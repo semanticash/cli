@@ -1,0 +1,419 @@
+package kiroide
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	agentKiro "github.com/semanticash/cli/internal/agents/kiro"
+	"github.com/semanticash/cli/internal/hooks"
+)
+
+func TestInstallHooks_CreatesCorrectFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	p := &Provider{}
+
+	count, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("installed %d hooks, want 2", count)
+	}
+
+	for _, name := range []string{"semantica-prompt-submit.kiro.hook", "semantica-agent-stop.kiro.hook"} {
+		path := filepath.Join(repoRoot, ".kiro", "hooks", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("hook file %s not found: %v", name, err)
+		}
+
+		var hook kiroHook
+		if err := json.Unmarshal(data, &hook); err != nil {
+			t.Fatalf("invalid JSON in %s: %v", name, err)
+		}
+		if !hook.Enabled {
+			t.Errorf("%s: enabled = false, want true", name)
+		}
+		if hook.Then.Type != "runCommand" {
+			t.Errorf("%s: then.type = %q, want runCommand", name, hook.Then.Type)
+		}
+		if !strings.Contains(hook.Then.Command, "semantica capture kiro-ide") {
+			t.Errorf("%s: command missing capture marker: %q", name, hook.Then.Command)
+		}
+		if !strings.Contains(hook.Then.Command, "/usr/local/bin/semantica") {
+			t.Errorf("%s: command missing binary path: %q", name, hook.Then.Command)
+		}
+	}
+}
+
+func TestInstallHooks_Idempotent(t *testing.T) {
+	repoRoot := t.TempDir()
+	p := &Provider{}
+
+	_, _ = p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
+	count, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("second install returned %d, want 2 (idempotent)", count)
+	}
+}
+
+func TestUninstallHooks_RemovesSemanticaOnly(t *testing.T) {
+	repoRoot := t.TempDir()
+	hooksDir := filepath.Join(repoRoot, ".kiro", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	_, _ = p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
+
+	otherHook := `{"id":"user-hook","name":"My Hook","when":{"type":"fileSave"},"then":{"type":"alert","message":"saved"}}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "user-hook.kiro.hook"), []byte(otherHook), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.UninstallHooks(context.Background(), repoRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if p.AreHooksInstalled(context.Background(), repoRoot) {
+		t.Error("semantica hooks still installed after uninstall")
+	}
+
+	if _, err := os.Stat(filepath.Join(hooksDir, "user-hook.kiro.hook")); err != nil {
+		t.Error("non-semantica hook was removed")
+	}
+}
+
+func TestAreHooksInstalled(t *testing.T) {
+	repoRoot := t.TempDir()
+	p := &Provider{}
+
+	if p.AreHooksInstalled(context.Background(), repoRoot) {
+		t.Error("hooks detected before install")
+	}
+
+	_, _ = p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
+
+	if !p.AreHooksInstalled(context.Background(), repoRoot) {
+		t.Error("hooks not detected after install")
+	}
+}
+
+func TestHookBinary_ExtractsBinaryPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	p := &Provider{}
+
+	_, _ = p.InstallHooks(context.Background(), repoRoot, "/opt/bin/semantica")
+
+	bin, err := p.HookBinary(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bin != "/opt/bin/semantica" {
+		t.Errorf("binary = %q, want /opt/bin/semantica", bin)
+	}
+}
+
+func TestParseHookEvent_PromptSubmitAndStopUseSameWorkspaceKey(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	histPathA := filepath.Join(t.TempDir(), "session-a.json")
+	histPathB := filepath.Join(t.TempDir(), "session-b.json")
+
+	if err := os.WriteFile(histPathA, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(histPathB, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	callCount := 0
+	p := &Provider{
+		resolveSession: func(workspacePath string) (string, string, error) {
+			callCount++
+			if callCount == 1 {
+				return "session-a", histPathA, nil
+			}
+			return "session-b", histPathB, nil
+		},
+	}
+
+	submitEvent, err := p.ParseHookEvent(context.Background(), "prompt-submit", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.HasPrefix(submitEvent.SessionID, "kiroide:") {
+		t.Errorf("session ID = %q, want kiroide: prefix", submitEvent.SessionID)
+	}
+	if submitEvent.TranscriptRef != histPathA {
+		t.Errorf("transcript ref = %q, want %q", submitEvent.TranscriptRef, histPathA)
+	}
+
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID:        submitEvent.SessionID,
+		Provider:         providerName,
+		TranscriptRef:    submitEvent.TranscriptRef,
+		TranscriptOffset: 0,
+		Timestamp:        submitEvent.Timestamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hooks.DeleteCaptureState(submitEvent.SessionID) }()
+
+	stopEvent, err := p.ParseHookEvent(context.Background(), "stop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stopEvent.SessionID != submitEvent.SessionID {
+		t.Errorf("stop session ID = %q, want %q (same workspace key)", stopEvent.SessionID, submitEvent.SessionID)
+	}
+	if stopEvent.TranscriptRef != histPathA {
+		t.Errorf("stop transcript ref = %q, want %q (pinned from prompt-submit)", stopEvent.TranscriptRef, histPathA)
+	}
+}
+
+func TestParseHookEvent_StopFallsBackWhenNoCaptureState(t *testing.T) {
+	histPath := filepath.Join(t.TempDir(), "fallback.json")
+	if err := os.WriteFile(histPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{
+		resolveSession: func(workspacePath string) (string, string, error) {
+			return "fallback-session", histPath, nil
+		},
+	}
+
+	event, err := p.ParseHookEvent(context.Background(), "stop", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(event.SessionID, "kiroide:") {
+		t.Errorf("session ID = %q, want kiroide: prefix", event.SessionID)
+	}
+	if event.TranscriptRef != histPath {
+		t.Errorf("transcript ref = %q, want %q", event.TranscriptRef, histPath)
+	}
+}
+
+func TestParseHookEvent_UnknownHook(t *testing.T) {
+	p := &Provider{}
+	_, err := p.ParseHookEvent(context.Background(), "unknown-hook", nil)
+	if err == nil {
+		t.Fatal("expected error for unknown hook name")
+	}
+	if !strings.Contains(err.Error(), "unknown kiro-ide hook") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestReadFromOffset_NewExecutions(t *testing.T) {
+	sessDir := t.TempDir()
+	histPath := filepath.Join(sessDir, "session.json")
+
+	sessions := []agentKiro.SessionIndex{
+		{SessionID: "read-session", DateCreated: "1700000000000", WorkspaceDirectory: "/mock/workspace"},
+	}
+	sData, _ := json.Marshal(sessions)
+	if err := os.WriteFile(filepath.Join(sessDir, "sessions.json"), sData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	history := agentKiro.SessionHistory{
+		SessionID:          "read-session",
+		WorkspaceDirectory: "/mock/workspace",
+		History: []agentKiro.HistoryEntry{
+			{Message: agentKiro.HistoryMessage{Role: "user"}},
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-old"},
+			{Message: agentKiro.HistoryMessage{Role: "user"}},
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-new"},
+		},
+	}
+	hData, _ := json.Marshal(history)
+	if err := os.WriteFile(histPath, hData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	events, newOffset, err := p.ReadFromOffset(context.Background(), histPath, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Logf("got %d events (trace files found unexpectedly)", len(events))
+	}
+	if newOffset != 2 {
+		t.Errorf("newOffset = %d, want 2", newOffset)
+	}
+}
+
+func TestReadFromOffset_NoNewExecutions(t *testing.T) {
+	sessDir := t.TempDir()
+	histPath := filepath.Join(sessDir, "session.json")
+
+	history := agentKiro.SessionHistory{
+		SessionID:          "static-session",
+		WorkspaceDirectory: "/mock/workspace",
+		History: []agentKiro.HistoryEntry{
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-1"},
+		},
+	}
+	hData, _ := json.Marshal(history)
+	if err := os.WriteFile(histPath, hData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	events, newOffset, err := p.ReadFromOffset(context.Background(), histPath, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+	if newOffset != 1 {
+		t.Errorf("newOffset = %d, want 1 (unchanged)", newOffset)
+	}
+}
+
+func TestReadFromOffset_MissingTranscript(t *testing.T) {
+	p := &Provider{}
+	events, offset, err := p.ReadFromOffset(context.Background(), "/nonexistent/path.json", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 || offset != 0 {
+		t.Errorf("expected empty result for missing transcript, got %d events offset %d", len(events), offset)
+	}
+}
+
+func TestReadFromOffset_UsesRealKiroSessionID(t *testing.T) {
+	sessDir := t.TempDir()
+	histPath := filepath.Join(sessDir, "session.json")
+
+	sessions := []agentKiro.SessionIndex{
+		{SessionID: "real-kiro-id-abc123", DateCreated: "1700000000000", WorkspaceDirectory: "/mock/ws"},
+	}
+	sData, _ := json.Marshal(sessions)
+	if err := os.WriteFile(filepath.Join(sessDir, "sessions.json"), sData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	history := agentKiro.SessionHistory{
+		SessionID:          "real-kiro-id-abc123",
+		WorkspaceDirectory: "/mock/ws",
+		History: []agentKiro.HistoryEntry{
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-1"},
+		},
+	}
+	hData, _ := json.Marshal(history)
+	if err := os.WriteFile(histPath, hData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	_, newOffset, err := p.ReadFromOffset(context.Background(), histPath, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newOffset != 1 {
+		t.Errorf("newOffset = %d, want 1", newOffset)
+	}
+}
+
+func TestReadFromOffset_PopulatesSourceKey(t *testing.T) {
+	sessDir := t.TempDir()
+	histPath := filepath.Join(sessDir, "session.json")
+
+	sessions := []agentKiro.SessionIndex{
+		{SessionID: "source-session", DateCreated: "1700000000000", WorkspaceDirectory: "/mock/ws"},
+	}
+	sData, _ := json.Marshal(sessions)
+	if err := os.WriteFile(filepath.Join(sessDir, "sessions.json"), sData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	history := agentKiro.SessionHistory{
+		SessionID:          "source-session",
+		WorkspaceDirectory: "/mock/ws",
+		History: []agentKiro.HistoryEntry{
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-src"},
+		},
+	}
+	hData, _ := json.Marshal(history)
+	if err := os.WriteFile(histPath, hData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	_, newOffset, err := p.ReadFromOffset(context.Background(), histPath, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newOffset != 1 {
+		t.Errorf("newOffset = %d, want 1", newOffset)
+	}
+}
+
+func TestExecsAfterID(t *testing.T) {
+	execs := []execMeta{
+		{ExecutionID: "a"}, {ExecutionID: "b"}, {ExecutionID: "c"},
+	}
+
+	got := execsAfterID(execs, "a")
+	if len(got) != 2 || got[0].ExecutionID != "b" {
+		t.Errorf("after a: got %d execs", len(got))
+	}
+
+	got = execsAfterID(execs, "")
+	if len(got) != 3 {
+		t.Errorf("empty lastID: got %d, want 3", len(got))
+	}
+
+	got = execsAfterID(execs, "unknown")
+	if len(got) != 3 {
+		t.Errorf("unknown lastID: got %d, want 3", len(got))
+	}
+
+	got = execsAfterID(execs, "c")
+	if len(got) != 0 {
+		t.Errorf("after last: got %d, want 0", len(got))
+	}
+}
+
+func TestTranscriptOffset(t *testing.T) {
+	dir := t.TempDir()
+	histPath := filepath.Join(dir, "session.json")
+
+	history := agentKiro.SessionHistory{
+		SessionID: "test",
+		History: []agentKiro.HistoryEntry{
+			{Message: agentKiro.HistoryMessage{Role: "user"}},
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-1"},
+			{Message: agentKiro.HistoryMessage{Role: "user"}},
+			{Message: agentKiro.HistoryMessage{Role: "assistant"}, ExecutionID: "exec-2"},
+		},
+	}
+	data, _ := json.Marshal(history)
+	if err := os.WriteFile(histPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	offset, err := p.TranscriptOffset(context.Background(), histPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != 2 {
+		t.Errorf("offset = %d, want 2 (two execution entries)", offset)
+	}
+}

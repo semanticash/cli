@@ -1,0 +1,70 @@
+version: 2
+
+before:
+  hooks:
+    - go mod download
+    - make completions
+
+builds:
+  - main: ./cmd/semantica
+    binary: semantica
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/semanticash/cli/internal/version.Version={{.Version}}
+      - -X github.com/semanticash/cli/internal/version.Commit={{.ShortCommit}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "semantica_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: completions/*
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+homebrew_casks:
+  - repository:
+      owner: semanticash
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    name: semantica
+    homepage: "https://www.semantica.sh"
+    description: "Observability and control for AI-assisted development"
+    binaries:
+      - semantica
+    completions:
+      bash: "completions/semantica.bash"
+      zsh: "completions/semantica.zsh"
+      fish: "completions/semantica.fish"

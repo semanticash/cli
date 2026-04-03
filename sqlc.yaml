@@ -1,0 +1,16 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    queries: "./internal/store/sqlite/queries"
+    schema: "./internal/store/sqlite/schema"
+    gen:
+      go:
+        package: "db"
+        sql_package: "database/sql"
+        emit_prepared_queries: true
+        emit_interface: false
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        emit_json_tags: true
+        json_tags_case_style: "snake"
+        out: "./internal/store/sqlite/db"
