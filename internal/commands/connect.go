@@ -286,14 +286,14 @@ func handleWorkspaceConflict(cmd *cobra.Command, resp *auth.ConnectRepoResponse)
 	case "pending":
 		_, _ = fmt.Fprintf(out, "This repository is already connected to %s.\n", workspaceName)
 		_, _ = fmt.Fprintln(out, "Your access request is still pending approval.")
-		return fmt.Errorf("access request pending")
+		return nil
 	case "rejected":
 		_, _ = fmt.Fprintf(out, "This repository is already connected to %s.\n", workspaceName)
 		_, _ = fmt.Fprintln(out, "Your access request was declined. Contact the workspace owner/admin for access.")
-		return fmt.Errorf("access request rejected")
+		return nil
 	case "approved":
 		_, _ = fmt.Fprintf(out, "Access to %s was approved. Rerun `semantica connect`.\n", workspaceName)
-		return fmt.Errorf("access approved but not yet connected locally")
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(out, "This repository is already connected to %s.\n", workspaceName)
@@ -330,7 +330,7 @@ func handleWorkspaceConflict(cmd *cobra.Command, resp *auth.ConnectRepoResponse)
 	_, _ = fmt.Fprintf(out, "Access requested from %s.\n", workspaceName)
 	_, _ = fmt.Fprintln(out, "Semantica will keep capturing locally until access is approved.")
 	_, _ = fmt.Fprintln(out, "Rerun `semantica connect` after approval.")
-	return fmt.Errorf("access requested, pending approval")
+	return nil
 }
 
 func backfillAttribution(ctx context.Context, out io.Writer, semDir, connectedRepoID string) {
