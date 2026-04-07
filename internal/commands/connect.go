@@ -290,7 +290,7 @@ func handleWorkspaceConflict(cmd *cobra.Command, resp *auth.ConnectRepoResponse)
 	case "rejected":
 		_, _ = fmt.Fprintf(out, "This repository is already connected to %s.\n", workspaceName)
 		_, _ = fmt.Fprintln(out, "Your access request was declined. Contact the workspace owner/admin for access.")
-		return fmt.Errorf("access request rejected")
+		return nil
 	case "approved":
 		_, _ = fmt.Fprintf(out, "Access to %s was approved. Rerun `semantica connect`.\n", workspaceName)
 		return nil

@@ -74,7 +74,6 @@ func TestHandleWorkspaceConflict_KnownStatuses(t *testing.T) {
 	tests := []struct {
 		name    string
 		resp    *auth.ConnectRepoResponse
-		wantErr string
 		wantOut string
 	}{
 		{
@@ -83,7 +82,6 @@ func TestHandleWorkspaceConflict_KnownStatuses(t *testing.T) {
 				WorkspaceName:         "Acme",
 				ExistingRequestStatus: "pending",
 			},
-			wantErr: "access request pending",
 			wantOut: "Your access request is still pending approval.",
 		},
 		{
@@ -92,7 +90,6 @@ func TestHandleWorkspaceConflict_KnownStatuses(t *testing.T) {
 				WorkspaceName:         "Acme",
 				ExistingRequestStatus: "rejected",
 			},
-			wantErr: "access request rejected",
 			wantOut: "Your access request was declined.",
 		},
 		{
@@ -101,7 +98,6 @@ func TestHandleWorkspaceConflict_KnownStatuses(t *testing.T) {
 				WorkspaceName:         "Acme",
 				ExistingRequestStatus: "approved",
 			},
-			wantErr: "access approved but not yet connected locally",
 			wantOut: "Access to Acme was approved.",
 		},
 	}
@@ -113,8 +109,8 @@ func TestHandleWorkspaceConflict_KnownStatuses(t *testing.T) {
 			cmd.SetOut(&out)
 
 			err := handleWorkspaceConflict(cmd, tt.resp)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			if err != nil {
+				t.Fatalf("error = %v, want nil", err)
 			}
 			if !strings.Contains(out.String(), tt.wantOut) {
 				t.Fatalf("output = %q, want substring %q", out.String(), tt.wantOut)
