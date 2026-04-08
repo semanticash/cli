@@ -17,6 +17,8 @@ import (
 	"github.com/semanticash/cli/internal/auth"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/service/implementations"
+	"github.com/semanticash/cli/internal/store/impldb"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/redact"
@@ -97,6 +99,10 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// Reconciliation must run before manifest/checkpoint completion so
 	// recovered events are included in this checkpoint.
 	reconcileActiveSessions(ctx)
+
+	// Reconcile implementation observations (best-effort).
+	// Creates implementations.db on first call, processes pending observations.
+	reconcileImplementations(ctx, in.RepoRoot, in.CommitHash)
 
 	repo, err := git.OpenRepo(in.RepoRoot)
 	if err != nil {
@@ -725,6 +731,41 @@ func redactPushPayload(p *remotePushPayload) error {
 		p.PlaybookJSON = redacted
 	}
 	return nil
+}
+
+// reconcileImplementations processes pending implementation observations and
+// optionally attaches the current commit. Best-effort: errors are logged, not
+// propagated. Creates implementations.db on first call.
+func reconcileImplementations(ctx context.Context, repoRoot, commitHash string) {
+	base, err := broker.GlobalBase()
+	if err != nil {
+		return
+	}
+	implPath := filepath.Join(base, "implementations.db")
+
+	implH, err := impldb.Open(ctx, implPath, impldb.OpenOptions{
+		BusyTimeout: 5 * time.Second,
+		TxImmediate: true,
+	})
+	if err != nil {
+		wlog("worker: open implementations db: %v\n", err)
+		return
+	}
+	defer func() { _ = impldb.Close(implH) }()
+
+	r := &implementations.Reconciler{}
+	if _, err := r.Reconcile(ctx, implH); err != nil {
+		wlog("worker: reconcile implementations: %v\n", err)
+	}
+
+	if commitHash != "" {
+		if err := r.AttachCommit(ctx, implH, implementations.AttachCommitInput{
+			RepoPath:   repoRoot,
+			CommitHash: commitHash,
+		}); err != nil {
+			wlog("worker: attach commit to implementation: %v\n", err)
+		}
+	}
 }
 
 func failCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string) {

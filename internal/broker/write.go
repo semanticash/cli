@@ -65,7 +65,9 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		sessionStartedAt  int64
 		sessionMetaJSON   string
 		sourceRepoPath    string // set when session originated from a different repo
+		sourceProjectPath string // raw SourceProjectPath (always set, for implementation observations)
 		model             string // LLM model name
+		latestEventTs     int64  // most recent event timestamp in this group
 	}
 
 	groups := make(map[string]*sourceGroup) // key: provider + "|" + source_key + "|" + provider_session_id
@@ -91,12 +93,16 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				sessionStartedAt:  ev.SessionStartedAt,
 				sessionMetaJSON:   ev.SessionMetaJSON,
 				sourceRepoPath:    sourceRepoPath,
+				sourceProjectPath: ev.SourceProjectPath,
 				model:             ev.Model,
 			}
 			groups[key] = g
 			groupOrder = append(groupOrder, key)
 		}
 		g.events = append(g.events, *ev)
+		if ev.Timestamp > g.latestEventTs {
+			g.latestEventTs = ev.Timestamp
+		}
 	}
 
 	// Propagate payload and provenance blobs from the broker store into the
@@ -274,6 +280,53 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		return sessionIDs, fmt.Errorf("commit tx: %w", err)
 	}
 	dbDuration := time.Since(dbStart)
+
+	// Emit implementation observations (fail-open, best-effort).
+	// One observation per unique (provider, provider_session_id) in this batch.
+	// Aggregate across groups that share the same session (different source_keys)
+	// to get the latest event_ts and prefer non-empty parent/source fields.
+	type obsAgg struct {
+		provider          string
+		providerSessionID string
+		parentSessionID   string
+		sourceProjectPath string
+		latestEventTs     int64
+	}
+	obsMap := make(map[string]*obsAgg)
+	for _, key := range groupOrder {
+		g := groups[key]
+		dedup := g.events[0].Provider + "|" + g.providerSessionID
+		agg, ok := obsMap[dedup]
+		if !ok {
+			obsMap[dedup] = &obsAgg{
+				provider:          g.events[0].Provider,
+				providerSessionID: g.providerSessionID,
+				parentSessionID:   g.parentSessionID,
+				sourceProjectPath: g.sourceProjectPath,
+				latestEventTs:     g.latestEventTs,
+			}
+			continue
+		}
+		if g.latestEventTs > agg.latestEventTs {
+			agg.latestEventTs = g.latestEventTs
+		}
+		if agg.parentSessionID == "" && g.parentSessionID != "" {
+			agg.parentSessionID = g.parentSessionID
+		}
+		if agg.sourceProjectPath == "" && g.sourceProjectPath != "" {
+			agg.sourceProjectPath = g.sourceProjectPath
+		}
+	}
+	for _, agg := range obsMap {
+		EmitObservation(ctx, Observation{
+			Provider:          agg.provider,
+			ProviderSessionID: agg.providerSessionID,
+			ParentSessionID:   agg.parentSessionID,
+			SourceProjectPath: agg.sourceProjectPath,
+			TargetRepoPath:    repoPath,
+			EventTs:           agg.latestEventTs,
+		})
+	}
 
 	doctor.AddBenchStats(ctx, repoPath, doctor.BenchStats{
 		RowsWritten:  rowsWritten,
