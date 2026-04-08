@@ -120,6 +120,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listAgentEventsBySessionStmt, err = db.PrepareContext(ctx, listAgentEventsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAgentEventsBySession: %w", err)
 	}
+	if q.listAgentEventsBySessionPagedStmt, err = db.PrepareContext(ctx, listAgentEventsBySessionPaged); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAgentEventsBySessionPaged: %w", err)
+	}
 	if q.listBackfillReplayCandidatesStmt, err = db.PrepareContext(ctx, listBackfillReplayCandidates); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBackfillReplayCandidates: %w", err)
 	}
@@ -417,6 +420,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listAgentEventsBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listAgentEventsBySessionPagedStmt != nil {
+		if cerr := q.listAgentEventsBySessionPagedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAgentEventsBySessionPagedStmt: %w", cerr)
+		}
+	}
 	if q.listBackfillReplayCandidatesStmt != nil {
 		if cerr := q.listBackfillReplayCandidatesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listBackfillReplayCandidatesStmt: %w", cerr)
@@ -708,6 +716,7 @@ type Queries struct {
 	insertRepositoryStmt                  *sql.Stmt
 	insertSessionCheckpointStmt           *sql.Stmt
 	listAgentEventsBySessionStmt          *sql.Stmt
+	listAgentEventsBySessionPagedStmt     *sql.Stmt
 	listBackfillReplayCandidatesStmt      *sql.Stmt
 	listCheckpointsByRepositoryStmt       *sql.Stmt
 	listCheckpointsWithCommitStmt         *sql.Stmt
@@ -790,6 +799,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		insertRepositoryStmt:                  q.insertRepositoryStmt,
 		insertSessionCheckpointStmt:           q.insertSessionCheckpointStmt,
 		listAgentEventsBySessionStmt:          q.listAgentEventsBySessionStmt,
+		listAgentEventsBySessionPagedStmt:     q.listAgentEventsBySessionPagedStmt,
 		listBackfillReplayCandidatesStmt:      q.listBackfillReplayCandidatesStmt,
 		listCheckpointsByRepositoryStmt:       q.listCheckpointsByRepositoryStmt,
 		listCheckpointsWithCommitStmt:         q.listCheckpointsWithCommitStmt,

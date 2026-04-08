@@ -350,6 +350,35 @@ func (q *Queries) MarkDormant(ctx context.Context, lastActivityAt int64) (sql.Re
 	return q.exec(ctx, q.markDormantStmt, markDormant, lastActivityAt)
 }
 
+const resolveImplementationByPrefix = `-- name: ResolveImplementationByPrefix :many
+select implementation_id from implementations
+where implementation_id like ?1 || '%'
+limit 10
+`
+
+func (q *Queries) ResolveImplementationByPrefix(ctx context.Context, prefix sql.NullString) ([]string, error) {
+	rows, err := q.query(ctx, q.resolveImplementationByPrefixStmt, resolveImplementationByPrefix, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var implementation_id string
+		if err := rows.Scan(&implementation_id); err != nil {
+			return nil, err
+		}
+		items = append(items, implementation_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateImplementationActivity = `-- name: UpdateImplementationActivity :exec
 update implementations set last_activity_at = ? where implementation_id = ?
 `

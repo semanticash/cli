@@ -420,6 +420,73 @@ func (q *Queries) ListAgentEventsBySession(ctx context.Context, arg ListAgentEve
 	return items, nil
 }
 
+const listAgentEventsBySessionPaged = `-- name: ListAgentEventsBySessionPaged :many
+select event_id, session_id, repository_id, ts, kind, payload_hash, role, tool_uses, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create, summary, provider_event_id, turn_id, tool_use_id, tool_name, event_source, provenance_hash from agent_events
+where session_id = ?1
+  and (ts > ?2
+       or (ts = ?2 and event_id > ?3))
+order by ts asc, event_id asc
+limit ?4
+`
+
+type ListAgentEventsBySessionPagedParams struct {
+	SessionID    string `json:"session_id"`
+	AfterTs      int64  `json:"after_ts"`
+	AfterEventID string `json:"after_event_id"`
+	PageLimit    int64  `json:"page_limit"`
+}
+
+// Keyset pagination: returns the next page of events after the given cursor.
+// Use after_ts=0, after_event_id=” for the first page. Order is ascending
+// (chronological) for timeline construction.
+func (q *Queries) ListAgentEventsBySessionPaged(ctx context.Context, arg ListAgentEventsBySessionPagedParams) ([]AgentEvent, error) {
+	rows, err := q.query(ctx, q.listAgentEventsBySessionPagedStmt, listAgentEventsBySessionPaged,
+		arg.SessionID,
+		arg.AfterTs,
+		arg.AfterEventID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentEvent{}
+	for rows.Next() {
+		var i AgentEvent
+		if err := rows.Scan(
+			&i.EventID,
+			&i.SessionID,
+			&i.RepositoryID,
+			&i.Ts,
+			&i.Kind,
+			&i.PayloadHash,
+			&i.Role,
+			&i.ToolUses,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.TokensCacheRead,
+			&i.TokensCacheCreate,
+			&i.Summary,
+			&i.ProviderEventID,
+			&i.TurnID,
+			&i.ToolUseID,
+			&i.ToolName,
+			&i.EventSource,
+			&i.ProvenanceHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrossRepoSessions = `-- name: ListCrossRepoSessions :many
 select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions
 where repository_id = ? and source_repo_path is not null

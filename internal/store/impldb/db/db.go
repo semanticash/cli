@@ -129,6 +129,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.resolveConflictStmt, err = db.PrepareContext(ctx, resolveConflict); err != nil {
 		return nil, fmt.Errorf("error preparing query ResolveConflict: %w", err)
 	}
+	if q.resolveImplementationByPrefixStmt, err = db.PrepareContext(ctx, resolveImplementationByPrefix); err != nil {
+		return nil, fmt.Errorf("error preparing query ResolveImplementationByPrefix: %w", err)
+	}
 	if q.updateImplementationActivityStmt, err = db.PrepareContext(ctx, updateImplementationActivity); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateImplementationActivity: %w", err)
 	}
@@ -327,6 +330,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing resolveConflictStmt: %w", cerr)
 		}
 	}
+	if q.resolveImplementationByPrefixStmt != nil {
+		if cerr := q.resolveImplementationByPrefixStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing resolveImplementationByPrefixStmt: %w", cerr)
+		}
+	}
 	if q.updateImplementationActivityStmt != nil {
 		if cerr := q.updateImplementationActivityStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateImplementationActivityStmt: %w", cerr)
@@ -431,6 +439,7 @@ type Queries struct {
 	markObservationReconciledStmt             *sql.Stmt
 	pruneReconciledObservationsStmt           *sql.Stmt
 	resolveConflictStmt                       *sql.Stmt
+	resolveImplementationByPrefixStmt         *sql.Stmt
 	updateImplementationActivityStmt          *sql.Stmt
 	updateImplementationStateStmt             *sql.Stmt
 	updateImplementationTitleStmt             *sql.Stmt
@@ -478,6 +487,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		markObservationReconciledStmt:             q.markObservationReconciledStmt,
 		pruneReconciledObservationsStmt:           q.pruneReconciledObservationsStmt,
 		resolveConflictStmt:                       q.resolveConflictStmt,
+		resolveImplementationByPrefixStmt:         q.resolveImplementationByPrefixStmt,
 		updateImplementationActivityStmt:          q.updateImplementationActivityStmt,
 		updateImplementationStateStmt:             q.updateImplementationStateStmt,
 		updateImplementationTitleStmt:             q.updateImplementationTitleStmt,

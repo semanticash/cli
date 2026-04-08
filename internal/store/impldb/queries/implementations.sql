@@ -59,6 +59,11 @@ set state = 'dormant'
 where state = 'active'
   and last_activity_at < ?;
 
+-- name: ResolveImplementationByPrefix :many
+select implementation_id from implementations
+where implementation_id like sqlc.arg(prefix) || '%'
+limit 10;
+
 -- name: ListStaleImplementations :many
 select * from implementations
 where state = 'dormant'
