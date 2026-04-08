@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/semanticash/cli/internal/service"
+	"github.com/semanticash/cli/internal/service/implementations"
+	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +21,7 @@ func NewSuggestCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd.AddCommand(newSuggestCommitCmd(rootOpts))
 	cmd.AddCommand(newSuggestPRCmd(rootOpts))
+	cmd.AddCommand(newSuggestImplementationsCmd())
 
 	return cmd
 }
@@ -146,6 +149,147 @@ Requires at least one supported LLM CLI: Claude Code, Cursor, Gemini CLI, or Cop
 	cmd.Flags().StringVar(&base, "base", "", "Base branch (default: auto-detect)")
 
 	return cmd
+}
+
+func newSuggestImplementationsCmd() *cobra.Command {
+	var (
+		asJSON bool
+		apply  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "implementations [implementation_id]",
+		Short: "Suggest titles, summaries, and merge candidates for implementations",
+		Long: `Without arguments: suggests titles for untitled implementations and
+identifies merge candidates across all active/dormant implementations.
+
+With an implementation ID: generates a title, summary, and review
+priority ranking for that specific implementation.
+
+All suggestions are advisory. Use --apply to write the suggested title.`,
+		Aliases: []string{"impl"},
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			svc := implementations.NewSuggestService()
+
+			if len(args) == 1 {
+				return suggestSingleImplementation(cmd, out, svc, args[0], asJSON, apply)
+			}
+			return suggestBatchImplementations(cmd, out, svc, asJSON)
+		},
+	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Apply the suggested title")
+
+	return cmd
+}
+
+func suggestSingleImplementation(
+	cmd *cobra.Command,
+	out interface{ Write([]byte) (int, error) },
+	svc *implementations.SuggestService,
+	implID string,
+	asJSON, apply bool,
+) error {
+	var res *implementations.SuggestResult
+	var err error
+
+	action := func() {
+		res, err = svc.SuggestForImplementation(cmd.Context(), implID)
+	}
+	if spinErr := runWithOptionalSpinner(out, asJSON, "Generating suggestions...", action); spinErr != nil {
+		action()
+	}
+	if err != nil {
+		return err
+	}
+
+	// Apply title before output so --json --apply works correctly.
+	if apply {
+		if err := implementations.ApplyTitle(cmd.Context(), implID, res.Title); err != nil {
+			return fmt.Errorf("apply title: %w", err)
+		}
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+
+	_, _ = fmt.Fprintf(out, "Suggested title: %s\n", res.Title)
+	_, _ = fmt.Fprintf(out, "Suggested summary: %s\n", res.Summary)
+
+	if len(res.ReviewPriority) > 0 {
+		_, _ = fmt.Fprintf(out, "\nReview priority:\n")
+		for _, r := range res.ReviewPriority {
+			_, _ = fmt.Fprintf(out, "  %-7s %-12s %-30s %s\n",
+				r.Priority, r.Repo, r.File, r.Reason)
+		}
+	}
+
+	if apply {
+		_, _ = fmt.Fprintf(out, "\nTitle applied.\n")
+	}
+
+	return nil
+}
+
+func suggestBatchImplementations(
+	cmd *cobra.Command,
+	out interface{ Write([]byte) (int, error) },
+	svc *implementations.SuggestService,
+	asJSON bool,
+) error {
+	var res *implementations.SuggestBatchResult
+	var err error
+
+	action := func() {
+		res, err = svc.SuggestBatch(cmd.Context())
+	}
+	if spinErr := runWithOptionalSpinner(out, asJSON, "Analyzing implementations...", action); spinErr != nil {
+		action()
+	}
+	if err != nil {
+		return err
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+
+	if res.Truncated {
+		_, _ = fmt.Fprintf(out, "Note: analyzed %d of %d implementations (oldest excluded)\n\n",
+			res.Analyzed, res.Total)
+	}
+
+	if len(res.Titles) == 0 && len(res.Merges) == 0 {
+		_, _ = fmt.Fprintln(out, "No suggestions.")
+		return nil
+	}
+
+	if len(res.Titles) > 0 {
+		_, _ = fmt.Fprintf(out, "Suggested titles:\n")
+		for _, t := range res.Titles {
+			_, _ = fmt.Fprintf(out, "  %s  %s\n", util.ShortID(t.ImplementationID), t.Title)
+		}
+	}
+
+	if len(res.Merges) > 0 {
+		_, _ = fmt.Fprintf(out, "\nMerge candidates:\n")
+		for _, m := range res.Merges {
+			_, _ = fmt.Fprintf(out, "  %s + %s  %s\n",
+				util.ShortID(m.ImplementationA),
+				util.ShortID(m.ImplementationB),
+				m.Reason)
+		}
+	}
+
+	return nil
 }
 
 // copyToClipboard copies text to the system clipboard.

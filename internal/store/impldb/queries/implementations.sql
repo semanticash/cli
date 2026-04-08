@@ -64,6 +64,10 @@ select implementation_id from implementations
 where implementation_id like sqlc.arg(prefix) || '%'
 limit 10;
 
+-- name: CountImplementationsByState :one
+select count(*) from implementations
+where state in (sqlc.slice('states'));
+
 -- name: ListStaleImplementations :many
 select * from implementations
 where state = 'dormant'

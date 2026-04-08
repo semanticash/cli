@@ -11,6 +11,28 @@ import (
 	"strings"
 )
 
+const countImplementationsByState = `-- name: CountImplementationsByState :one
+select count(*) from implementations
+where state in (/*SLICE:states*/?)
+`
+
+func (q *Queries) CountImplementationsByState(ctx context.Context, states []string) (int64, error) {
+	query := countImplementationsByState
+	var queryParams []interface{}
+	if len(states) > 0 {
+		for _, v := range states {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:states*/?", strings.Repeat(",?", len(states))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:states*/?", "NULL", 1)
+	}
+	row := q.queryRow(ctx, nil, query, queryParams...)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getImplementation = `-- name: GetImplementation :one
 select implementation_id, title, state, created_at, last_activity_at, closed_at, metadata_json from implementations where implementation_id = ?
 `
