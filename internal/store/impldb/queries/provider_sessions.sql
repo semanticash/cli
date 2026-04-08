@@ -24,3 +24,12 @@ limit 1;
 select * from implementation_provider_sessions
 where implementation_id = ?
 order by attached_at asc;
+
+-- name: MoveProviderSessions :exec
+update implementation_provider_sessions
+set implementation_id = sqlc.arg(target_id)
+where implementation_id = sqlc.arg(source_id);
+
+-- name: DeleteProviderSession :exec
+delete from implementation_provider_sessions
+where implementation_id = ? and provider = ? and provider_session_id = ?;

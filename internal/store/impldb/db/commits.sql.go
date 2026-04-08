@@ -99,3 +99,19 @@ func (q *Queries) ListImplementationCommits(ctx context.Context, implementationI
 	}
 	return items, nil
 }
+
+const moveCommits = `-- name: MoveCommits :exec
+update implementation_commits
+set implementation_id = ?1
+where implementation_id = ?2
+`
+
+type MoveCommitsParams struct {
+	TargetID string `json:"target_id"`
+	SourceID string `json:"source_id"`
+}
+
+func (q *Queries) MoveCommits(ctx context.Context, arg MoveCommitsParams) error {
+	_, err := q.exec(ctx, q.moveCommitsStmt, moveCommits, arg.TargetID, arg.SourceID)
+	return err
+}

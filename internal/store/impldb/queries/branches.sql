@@ -18,3 +18,6 @@ limit 1;
 select * from implementation_branches
 where implementation_id = ?
 order by first_seen_at asc;
+
+-- name: DeleteBranchesForImplementation :exec
+delete from implementation_branches where implementation_id = ?;

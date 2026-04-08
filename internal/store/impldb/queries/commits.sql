@@ -17,3 +17,8 @@ order by attached_at asc;
 -- name: CountCommitsForImplementation :one
 select count(*) from implementation_commits
 where implementation_id = ?;
+
+-- name: MoveCommits :exec
+update implementation_commits
+set implementation_id = sqlc.arg(target_id)
+where implementation_id = sqlc.arg(source_id);

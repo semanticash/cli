@@ -21,6 +21,40 @@ func (q *Queries) CountReposForImplementation(ctx context.Context, implementatio
 	return count, err
 }
 
+const deleteOrphanedRepos = `-- name: DeleteOrphanedRepos :exec
+delete from implementation_repos
+where implementation_repos.implementation_id = ?1
+  and implementation_repos.canonical_path not in (
+    select distinct rs.canonical_path
+    from implementation_repo_sessions rs
+    where rs.implementation_id = ?1
+    union
+    select distinct c.canonical_path
+    from implementation_commits c
+    where c.implementation_id = ?1
+    union
+    select distinct b.canonical_path
+    from implementation_branches b
+    where b.implementation_id = ?1
+  )
+`
+
+// Remove repos that no longer have any repo-scoped data (sessions, commits,
+// or branches) in this implementation.
+func (q *Queries) DeleteOrphanedRepos(ctx context.Context, implID string) error {
+	_, err := q.exec(ctx, q.deleteOrphanedReposStmt, deleteOrphanedRepos, implID)
+	return err
+}
+
+const deleteReposForImplementation = `-- name: DeleteReposForImplementation :exec
+delete from implementation_repos where implementation_id = ?
+`
+
+func (q *Queries) DeleteReposForImplementation(ctx context.Context, implementationID string) error {
+	_, err := q.exec(ctx, q.deleteReposForImplementationStmt, deleteReposForImplementation, implementationID)
+	return err
+}
+
 const listImplementationRepos = `-- name: ListImplementationRepos :many
 select implementation_id, canonical_path, display_name, repo_role, first_seen_at, last_seen_at from implementation_repos
 where implementation_id = ?

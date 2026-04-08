@@ -487,6 +487,53 @@ func (q *Queries) ListAgentEventsBySessionPaged(ctx context.Context, arg ListAge
 	return items, nil
 }
 
+const listAgentSessionsByProviderSessionID = `-- name: ListAgentSessionsByProviderSessionID :many
+select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions
+where repository_id = ? and provider_session_id = ?
+`
+
+type ListAgentSessionsByProviderSessionIDParams struct {
+	RepositoryID      string `json:"repository_id"`
+	ProviderSessionID string `json:"provider_session_id"`
+}
+
+// Search by provider_session_id across all providers in a repo.
+// Returns multiple rows if different providers reuse the same ID.
+func (q *Queries) ListAgentSessionsByProviderSessionID(ctx context.Context, arg ListAgentSessionsByProviderSessionIDParams) ([]AgentSession, error) {
+	rows, err := q.query(ctx, q.listAgentSessionsByProviderSessionIDStmt, listAgentSessionsByProviderSessionID, arg.RepositoryID, arg.ProviderSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentSession{}
+	for rows.Next() {
+		var i AgentSession
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.ProviderSessionID,
+			&i.ParentSessionID,
+			&i.RepositoryID,
+			&i.Provider,
+			&i.SourceID,
+			&i.StartedAt,
+			&i.LastSeenAt,
+			&i.MetadataJson,
+			&i.SourceRepoPath,
+			&i.Model,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCrossRepoSessions = `-- name: ListCrossRepoSessions :many
 select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions
 where repository_id = ? and source_repo_path is not null

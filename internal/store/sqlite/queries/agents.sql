@@ -25,6 +25,12 @@ returning *;
 select * from agent_sessions
 where repository_id = ? and provider = ? and provider_session_id = ?;
 
+-- name: ListAgentSessionsByProviderSessionID :many
+-- Search by provider_session_id across all providers in a repo.
+-- Returns multiple rows if different providers reuse the same ID.
+select * from agent_sessions
+where repository_id = ? and provider_session_id = ?;
+
 -- name: InsertAgentEvent :exec
 insert or ignore into agent_events (
     event_id, session_id, repository_id, ts, kind,

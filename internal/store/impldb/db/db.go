@@ -33,6 +33,21 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countReposForImplementationStmt, err = db.PrepareContext(ctx, countReposForImplementation); err != nil {
 		return nil, fmt.Errorf("error preparing query CountReposForImplementation: %w", err)
 	}
+	if q.deleteBranchesForImplementationStmt, err = db.PrepareContext(ctx, deleteBranchesForImplementation); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBranchesForImplementation: %w", err)
+	}
+	if q.deleteOrphanedReposStmt, err = db.PrepareContext(ctx, deleteOrphanedRepos); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteOrphanedRepos: %w", err)
+	}
+	if q.deleteProviderSessionStmt, err = db.PrepareContext(ctx, deleteProviderSession); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteProviderSession: %w", err)
+	}
+	if q.deleteRepoSessionsByProviderSessionStmt, err = db.PrepareContext(ctx, deleteRepoSessionsByProviderSession); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteRepoSessionsByProviderSession: %w", err)
+	}
+	if q.deleteReposForImplementationStmt, err = db.PrepareContext(ctx, deleteReposForImplementation); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteReposForImplementation: %w", err)
+	}
 	if q.findActiveImplementationByBranchStmt, err = db.PrepareContext(ctx, findActiveImplementationByBranch); err != nil {
 		return nil, fmt.Errorf("error preparing query FindActiveImplementationByBranch: %w", err)
 	}
@@ -123,6 +138,15 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.markObservationReconciledStmt, err = db.PrepareContext(ctx, markObservationReconciled); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkObservationReconciled: %w", err)
 	}
+	if q.moveCommitsStmt, err = db.PrepareContext(ctx, moveCommits); err != nil {
+		return nil, fmt.Errorf("error preparing query MoveCommits: %w", err)
+	}
+	if q.moveProviderSessionsStmt, err = db.PrepareContext(ctx, moveProviderSessions); err != nil {
+		return nil, fmt.Errorf("error preparing query MoveProviderSessions: %w", err)
+	}
+	if q.moveRepoSessionsStmt, err = db.PrepareContext(ctx, moveRepoSessions); err != nil {
+		return nil, fmt.Errorf("error preparing query MoveRepoSessions: %w", err)
+	}
 	if q.pruneReconciledObservationsStmt, err = db.PrepareContext(ctx, pruneReconciledObservations); err != nil {
 		return nil, fmt.Errorf("error preparing query PruneReconciledObservations: %w", err)
 	}
@@ -168,6 +192,31 @@ func (q *Queries) Close() error {
 	if q.countReposForImplementationStmt != nil {
 		if cerr := q.countReposForImplementationStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countReposForImplementationStmt: %w", cerr)
+		}
+	}
+	if q.deleteBranchesForImplementationStmt != nil {
+		if cerr := q.deleteBranchesForImplementationStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBranchesForImplementationStmt: %w", cerr)
+		}
+	}
+	if q.deleteOrphanedReposStmt != nil {
+		if cerr := q.deleteOrphanedReposStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteOrphanedReposStmt: %w", cerr)
+		}
+	}
+	if q.deleteProviderSessionStmt != nil {
+		if cerr := q.deleteProviderSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteProviderSessionStmt: %w", cerr)
+		}
+	}
+	if q.deleteRepoSessionsByProviderSessionStmt != nil {
+		if cerr := q.deleteRepoSessionsByProviderSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteRepoSessionsByProviderSessionStmt: %w", cerr)
+		}
+	}
+	if q.deleteReposForImplementationStmt != nil {
+		if cerr := q.deleteReposForImplementationStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteReposForImplementationStmt: %w", cerr)
 		}
 	}
 	if q.findActiveImplementationByBranchStmt != nil {
@@ -320,6 +369,21 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing markObservationReconciledStmt: %w", cerr)
 		}
 	}
+	if q.moveCommitsStmt != nil {
+		if cerr := q.moveCommitsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing moveCommitsStmt: %w", cerr)
+		}
+	}
+	if q.moveProviderSessionsStmt != nil {
+		if cerr := q.moveProviderSessionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing moveProviderSessionsStmt: %w", cerr)
+		}
+	}
+	if q.moveRepoSessionsStmt != nil {
+		if cerr := q.moveRepoSessionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing moveRepoSessionsStmt: %w", cerr)
+		}
+	}
 	if q.pruneReconciledObservationsStmt != nil {
 		if cerr := q.pruneReconciledObservationsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing pruneReconciledObservationsStmt: %w", cerr)
@@ -407,6 +471,11 @@ type Queries struct {
 	countCommitsForImplementationStmt         *sql.Stmt
 	countFailedObservationsStmt               *sql.Stmt
 	countReposForImplementationStmt           *sql.Stmt
+	deleteBranchesForImplementationStmt       *sql.Stmt
+	deleteOrphanedReposStmt                   *sql.Stmt
+	deleteProviderSessionStmt                 *sql.Stmt
+	deleteRepoSessionsByProviderSessionStmt   *sql.Stmt
+	deleteReposForImplementationStmt          *sql.Stmt
 	findActiveImplementationByBranchStmt      *sql.Stmt
 	findImplementationByCommitStmt            *sql.Stmt
 	findImplementationByProviderSessionStmt   *sql.Stmt
@@ -437,6 +506,9 @@ type Queries struct {
 	markObservationDeferredStmt               *sql.Stmt
 	markObservationFailedStmt                 *sql.Stmt
 	markObservationReconciledStmt             *sql.Stmt
+	moveCommitsStmt                           *sql.Stmt
+	moveProviderSessionsStmt                  *sql.Stmt
+	moveRepoSessionsStmt                      *sql.Stmt
 	pruneReconciledObservationsStmt           *sql.Stmt
 	resolveConflictStmt                       *sql.Stmt
 	resolveImplementationByPrefixStmt         *sql.Stmt
@@ -455,6 +527,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		countCommitsForImplementationStmt:         q.countCommitsForImplementationStmt,
 		countFailedObservationsStmt:               q.countFailedObservationsStmt,
 		countReposForImplementationStmt:           q.countReposForImplementationStmt,
+		deleteBranchesForImplementationStmt:       q.deleteBranchesForImplementationStmt,
+		deleteOrphanedReposStmt:                   q.deleteOrphanedReposStmt,
+		deleteProviderSessionStmt:                 q.deleteProviderSessionStmt,
+		deleteRepoSessionsByProviderSessionStmt:   q.deleteRepoSessionsByProviderSessionStmt,
+		deleteReposForImplementationStmt:          q.deleteReposForImplementationStmt,
 		findActiveImplementationByBranchStmt:      q.findActiveImplementationByBranchStmt,
 		findImplementationByCommitStmt:            q.findImplementationByCommitStmt,
 		findImplementationByProviderSessionStmt:   q.findImplementationByProviderSessionStmt,
@@ -485,6 +562,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		markObservationDeferredStmt:               q.markObservationDeferredStmt,
 		markObservationFailedStmt:                 q.markObservationFailedStmt,
 		markObservationReconciledStmt:             q.markObservationReconciledStmt,
+		moveCommitsStmt:                           q.moveCommitsStmt,
+		moveProviderSessionsStmt:                  q.moveProviderSessionsStmt,
+		moveRepoSessionsStmt:                      q.moveRepoSessionsStmt,
 		pruneReconciledObservationsStmt:           q.pruneReconciledObservationsStmt,
 		resolveConflictStmt:                       q.resolveConflictStmt,
 		resolveImplementationByPrefixStmt:         q.resolveImplementationByPrefixStmt,

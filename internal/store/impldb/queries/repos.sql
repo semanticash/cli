@@ -19,3 +19,25 @@ order by first_seen_at asc;
 -- name: CountReposForImplementation :one
 select count(distinct canonical_path) from implementation_repos
 where implementation_id = ?;
+
+-- name: DeleteReposForImplementation :exec
+delete from implementation_repos where implementation_id = ?;
+
+-- name: DeleteOrphanedRepos :exec
+-- Remove repos that no longer have any repo-scoped data (sessions, commits,
+-- or branches) in this implementation.
+delete from implementation_repos
+where implementation_repos.implementation_id = sqlc.arg(impl_id)
+  and implementation_repos.canonical_path not in (
+    select distinct rs.canonical_path
+    from implementation_repo_sessions rs
+    where rs.implementation_id = sqlc.arg(impl_id)
+    union
+    select distinct c.canonical_path
+    from implementation_commits c
+    where c.implementation_id = sqlc.arg(impl_id)
+    union
+    select distinct b.canonical_path
+    from implementation_branches b
+    where b.implementation_id = sqlc.arg(impl_id)
+  );

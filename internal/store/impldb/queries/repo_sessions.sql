@@ -18,3 +18,14 @@ order by
 select * from implementation_repo_sessions
 where implementation_id = ?
 order by first_seen_at asc;
+
+-- name: MoveRepoSessions :exec
+update implementation_repo_sessions
+set implementation_id = sqlc.arg(target_id)
+where implementation_id = sqlc.arg(source_id);
+
+-- name: DeleteRepoSessionsByProviderSession :exec
+delete from implementation_repo_sessions
+where implementation_id = ?
+  and provider = ?
+  and provider_session_id = ?;

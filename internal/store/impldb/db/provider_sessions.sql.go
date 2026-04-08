@@ -10,6 +10,22 @@ import (
 	"database/sql"
 )
 
+const deleteProviderSession = `-- name: DeleteProviderSession :exec
+delete from implementation_provider_sessions
+where implementation_id = ? and provider = ? and provider_session_id = ?
+`
+
+type DeleteProviderSessionParams struct {
+	ImplementationID  string `json:"implementation_id"`
+	Provider          string `json:"provider"`
+	ProviderSessionID string `json:"provider_session_id"`
+}
+
+func (q *Queries) DeleteProviderSession(ctx context.Context, arg DeleteProviderSessionParams) error {
+	_, err := q.exec(ctx, q.deleteProviderSessionStmt, deleteProviderSession, arg.ImplementationID, arg.Provider, arg.ProviderSessionID)
+	return err
+}
+
 const findImplementationByProviderSession = `-- name: FindImplementationByProviderSession :one
 select i.implementation_id, i.title, i.state, i.created_at, i.last_activity_at, i.closed_at, i.metadata_json from implementations i
 join implementation_provider_sessions s on i.implementation_id = s.implementation_id
@@ -122,4 +138,20 @@ func (q *Queries) ListProviderSessionsForImplementation(ctx context.Context, imp
 		return nil, err
 	}
 	return items, nil
+}
+
+const moveProviderSessions = `-- name: MoveProviderSessions :exec
+update implementation_provider_sessions
+set implementation_id = ?1
+where implementation_id = ?2
+`
+
+type MoveProviderSessionsParams struct {
+	TargetID string `json:"target_id"`
+	SourceID string `json:"source_id"`
+}
+
+func (q *Queries) MoveProviderSessions(ctx context.Context, arg MoveProviderSessionsParams) error {
+	_, err := q.exec(ctx, q.moveProviderSessionsStmt, moveProviderSessions, arg.TargetID, arg.SourceID)
+	return err
 }

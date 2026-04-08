@@ -9,6 +9,24 @@ import (
 	"context"
 )
 
+const deleteRepoSessionsByProviderSession = `-- name: DeleteRepoSessionsByProviderSession :exec
+delete from implementation_repo_sessions
+where implementation_id = ?
+  and provider = ?
+  and provider_session_id = ?
+`
+
+type DeleteRepoSessionsByProviderSessionParams struct {
+	ImplementationID  string `json:"implementation_id"`
+	Provider          string `json:"provider"`
+	ProviderSessionID string `json:"provider_session_id"`
+}
+
+func (q *Queries) DeleteRepoSessionsByProviderSession(ctx context.Context, arg DeleteRepoSessionsByProviderSessionParams) error {
+	_, err := q.exec(ctx, q.deleteRepoSessionsByProviderSessionStmt, deleteRepoSessionsByProviderSession, arg.ImplementationID, arg.Provider, arg.ProviderSessionID)
+	return err
+}
+
 const findImplementationsByLocalSession = `-- name: FindImplementationsByLocalSession :many
 select i.implementation_id, i.title, i.state, i.created_at, i.last_activity_at, i.closed_at, i.metadata_json from implementations i
 join implementation_repo_sessions rs on i.implementation_id = rs.implementation_id
@@ -84,6 +102,22 @@ func (q *Queries) ListRepoSessionsForImplementation(ctx context.Context, impleme
 		return nil, err
 	}
 	return items, nil
+}
+
+const moveRepoSessions = `-- name: MoveRepoSessions :exec
+update implementation_repo_sessions
+set implementation_id = ?1
+where implementation_id = ?2
+`
+
+type MoveRepoSessionsParams struct {
+	TargetID string `json:"target_id"`
+	SourceID string `json:"source_id"`
+}
+
+func (q *Queries) MoveRepoSessions(ctx context.Context, arg MoveRepoSessionsParams) error {
+	_, err := q.exec(ctx, q.moveRepoSessionsStmt, moveRepoSessions, arg.TargetID, arg.SourceID)
+	return err
 }
 
 const upsertRepoSession = `-- name: UpsertRepoSession :exec

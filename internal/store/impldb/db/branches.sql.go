@@ -9,6 +9,15 @@ import (
 	"context"
 )
 
+const deleteBranchesForImplementation = `-- name: DeleteBranchesForImplementation :exec
+delete from implementation_branches where implementation_id = ?
+`
+
+func (q *Queries) DeleteBranchesForImplementation(ctx context.Context, implementationID string) error {
+	_, err := q.exec(ctx, q.deleteBranchesForImplementationStmt, deleteBranchesForImplementation, implementationID)
+	return err
+}
+
 const findActiveImplementationByBranch = `-- name: FindActiveImplementationByBranch :one
 select i.implementation_id, i.title, i.state, i.created_at, i.last_activity_at, i.closed_at, i.metadata_json from implementations i
 join implementation_branches b on i.implementation_id = b.implementation_id
