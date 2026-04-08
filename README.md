@@ -180,7 +180,25 @@ Generate commit messages and pull request descriptions from your current changes
 ```bash
 semantica suggest commit # generates a concise commit message from your current diff.
 semantica suggest pr # generates a pull request title and description from your branch diff.
+semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
+```
+
+### Cross-repo implementations
+
+Agent work often becomes a single story that spans more than one repository:
+an API change in one repo, a client update in another, and maybe supporting
+docs or infrastructure changes alongside both. Semantica records that work
+under the umbrella of an **implementation**.
+
+An implementation is the concrete local record for one of those cross-repo
+stories: the related repos, sessions, commits, and timeline entries that belong
+together.
+
+```bash
+semantica implementations
+semantica impl <implementation_id>
+semantica suggest implementations
 ```
 
 ### Agent sessions
@@ -229,8 +247,10 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `status` | Show AI activity overview |
 | `blame <ref>` | AI attribution for a commit |
 | `explain <commit>` | Explain a commit with AI breakdown |
+| `implementations [id]` | List or inspect cross-repo implementation stories |
 | `suggest commit` | Generate a commit message from uncommitted changes |
 | `suggest pr` | Generate a PR title and body from the current branch diff |
+| `suggest implementations` | Suggest titles, summaries, and merge candidates for implementations |
 | `tidy` | Preview or remove stale local Semantica state |
 | `checkpoint` | Manually create a checkpoint |
 | `rewind <id>` | Restore working tree to a checkpoint |
@@ -255,6 +275,9 @@ Most commands support `--json` for structured output. See [help.md](help.md) for
 
 By default, Semantica keeps all data local to your machine and repository in `.semantica/`.
 It does not write to Git history or create side branches. Hosted sync only starts after `semantica auth login` and `semantica connect`.
+
+Cross-repo implementations are indexed in Semantica's global state under
+`$SEMANTICA_HOME/implementations.db`.
 
 ---
 
