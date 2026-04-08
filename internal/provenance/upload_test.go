@@ -369,7 +369,7 @@ func TestClassifyOutcome_TransientBelowCapReturnsRetry(t *testing.T) {
 
 func TestClassifyOutcome_TransientAtCapReturnsFail(t *testing.T) {
 	err := fmt.Errorf("network timeout")
-	// MaxUploadAttempts is 5, so attempts=4 means next would be 5th → fail.
+	// MaxUploadAttempts is 5, so attempts=4 means next would be 5th -> fail.
 	if got := ClassifyOutcome(err, 4); got != ActionFail {
 		t.Errorf("ClassifyOutcome(transient, 4) = %d, want ActionFail", got)
 	}
@@ -397,7 +397,7 @@ func TestClassifyOutcome_UnauthorizedIsTransient(t *testing.T) {
 	}
 }
 
-// ---------- End-to-end: UploadTurn error → ClassifyOutcome chain ----------
+// ---------- End-to-end: UploadTurn error -> ClassifyOutcome chain ----------
 
 func TestUploadTurn_TransientError_ClassifiesAsRetry(t *testing.T) {
 	// Backend returns 500 (transient).
@@ -454,7 +454,7 @@ func TestUploadTurn_TransientAtCap_ClassifiesAsFail(t *testing.T) {
 	if out.Err == nil {
 		t.Fatal("expected error")
 	}
-	// attempts=4, so 4+1 >= 5 → fail.
+	// attempts=4, so 4+1 >= 5 -> fail.
 	if got := ClassifyOutcome(out.Err, inputAttempts); got != ActionFail {
 		t.Errorf("ClassifyOutcome = %d, want ActionFail", got)
 	}

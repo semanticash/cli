@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -242,7 +243,7 @@ func TestWriteEventsToRepo_AggregatesAcrossSourceKeys(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Same provider_session_id but different source_keys → two groups in write.go.
+	// Same provider_session_id but different source_keys -> two groups in write.go.
 	// The observation should aggregate: latest event_ts, non-empty parent.
 	events := []RawEvent{
 		{
@@ -296,4 +297,46 @@ func TestWriteEventsToRepo_AggregatesAcrossSourceKeys(t *testing.T) {
 	if !obs.ParentSessionID.Valid || obs.ParentSessionID.String != "parent-sess" {
 		t.Errorf("parent_session_id: got %v, want parent-sess (from second group)", obs.ParentSessionID)
 	}
+}
+
+func TestEmitObservations_BatchInsertsAllInOneCall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", dir)
+	ensureImplDB(t, dir)
+
+	ctx := context.Background()
+
+	observations := make([]Observation, 5)
+	for i := range observations {
+		observations[i] = Observation{
+			Provider:          "claude_code",
+			ProviderSessionID: fmt.Sprintf("sess-%d", i),
+			SourceProjectPath: "/projects/api",
+			TargetRepoPath:    "/repos/api",
+			EventTs:           int64(1000 + i),
+		}
+	}
+
+	EmitObservations(ctx, observations)
+
+	dbPath := filepath.Join(dir, "implementations.db")
+	h, err := impldb.Open(ctx, dbPath, impldb.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = impldb.Close(h) }()
+
+	pending, _ := h.Queries.ListPendingObservations(ctx, 20)
+	if len(pending) != 5 {
+		t.Errorf("expected 5 observations from batch, got %d", len(pending))
+	}
+}
+
+func TestEmitObservations_EmptyBatchIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", dir)
+	// No DB created - empty batch should not even try to open it.
+	ctx := context.Background()
+	EmitObservations(ctx, nil)
+	EmitObservations(ctx, []Observation{})
 }

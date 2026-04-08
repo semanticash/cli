@@ -82,7 +82,7 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		title = impl.Title.String
 	}
 
-	// Load repos and build canonical_path → display_name map.
+	// Load repos and build canonical_path -> display_name map.
 	repoRows, _ := h.Queries.ListImplementationRepos(ctx, fullID)
 	repoSessionRows, _ := h.Queries.ListRepoSessionsForImplementation(ctx, fullID)
 

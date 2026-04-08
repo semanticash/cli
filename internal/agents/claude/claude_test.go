@@ -40,7 +40,7 @@ func TestExtractParentSessionID(t *testing.T) {
 }
 
 func TestExtractFields_ReadToolResultUsesMetadataSummary(t *testing.T) {
-	line := `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_read","type":"tool_result","content":"     1→alpha\n     2→beta"}]},"uuid":"user-1","timestamp":"2026-03-23T14:12:33.339Z","toolUseResult":{"type":"text","file":{"filePath":"/tmp/step1.txt","content":"alpha\nbeta\n","numLines":2,"startLine":1,"totalLines":2}},"sessionId":"sess-1"}`
+	line := `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_read","type":"tool_result","content":"     1->alpha\n     2->beta"}]},"uuid":"user-1","timestamp":"2026-03-23T14:12:33.339Z","toolUseResult":{"type":"text","file":{"filePath":"/tmp/step1.txt","content":"alpha\nbeta\n","numLines":2,"startLine":1,"totalLines":2}},"sessionId":"sess-1"}`
 
 	fields := ExtractFields(line)
 	if !fields.IsToolResult {

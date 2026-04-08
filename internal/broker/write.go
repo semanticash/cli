@@ -317,8 +317,9 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 			agg.sourceProjectPath = g.sourceProjectPath
 		}
 	}
+	var observations []Observation
 	for _, agg := range obsMap {
-		EmitObservation(ctx, Observation{
+		observations = append(observations, Observation{
 			Provider:          agg.provider,
 			ProviderSessionID: agg.providerSessionID,
 			ParentSessionID:   agg.parentSessionID,
@@ -327,6 +328,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 			EventTs:           agg.latestEventTs,
 		})
 	}
+	EmitObservations(ctx, observations)
 
 	doctor.AddBenchStats(ctx, repoPath, doctor.BenchStats{
 		RowsWritten:  rowsWritten,

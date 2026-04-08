@@ -86,7 +86,7 @@ func TestBuildSuggestImplementationPrompt_ContainsContext(t *testing.T) {
 		3,
 		"45.2k", "3.8k",
 		"api abc123\nsdk def456",
-		"api edit auth/middleware.go\n→ sdk edit client/auth.py",
+		"api edit auth/middleware.go\n-> sdk edit client/auth.py",
 	)
 
 	for _, want := range []string{

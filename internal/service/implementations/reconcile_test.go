@@ -80,7 +80,7 @@ func TestReconcile_SingleObservation_CreatesImplementation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
 
-	// SourceProjectPath matches TargetRepoPath → origin role.
+	// SourceProjectPath matches TargetRepoPath -> origin role.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 
 	r := newReconciler("main")
@@ -281,7 +281,7 @@ func TestReconcile_SessionIdentity_RevivesDormant(t *testing.T) {
 
 	impl, _ := h.Queries.GetImplementation(ctx, implID)
 	if impl.State != "active" {
-		t.Errorf("expected dormant→active revival, got %q", impl.State)
+		t.Errorf("expected dormant->active revival, got %q", impl.State)
 	}
 }
 
@@ -326,7 +326,7 @@ func TestReconcile_ChildDeferred_ThenResolved(t *testing.T) {
 	// Now insert the parent observation.
 	insertObs(t, ctx, h.Queries, "claude_code", "parent-sess", "", "/repos/api", "/repos/api", now)
 
-	// Second pass: parent is pending → processed. Child is in deferred snapshot → resolved.
+	// Second pass: parent is pending -> processed. Child is in deferred snapshot -> resolved.
 	result2, _ := r.Reconcile(ctx, h)
 
 	if result2.Processed != 1 {
@@ -408,7 +408,7 @@ func TestReconcile_RoleAssignment_EmptySourceIsOrigin(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
 
-	// Empty SourceProjectPath → treated as origin.
+	// Empty SourceProjectPath -> treated as origin.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "", "/repos/api", now)
 
 	r := newReconciler("main")
@@ -421,7 +421,7 @@ func TestReconcile_RoleAssignment_EmptySourceIsOrigin(t *testing.T) {
 	}
 }
 
-// --- Different sessions, no branch match → separate implementations ---
+// --- Different sessions, no branch match -> separate implementations ---
 
 func TestReconcile_DifferentSessions_NoBranch_SeparateImpls(t *testing.T) {
 	h := openTestDB(t)
@@ -431,7 +431,7 @@ func TestReconcile_DifferentSessions_NoBranch_SeparateImpls(t *testing.T) {
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-2", "", "/repos/api", "/repos/api", now+1000)
 
-	// No branch → branch_active can't match.
+	// No branch -> branch_active can't match.
 	r := newReconciler("")
 	_, _ = r.Reconcile(ctx, h)
 
@@ -480,7 +480,7 @@ func TestReconcile_SessionReattachesAfterClose(t *testing.T) {
 		State: "closed", ClosedAt: impldb.NullInt64(now), ImplementationID: firstImplID,
 	})
 
-	// Same session on a different branch → should create a new implementation.
+	// Same session on a different branch -> should create a new implementation.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now+5000)
 	r2 := newReconciler("feature/billing")
 	_, _ = r2.Reconcile(ctx, h)

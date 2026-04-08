@@ -71,8 +71,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, h *impldb.Handle) (*Reconcil
 		return nil, fmt.Errorf("list pending: %w", err)
 	}
 
+	// 5. Retry previously failed observations (up to MaxRetryAttempts).
+	retryable, _ := h.Queries.ListRetryableObservations(ctx, impldbgen.ListRetryableObservationsParams{
+		ReconcileAttempts: int64(MaxRetryAttempts),
+		Limit:             int64(ReconcileBatch / 4),
+	})
+
+	// Pre-compute branch and local session data for all batches outside
+	// the per-observation transaction. This avoids holding the global
+	// implementations.db write lock while doing git or lineage.db I/O.
+	cache := r.precompute(ctx, pending, deferred, retryable)
+
 	for _, obs := range pending {
-		err := r.processObservation(ctx, h, obs)
+		err := r.processObservation(ctx, h, cache, obs)
 		if err == errDeferred {
 			continue
 		}
@@ -87,9 +98,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, h *impldb.Handle) (*Reconcil
 		result.Processed++
 	}
 
-	// 4. Process deferred observations (snapshotted before step 3).
+	// 6. Process deferred observations (snapshotted before step 3).
 	for _, obs := range deferred {
-		err := r.processObservation(ctx, h, obs)
+		err := r.processObservation(ctx, h, cache, obs)
 		if err == errDeferred {
 			continue
 		}
@@ -103,13 +114,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, h *impldb.Handle) (*Reconcil
 		result.DeferredResolved++
 	}
 
-	// 5. Retry previously failed observations (up to MaxRetryAttempts).
-	retryable, _ := h.Queries.ListRetryableObservations(ctx, impldbgen.ListRetryableObservationsParams{
-		ReconcileAttempts: int64(MaxRetryAttempts),
-		Limit:             int64(ReconcileBatch / 4),
-	})
+	// 7. Process retryable observations.
 	for _, obs := range retryable {
-		err := r.processObservation(ctx, h, obs)
+		err := r.processObservation(ctx, h, cache, obs)
 		if err == errDeferred {
 			continue
 		}
@@ -129,14 +136,63 @@ func (r *Reconciler) Reconcile(ctx context.Context, h *impldb.Handle) (*Reconcil
 // errDeferred is a sentinel indicating the observation was deferred, not processed.
 var errDeferred = fmt.Errorf("observation deferred")
 
+// obsCache holds pre-computed branch and local session data so that
+// processObservation only touches implementations.db inside its transaction.
+type obsCache struct {
+	branches      map[string]string // target_repo_path -> branch
+	localSessions map[string]string // "target_repo_path|provider|provider_session_id" -> local session ID
+}
+
+func (c *obsCache) branch(repoPath string) string {
+	return c.branches[repoPath]
+}
+
+func (c *obsCache) localSession(repoPath, provider, provSessionID string) string {
+	return c.localSessions[repoPath+"|"+provider+"|"+provSessionID]
+}
+
+// precompute builds the cache for a batch of observations. Branch detection
+// and lineage.db lookups happen here, outside any implementations.db transaction.
+func (r *Reconciler) precompute(ctx context.Context, batches ...[]impldbgen.Observation) *obsCache {
+	c := &obsCache{
+		branches:      make(map[string]string),
+		localSessions: make(map[string]string),
+	}
+
+	type sessKey struct{ repo, provider, provSessID string }
+	seenSess := make(map[sessKey]bool)
+
+	for _, batch := range batches {
+		for _, obs := range batch {
+			// Branch: one detection per unique target_repo_path.
+			if _, ok := c.branches[obs.TargetRepoPath]; !ok {
+				c.branches[obs.TargetRepoPath] = r.detectBranch(ctx, obs.TargetRepoPath)
+			}
+
+			// Local session: one lookup per unique (repo, provider, provider_session_id).
+			sk := sessKey{obs.TargetRepoPath, obs.Provider, obs.ProviderSessionID}
+			if !seenSess[sk] {
+				seenSess[sk] = true
+				localID := resolveLocalSessionID(ctx, obs)
+				if localID != "" {
+					c.localSessions[obs.TargetRepoPath+"|"+obs.Provider+"|"+obs.ProviderSessionID] = localID
+				}
+			}
+		}
+	}
+
+	return c
+}
+
 func (r *Reconciler) processObservation(
 	ctx context.Context,
 	h *impldb.Handle,
+	cache *obsCache,
 	obs impldbgen.Observation,
 ) error {
 	pObs := processedObs{
 		Observation: obs,
-		Branch:      r.detectBranch(ctx, obs.TargetRepoPath),
+		Branch:      cache.branch(obs.TargetRepoPath),
 	}
 
 	// The DB is opened with TxImmediate=true, so BeginTx issues
@@ -165,7 +221,7 @@ func (r *Reconciler) processObservation(
 				ImplementationID: existingImplID,
 			})
 		}
-		if err := r.updateImplementationState(ctx, qtx, existingImplID, pObs); err != nil {
+		if err := r.updateImplementationState(ctx, qtx, cache, existingImplID, pObs); err != nil {
 			return err
 		}
 		if err := qtx.MarkObservationReconciled(ctx, obs.ObservationID); err != nil {
@@ -274,7 +330,7 @@ func (r *Reconciler) processObservation(
 	}
 
 	// --- Update implementation state ---
-	if err := r.updateImplementationState(ctx, qtx, matchedImplID, pObs); err != nil {
+	if err := r.updateImplementationState(ctx, qtx, cache, matchedImplID, pObs); err != nil {
 		return err
 	}
 
@@ -289,6 +345,7 @@ func (r *Reconciler) processObservation(
 func (r *Reconciler) updateImplementationState(
 	ctx context.Context,
 	qtx *impldbgen.Queries,
+	cache *obsCache,
 	implID string,
 	obs processedObs,
 ) error {
@@ -332,7 +389,7 @@ func (r *Reconciler) updateImplementationState(
 		}
 	}
 
-	localSessionID := resolveLocalSessionID(ctx, obs.Observation)
+	localSessionID := cache.localSession(obs.TargetRepoPath, obs.Provider, obs.ProviderSessionID)
 	if localSessionID != "" {
 		if err := qtx.UpsertRepoSession(ctx, impldbgen.UpsertRepoSessionParams{
 			ImplementationID:  implID,

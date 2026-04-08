@@ -123,7 +123,7 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 	// implementation before deleting, so we can re-insert them into the target
 	// with the correct role (preserving cross-repo coverage and role semantics).
 	var movedRepoSessions []impldbgen.ImplementationRepoSession
-	oldRepoRoles := make(map[string]string) // canonical_path → role
+	oldRepoRoles := make(map[string]string) // canonical_path -> role
 	if result.MovedFrom != "" {
 		allOldRepoSess, _ := qtx.ListRepoSessionsForImplementation(ctx, result.MovedFrom)
 		for _, rs := range allOldRepoSess {

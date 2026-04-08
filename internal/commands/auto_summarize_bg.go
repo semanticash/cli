@@ -108,9 +108,15 @@ func NewAutoPlaybookCmd() *cobra.Command {
 	cmd.Flags().StringVar(&commitHash, "commit", "", "commit hash")
 	cmd.Flags().StringVar(&checkpointID, "checkpoint", "", "checkpoint ID")
 	cmd.Flags().StringVar(&repoRoot, "repo", "", "repository root path")
-	_ = cmd.MarkFlagRequired("commit")
-	_ = cmd.MarkFlagRequired("checkpoint")
-	_ = cmd.MarkFlagRequired("repo")
+	if err := cmd.MarkFlagRequired("commit"); err != nil {
+		panic(err)
+	}
+	if err := cmd.MarkFlagRequired("checkpoint"); err != nil {
+		panic(err)
+	}
+	if err := cmd.MarkFlagRequired("repo"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }
@@ -133,4 +139,3 @@ func hasSummary(repoRoot, checkpointID string) bool {
 	}
 	return row.SummaryJson != (sql.NullString{}) && row.SummaryJson.Valid
 }
-

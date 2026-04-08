@@ -177,7 +177,7 @@ func buildSinglePrompt(detail *ImplementationDetail) string {
 	for _, e := range detail.Timeline[start:] {
 		prefix := "  "
 		if e.CrossRepo {
-			prefix = "→ "
+			prefix = "-> "
 		}
 		fmt.Fprintf(&timeline, "  %s%s %s\n", prefix, e.RepoName, e.Summary)
 	}

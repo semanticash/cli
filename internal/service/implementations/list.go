@@ -55,7 +55,7 @@ type implRow struct {
 func List(ctx context.Context, in ListInput) (*ListResult, error) {
 	h, err := openGlobalDB(ctx)
 	if err != nil {
-		return &ListResult{}, nil // no DB yet → empty list
+		return &ListResult{}, nil // no DB yet -> empty list
 	}
 	defer func() { _ = impldb.Close(h) }()
 
