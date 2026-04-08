@@ -42,6 +42,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteBranchesForImplementationStmt, err = db.PrepareContext(ctx, deleteBranchesForImplementation); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteBranchesForImplementation: %w", err)
 	}
+	if q.deleteBranchesForRepoStmt, err = db.PrepareContext(ctx, deleteBranchesForRepo); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBranchesForRepo: %w", err)
+	}
+	if q.deleteOrphanedBranchesStmt, err = db.PrepareContext(ctx, deleteOrphanedBranches); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteOrphanedBranches: %w", err)
+	}
 	if q.deleteOrphanedReposStmt, err = db.PrepareContext(ctx, deleteOrphanedRepos); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteOrphanedRepos: %w", err)
 	}
@@ -213,6 +219,16 @@ func (q *Queries) Close() error {
 	if q.deleteBranchesForImplementationStmt != nil {
 		if cerr := q.deleteBranchesForImplementationStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteBranchesForImplementationStmt: %w", cerr)
+		}
+	}
+	if q.deleteBranchesForRepoStmt != nil {
+		if cerr := q.deleteBranchesForRepoStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBranchesForRepoStmt: %w", cerr)
+		}
+	}
+	if q.deleteOrphanedBranchesStmt != nil {
+		if cerr := q.deleteOrphanedBranchesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteOrphanedBranchesStmt: %w", cerr)
 		}
 	}
 	if q.deleteOrphanedReposStmt != nil {
@@ -490,6 +506,8 @@ type Queries struct {
 	countReposForImplementationStmt           *sql.Stmt
 	countUnresolvedConflictsStmt              *sql.Stmt
 	deleteBranchesForImplementationStmt       *sql.Stmt
+	deleteBranchesForRepoStmt                 *sql.Stmt
+	deleteOrphanedBranchesStmt                *sql.Stmt
 	deleteOrphanedReposStmt                   *sql.Stmt
 	deleteProviderSessionStmt                 *sql.Stmt
 	deleteRepoSessionsByProviderSessionStmt   *sql.Stmt
@@ -548,6 +566,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		countReposForImplementationStmt:           q.countReposForImplementationStmt,
 		countUnresolvedConflictsStmt:              q.countUnresolvedConflictsStmt,
 		deleteBranchesForImplementationStmt:       q.deleteBranchesForImplementationStmt,
+		deleteBranchesForRepoStmt:                 q.deleteBranchesForRepoStmt,
+		deleteOrphanedBranchesStmt:                q.deleteOrphanedBranchesStmt,
 		deleteOrphanedReposStmt:                   q.deleteOrphanedReposStmt,
 		deleteProviderSessionStmt:                 q.deleteProviderSessionStmt,
 		deleteRepoSessionsByProviderSessionStmt:   q.deleteRepoSessionsByProviderSessionStmt,

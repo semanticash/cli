@@ -119,16 +119,21 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 	defer impldb.RollbackTx(tx)
 	qtx := h.Queries.WithTx(tx)
 
-	// If force-moving, collect all repo sessions from the old implementation
-	// before deleting, so we can re-insert them into the target (preserving
-	// cross-repo coverage).
+	// If force-moving, collect all repo sessions and their roles from the old
+	// implementation before deleting, so we can re-insert them into the target
+	// with the correct role (preserving cross-repo coverage and role semantics).
 	var movedRepoSessions []impldbgen.ImplementationRepoSession
+	oldRepoRoles := make(map[string]string) // canonical_path → role
 	if result.MovedFrom != "" {
 		allOldRepoSess, _ := qtx.ListRepoSessionsForImplementation(ctx, result.MovedFrom)
 		for _, rs := range allOldRepoSess {
 			if rs.Provider == resolved.provider && rs.ProviderSessionID == resolved.providerSessionID {
 				movedRepoSessions = append(movedRepoSessions, rs)
 			}
+		}
+		oldRepos, _ := qtx.ListImplementationRepos(ctx, result.MovedFrom)
+		for _, r := range oldRepos {
+			oldRepoRoles[r.CanonicalPath] = r.RepoRole
 		}
 
 		if err := qtx.DeleteProviderSession(ctx, impldbgen.DeleteProviderSessionParams{
@@ -145,7 +150,23 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 		}); err != nil {
 			return nil, fmt.Errorf("delete old repo sessions: %w", err)
 		}
-		// Remove repos from old implementation that no longer have any sessions.
+		// Delete branch rows for each moved session's repos from the source.
+		// We can't know which branches belonged to which session, so we
+		// clear all branches for repos that lost this session and let future
+		// reconciliation re-populate them for any remaining sessions.
+		movedRepoPaths := make(map[string]bool)
+		for _, rs := range movedRepoSessions {
+			movedRepoPaths[rs.CanonicalPath] = true
+		}
+		for repoPath := range movedRepoPaths {
+			if err := qtx.DeleteBranchesForRepo(ctx, impldbgen.DeleteBranchesForRepoParams{
+				ImplementationID: result.MovedFrom,
+				CanonicalPath:    repoPath,
+			}); err != nil {
+				return nil, fmt.Errorf("delete branches for moved repo: %w", err)
+			}
+		}
+		// Remove repos from old implementation that no longer have any data.
 		if err := qtx.DeleteOrphanedRepos(ctx, result.MovedFrom); err != nil {
 			return nil, fmt.Errorf("clean orphaned repos: %w", err)
 		}
@@ -177,15 +198,33 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 			return nil, fmt.Errorf("move repo session: %w", err)
 		}
 
+		// Carry the role from the old implementation so we don't downgrade.
+		role := oldRepoRoles[rs.CanonicalPath]
+		if role == "" {
+			role = "related"
+		}
 		if err := qtx.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
 			ImplementationID: targetID,
 			CanonicalPath:    rs.CanonicalPath,
 			DisplayName:      filepath.Base(rs.CanonicalPath),
-			RepoRole:         "related",
+			RepoRole:         role,
 			FirstSeenAt:      rs.FirstSeenAt,
 			LastSeenAt:       rs.LastSeenAt,
 		}); err != nil {
 			return nil, fmt.Errorf("upsert repo for moved session: %w", err)
+		}
+
+		// Upsert current branch so the target is visible to branch_active.
+		if branch := GitDetectBranch(ctx, rs.CanonicalPath); branch != "" {
+			if err := qtx.UpsertImplementationBranch(ctx, impldbgen.UpsertImplementationBranchParams{
+				ImplementationID: targetID,
+				CanonicalPath:    rs.CanonicalPath,
+				Branch:           branch,
+				FirstSeenAt:      now,
+				LastSeenAt:       now,
+			}); err != nil {
+				return nil, fmt.Errorf("upsert branch for moved session: %w", err)
+			}
 		}
 	}
 
@@ -236,6 +275,19 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 				LastSeenAt:       now,
 			}); err != nil {
 				return nil, fmt.Errorf("upsert repo: %w", err)
+			}
+
+			// Upsert current branch so the target is visible to branch_active.
+			if branch := GitDetectBranch(ctx, rs.canonicalPath); branch != "" {
+				if err := qtx.UpsertImplementationBranch(ctx, impldbgen.UpsertImplementationBranchParams{
+					ImplementationID: targetID,
+					CanonicalPath:    rs.canonicalPath,
+					Branch:           branch,
+					FirstSeenAt:      now,
+					LastSeenAt:       now,
+				}); err != nil {
+					return nil, fmt.Errorf("upsert branch: %w", err)
+				}
 			}
 		}
 	}
@@ -300,6 +352,18 @@ func backfillRepoSlices(ctx context.Context, h *impldb.Handle, targetID string, 
 			LastSeenAt:       now,
 		}); err != nil {
 			return err
+		}
+
+		if branch := GitDetectBranch(ctx, rs.canonicalPath); branch != "" {
+			if err := h.Queries.UpsertImplementationBranch(ctx, impldbgen.UpsertImplementationBranchParams{
+				ImplementationID: targetID,
+				CanonicalPath:    rs.canonicalPath,
+				Branch:           branch,
+				FirstSeenAt:      now,
+				LastSeenAt:       now,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 

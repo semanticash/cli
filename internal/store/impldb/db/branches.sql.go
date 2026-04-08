@@ -18,6 +18,39 @@ func (q *Queries) DeleteBranchesForImplementation(ctx context.Context, implement
 	return err
 }
 
+const deleteBranchesForRepo = `-- name: DeleteBranchesForRepo :exec
+delete from implementation_branches
+where implementation_id = ? and canonical_path = ?
+`
+
+type DeleteBranchesForRepoParams struct {
+	ImplementationID string `json:"implementation_id"`
+	CanonicalPath    string `json:"canonical_path"`
+}
+
+// Remove all branch rows for a specific repo in an implementation.
+// Used during force-move to clear stale branch associations.
+func (q *Queries) DeleteBranchesForRepo(ctx context.Context, arg DeleteBranchesForRepoParams) error {
+	_, err := q.exec(ctx, q.deleteBranchesForRepoStmt, deleteBranchesForRepo, arg.ImplementationID, arg.CanonicalPath)
+	return err
+}
+
+const deleteOrphanedBranches = `-- name: DeleteOrphanedBranches :exec
+delete from implementation_branches
+where implementation_branches.implementation_id = ?1
+  and implementation_branches.canonical_path not in (
+    select distinct rs.canonical_path
+    from implementation_repo_sessions rs
+    where rs.implementation_id = ?1
+  )
+`
+
+// Remove branches whose repo no longer has any sessions in this implementation.
+func (q *Queries) DeleteOrphanedBranches(ctx context.Context, implID string) error {
+	_, err := q.exec(ctx, q.deleteOrphanedBranchesStmt, deleteOrphanedBranches, implID)
+	return err
+}
+
 const findActiveImplementationByBranch = `-- name: FindActiveImplementationByBranch :one
 select i.implementation_id, i.title, i.state, i.created_at, i.last_activity_at, i.closed_at, i.metadata_json from implementations i
 join implementation_branches b on i.implementation_id = b.implementation_id

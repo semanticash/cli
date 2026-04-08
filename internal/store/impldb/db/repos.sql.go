@@ -99,8 +99,13 @@ insert into implementation_repos (
 on conflict (implementation_id, canonical_path) do update
 set last_seen_at = excluded.last_seen_at,
     repo_role = case
+        -- origin is the highest rank, never downgraded
         when implementation_repos.repo_role = 'origin' then 'origin'
         when excluded.repo_role = 'origin' then 'origin'
+        -- downstream outranks related
+        when implementation_repos.repo_role = 'downstream' then 'downstream'
+        when excluded.repo_role = 'downstream' then 'downstream'
+        -- otherwise keep the incoming role
         else excluded.repo_role
     end
 `

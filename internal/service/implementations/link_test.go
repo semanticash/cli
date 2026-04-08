@@ -3,6 +3,7 @@ package implementations
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -650,6 +651,313 @@ func TestLinkSession_FreshLink_AllRepoSlices(t *testing.T) {
 	repos, _ := h.Queries.ListImplementationRepos(ctx, implID)
 	if len(repos) != 2 {
 		t.Errorf("expected 2 repos, got %d", len(repos))
+	}
+}
+
+// --- Force-move cleans orphaned branches from source ---
+
+func TestLinkSession_ForceMove_CleansOrphanedBranches(t *testing.T) {
+	dir, repoPath, sessions := setupLinkEnv(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	registryPath, _ := broker.DefaultRegistryPath()
+	bh, _ := broker.Open(ctx, registryPath)
+	_ = broker.Register(ctx, bh, repoPath, repoPath)
+	_ = broker.Close(bh)
+
+	implPath := filepath.Join(dir, "implementations.db")
+	h, _ := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+
+	oldImplID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: oldImplID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = h.Queries.InsertProviderSession(ctx, impldbgen.InsertProviderSessionParams{
+		ImplementationID: oldImplID, Provider: "claude_code",
+		ProviderSessionID: "prov-sess-A", AttachRule: "new", AttachedAt: now,
+	})
+	_ = h.Queries.UpsertRepoSession(ctx, impldbgen.UpsertRepoSessionParams{
+		ImplementationID: oldImplID, Provider: "claude_code",
+		ProviderSessionID: "prov-sess-A", CanonicalPath: repoPath,
+		SessionID: sessions[0].localID, FirstSeenAt: now, LastSeenAt: now,
+	})
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: oldImplID, CanonicalPath: repoPath,
+		DisplayName: "api", RepoRole: "origin", FirstSeenAt: now, LastSeenAt: now,
+	})
+	_ = h.Queries.UpsertImplementationBranch(ctx, impldbgen.UpsertImplementationBranchParams{
+		ImplementationID: oldImplID, CanonicalPath: repoPath,
+		Branch: "feature/auth", FirstSeenAt: now, LastSeenAt: now,
+	})
+
+	newImplID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: newImplID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = impldb.Close(h)
+
+	_, err := LinkSession(ctx, LinkSessionInput{
+		ImplementationID: newImplID,
+		SessionID:        sessions[0].localID,
+		RepoPath:         repoPath,
+		Force:            true,
+	})
+	if err != nil {
+		t.Fatalf("force-move: %v", err)
+	}
+
+	h, _ = impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	defer func() { _ = impldb.Close(h) }()
+
+	// Old implementation should have no branches left.
+	oldBranches, _ := h.Queries.ListBranchesForImplementation(ctx, oldImplID)
+	if len(oldBranches) != 0 {
+		t.Errorf("old impl should have 0 branches after move, got %d", len(oldBranches))
+	}
+}
+
+// --- Force-move preserves repo roles from source ---
+
+func TestLinkSession_ForceMove_PreservesRepoRoles(t *testing.T) {
+	dir, repoPath, sessions := setupLinkEnv(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	registryPath, _ := broker.DefaultRegistryPath()
+	bh, _ := broker.Open(ctx, registryPath)
+	_ = broker.Register(ctx, bh, repoPath, repoPath)
+	_ = broker.Close(bh)
+
+	implPath := filepath.Join(dir, "implementations.db")
+	h, _ := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+
+	oldImplID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: oldImplID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = h.Queries.InsertProviderSession(ctx, impldbgen.InsertProviderSessionParams{
+		ImplementationID: oldImplID, Provider: "claude_code",
+		ProviderSessionID: "prov-sess-A", AttachRule: "new", AttachedAt: now,
+	})
+	_ = h.Queries.UpsertRepoSession(ctx, impldbgen.UpsertRepoSessionParams{
+		ImplementationID: oldImplID, Provider: "claude_code",
+		ProviderSessionID: "prov-sess-A", CanonicalPath: repoPath,
+		SessionID: sessions[0].localID, FirstSeenAt: now, LastSeenAt: now,
+	})
+	// Repo has origin role in the old implementation.
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: oldImplID, CanonicalPath: repoPath,
+		DisplayName: "api", RepoRole: "origin", FirstSeenAt: now, LastSeenAt: now,
+	})
+
+	newImplID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: newImplID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = impldb.Close(h)
+
+	_, err := LinkSession(ctx, LinkSessionInput{
+		ImplementationID: newImplID,
+		SessionID:        sessions[0].localID,
+		RepoPath:         repoPath,
+		Force:            true,
+	})
+	if err != nil {
+		t.Fatalf("force-move: %v", err)
+	}
+
+	h, _ = impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	defer func() { _ = impldb.Close(h) }()
+
+	// Target should have the repo with origin role (carried from source).
+	repos, _ := h.Queries.ListImplementationRepos(ctx, newImplID)
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %d", len(repos))
+	}
+	if repos[0].RepoRole != "origin" {
+		t.Errorf("expected origin role carried from source, got %q", repos[0].RepoRole)
+	}
+}
+
+// --- Fresh link writes branch rows into target ---
+
+func TestLinkSession_FreshLink_WritesBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", dir)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	// Create a git repo so GitDetectBranch returns something.
+	repoPath := filepath.Join(dir, "repos", "api")
+	_ = os.MkdirAll(repoPath, 0o755)
+	exec.Command("git", "init", repoPath).Run()
+	exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/test-branch").Run()
+	os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
+	exec.Command("git", "-C", repoPath, "add", ".").Run()
+	exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
+	// Create .semantica with lineage.db.
+	semDir := filepath.Join(repoPath, ".semantica")
+	_ = os.MkdirAll(semDir, 0o755)
+	dbPath := filepath.Join(semDir, "lineage.db")
+	repoH, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	repoID := uuid.NewString()
+	_ = repoH.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath, CreatedAt: now, EnabledAt: now,
+	})
+	src, _ := repoH.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID,
+		Provider: "claude_code", SourceKey: "src", LastSeenAt: now, CreatedAt: now,
+	})
+	sess, _ := repoH.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "prov-branch-test",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt: now, LastSeenAt: now,
+	})
+	_ = sqlstore.Close(repoH)
+
+	// Register in broker.
+	registryPath, _ := broker.DefaultRegistryPath()
+	bh, _ := broker.Open(ctx, registryPath)
+	_ = broker.Register(ctx, bh, repoPath, repoPath)
+	_ = broker.Close(bh)
+
+	// Create implementation.
+	implPath := filepath.Join(dir, "implementations.db")
+	h, _ := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	implID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: implID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = impldb.Close(h)
+
+	// Fresh link.
+	_, err := LinkSession(ctx, LinkSessionInput{
+		ImplementationID: implID,
+		SessionID:        sess.SessionID,
+		RepoPath:         repoPath,
+	})
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	h, _ = impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	defer func() { _ = impldb.Close(h) }()
+
+	branches, _ := h.Queries.ListBranchesForImplementation(ctx, implID)
+	if len(branches) != 1 {
+		t.Fatalf("expected 1 branch, got %d", len(branches))
+	}
+	if branches[0].Branch != "feature/test-branch" {
+		t.Errorf("expected branch feature/test-branch, got %q", branches[0].Branch)
+	}
+}
+
+// --- Idempotent backfill writes branch rows ---
+
+func TestLinkSession_IdempotentBackfill_WritesBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", dir)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	// Create a git repo.
+	repoPath := filepath.Join(dir, "repos", "api")
+	_ = os.MkdirAll(repoPath, 0o755)
+	exec.Command("git", "init", repoPath).Run()
+	exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/backfill").Run()
+	os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
+	exec.Command("git", "-C", repoPath, "add", ".").Run()
+	exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
+	semDir := filepath.Join(repoPath, ".semantica")
+	_ = os.MkdirAll(semDir, 0o755)
+	dbPath := filepath.Join(semDir, "lineage.db")
+	repoH, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	repoID := uuid.NewString()
+	_ = repoH.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath, CreatedAt: now, EnabledAt: now,
+	})
+	src, _ := repoH.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID,
+		Provider: "claude_code", SourceKey: "src", LastSeenAt: now, CreatedAt: now,
+	})
+	sess, _ := repoH.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "prov-backfill-test",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt: now, LastSeenAt: now,
+	})
+	_ = sqlstore.Close(repoH)
+
+	registryPath, _ := broker.DefaultRegistryPath()
+	bh, _ := broker.Open(ctx, registryPath)
+	_ = broker.Register(ctx, bh, repoPath, repoPath)
+	_ = broker.Close(bh)
+
+	// Create implementation with provider session but NO branch rows.
+	implPath := filepath.Join(dir, "implementations.db")
+	h, _ := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	implID := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: implID, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = h.Queries.InsertProviderSession(ctx, impldbgen.InsertProviderSessionParams{
+		ImplementationID: implID, Provider: "claude_code",
+		ProviderSessionID: "prov-backfill-test", AttachRule: "new", AttachedAt: now,
+	})
+	_ = impldb.Close(h)
+
+	// Re-link triggers idempotent backfill.
+	_, err := LinkSession(ctx, LinkSessionInput{
+		ImplementationID: implID,
+		SessionID:        sess.SessionID,
+		RepoPath:         repoPath,
+	})
+	if err != nil {
+		t.Fatalf("backfill link: %v", err)
+	}
+
+	h, _ = impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	defer func() { _ = impldb.Close(h) }()
+
+	branches, _ := h.Queries.ListBranchesForImplementation(ctx, implID)
+	if len(branches) != 1 {
+		t.Fatalf("expected 1 branch after backfill, got %d", len(branches))
+	}
+	if branches[0].Branch != "feature/backfill" {
+		t.Errorf("expected branch feature/backfill, got %q", branches[0].Branch)
+	}
+}
+
+// --- Repo role upsert never downgrades downstream to related ---
+
+func TestRepoUpsert_NeverDowngradesDownstream(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", dir)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	dbPath := filepath.Join(dir, "implementations.db")
+	h, _ := impldb.Open(ctx, dbPath, impldb.DefaultOpenOptions())
+	defer func() { _ = impldb.Close(h) }()
+
+	id := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: id, CreatedAt: now, LastActivityAt: now,
+	})
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: id, CanonicalPath: "/repos/sdk",
+		DisplayName: "sdk", RepoRole: "downstream", FirstSeenAt: now, LastSeenAt: now,
+	})
+
+	// Upsert with "related" should NOT downgrade.
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: id, CanonicalPath: "/repos/sdk",
+		DisplayName: "sdk", RepoRole: "related", FirstSeenAt: now, LastSeenAt: now + 1000,
+	})
+
+	repos, _ := h.Queries.ListImplementationRepos(ctx, id)
+	if repos[0].RepoRole != "downstream" {
+		t.Errorf("expected downstream preserved, got %q", repos[0].RepoRole)
 	}
 }
 
