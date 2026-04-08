@@ -10,6 +10,18 @@ import (
 	"database/sql"
 )
 
+const countUnresolvedConflicts = `-- name: CountUnresolvedConflicts :one
+select count(*) from observation_conflicts
+where resolved = 0
+`
+
+func (q *Queries) CountUnresolvedConflicts(ctx context.Context) (int64, error) {
+	row := q.queryRow(ctx, q.countUnresolvedConflictsStmt, countUnresolvedConflicts)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertConflict = `-- name: InsertConflict :exec
 insert into observation_conflicts (
     conflict_id, observation_id, candidate_a, candidate_b,

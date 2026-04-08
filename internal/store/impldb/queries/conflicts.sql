@@ -10,6 +10,10 @@ where resolved = 0
 order by created_at asc
 limit ?;
 
+-- name: CountUnresolvedConflicts :one
+select count(*) from observation_conflicts
+where resolved = 0;
+
 -- name: ResolveConflict :exec
 update observation_conflicts
 set resolved = 1, resolution = ?
