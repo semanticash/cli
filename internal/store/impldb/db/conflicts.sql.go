@@ -50,45 +50,6 @@ func (q *Queries) InsertConflict(ctx context.Context, arg InsertConflictParams) 
 	return err
 }
 
-const listUnresolvedConflicts = `-- name: ListUnresolvedConflicts :many
-select conflict_id, observation_id, candidate_a, candidate_b, rule_name, resolved, resolution, created_at from observation_conflicts
-where resolved = 0
-order by created_at asc
-limit ?
-`
-
-func (q *Queries) ListUnresolvedConflicts(ctx context.Context, limit int64) ([]ObservationConflict, error) {
-	rows, err := q.query(ctx, q.listUnresolvedConflictsStmt, listUnresolvedConflicts, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ObservationConflict{}
-	for rows.Next() {
-		var i ObservationConflict
-		if err := rows.Scan(
-			&i.ConflictID,
-			&i.ObservationID,
-			&i.CandidateA,
-			&i.CandidateB,
-			&i.RuleName,
-			&i.Resolved,
-			&i.Resolution,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const resolveConflict = `-- name: ResolveConflict :exec
 update observation_conflicts
 set resolved = 1, resolution = ?

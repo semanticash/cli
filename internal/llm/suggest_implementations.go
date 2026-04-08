@@ -82,7 +82,7 @@ Rules:
 - Return a JSON object with exactly two keys: "titles" and "merges"
 - titles: array of {"implementation_id": "...", "title": "..."}. Only for implementations marked (untitled).
 - merges: array of {"implementation_a": "...", "implementation_b": "...", "reason": "..."}. Only suggest merges when two implementations clearly represent the same logical effort.
-- Be conservative with merge suggestions — only suggest when evidence is strong
+- Be conservative with merge suggestions - only suggest when evidence is strong
 - Titles: max 60 characters, imperative mood
 - Do not wrap the JSON in markdown code blocks
 - Return ONLY the JSON object`

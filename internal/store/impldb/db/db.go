@@ -33,9 +33,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countImplementationsByStateStmt, err = db.PrepareContext(ctx, countImplementationsByState); err != nil {
 		return nil, fmt.Errorf("error preparing query CountImplementationsByState: %w", err)
 	}
-	if q.countReposForImplementationStmt, err = db.PrepareContext(ctx, countReposForImplementation); err != nil {
-		return nil, fmt.Errorf("error preparing query CountReposForImplementation: %w", err)
-	}
 	if q.countUnresolvedConflictsStmt, err = db.PrepareContext(ctx, countUnresolvedConflicts); err != nil {
 		return nil, fmt.Errorf("error preparing query CountUnresolvedConflicts: %w", err)
 	}
@@ -44,9 +41,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.deleteBranchesForRepoStmt, err = db.PrepareContext(ctx, deleteBranchesForRepo); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteBranchesForRepo: %w", err)
-	}
-	if q.deleteOrphanedBranchesStmt, err = db.PrepareContext(ctx, deleteOrphanedBranches); err != nil {
-		return nil, fmt.Errorf("error preparing query DeleteOrphanedBranches: %w", err)
 	}
 	if q.deleteOrphanedReposStmt, err = db.PrepareContext(ctx, deleteOrphanedRepos); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteOrphanedRepos: %w", err)
@@ -114,9 +108,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listImplementationsByStateStmt, err = db.PrepareContext(ctx, listImplementationsByState); err != nil {
 		return nil, fmt.Errorf("error preparing query ListImplementationsByState: %w", err)
 	}
-	if q.listMultiRepoImplementationsStmt, err = db.PrepareContext(ctx, listMultiRepoImplementations); err != nil {
-		return nil, fmt.Errorf("error preparing query ListMultiRepoImplementations: %w", err)
-	}
 	if q.listPendingObservationsStmt, err = db.PrepareContext(ctx, listPendingObservations); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPendingObservations: %w", err)
 	}
@@ -131,9 +122,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listStaleImplementationsStmt, err = db.PrepareContext(ctx, listStaleImplementations); err != nil {
 		return nil, fmt.Errorf("error preparing query ListStaleImplementations: %w", err)
-	}
-	if q.listUnresolvedConflictsStmt, err = db.PrepareContext(ctx, listUnresolvedConflicts); err != nil {
-		return nil, fmt.Errorf("error preparing query ListUnresolvedConflicts: %w", err)
 	}
 	if q.markDormantStmt, err = db.PrepareContext(ctx, markDormant); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkDormant: %w", err)
@@ -206,11 +194,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing countImplementationsByStateStmt: %w", cerr)
 		}
 	}
-	if q.countReposForImplementationStmt != nil {
-		if cerr := q.countReposForImplementationStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing countReposForImplementationStmt: %w", cerr)
-		}
-	}
 	if q.countUnresolvedConflictsStmt != nil {
 		if cerr := q.countUnresolvedConflictsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countUnresolvedConflictsStmt: %w", cerr)
@@ -224,11 +207,6 @@ func (q *Queries) Close() error {
 	if q.deleteBranchesForRepoStmt != nil {
 		if cerr := q.deleteBranchesForRepoStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteBranchesForRepoStmt: %w", cerr)
-		}
-	}
-	if q.deleteOrphanedBranchesStmt != nil {
-		if cerr := q.deleteOrphanedBranchesStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing deleteOrphanedBranchesStmt: %w", cerr)
 		}
 	}
 	if q.deleteOrphanedReposStmt != nil {
@@ -341,11 +319,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listImplementationsByStateStmt: %w", cerr)
 		}
 	}
-	if q.listMultiRepoImplementationsStmt != nil {
-		if cerr := q.listMultiRepoImplementationsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listMultiRepoImplementationsStmt: %w", cerr)
-		}
-	}
 	if q.listPendingObservationsStmt != nil {
 		if cerr := q.listPendingObservationsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listPendingObservationsStmt: %w", cerr)
@@ -369,11 +342,6 @@ func (q *Queries) Close() error {
 	if q.listStaleImplementationsStmt != nil {
 		if cerr := q.listStaleImplementationsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listStaleImplementationsStmt: %w", cerr)
-		}
-	}
-	if q.listUnresolvedConflictsStmt != nil {
-		if cerr := q.listUnresolvedConflictsStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing listUnresolvedConflictsStmt: %w", cerr)
 		}
 	}
 	if q.markDormantStmt != nil {
@@ -503,11 +471,9 @@ type Queries struct {
 	countCommitsForImplementationStmt         *sql.Stmt
 	countFailedObservationsStmt               *sql.Stmt
 	countImplementationsByStateStmt           *sql.Stmt
-	countReposForImplementationStmt           *sql.Stmt
 	countUnresolvedConflictsStmt              *sql.Stmt
 	deleteBranchesForImplementationStmt       *sql.Stmt
 	deleteBranchesForRepoStmt                 *sql.Stmt
-	deleteOrphanedBranchesStmt                *sql.Stmt
 	deleteOrphanedReposStmt                   *sql.Stmt
 	deleteProviderSessionStmt                 *sql.Stmt
 	deleteRepoSessionsByProviderSessionStmt   *sql.Stmt
@@ -530,13 +496,11 @@ type Queries struct {
 	listImplementationCommitsStmt             *sql.Stmt
 	listImplementationReposStmt               *sql.Stmt
 	listImplementationsByStateStmt            *sql.Stmt
-	listMultiRepoImplementationsStmt          *sql.Stmt
 	listPendingObservationsStmt               *sql.Stmt
 	listProviderSessionsForImplementationStmt *sql.Stmt
 	listRepoSessionsForImplementationStmt     *sql.Stmt
 	listRetryableObservationsStmt             *sql.Stmt
 	listStaleImplementationsStmt              *sql.Stmt
-	listUnresolvedConflictsStmt               *sql.Stmt
 	markDormantStmt                           *sql.Stmt
 	markObservationConflictStmt               *sql.Stmt
 	markObservationDeferredStmt               *sql.Stmt
@@ -563,11 +527,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		countCommitsForImplementationStmt:         q.countCommitsForImplementationStmt,
 		countFailedObservationsStmt:               q.countFailedObservationsStmt,
 		countImplementationsByStateStmt:           q.countImplementationsByStateStmt,
-		countReposForImplementationStmt:           q.countReposForImplementationStmt,
 		countUnresolvedConflictsStmt:              q.countUnresolvedConflictsStmt,
 		deleteBranchesForImplementationStmt:       q.deleteBranchesForImplementationStmt,
 		deleteBranchesForRepoStmt:                 q.deleteBranchesForRepoStmt,
-		deleteOrphanedBranchesStmt:                q.deleteOrphanedBranchesStmt,
 		deleteOrphanedReposStmt:                   q.deleteOrphanedReposStmt,
 		deleteProviderSessionStmt:                 q.deleteProviderSessionStmt,
 		deleteRepoSessionsByProviderSessionStmt:   q.deleteRepoSessionsByProviderSessionStmt,
@@ -590,13 +552,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listImplementationCommitsStmt:             q.listImplementationCommitsStmt,
 		listImplementationReposStmt:               q.listImplementationReposStmt,
 		listImplementationsByStateStmt:            q.listImplementationsByStateStmt,
-		listMultiRepoImplementationsStmt:          q.listMultiRepoImplementationsStmt,
 		listPendingObservationsStmt:               q.listPendingObservationsStmt,
 		listProviderSessionsForImplementationStmt: q.listProviderSessionsForImplementationStmt,
 		listRepoSessionsForImplementationStmt:     q.listRepoSessionsForImplementationStmt,
 		listRetryableObservationsStmt:             q.listRetryableObservationsStmt,
 		listStaleImplementationsStmt:              q.listStaleImplementationsStmt,
-		listUnresolvedConflictsStmt:               q.listUnresolvedConflictsStmt,
 		markDormantStmt:                           q.markDormantStmt,
 		markObservationConflictStmt:               q.markObservationConflictStmt,
 		markObservationDeferredStmt:               q.markObservationDeferredStmt,

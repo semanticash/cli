@@ -22,16 +22,6 @@ order by first_seen_at asc;
 -- name: DeleteBranchesForImplementation :exec
 delete from implementation_branches where implementation_id = ?;
 
--- name: DeleteOrphanedBranches :exec
--- Remove branches whose repo no longer has any sessions in this implementation.
-delete from implementation_branches
-where implementation_branches.implementation_id = sqlc.arg(impl_id)
-  and implementation_branches.canonical_path not in (
-    select distinct rs.canonical_path
-    from implementation_repo_sessions rs
-    where rs.implementation_id = sqlc.arg(impl_id)
-  );
-
 -- name: DeleteBranchesForRepo :exec
 -- Remove all branch rows for a specific repo in an implementation.
 -- Used during force-move to clear stale branch associations.

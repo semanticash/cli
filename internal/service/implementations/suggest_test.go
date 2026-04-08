@@ -151,7 +151,7 @@ func TestSuggestBatch_Empty(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", dir)
 	ctx := context.Background()
 
-	// Create empty DB — no implementations.
+	// Create an empty DB with no implementations.
 	dbPath := filepath.Join(dir, "implementations.db")
 	h, _ := impldb.Open(ctx, dbPath, impldb.DefaultOpenOptions())
 	_ = impldb.Close(h)

@@ -112,7 +112,7 @@ func TestEmitObservation_FailOpenWhenNoHome(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Should not panic or error — just silently skip.
+	// Should not panic or error - just skip.
 	EmitObservation(ctx, Observation{
 		Provider:          "claude_code",
 		ProviderSessionID: "sess-fail",
@@ -124,7 +124,7 @@ func TestEmitObservation_FailOpenWhenNoHome(t *testing.T) {
 func TestEmitObservation_CreatesDBOnFirstCall(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", dir)
-	// Do NOT call ensureImplDB — the DB file does not exist yet.
+	// Do not call ensureImplDB - the DB file does not exist yet.
 
 	ctx := context.Background()
 

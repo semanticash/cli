@@ -349,7 +349,7 @@ func TestLinkSession_ForceMove_PreservesRepoWithCommits(t *testing.T) {
 		ImplementationID: oldImplID, CanonicalPath: repoPath,
 		DisplayName: "api", RepoRole: "origin", FirstSeenAt: now, LastSeenAt: now,
 	})
-	// Repo also has a commit — should survive orphan cleanup even after
+	// Repo also has a commit - it should survive orphan cleanup even after
 	// sessions are moved out.
 	_ = h.Queries.InsertImplementationCommit(ctx, impldbgen.InsertImplementationCommitParams{
 		ImplementationID: oldImplID, CanonicalPath: repoPath,
@@ -472,7 +472,7 @@ func TestLinkSession_AlreadyLinkedToTarget_Idempotent(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	// Link the same session again — should succeed without error.
+	// Link the same session again - should succeed without error.
 	result, err := LinkSession(ctx, LinkSessionInput{
 		ImplementationID: implID,
 		SessionID:        sessions[0].localID,
@@ -563,7 +563,7 @@ func TestLinkSession_IdempotentBackfillsMissingSlices(t *testing.T) {
 	}
 	_ = impldb.Close(h)
 
-	// Re-link — should backfill the missing repo session.
+	// Re-link - should backfill the missing repo session.
 	_, err := LinkSession(ctx, LinkSessionInput{
 		ImplementationID: implID,
 		SessionID:        sessions[0].localID,
@@ -791,11 +791,11 @@ func TestLinkSession_FreshLink_WritesBranch(t *testing.T) {
 	// Create a git repo so GitDetectBranch returns something.
 	repoPath := filepath.Join(dir, "repos", "api")
 	_ = os.MkdirAll(repoPath, 0o755)
-	exec.Command("git", "init", repoPath).Run()
-	exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/test-branch").Run()
-	os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
-	exec.Command("git", "-C", repoPath, "add", ".").Run()
-	exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
+	_ = exec.Command("git", "init", repoPath).Run()
+	_ = exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/test-branch").Run()
+	_ = os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
+	_ = exec.Command("git", "-C", repoPath, "add", ".").Run()
+	_ = exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
 	// Create .semantica with lineage.db.
 	semDir := filepath.Join(repoPath, ".semantica")
 	_ = os.MkdirAll(semDir, 0o755)
@@ -864,11 +864,11 @@ func TestLinkSession_IdempotentBackfill_WritesBranch(t *testing.T) {
 	// Create a git repo.
 	repoPath := filepath.Join(dir, "repos", "api")
 	_ = os.MkdirAll(repoPath, 0o755)
-	exec.Command("git", "init", repoPath).Run()
-	exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/backfill").Run()
-	os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
-	exec.Command("git", "-C", repoPath, "add", ".").Run()
-	exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
+	_ = exec.Command("git", "init", repoPath).Run()
+	_ = exec.Command("git", "-C", repoPath, "checkout", "-b", "feature/backfill").Run()
+	_ = os.WriteFile(filepath.Join(repoPath, ".gitkeep"), nil, 0o644)
+	_ = exec.Command("git", "-C", repoPath, "add", ".").Run()
+	_ = exec.Command("git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "init").Run()
 	semDir := filepath.Join(repoPath, ".semantica")
 	_ = os.MkdirAll(semDir, 0o755)
 	dbPath := filepath.Join(semDir, "lineage.db")

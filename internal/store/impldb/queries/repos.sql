@@ -21,10 +21,6 @@ select * from implementation_repos
 where implementation_id = ?
 order by first_seen_at asc;
 
--- name: CountReposForImplementation :one
-select count(distinct canonical_path) from implementation_repos
-where implementation_id = ?;
-
 -- name: DeleteReposForImplementation :exec
 delete from implementation_repos where implementation_id = ?;
 

@@ -35,22 +35,6 @@ func (q *Queries) DeleteBranchesForRepo(ctx context.Context, arg DeleteBranchesF
 	return err
 }
 
-const deleteOrphanedBranches = `-- name: DeleteOrphanedBranches :exec
-delete from implementation_branches
-where implementation_branches.implementation_id = ?1
-  and implementation_branches.canonical_path not in (
-    select distinct rs.canonical_path
-    from implementation_repo_sessions rs
-    where rs.implementation_id = ?1
-  )
-`
-
-// Remove branches whose repo no longer has any sessions in this implementation.
-func (q *Queries) DeleteOrphanedBranches(ctx context.Context, implID string) error {
-	_, err := q.exec(ctx, q.deleteOrphanedBranchesStmt, deleteOrphanedBranches, implID)
-	return err
-}
-
 const findActiveImplementationByBranch = `-- name: FindActiveImplementationByBranch :one
 select i.implementation_id, i.title, i.state, i.created_at, i.last_activity_at, i.closed_at, i.metadata_json from implementations i
 join implementation_branches b on i.implementation_id = b.implementation_id

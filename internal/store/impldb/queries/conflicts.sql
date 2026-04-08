@@ -4,12 +4,6 @@ insert into observation_conflicts (
     rule_name, resolved, created_at
 ) values (?, ?, ?, ?, ?, 0, ?);
 
--- name: ListUnresolvedConflicts :many
-select * from observation_conflicts
-where resolved = 0
-order by created_at asc
-limit ?;
-
 -- name: CountUnresolvedConflicts :one
 select count(*) from observation_conflicts
 where resolved = 0;

@@ -22,17 +22,6 @@ from implementations i
 order by i.last_activity_at desc
 limit ?;
 
--- name: ListMultiRepoImplementations :many
-select i.*,
-    (select count(distinct canonical_path) from implementation_repos where implementation_id = i.implementation_id) as repo_count,
-    (select count(*) from implementation_commits where implementation_id = i.implementation_id) as commit_count
-from implementations i
-where i.state in (sqlc.slice('states'))
-  and (select count(distinct canonical_path) from implementation_repos
-       where implementation_id = i.implementation_id) > 1
-order by i.last_activity_at desc
-limit ?;
-
 -- name: ListActiveOrMultiRepo :many
 select i.*,
     (select count(distinct canonical_path) from implementation_repos where implementation_id = i.implementation_id) as repo_count,

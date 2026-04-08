@@ -150,7 +150,7 @@ func TestTidy_ImplementationsApply_PrunesObservations(t *testing.T) {
 	_ = all // just checking DB is accessible
 
 	// The old reconciled observation should be gone, recent should remain.
-	// We can verify by trying to prune again — should get 0.
+	// Try pruning again with a much newer threshold to confirm only the recent row remains.
 	pruneResult, _ := h.Queries.PruneReconciledObservations(ctx, time.Now().UnixMilli())
 	pruned, _ := pruneResult.RowsAffected()
 	if pruned != 1 {
@@ -202,7 +202,7 @@ func TestTidy_FailedObservationsOnly_StillReported(t *testing.T) {
 		t.Errorf("ImplFailedObs: got %d, want 1", res.ImplFailedObs)
 	}
 
-	// This is the only finding — verify it surfaces in actions.
+	// This is the only finding - verify it surfaces in actions.
 	if res.ImplStale != 0 || res.ImplConflicts != 0 {
 		t.Errorf("expected no other implementation findings, got stale=%d conflicts=%d",
 			res.ImplStale, res.ImplConflicts)
@@ -277,7 +277,7 @@ func TestTidy_NoImplementationsDB_Graceful(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tidy without impldb: %v", err)
 	}
-	if res.ImplStale != 0 && res.ImplConflicts != 0 {
+	if res.ImplStale != 0 || res.ImplConflicts != 0 || res.ImplFailedObs != 0 || res.ImplObsPruned != 0 {
 		t.Errorf("expected 0 implementation findings without DB")
 	}
 }

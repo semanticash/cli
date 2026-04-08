@@ -545,7 +545,7 @@ func TestRepoSessions_MultiRepo(t *testing.T) {
 		t.Fatalf("got %d repo sessions, want 2", len(sessions))
 	}
 
-	// Look up by local session ID — returns all matching implementations
+	// Look up by local session ID - returns all matching implementations
 	found, err := h.Queries.FindImplementationsByLocalSession(ctx, localB)
 	if err != nil {
 		t.Fatalf("find by local session: %v", err)

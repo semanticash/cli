@@ -151,9 +151,9 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 			return nil, fmt.Errorf("delete old repo sessions: %w", err)
 		}
 		// Delete branch rows for each moved session's repos from the source.
-		// We can't know which branches belonged to which session, so we
-		// clear all branches for repos that lost this session and let future
-		// reconciliation re-populate them for any remaining sessions.
+		// Branch rows are repo-scoped rather than session-scoped.
+		// Clear them for repos touched by the moved session and let future
+		// reconciliation restore any branch data that still applies.
 		movedRepoPaths := make(map[string]bool)
 		for _, rs := range movedRepoSessions {
 			movedRepoPaths[rs.CanonicalPath] = true
@@ -198,7 +198,7 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 			return nil, fmt.Errorf("move repo session: %w", err)
 		}
 
-		// Carry the role from the old implementation so we don't downgrade.
+		// Carry the role from the old implementation to preserve repo semantics.
 		role := oldRepoRoles[rs.CanonicalPath]
 		if role == "" {
 			role = "related"
@@ -235,7 +235,7 @@ func linkResolvedSession(ctx context.Context, h *impldb.Handle, targetID string,
 	if len(movedRepoSessions) == 0 {
 		allRepoSlices := findAllRepoSlices(ctx, resolved.provider, resolved.providerSessionID)
 
-		// Ensure the resolved session is included even if its repo isn't
+		// Ensure the resolved session is included even if its repo is not
 		// in the broker registry.
 		if resolved.localSessionID != "" && resolved.canonicalPath != "" {
 			found := false
@@ -434,7 +434,7 @@ func resolveSessionFromRepos(ctx context.Context, sessionID, repoPath string) (r
 		if err == nil {
 			return resolved, nil
 		}
-		// Propagate ambiguity — don't fall through to other repos.
+		// Propagate ambiguity - do not fall through to other repos.
 		if isAmbiguityError(err) {
 			return resolvedSession{}, err
 		}

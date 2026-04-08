@@ -422,7 +422,7 @@ func (r *Reconciler) AttachCommit(ctx context.Context, h *impldb.Handle, in Atta
 	}
 
 	// Pick the implementation with the most session matches.
-	// If tied, skip automatic attachment — the data doesn't distinguish
+	// If tied, skip automatic attachment - the data does not distinguish
 	// which implementation owns this commit. Ties surface later via
 	// `semantica suggest implementations`.
 	var bestImplID string

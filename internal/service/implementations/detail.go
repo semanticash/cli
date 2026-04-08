@@ -126,7 +126,7 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		})
 	}
 
-	// Load commits — use display_name from implementation_repos, not filepath.Base.
+	// Load commits using the repo display name from implementation_repos.
 	commitRows, _ := h.Queries.ListImplementationCommits(ctx, fullID)
 	commits := make([]CommitDetail, 0, len(commitRows))
 	for _, c := range commitRows {
@@ -334,7 +334,7 @@ func lookupCommitTimestamp(ctx context.Context, canonicalPath, commitHash string
 }
 
 // resolveImplID resolves a short ID prefix to a full implementation ID.
-// Uses a SQL LIKE query — no cap on implementation count.
+// Uses a SQL LIKE query with no cap on implementation count.
 func resolveImplID(ctx context.Context, h *impldb.Handle, id string) (string, error) {
 	// Try exact match first.
 	_, err := h.Queries.GetImplementation(ctx, id)

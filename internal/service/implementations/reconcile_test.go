@@ -127,11 +127,11 @@ func TestReconcile_SessionIdentity_SameSession(t *testing.T) {
 	// First observation creates an implementation.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/projects/api", "/repos/api", now)
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	// Second observation for the same session.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/projects/api", "/repos/api", now+1000)
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls) != 1 {
@@ -149,11 +149,11 @@ func TestReconcile_SessionIdentity_CrossRepo(t *testing.T) {
 	// Session starts in api repo.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	// Same session routes events to sdk repo.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/sdk", now+1000)
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls) != 1 {
@@ -188,11 +188,11 @@ func TestReconcile_SessionIdentity_ParentChild(t *testing.T) {
 	// Parent observation.
 	insertObs(t, ctx, h.Queries, "claude_code", "parent-sess", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	// Child observation with parent_session_id.
 	insertObs(t, ctx, h.Queries, "claude_code", "child-sess", "parent-sess", "/repos/api", "/repos/api", now+1000)
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls) != 1 {
@@ -210,11 +210,11 @@ func TestReconcile_BranchActive_AttachesToActive(t *testing.T) {
 	// First session creates an implementation on feature/auth.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("feature/auth")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	// Different session on the same branch.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-2", "", "/repos/api", "/repos/api", now+1000)
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls) != 1 {
@@ -242,7 +242,7 @@ func TestReconcile_BranchActive_DoesNotReviveDormant(t *testing.T) {
 	// New session on the same branch.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-new", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("feature/auth")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	// Should create a NEW implementation, not revive the dormant one.
@@ -277,7 +277,7 @@ func TestReconcile_SessionIdentity_RevivesDormant(t *testing.T) {
 	// Same session sends new activity.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impl, _ := h.Queries.GetImplementation(ctx, implID)
 	if impl.State != "active" {
@@ -385,8 +385,8 @@ func TestReconcile_RoleAssignment_OriginVsDownstream(t *testing.T) {
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/sdk", now+1000)
 
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	repos, _ := h.Queries.ListImplementationRepos(ctx, impls[0].ImplementationID)
@@ -412,7 +412,7 @@ func TestReconcile_RoleAssignment_EmptySourceIsOrigin(t *testing.T) {
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "", "/repos/api", now)
 
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	repos, _ := h.Queries.ListImplementationRepos(ctx, impls[0].ImplementationID)
@@ -433,7 +433,7 @@ func TestReconcile_DifferentSessions_NoBranch_SeparateImpls(t *testing.T) {
 
 	// No branch → branch_active can't match.
 	r := newReconciler("")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls) != 2 {
@@ -451,7 +451,7 @@ func TestReconcile_ObservationMarkedReconciled(t *testing.T) {
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 
 	r := newReconciler("main")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	// No pending observations after reconciliation.
 	pending, _ := h.Queries.ListPendingObservations(ctx, 10)
@@ -470,7 +470,7 @@ func TestReconcile_SessionReattachesAfterClose(t *testing.T) {
 	// First observation creates impl, attach session.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now)
 	r := newReconciler("feature/auth")
-	r.Reconcile(ctx, h)
+	_, _ = r.Reconcile(ctx, h)
 
 	impls, _ := h.Queries.ListAllImplementations(ctx, 10)
 	firstImplID := impls[0].ImplementationID
@@ -483,7 +483,7 @@ func TestReconcile_SessionReattachesAfterClose(t *testing.T) {
 	// Same session on a different branch → should create a new implementation.
 	insertObs(t, ctx, h.Queries, "claude_code", "sess-1", "", "/repos/api", "/repos/api", now+5000)
 	r2 := newReconciler("feature/billing")
-	r2.Reconcile(ctx, h)
+	_, _ = r2.Reconcile(ctx, h)
 
 	impls2, _ := h.Queries.ListAllImplementations(ctx, 10)
 	if len(impls2) != 2 {

@@ -48,7 +48,7 @@ func EmitObservation(ctx context.Context, obs Observation) {
 	opts := impldb.OpenOptions{BusyTimeout: 50 * time.Millisecond}
 	h, err := impldb.OpenNoMigrate(ctx, dbPath, opts)
 	if err != nil {
-		// DB doesn't exist yet — create it. One-time cost.
+		// Create the database on the first observation if it does not exist yet.
 		h, err = impldb.Open(ctx, dbPath, opts)
 		if err != nil {
 			slog.Debug("impldb: skip observation, cannot open db", "err", err)

@@ -262,12 +262,12 @@ func (s *TidyService) tidyImplementations(ctx context.Context, apply bool, resul
 	// 2. Report unresolved observation conflicts (exact count, not capped).
 	conflictCount, err := h.Queries.CountUnresolvedConflicts(ctx)
 	if err == nil && conflictCount > 0 {
-		result.Actions = append(result.Actions, TidyAction{
-			Category: "implementation",
-			ID:       "conflicts",
-			Detail: fmt.Sprintf("%d unresolved — run semantica suggest implementations",
-				conflictCount),
-		})
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "implementation",
+				ID:       "conflicts",
+				Detail: fmt.Sprintf("%d unresolved - run semantica suggest implementations",
+					conflictCount),
+			})
 		result.ImplConflicts = int(conflictCount)
 	}
 

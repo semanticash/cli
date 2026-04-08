@@ -87,7 +87,7 @@ func OpenNoMigrate(ctx context.Context, dbPath string, opts OpenOptions) (*Handl
 		return nil, fmt.Errorf("dbPath is empty")
 	}
 
-	// Check the file exists — don't create it here.
+	// Check that the file exists; do not create it here.
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("impldb not found: %w", err)
 	}
