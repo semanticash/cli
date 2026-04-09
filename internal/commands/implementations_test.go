@@ -163,6 +163,10 @@ func TestBuildImplementationJSON_ContainsCardSections(t *testing.T) {
 			{DisplayName: "pulse-api", Role: "origin", FirstSeenAt: 0, SessionCount: 2},
 			{DisplayName: "pulse-web", Role: "downstream", FirstSeenAt: 0, SessionCount: 2},
 		},
+		RepoAttribution: []implementations.RepoAttribution{
+			{DisplayName: "pulse-api", AIPercentage: 78},
+			{DisplayName: "pulse-web", AIPercentage: 91},
+		},
 		Sessions: []implementations.SessionDetail{
 			{Provider: "claude_code", SourceProjectPath: "/tmp/pulse/pulse-api"},
 			{}, {}, {},
