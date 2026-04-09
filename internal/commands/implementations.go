@@ -1,16 +1,21 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
 )
+
+const implementationPickerTitleWidth = 64
 
 func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
@@ -27,15 +32,25 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
+			listInput := implementations.ListInput{
+				Limit:         limit,
+				All:           all,
+				IncludeSingle: includeSingle,
+			}
 
 			if len(args) == 1 {
 				return showImplementation(cmd, out, args[0], asJSON)
 			}
-			return listImplementations(cmd, out, implementations.ListInput{
-				Limit:         limit,
-				All:           all,
-				IncludeSingle: includeSingle,
-			}, asJSON)
+
+			if !asJSON && isTerminal() && isTerminalWriter(out) {
+				implID, err := pickImplementation(cmd.Context(), listInput)
+				if err != nil {
+					return err
+				}
+				return showImplementation(cmd, out, implID, false)
+			}
+
+			return listImplementations(cmd, out, listInput, asJSON)
 		},
 	}
 
@@ -183,23 +198,8 @@ func listImplementations(cmd *cobra.Command, out io.Writer, in implementations.L
 
 	for _, item := range result.Items {
 		id := util.ShortID(item.ImplementationID)
-		title := item.Title
-		if title == "" {
-			title = "\u2014"
-		}
-		if len(title) > 28 {
-			title = title[:27] + "\u2026"
-		}
-
-		repoNames := make([]string, 0, len(item.Repos))
-		for _, r := range item.Repos {
-			repoNames = append(repoNames, r.DisplayName)
-		}
-		repos := strings.Join(repoNames, ", ")
-		if len(repos) > 16 {
-			repos = repos[:15] + "\u2026"
-		}
-
+		title := displayImplementationTitle(item.Title, 28)
+		repos := displayImplementationRepos(item.Repos, 16)
 		_, _ = fmt.Fprintf(out, "%-10s %-30s %-18s %-10s %d\n",
 			id, title, repos, item.State, item.CommitCount)
 	}
@@ -245,7 +245,7 @@ func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON
 		for _, e := range detail.Timeline {
 			prefix := "  "
 			if e.CrossRepo {
-				prefix = "\u2192 "
+				prefix = "-> "
 			}
 			ts := service.RelativeTime(e.Timestamp)
 			_, _ = fmt.Fprintf(out, "  %s %s%-14s %s\n", ts, prefix, e.RepoName, e.Summary)
@@ -261,4 +261,91 @@ func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON
 	_, _ = fmt.Fprintln(out)
 
 	return nil
+}
+
+func pickImplementation(ctx context.Context, in implementations.ListInput) (string, error) {
+	result, err := implementations.List(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	if len(result.Items) == 0 {
+		return "", fmt.Errorf("no implementations found")
+	}
+
+	options := make([]huh.Option[string], len(result.Items))
+	for i, item := range result.Items {
+		options[i] = huh.NewOption(formatImplementationOption(item), item.ImplementationID)
+	}
+
+	var selected string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(implementationPickerTitle()).
+				Options(options...).
+				Value(&selected),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return "", fmt.Errorf("no implementation selected")
+	}
+	if selected == "" {
+		return "", fmt.Errorf("no implementation selected")
+	}
+	return selected, nil
+}
+
+func formatImplementationOption(item implementations.ListItem) string {
+	title := displayImplementationTitle(item.Title, implementationPickerTitleWidth)
+	repos := displayImplementationRepos(item.Repos, 0)
+	commitLabel := "commits"
+	if item.CommitCount == 1 {
+		commitLabel = "commit"
+	}
+	commitText := fmt.Sprintf("%d %s", item.CommitCount, commitLabel)
+	labelStyle := lipgloss.NewStyle().Faint(true)
+	repoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	return fmt.Sprintf("%-8s  %-64s  %-8s  %s\n%s %s",
+		util.ShortID(item.ImplementationID),
+		title,
+		item.State,
+		commitText,
+		labelStyle.Render("Repositories:"),
+		repoStyle.Render(repos))
+}
+
+func implementationPickerTitle() string {
+	return fmt.Sprintf(
+		"Select an implementation\n  %-8s  %-64s  %-8s  %s",
+		"ID",
+		"TITLE",
+		"STATE",
+		"COMMITS",
+	)
+}
+
+func displayImplementationTitle(title string, maxLen int) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "-"
+	}
+	return truncateDisplay(title, maxLen)
+}
+
+func displayImplementationRepos(repos []implementations.RepoSummary, maxLen int) string {
+	names := make([]string, 0, len(repos))
+	for _, r := range repos {
+		names = append(names, r.DisplayName)
+	}
+	return truncateDisplay(strings.Join(names, ", "), maxLen)
+}
+
+func truncateDisplay(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
