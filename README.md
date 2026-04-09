@@ -19,6 +19,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 ## Why Semantica
 - Make AI-assisted code changes understandable, reviewable, and attributable.
 - Connect agent activity to commits and pull requests so teams can trace how work happened.
+- Track one implementation story even when agents carry the work across multiple repositories.
 - Reduce ambiguity during code review, debugging, handoff, and incident analysis.
 - Keep provenance and attribution local by default, with optional hosted sync for team visibility.
 - Build trust in AI-assisted software development with a clear system of record that supports audit and compliance.
@@ -145,6 +146,25 @@ semantica set trailers enabled
 semantica set trailers disabled    # checkpoint-only commits
 ```
 
+### Cross-repo implementations
+
+Agent work often becomes one story that spans more than one repository: an API
+change in one repo, a client update in another, and a UI or docs follow-up in
+a third. Semantica tracks that work as an **implementation** so the related
+repos, sessions, commits, and summary stay grouped together.
+
+```bash
+semantica implementations or semantica impl        # show current cross-repo implementations
+semantica impl <implementation_id>                 # show the implementation card/details
+semantica suggest impl                             # suggest a title and summary for one implementation 
+semantica suggest impl <implementation_id> --apply # apply the suggested title and summary
+```
+
+<p>
+  <img src="docs/images/semantica-impl-list-view.png" alt="semantica blame output" width="600">
+  <img src="docs/images/semantica-impl-card-view.png" alt="semantica blame output" width="600">
+</p>
+
 ### Checkpoints and rewind
 
 Every commit creates a checkpoint, and you can create checkpoints manually too.
@@ -182,23 +202,6 @@ semantica suggest commit # generates a concise commit message from your current 
 semantica suggest pr # generates a pull request title and description from your branch diff.
 semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
-```
-
-### Cross-repo implementations
-
-Agent work often becomes a single story that spans more than one repository:
-an API change in one repo, a client update in another, and maybe supporting
-docs or infrastructure changes alongside both. Semantica records that work
-under the umbrella of an **implementation**.
-
-An implementation is the concrete local record for one of those cross-repo
-stories: the related repos, sessions, commits, and timeline entries that belong
-together.
-
-```bash
-semantica implementations
-semantica impl <implementation_id>
-semantica suggest implementations
 ```
 
 ### Agent sessions

@@ -19,6 +19,8 @@ import (
 const implementationPickerTitleWidth = 64
 const implementationStoryWrapWidth = 86
 
+var errNoImplementations = fmt.Errorf("no implementations found")
+
 type implementationCardFieldJSON struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
@@ -72,6 +74,10 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 			if !asJSON && isTerminal() && isTerminalWriter(out) {
 				implID, err := pickImplementation(cmd.Context(), listInput)
 				if err != nil {
+					if err == errNoImplementations {
+						_, _ = fmt.Fprintln(out, "No implementations found.")
+						return nil
+					}
 					return err
 				}
 				return showImplementation(cmd, out, implID, false, verbose)
@@ -263,7 +269,7 @@ func pickImplementation(ctx context.Context, in implementations.ListInput) (stri
 		return "", err
 	}
 	if len(result.Items) == 0 {
-		return "", fmt.Errorf("no implementations found")
+		return "", errNoImplementations
 	}
 
 	options := make([]huh.Option[string], len(result.Items))

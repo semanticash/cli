@@ -43,6 +43,23 @@ func setupListDB(t *testing.T) {
 		RepoRole: "downstream", FirstSeenAt: now, LastSeenAt: now,
 	})
 
+	// Closed multi-repo implementation.
+	implD := uuid.NewString()
+	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
+		ImplementationID: implD, CreatedAt: now - 3600_000, LastActivityAt: now - 3600_000,
+	})
+	_ = h.Queries.UpdateImplementationState(ctx, impldbgen.UpdateImplementationStateParams{
+		State: "closed", ImplementationID: implD,
+	})
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: implD, CanonicalPath: "/repos/web", DisplayName: "web",
+		RepoRole: "origin", FirstSeenAt: now - 3600_000, LastSeenAt: now - 3600_000,
+	})
+	_ = h.Queries.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
+		ImplementationID: implD, CanonicalPath: "/repos/docs", DisplayName: "docs",
+		RepoRole: "downstream", FirstSeenAt: now - 3600_000, LastSeenAt: now - 3600_000,
+	})
+
 	// Dormant single-repo implementation.
 	implB := uuid.NewString()
 	_ = h.Queries.InsertImplementation(ctx, impldbgen.InsertImplementationParams{
@@ -78,11 +95,11 @@ func TestList_Default_CrossRepoFocus(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 
-	// Default: cross-repo only.
-	// implA (multi-repo active) should appear.
+	// Default: cross-repo only across all states.
+	// implA (multi-repo active) and implD (multi-repo closed) should appear.
 	// implB (single-repo dormant) and implC (single-repo active) should NOT appear.
-	if result.Total != 1 {
-		t.Errorf("got %d items, want 1 (cross-repo only)", result.Total)
+	if result.Total != 2 {
+		t.Errorf("got %d items, want 2 (cross-repo only across all states)", result.Total)
 		for _, item := range result.Items {
 			t.Logf("  %s state=%s repos=%d", item.Title, item.State, item.RepoCount)
 		}
@@ -98,7 +115,7 @@ func TestList_IncludeSingle(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 
-	// IncludeSingle with active+dormant: all 3.
+	// IncludeSingle with active+dormant: active+dormant across repo counts, not closed.
 	if result.Total != 3 {
 		t.Errorf("got %d items, want 3", result.Total)
 	}
@@ -113,9 +130,9 @@ func TestList_All(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 
-	// All: all 3.
-	if result.Total != 3 {
-		t.Errorf("got %d items, want 3", result.Total)
+	// All: all 4.
+	if result.Total != 4 {
+		t.Errorf("got %d items, want 4", result.Total)
 	}
 }
 

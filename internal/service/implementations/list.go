@@ -84,10 +84,7 @@ func List(ctx context.Context, in ListInput) (*ListResult, error) {
 			common = append(common, implRow{r.ImplementationID, r.Title, r.State, r.RepoCount, r.CommitCount, r.LastActivityAt})
 		}
 	} else {
-		rows, qerr := h.Queries.ListImplementationsByState(ctx, impldbgen.ListImplementationsByStateParams{
-			States: []string{"active", "dormant"},
-			Limit:  in.Limit,
-		})
+		rows, qerr := h.Queries.ListAllImplementations(ctx, in.Limit)
 		if qerr != nil {
 			return nil, fmt.Errorf("list implementations: %w", qerr)
 		}
