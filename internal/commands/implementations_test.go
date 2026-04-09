@@ -63,3 +63,128 @@ func TestImplementationPickerTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderImplementationPlain_ShowsCommitFocusedSections(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		ImplementationID: "4d741c1f-1234-5678-9abc-def012345678",
+		Title:            "Add roadmap voting",
+		Summary:          "Adds roadmap voting scaffolding across the API and web surfaces with a shared implementation story.",
+		State:            "active",
+		LastActivityAt:   0,
+		Repos: []implementations.RepoDetail{
+			{DisplayName: "pulse-api", Role: "origin", FirstSeenAt: 0, SessionCount: 2},
+			{DisplayName: "pulse-web", Role: "downstream", FirstSeenAt: 0, SessionCount: 2},
+		},
+		Sessions: []implementations.SessionDetail{
+			{Provider: "claude_code", SourceProjectPath: "/tmp/pulse/pulse-api"},
+			{}, {}, {},
+		},
+		Commits: []implementations.CommitDetail{
+			{DisplayName: "pulse-api", CommitHash: "abc1234", Subject: "Add roadmap voting API stubs"},
+		},
+		Timeline: []implementations.TimelineEntry{
+			{Timestamp: 900, RepoName: "pulse-api", Kind: "tool", FilePath: "internal/voting/handler.go", FileOp: "edited", Summary: "Edit"},
+			{Timestamp: 1000, RepoName: "pulse-api", Kind: "commit", Summary: "commit abc1234"},
+		},
+		TotalTokensIn:     957,
+		TotalTokensOut:    823,
+		TotalTokensCached: 16000,
+	}
+
+	got := renderImplementationPlain(detail, false)
+	for _, want := range []string{
+		"Add roadmap voting",
+		"Implementation: 4d741c1f",
+		"Started in pulse-api (Claude)",
+		"Story",
+		"Adds roadmap voting scaffolding across the API and web surfaces with a",
+		"Repos",
+		"Commits",
+		"pulse-api    abc1234  Add roadmap voting API stubs",
+		"Stats",
+		"Implementation sessions: 4",
+		"Session details: 2 in pulse-api, 2 in pulse-web",
+		"Tokens: 957 in / 823 out (+16k cached)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("plain detail missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\nDetails\n") {
+		t.Fatalf("plain detail should not show Details by default:\n%s", got)
+	}
+	if strings.Contains(got, ".claude/settings.json") {
+		t.Fatalf("plain detail should filter internal config noise:\n%s", got)
+	}
+}
+
+func TestBuildSummaryLines_WrapsSummary(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		Summary: "Adds roadmap voting scaffolding across the API, SDK, and web UI so the implementation card can show a concise product story before the repo and commit breakdown.",
+	}
+
+	got := buildSummaryLines(detail)
+	if len(got) < 2 {
+		t.Fatalf("expected wrapped summary lines, got %v", got)
+	}
+	if strings.Contains(got[0], "\n") {
+		t.Fatalf("summary lines should already be split: %q", got[0])
+	}
+}
+
+func TestBuildCommitLines(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		Commits: []implementations.CommitDetail{
+			{DisplayName: "pulse-api", CommitHash: "abc1234def", Subject: "Add roadmap voting API stubs"},
+			{DisplayName: "pulse-web", CommitHash: "def5678abc"},
+		},
+	}
+
+	got := buildCommitLines(detail)
+	if len(got) != 2 {
+		t.Fatalf("build commit lines: got %d want 2", len(got))
+	}
+	if !strings.Contains(got[0], "pulse-api") || !strings.Contains(got[0], "abc1234") || !strings.Contains(got[0], "Add roadmap voting API stubs") {
+		t.Fatalf("unexpected first commit line: %q", got[0])
+	}
+	if !strings.Contains(got[1], "(no subject)") {
+		t.Fatalf("expected missing subject fallback, got %q", got[1])
+	}
+}
+
+func TestImplementationContextLine_PrefersOriginRepoDisplayName(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		Repos: []implementations.RepoDetail{
+			{DisplayName: "pulse-api", Role: "origin"},
+			{DisplayName: "pulse-sdk", Role: "downstream"},
+			{DisplayName: "pulse-web", Role: "downstream"},
+		},
+		Sessions: []implementations.SessionDetail{
+			{Provider: "claude_code", SourceProjectPath: "/tmp/work/api"},
+		},
+	}
+
+	got := implementationContextLine(detail)
+	want := "Started in pulse-api (Claude)"
+	if got != want {
+		t.Fatalf("implementation context line: got %q want %q", got, want)
+	}
+}
+
+func TestBuildVerboseTimelineLines_UsesRawSummary(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		Timeline: []implementations.TimelineEntry{
+			{Timestamp: 1000, RepoName: "pulse-api", Kind: "tool", Summary: "Read Read(/tmp/pulse/pulse-api/.claude/settings.json)"},
+			{Timestamp: 2000, RepoName: "pulse-api", Kind: "tool", FilePath: "internal/voting/handler.go", FileOp: "edited", Summary: "Edit"},
+			{Timestamp: 3000, RepoName: "pulse-api", Kind: "commit", Summary: "commit abc1234"},
+		},
+	}
+
+	got := buildVerboseTimelineLines(detail)
+	if len(got) != 3 {
+		t.Fatalf("verbose timeline lines: got %d want 3", len(got))
+	}
+	if !strings.Contains(got[2], "Commit abc1234") {
+		t.Fatalf("expected commit line in verbose timeline: %v", got)
+	}
+}

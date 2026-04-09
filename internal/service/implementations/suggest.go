@@ -13,11 +13,10 @@ import (
 
 // SuggestResult holds the LLM-generated suggestions for a single implementation.
 type SuggestResult struct {
-	Title          string           `json:"title"`
-	Summary        string           `json:"summary"`
-	ReviewPriority []llm.ReviewItem `json:"review_priority,omitempty"`
-	Provider       string           `json:"provider,omitempty"`
-	Model          string           `json:"model,omitempty"`
+	Title    string `json:"title"`
+	Summary  string `json:"summary"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // SuggestBatchResult holds title and merge suggestions across implementations.
@@ -44,8 +43,7 @@ func NewSuggestService() *SuggestService {
 	return &SuggestService{GenerateText: llm.GenerateText}
 }
 
-// SuggestForImplementation generates title, summary, and review priority
-// for a single implementation.
+// SuggestForImplementation generates a title and summary for a single implementation.
 func (s *SuggestService) SuggestForImplementation(ctx context.Context, implID string) (*SuggestResult, error) {
 	detail, err := GetDetail(ctx, implID)
 	if err != nil {
@@ -64,11 +62,10 @@ func (s *SuggestService) SuggestForImplementation(ctx context.Context, implID st
 	}
 
 	return &SuggestResult{
-		Title:          parsed.Title,
-		Summary:        parsed.Summary,
-		ReviewPriority: parsed.ReviewPriority,
-		Provider:       res.Provider,
-		Model:          res.Model,
+		Title:    parsed.Title,
+		Summary:  parsed.Summary,
+		Provider: res.Provider,
+		Model:    res.Model,
 	}, nil
 }
 
@@ -131,8 +128,8 @@ func (s *SuggestService) SuggestBatch(ctx context.Context) (*SuggestBatchResult,
 	}, nil
 }
 
-// ApplyTitle writes a suggested title to an implementation.
-func ApplyTitle(ctx context.Context, implID, title string) error {
+// ApplySuggestion writes the suggested title and summary to an implementation.
+func ApplySuggestion(ctx context.Context, implID, title, summary string) error {
 	h, err := openGlobalDB(ctx)
 	if err != nil {
 		return fmt.Errorf("open implementations db: %w", err)
@@ -144,45 +141,81 @@ func ApplyTitle(ctx context.Context, implID, title string) error {
 		return err
 	}
 
-	return h.Queries.UpdateImplementationTitle(ctx, impldbgen.UpdateImplementationTitleParams{
+	impl, err := h.Queries.GetImplementation(ctx, fullID)
+	if err != nil {
+		return fmt.Errorf("get implementation: %w", err)
+	}
+
+	metadata, err := implementationMetadataWithSummary(impl.MetadataJson, summary)
+	if err != nil {
+		return err
+	}
+
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin implementation update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.UpdateImplementationTitle(ctx, impldbgen.UpdateImplementationTitleParams{
 		Title:            impldb.NullStr(title),
 		ImplementationID: fullID,
-	})
+	}); err != nil {
+		return fmt.Errorf("update implementation title: %w", err)
+	}
+	if err := qtx.UpdateImplementationMetadata(ctx, impldbgen.UpdateImplementationMetadataParams{
+		MetadataJson:     metadata,
+		ImplementationID: fullID,
+	}); err != nil {
+		return fmt.Errorf("update implementation metadata: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit implementation update: %w", err)
+	}
+	return nil
+}
+
+// ApplyTitle writes only a suggested title to an implementation.
+// Kept as a convenience wrapper for callers that do not need summary persistence.
+func ApplyTitle(ctx context.Context, implID, title string) error {
+	return ApplySuggestion(ctx, implID, title, "")
 }
 
 // --- prompt construction helpers ---
 
 func buildSinglePrompt(detail *ImplementationDetail) string {
-	// Repos
 	repoNames := make([]string, 0, len(detail.Repos))
 	for _, r := range detail.Repos {
 		repoNames = append(repoNames, fmt.Sprintf("%s (%s)", r.DisplayName, r.Role))
 	}
 
-	// Commits
+	startedIn := suggestStartedIn(detail)
+	if startedIn == "" {
+		startedIn = "(unknown)"
+	}
+
 	var commits strings.Builder
 	for _, c := range detail.Commits {
-		fmt.Fprintf(&commits, "  %s %s\n", c.DisplayName, c.CommitHash[:minLen(len(c.CommitHash), 7)])
+		subject := strings.TrimSpace(c.Subject)
+		if subject == "" {
+			subject = "(no subject)"
+		}
+		fmt.Fprintf(&commits, "  %s %s %s\n",
+			c.DisplayName,
+			c.CommitHash[:minLen(len(c.CommitHash), 7)],
+			subject)
 	}
 	if commits.Len() == 0 {
 		commits.WriteString("  (none)\n")
 	}
 
-	// Timeline (last 50 entries to stay within prompt budget)
-	var timeline strings.Builder
-	start := 0
-	if len(detail.Timeline) > 50 {
-		start = len(detail.Timeline) - 50
+	var fileChanges strings.Builder
+	for _, line := range suggestTopFileChanges(detail, 10) {
+		fmt.Fprintf(&fileChanges, "  %s\n", line)
 	}
-	for _, e := range detail.Timeline[start:] {
-		prefix := "  "
-		if e.CrossRepo {
-			prefix = "-> "
-		}
-		fmt.Fprintf(&timeline, "  %s%s %s\n", prefix, e.RepoName, e.Summary)
-	}
-	if timeline.Len() == 0 {
-		timeline.WriteString("  (no events)\n")
+	if fileChanges.Len() == 0 {
+		fileChanges.WriteString("  (none)\n")
 	}
 
 	tokIn := compactTokens(detail.TotalTokensIn)
@@ -190,12 +223,102 @@ func buildSinglePrompt(detail *ImplementationDetail) string {
 
 	return llm.BuildSuggestImplementationPrompt(
 		detail.State,
+		startedIn,
 		strings.Join(repoNames, ", "),
 		len(detail.Sessions),
 		tokIn, tokOut,
 		strings.TrimSpace(commits.String()),
-		strings.TrimSpace(timeline.String()),
+		strings.TrimSpace(fileChanges.String()),
 	)
+}
+
+func suggestStartedIn(detail *ImplementationDetail) string {
+	provider := ""
+	if len(detail.Sessions) > 0 {
+		provider = suggestProviderDisplayName(detail.Sessions[0].Provider)
+	}
+	for _, repo := range detail.Repos {
+		if repo.Role == "origin" {
+			if provider != "" {
+				return fmt.Sprintf("%s (%s)", repo.DisplayName, provider)
+			}
+			return repo.DisplayName
+		}
+	}
+	if len(detail.Repos) > 0 {
+		if provider != "" {
+			return fmt.Sprintf("%s (%s)", detail.Repos[0].DisplayName, provider)
+		}
+		return detail.Repos[0].DisplayName
+	}
+	return ""
+}
+
+func suggestTopFileChanges(detail *ImplementationDetail, limit int) []string {
+	type item struct {
+		repo string
+		path string
+		op   string
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	seen := make(map[string]bool)
+	items := make([]item, 0, limit)
+	for i := len(detail.Timeline) - 1; i >= 0; i-- {
+		entry := detail.Timeline[i]
+		if entry.Kind == "commit" || strings.TrimSpace(entry.FilePath) == "" {
+			continue
+		}
+		if suggestIsInternalPath(entry.FilePath) {
+			continue
+		}
+		key := entry.RepoName + "|" + entry.FilePath + "|" + entry.FileOp
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		items = append(items, item{repo: entry.RepoName, path: entry.FilePath, op: entry.FileOp})
+		if len(items) == limit {
+			break
+		}
+	}
+
+	lines := make([]string, 0, len(items))
+	for _, it := range items {
+		suffix := ""
+		if it.op != "" {
+			suffix = " (" + it.op + ")"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s%s", it.repo, it.path, suffix))
+	}
+	return lines
+}
+
+func suggestIsInternalPath(path string) bool {
+	lower := strings.ToLower(strings.TrimSpace(path))
+	return strings.HasPrefix(lower, ".claude/") ||
+		strings.HasPrefix(lower, ".cursor/") ||
+		strings.HasPrefix(lower, ".gemini/") ||
+		strings.HasPrefix(lower, ".semantica/") ||
+		strings.HasPrefix(lower, ".git/") ||
+		strings.HasPrefix(lower, ".kiro/") ||
+		lower == ".gitignore"
+}
+
+func suggestProviderDisplayName(provider string) string {
+	switch provider {
+	case "claude_code":
+		return "Claude"
+	case "cursor":
+		return "Cursor"
+	case "gemini_cli":
+		return "Gemini"
+	case "copilot":
+		return "Copilot"
+	default:
+		return ""
+	}
 }
 
 func buildBatchSummaries(ctx context.Context, h *impldb.Handle, rows []impldbgen.ListImplementationsByStateRow) string {

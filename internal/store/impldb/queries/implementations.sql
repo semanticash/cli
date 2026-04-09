@@ -42,6 +42,9 @@ update implementations set last_activity_at = ? where implementation_id = ?;
 -- name: UpdateImplementationTitle :exec
 update implementations set title = ? where implementation_id = ?;
 
+-- name: UpdateImplementationMetadata :exec
+update implementations set metadata_json = ? where implementation_id = ?;
+
 -- name: MarkDormant :execresult
 update implementations
 set state = 'dormant'

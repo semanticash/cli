@@ -9,24 +9,15 @@ import (
 // SuggestImplementationOutput is the structured JSON the LLM must return
 // for a single implementation.
 type SuggestImplementationOutput struct {
-	Title          string       `json:"title"`
-	Summary        string       `json:"summary"`
-	ReviewPriority []ReviewItem `json:"review_priority,omitempty"`
-}
-
-// ReviewItem ranks a file for review attention.
-type ReviewItem struct {
-	Priority string `json:"priority"` // "high", "medium", "low"
-	Repo     string `json:"repo"`
-	File     string `json:"file"`
-	Reason   string `json:"reason"`
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
 }
 
 // SuggestMergeCandidateOutput is the structured JSON for merge suggestions
 // across multiple implementations.
 type SuggestMergeCandidateOutput struct {
-	Titles []TitleSuggestion  `json:"titles,omitempty"`
-	Merges []MergeSuggestion  `json:"merges,omitempty"`
+	Titles []TitleSuggestion `json:"titles,omitempty"`
+	Merges []MergeSuggestion `json:"merges,omitempty"`
 }
 
 // TitleSuggestion proposes a title for an untitled implementation.
@@ -43,28 +34,30 @@ type MergeSuggestion struct {
 }
 
 // suggestImplementationPrompt instructs the model to analyze a single implementation.
-const suggestImplementationPrompt = `You are an engineering analyst. Given a cross-repo implementation's timeline, repos, sessions, and commits, generate a concise title, summary, and review priority ranking.
+const suggestImplementationPrompt = `You are an engineering analyst. Given a cross-repo implementation, generate a concise title and summary for the underlying product or code change.
 
 <implementation>
 State: %s
+Started in: %s
 Repos: %s
-Sessions: %d
+Implementation sessions: %d
 Tokens: %s in / %s out
 
 Commits:
 %s
 
-Timeline (recent events):
+Top file changes:
 %s
 </implementation>
 
 Rules:
-- Return a JSON object with exactly three keys: "title", "summary", "review_priority"
+- Return a JSON object with exactly two keys: "title" and "summary"
 - Title: max 60 characters, describes the single logical change (e.g. "Migrate auth to OAuth2")
 - Summary: 2-3 sentences describing what was done and why, across all repos
-- review_priority: array of objects with "priority" (high/medium/low), "repo", "file", "reason"
-- Focus on what a reviewer should look at first
-- Be specific about cross-repo relationships
+- Commit subjects are the strongest signal for intent. Use file changes as supporting evidence.
+- Focus on the product/code change, not internal tooling or configuration churn.
+- Ignore internal files and directories such as .claude/, .cursor/, .gemini/, .semantica/, .kiro/, .git/, and .gitignore.
+- Be specific about cross-repo relationships when they matter to the feature.
 - Do not mention AI, tools, or automation
 - Do not wrap the JSON in markdown code blocks
 - Return ONLY the JSON object`
@@ -90,14 +83,15 @@ Rules:
 // BuildSuggestImplementationPrompt assembles the prompt for a single implementation.
 func BuildSuggestImplementationPrompt(
 	state string,
+	startedIn string,
 	repos string,
 	sessionCount int,
 	tokensIn, tokensOut string,
 	commits string,
-	timeline string,
+	fileChanges string,
 ) string {
 	return fmt.Sprintf(suggestImplementationPrompt,
-		state, repos, sessionCount, tokensIn, tokensOut, commits, timeline)
+		state, startedIn, repos, sessionCount, tokensIn, tokensOut, commits, fileChanges)
 }
 
 // BuildSuggestMergeCandidatesPrompt assembles the prompt for batch title/merge suggestions.

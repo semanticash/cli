@@ -2,10 +2,17 @@ package implementations
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 
+	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/impldb"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -13,17 +20,19 @@ import (
 
 // ImplementationDetail is the full view of an implementation with timeline.
 type ImplementationDetail struct {
-	ImplementationID string          `json:"implementation_id"`
-	Title            string          `json:"title,omitempty"`
-	State            string          `json:"state"`
-	CreatedAt        int64           `json:"created_at"`
-	LastActivityAt   int64           `json:"last_activity_at"`
-	Repos            []RepoDetail    `json:"repos"`
-	Sessions         []SessionDetail `json:"sessions"`
-	Commits          []CommitDetail  `json:"commits"`
-	Timeline         []TimelineEntry `json:"timeline"`
-	TotalTokensIn    int64           `json:"total_tokens_in"`
-	TotalTokensOut   int64           `json:"total_tokens_out"`
+	ImplementationID  string          `json:"implementation_id"`
+	Title             string          `json:"title,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+	State             string          `json:"state"`
+	CreatedAt         int64           `json:"created_at"`
+	LastActivityAt    int64           `json:"last_activity_at"`
+	Repos             []RepoDetail    `json:"repos"`
+	Sessions          []SessionDetail `json:"sessions"`
+	Commits           []CommitDetail  `json:"commits"`
+	Timeline          []TimelineEntry `json:"timeline"`
+	TotalTokensIn     int64           `json:"total_tokens_in"`
+	TotalTokensOut    int64           `json:"total_tokens_out"`
+	TotalTokensCached int64           `json:"total_tokens_cached"`
 }
 
 // RepoDetail extends RepoSummary with more info for the detail view.
@@ -39,7 +48,9 @@ type RepoDetail struct {
 type SessionDetail struct {
 	Provider          string `json:"provider"`
 	ProviderSessionID string `json:"provider_session_id"`
+	SourceProjectPath string `json:"source_project_path,omitempty"`
 	AttachRule        string `json:"attach_rule"`
+	AttachedAt        int64  `json:"attached_at"`
 }
 
 // CommitDetail is a commit reference in the detail view.
@@ -47,6 +58,8 @@ type CommitDetail struct {
 	CanonicalPath string `json:"canonical_path"`
 	DisplayName   string `json:"display_name"`
 	CommitHash    string `json:"commit_hash"`
+	Subject       string `json:"subject,omitempty"`
+	AttachedAt    int64  `json:"attached_at"`
 	AttachRule    string `json:"attach_rule"`
 }
 
@@ -54,8 +67,10 @@ type CommitDetail struct {
 type TimelineEntry struct {
 	Timestamp int64  `json:"timestamp"`
 	RepoName  string `json:"repo_name"`
-	Kind      string `json:"kind"`    // "session_start", "edit", "tool", "commit", "event"
+	Kind      string `json:"kind"` // "session_start", "edit", "tool", "commit", "event"
 	Summary   string `json:"summary"`
+	FilePath  string `json:"file_path,omitempty"`
+	FileOp    string `json:"file_op,omitempty"`
 	CrossRepo bool   `json:"cross_repo"` // true when repo changed from previous entry
 }
 
@@ -81,6 +96,7 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 	if impl.Title.Valid {
 		title = impl.Title.String
 	}
+	summary := implementationSummaryFromMetadata(impl.MetadataJson)
 
 	// Load repos and build canonical_path -> display_name map.
 	repoRows, _ := h.Queries.ListImplementationRepos(ctx, fullID)
@@ -105,6 +121,24 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 			SessionCount:  sessPerRepo[rr.CanonicalPath],
 		})
 	}
+
+	// Load provider sessions.
+	provSessRows, _ := h.Queries.ListProviderSessionsForImplementation(ctx, fullID)
+	sessions := make([]SessionDetail, 0, len(provSessRows))
+	for _, ps := range provSessRows {
+		sourceProjectPath := ""
+		if ps.SourceProjectPath.Valid {
+			sourceProjectPath = ps.SourceProjectPath.String
+		}
+		sessions = append(sessions, SessionDetail{
+			Provider:          ps.Provider,
+			ProviderSessionID: ps.ProviderSessionID,
+			SourceProjectPath: sourceProjectPath,
+			AttachRule:        ps.AttachRule,
+			AttachedAt:        ps.AttachedAt,
+		})
+	}
+	ensureOriginRepo(repos, sessions)
 	sort.Slice(repos, func(i, j int) bool {
 		if repos[i].Role == "origin" && repos[j].Role != "origin" {
 			return true
@@ -115,17 +149,6 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		return repos[i].FirstSeenAt < repos[j].FirstSeenAt
 	})
 
-	// Load provider sessions.
-	provSessRows, _ := h.Queries.ListProviderSessionsForImplementation(ctx, fullID)
-	sessions := make([]SessionDetail, 0, len(provSessRows))
-	for _, ps := range provSessRows {
-		sessions = append(sessions, SessionDetail{
-			Provider:          ps.Provider,
-			ProviderSessionID: ps.ProviderSessionID,
-			AttachRule:        ps.AttachRule,
-		})
-	}
-
 	// Load commits using the repo display name from implementation_repos.
 	commitRows, _ := h.Queries.ListImplementationCommits(ctx, fullID)
 	commits := make([]CommitDetail, 0, len(commitRows))
@@ -134,33 +157,36 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		if dn == "" {
 			dn = filepath.Base(c.CanonicalPath) // fallback
 		}
+		subject := lookupCommitSubject(ctx, c.CanonicalPath, c.CommitHash)
 		commits = append(commits, CommitDetail{
 			CanonicalPath: c.CanonicalPath,
 			DisplayName:   dn,
 			CommitHash:    c.CommitHash,
-			AttachRule:     c.AttachRule,
+			Subject:       subject,
+			AttachedAt:    c.AttachedAt,
+			AttachRule:    c.AttachRule,
 		})
 	}
 
 	// Build timeline and compute tokens via deduplicated session stats.
 	var timeline []TimelineEntry
-	var totalIn, totalOut int64
+	var totalIn, totalOut, totalCached int64
 
 	for _, repo := range repos {
 		entries := loadRepoTimeline(ctx, h, fullID, repo.CanonicalPath, repo.DisplayName)
 		timeline = append(timeline, entries...)
 
 		// Token totals: use GetSessionWithStats (deduplicated) per session.
-		tIn, tOut := loadRepoTokens(ctx, fullID, h, repo.CanonicalPath)
+		tIn, tOut, tCached := loadRepoTokens(ctx, fullID, h, repo.CanonicalPath)
 		totalIn += tIn
 		totalOut += tOut
+		totalCached += tCached
 	}
 
 	// Add commit entries using the consistent display name.
 	for _, c := range commits {
-		ts := lookupCommitTimestamp(ctx, c.CanonicalPath, c.CommitHash)
 		timeline = append(timeline, TimelineEntry{
-			Timestamp: ts,
+			Timestamp: c.AttachedAt,
 			RepoName:  c.DisplayName,
 			Kind:      "commit",
 			Summary:   fmt.Sprintf("commit %s", c.CommitHash[:minLen(len(c.CommitHash), 7)]),
@@ -186,17 +212,19 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 	}
 
 	return &ImplementationDetail{
-		ImplementationID: fullID,
-		Title:            title,
-		State:            impl.State,
-		CreatedAt:        impl.CreatedAt,
-		LastActivityAt:   impl.LastActivityAt,
-		Repos:            repos,
-		Sessions:         sessions,
-		Commits:          commits,
-		Timeline:         timeline,
-		TotalTokensIn:    totalIn,
-		TotalTokensOut:   totalOut,
+		ImplementationID:  fullID,
+		Title:             title,
+		Summary:           summary,
+		State:             impl.State,
+		CreatedAt:         impl.CreatedAt,
+		LastActivityAt:    impl.LastActivityAt,
+		Repos:             repos,
+		Sessions:          sessions,
+		Commits:           commits,
+		Timeline:          timeline,
+		TotalTokensIn:     totalIn,
+		TotalTokensOut:    totalOut,
+		TotalTokensCached: totalCached,
 	}, nil
 }
 
@@ -248,6 +276,7 @@ func loadRepoTimeline(
 				if ev.Summary.Valid {
 					summary = ev.Summary.String
 				}
+				filePath, fileOp := extractTimelineToolInfo(ev.ToolUses, canonicalPath)
 				kind := "event"
 				if ev.ToolName.Valid && ev.ToolName.String != "" {
 					kind = "tool"
@@ -262,6 +291,8 @@ func loadRepoTimeline(
 					RepoName:  displayName,
 					Kind:      kind,
 					Summary:   summary,
+					FilePath:  filePath,
+					FileOp:    fileOp,
 				})
 			}
 
@@ -285,7 +316,7 @@ func loadRepoTokens(
 	implID string,
 	h *impldb.Handle,
 	canonicalPath string,
-) (int64, int64) {
+) (int64, int64, int64) {
 	allRepoSessions, _ := h.Queries.ListRepoSessionsForImplementation(ctx, implID)
 
 	var sessionIDs []string
@@ -295,17 +326,17 @@ func loadRepoTokens(
 		}
 	}
 	if len(sessionIDs) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 
 	dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
 	repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	defer func() { _ = sqlstore.Close(repoH) }()
 
-	var totalIn, totalOut int64
+	var totalIn, totalOut, totalCached int64
 	for _, sessID := range sessionIDs {
 		stats, err := repoH.Queries.GetSessionWithStats(ctx, sessID)
 		if err != nil {
@@ -313,24 +344,21 @@ func loadRepoTokens(
 		}
 		totalIn += stats.TokensIn
 		totalOut += stats.TokensOut
+		totalCached += stats.TokensCached
 	}
-	return totalIn, totalOut
+	return totalIn, totalOut, totalCached
 }
 
-// lookupCommitTimestamp finds the linked_at timestamp for a commit.
-func lookupCommitTimestamp(ctx context.Context, canonicalPath, commitHash string) int64 {
-	dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
-	repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+func lookupCommitSubject(ctx context.Context, canonicalPath, commitHash string) string {
+	repo, err := git.OpenRepo(canonicalPath)
 	if err != nil {
-		return 0
+		return ""
 	}
-	defer func() { _ = sqlstore.Close(repoH) }()
-
-	link, err := repoH.Queries.GetCommitLinkByCommitHash(ctx, commitHash)
+	subject, err := repo.CommitSubject(ctx, commitHash)
 	if err != nil {
-		return 0
+		return ""
 	}
-	return link.LinkedAt
+	return subject
 }
 
 // resolveImplID resolves a short ID prefix to a full implementation ID.
@@ -363,4 +391,156 @@ func minLen(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func ensureOriginRepo(repos []RepoDetail, sessions []SessionDetail) {
+	for _, repo := range repos {
+		if repo.Role == "origin" {
+			return
+		}
+	}
+
+	originPath := deriveOriginCanonicalPath(repos, sessions)
+	if originPath == "" {
+		return
+	}
+	for i := range repos {
+		if repos[i].CanonicalPath == originPath {
+			repos[i].Role = "origin"
+			return
+		}
+	}
+}
+
+func deriveOriginCanonicalPath(repos []RepoDetail, sessions []SessionDetail) string {
+	for _, sess := range sessions {
+		if sess.SourceProjectPath == "" {
+			continue
+		}
+		if canonicalPath := matchRepoForSourceProjectPath(sess.SourceProjectPath, repos); canonicalPath != "" {
+			return canonicalPath
+		}
+	}
+	return ""
+}
+
+func matchRepoForSourceProjectPath(sourceProjectPath string, repos []RepoDetail) string {
+	for _, repo := range repos {
+		if broker.PathBelongsToRepo(sourceProjectPath, repo.CanonicalPath) {
+			return repo.CanonicalPath
+		}
+	}
+
+	base := sourceProjectBaseName(sourceProjectPath)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+
+	var suffixMatch string
+	for _, repo := range repos {
+		if repo.DisplayName == base {
+			return repo.CanonicalPath
+		}
+		if strings.HasSuffix(repo.DisplayName, "-"+base) {
+			if suffixMatch != "" {
+				return ""
+			}
+			suffixMatch = repo.CanonicalPath
+		}
+	}
+	return suffixMatch
+}
+
+func sourceProjectBaseName(sourceProjectPath string) string {
+	return filepath.Base(filepath.Clean(strings.TrimSpace(sourceProjectPath)))
+}
+
+func extractTimelineToolInfo(toolUsesNS sql.NullString, repoRoot string) (string, string) {
+	if !toolUsesNS.Valid || toolUsesNS.String == "" {
+		return "", ""
+	}
+
+	type toolUse struct {
+		Name     string `json:"name"`
+		FilePath string `json:"file_path"`
+		FileOp   string `json:"file_op"`
+	}
+
+	var newFmt struct {
+		Tools []toolUse `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(toolUsesNS.String), &newFmt); err == nil && len(newFmt.Tools) > 0 {
+		return normalizeTimelineToolPath(newFmt.Tools[0].FilePath, repoRoot), normalizeTimelineFileOp(newFmt.Tools[0])
+	}
+
+	var legacy []toolUse
+	if err := json.Unmarshal([]byte(toolUsesNS.String), &legacy); err == nil && len(legacy) > 0 {
+		return normalizeTimelineToolPath(legacy[0].FilePath, repoRoot), normalizeTimelineFileOp(legacy[0])
+	}
+
+	return "", ""
+}
+
+func normalizeTimelineFileOp(tool struct {
+	Name     string `json:"name"`
+	FilePath string `json:"file_path"`
+	FileOp   string `json:"file_op"`
+}) string {
+	op := strings.ToLower(strings.TrimSpace(tool.FileOp))
+	switch op {
+	case "create", "new":
+		return "new"
+	case "delete", "remove", "rm":
+		return "deleted"
+	case "edit", "write", "replace", "update", "save":
+		return "edited"
+	}
+
+	name := strings.ToLower(strings.TrimSpace(tool.Name))
+	switch name {
+	case "write", "createfile", "create_file", "write_file":
+		return "new"
+	case "delete", "deletefile", "remove":
+		return "deleted"
+	case "edit", "replace", "editfile", "edit_file", "save_file", "kiro_file_edit":
+		return "edited"
+	default:
+		return ""
+	}
+}
+
+func normalizeTimelineToolPath(fp, repoRoot string) string {
+	fp = strings.TrimSpace(fp)
+	if fp == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(fp, "file:") {
+		if u, err := url.Parse(fp); err == nil {
+			p := u.Path
+			if runtime.GOOS == "windows" && len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+				p = p[1:]
+			}
+			if p != "" {
+				fp = p
+			}
+		} else {
+			fp = strings.TrimPrefix(fp, "file://")
+		}
+	}
+
+	if filepath.IsAbs(fp) {
+		rel, err := filepath.Rel(repoRoot, fp)
+		if err != nil {
+			return ""
+		}
+		relSlash := filepath.ToSlash(rel)
+		if relSlash == ".." || strings.HasPrefix(relSlash, "../") {
+			return ""
+		}
+		fp = rel
+	}
+
+	fp = filepath.ToSlash(fp)
+	return strings.TrimPrefix(fp, "./")
 }

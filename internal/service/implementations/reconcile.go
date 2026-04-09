@@ -357,19 +357,20 @@ func (r *Reconciler) updateImplementationState(
 	}
 
 	canonicalTarget := broker.CanonicalRepoPath(obs.TargetRepoPath)
+	displayName := filepath.Base(canonicalTarget)
 
 	// Role assignment via raw SourceProjectPath.
 	role := "downstream"
 	if !obs.SourceProjectPath.Valid || obs.SourceProjectPath.String == "" {
 		role = "origin"
-	} else if broker.PathBelongsToRepo(obs.SourceProjectPath.String, canonicalTarget) {
+	} else if sourceProjectMatchesRepo(obs.SourceProjectPath.String, canonicalTarget, displayName) {
 		role = "origin"
 	}
 
 	if err := qtx.UpsertImplementationRepo(ctx, impldbgen.UpsertImplementationRepoParams{
 		ImplementationID: implID,
 		CanonicalPath:    canonicalTarget,
-		DisplayName:      filepath.Base(canonicalTarget),
+		DisplayName:      displayName,
 		RepoRole:         role,
 		FirstSeenAt:      obs.EventTs,
 		LastSeenAt:       obs.EventTs,
@@ -405,6 +406,20 @@ func (r *Reconciler) updateImplementationState(
 	}
 
 	return nil
+}
+
+func sourceProjectMatchesRepo(sourceProjectPath, canonicalPath, displayName string) bool {
+	if sourceProjectPath == "" {
+		return false
+	}
+	if broker.PathBelongsToRepo(sourceProjectPath, canonicalPath) {
+		return true
+	}
+	base := sourceProjectBaseName(sourceProjectPath)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return false
+	}
+	return displayName == base || strings.HasSuffix(displayName, "-"+base)
 }
 
 // resolveLocalSessionID opens the target repo's lineage.db and looks up

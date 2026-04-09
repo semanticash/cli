@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -16,6 +17,7 @@ import (
 )
 
 const implementationPickerTitleWidth = 64
+const implementationStoryWrapWidth = 86
 
 func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
@@ -23,6 +25,7 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 		all           bool
 		includeSingle bool
 		limit         int64
+		verbose       bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +42,7 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 			}
 
 			if len(args) == 1 {
-				return showImplementation(cmd, out, args[0], asJSON)
+				return showImplementation(cmd, out, args[0], asJSON, verbose)
 			}
 
 			if !asJSON && isTerminal() && isTerminalWriter(out) {
@@ -47,7 +50,7 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return showImplementation(cmd, out, implID, false)
+				return showImplementation(cmd, out, implID, false, verbose)
 			}
 
 			return listImplementations(cmd, out, listInput, asJSON)
@@ -58,6 +61,7 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "Show all implementations including old dormant and single-repo")
 	cmd.Flags().BoolVar(&includeSingle, "include-single", false, "Include single-repo implementations")
 	cmd.Flags().Int64Var(&limit, "limit", 20, "Max implementations to list")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Show full raw timeline details")
 
 	// Subcommands
 	cmd.AddCommand(newImplCloseCmd())
@@ -207,7 +211,7 @@ func listImplementations(cmd *cobra.Command, out io.Writer, in implementations.L
 	return nil
 }
 
-func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON bool) error {
+func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON, verbose bool) error {
 	detail, err := implementations.GetDetail(cmd.Context(), implID)
 	if err != nil {
 		return err
@@ -219,46 +223,12 @@ func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON
 		return enc.Encode(detail)
 	}
 
-	_, _ = fmt.Fprintf(out, "Implementation %s\n", util.ShortID(detail.ImplementationID))
-	if detail.Title != "" {
-		_, _ = fmt.Fprintf(out, "Title: %s\n", detail.Title)
-	}
-	_, _ = fmt.Fprintf(out, "State: %s\n", detail.State)
-
-	for _, r := range detail.Repos {
-		if r.Role == "origin" {
-			_, _ = fmt.Fprintf(out, "Origin: %s\n", r.DisplayName)
-			break
-		}
+	if isTerminalWriter(out) {
+		_, _ = lipgloss.Fprintln(out, renderImplementationCard(detail, verbose))
+		return nil
 	}
 
-	_, _ = fmt.Fprintf(out, "\nRepos\n")
-	for _, r := range detail.Repos {
-		_, _ = fmt.Fprintf(out, "  %-14s %-12s first seen %s, %d sessions\n",
-			r.DisplayName, r.Role,
-			service.RelativeTime(r.FirstSeenAt),
-			r.SessionCount)
-	}
-
-	if len(detail.Timeline) > 0 {
-		_, _ = fmt.Fprintf(out, "\nTimeline\n")
-		for _, e := range detail.Timeline {
-			prefix := "  "
-			if e.CrossRepo {
-				prefix = "-> "
-			}
-			ts := service.RelativeTime(e.Timestamp)
-			_, _ = fmt.Fprintf(out, "  %s %s%-14s %s\n", ts, prefix, e.RepoName, e.Summary)
-		}
-	}
-
-	_, _ = fmt.Fprintf(out, "\nSessions: %d", len(detail.Sessions))
-	if detail.TotalTokensIn > 0 || detail.TotalTokensOut > 0 {
-		_, _ = fmt.Fprintf(out, "   Tokens: %s in / %s out",
-			service.CompactTokens(detail.TotalTokensIn),
-			service.CompactTokens(detail.TotalTokensOut))
-	}
-	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprint(out, renderImplementationPlain(detail, verbose))
 
 	return nil
 }
@@ -348,4 +318,447 @@ func truncateDisplay(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func renderImplementationPlain(detail *implementations.ImplementationDetail, verbose bool) string {
+	var b strings.Builder
+
+	b.WriteString(implementationDisplayTitle(detail) + "\n")
+	b.WriteString("Implementation: " + util.ShortID(detail.ImplementationID) + "\n")
+	b.WriteString("State: " + detail.State + "\n")
+	b.WriteString("Last activity: " + service.RelativeTime(detail.LastActivityAt) + "\n")
+	if ctx := implementationContextLine(detail); ctx != "" {
+		b.WriteString(ctx + "\n")
+	}
+	if story := buildSummaryLines(detail); len(story) > 0 {
+		b.WriteString("\nStory\n")
+		for _, line := range story {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+
+	b.WriteString("\nRepos\n")
+	for _, line := range buildRepoLines(detail) {
+		b.WriteString("  " + line + "\n")
+	}
+
+	if commits := buildCommitLines(detail); len(commits) > 0 {
+		b.WriteString("\nCommits\n")
+		for _, line := range commits {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+
+	b.WriteString("\nStats\n")
+	for _, field := range implementationStats(detail) {
+		b.WriteString("  " + field.Label + ": " + field.Value + "\n")
+	}
+
+	if verbose {
+		if details := buildDetailLines(detail); len(details) > 0 {
+			b.WriteString("\nDetails\n")
+			for _, line := range details {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		timeline := buildVerboseTimelineLines(detail)
+		if len(timeline) > 0 {
+			b.WriteString("\nTimeline\n")
+			for _, line := range timeline {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+	}
+
+	return b.String()
+}
+
+func renderImplementationCard(detail *implementations.ImplementationDetail, verbose bool) string {
+	theme := enableCardTheme()
+
+	boxStyle := theme.Focused.Card.
+		UnsetBorderLeft().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderTop(true).
+		BorderRight(true).
+		BorderBottom(true).
+		BorderLeft(true).
+		Padding(0, 1)
+	titleStyle := theme.Focused.SelectedOption.Bold(true)
+	subtleStyle := theme.Focused.Description
+	labelStyle := lipgloss.NewStyle().Bold(true)
+	valueStyle := lipgloss.NewStyle()
+	sectionBodyStyle := lipgloss.NewStyle().PaddingLeft(2)
+
+	header := titleStyle.Render(implementationDisplayTitle(detail))
+	subtitle := subtleStyle.Render(fmt.Sprintf("Implementation %s | %s | last activity %s",
+		util.ShortID(detail.ImplementationID),
+		detail.State,
+		service.RelativeTime(detail.LastActivityAt)))
+
+	sections := []string{header, subtitle}
+	if ctx := implementationContextLine(detail); ctx != "" {
+		sections = append(sections, subtleStyle.Render(ctx))
+	}
+	if story := buildSummaryLines(detail); len(story) > 0 {
+		sections = append(sections, "", renderImplementationSectionCard("Story", story, labelStyle, valueStyle, sectionBodyStyle))
+	}
+
+	if repos := buildRepoLines(detail); len(repos) > 0 {
+		sections = append(sections, "", renderImplementationSectionCard("Repos", repos, labelStyle, valueStyle, sectionBodyStyle))
+	}
+
+	if commits := buildCommitLines(detail); len(commits) > 0 {
+		sections = append(sections, "", renderImplementationSectionCard("Commits", commits, labelStyle, valueStyle, sectionBodyStyle))
+	}
+
+	stats := make([]string, 0, len(implementationStats(detail)))
+	for _, field := range implementationStats(detail) {
+		stats = append(stats, enableCardRow(labelStyle, valueStyle, field.Label, field.Value))
+	}
+	if len(stats) > 0 {
+		sections = append(sections, "", renderImplementationSectionCard("Stats", stats, labelStyle, valueStyle, sectionBodyStyle))
+	}
+
+	if verbose {
+		if details := buildDetailLines(detail); len(details) > 0 {
+			sections = append(sections, "", renderImplementationSectionCard("Details", details, labelStyle, valueStyle, sectionBodyStyle))
+		}
+		if timeline := buildVerboseTimelineLines(detail); len(timeline) > 0 {
+			sections = append(sections, "", renderImplementationSectionCard("Timeline", timeline, labelStyle, valueStyle, sectionBodyStyle))
+		}
+	}
+
+	return boxStyle.Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
+}
+
+func renderImplementationSectionCard(
+	title string,
+	lines []string,
+	labelStyle, valueStyle, sectionBodyStyle lipgloss.Style,
+) string {
+	sectionTitle := labelStyle.Render(title)
+	body := make([]string, 0, len(lines))
+	for _, line := range lines {
+		body = append(body, sectionBodyStyle.Render(valueStyle.Render(line)))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{sectionTitle}, body...)...)
+}
+
+func implementationDisplayTitle(detail *implementations.ImplementationDetail) string {
+	title := strings.TrimSpace(detail.Title)
+	if title == "" {
+		return "Untitled implementation"
+	}
+	return title
+}
+
+func buildRepoLines(detail *implementations.ImplementationDetail) []string {
+	lines := make([]string, 0, len(detail.Repos))
+	for _, r := range detail.Repos {
+		lines = append(lines, fmt.Sprintf("%-14s %-11s first seen %s, %d sessions",
+			r.DisplayName,
+			r.Role,
+			service.RelativeTime(r.FirstSeenAt),
+			r.SessionCount))
+	}
+	return lines
+}
+
+func buildCommitLines(detail *implementations.ImplementationDetail) []string {
+	lines := make([]string, 0, len(detail.Commits))
+	for _, c := range detail.Commits {
+		subject := strings.TrimSpace(c.Subject)
+		if subject == "" {
+			subject = "(no subject)"
+		}
+		lines = append(lines, fmt.Sprintf("%-12s %-8s %s",
+			c.DisplayName,
+			util.ShortID(c.CommitHash),
+			subject))
+	}
+	return lines
+}
+
+func implementationStats(detail *implementations.ImplementationDetail) []statusField {
+	repoNames := make([]string, 0, len(detail.Repos))
+	for _, r := range detail.Repos {
+		repoNames = append(repoNames, r.DisplayName)
+	}
+
+	fields := []statusField{
+		{Label: "Repos", Value: strings.Join(repoNames, ", ")},
+		{Label: "Implementation sessions", Value: fmt.Sprintf("%d", len(detail.Sessions))},
+		{Label: "Session details", Value: implementationSessionDetails(detail)},
+		{Label: "Commits", Value: fmt.Sprintf("%d", len(detail.Commits))},
+	}
+	if detail.TotalTokensIn > 0 || detail.TotalTokensOut > 0 || detail.TotalTokensCached > 0 {
+		tokenValue := fmt.Sprintf("%s in / %s out",
+			service.CompactTokens(detail.TotalTokensIn),
+			service.CompactTokens(detail.TotalTokensOut))
+		if detail.TotalTokensCached > 0 {
+			tokenValue += fmt.Sprintf(" (+%s cached)", service.CompactTokens(detail.TotalTokensCached))
+		}
+		fields = append(fields, statusField{
+			Label: "Tokens",
+			Value: tokenValue,
+		})
+	}
+	return fields
+}
+
+func buildSummaryLines(detail *implementations.ImplementationDetail) []string {
+	summary := strings.TrimSpace(detail.Summary)
+	if summary == "" {
+		return nil
+	}
+	return wrapImplementationText(summary, implementationStoryWrapWidth)
+}
+
+func implementationSessionDetails(detail *implementations.ImplementationDetail) string {
+	parts := make([]string, 0, len(detail.Repos))
+	for _, repo := range detail.Repos {
+		parts = append(parts, fmt.Sprintf("%d in %s", repo.SessionCount, repo.DisplayName))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func storySummary(e implementations.TimelineEntry) string {
+	summary := strings.TrimSpace(e.Summary)
+	if e.Kind == "commit" {
+		if strings.HasPrefix(strings.ToLower(summary), "commit ") {
+			return "Commit " + strings.TrimSpace(summary[len("commit "):])
+		}
+		return summary
+	}
+
+	if e.FilePath != "" {
+		if isInternalStoryPath(e.FilePath) {
+			return ""
+		}
+		if e.FileOp != "" {
+			return fmt.Sprintf("%s (%s)", e.FilePath, e.FileOp)
+		}
+		return e.FilePath
+	}
+
+	if summary == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(summary)
+	if lower == "read" || lower == "write" || lower == "edit" {
+		return ""
+	}
+
+	if p := extractSummaryPath(summary, e.RepoName); p != "" {
+		if isInternalStoryPath(p) {
+			return ""
+		}
+		return p
+	}
+
+	if containsInternalStoryPath(summary) {
+		return ""
+	}
+	return summary
+}
+
+func extractSummaryPath(summary, repoName string) string {
+	start := strings.LastIndex(summary, "(")
+	end := strings.LastIndex(summary, ")")
+	if start == -1 || end == -1 || end <= start+1 {
+		return ""
+	}
+	path := strings.TrimSpace(summary[start+1 : end])
+	if !strings.HasPrefix(path, "/") {
+		return ""
+	}
+	if repoName != "" {
+		needle := "/" + repoName + "/"
+		if idx := strings.Index(path, needle); idx != -1 {
+			return path[idx+len(needle):]
+		}
+	}
+	return filepath.Base(path)
+}
+
+func containsInternalStoryPath(summary string) bool {
+	lower := strings.ToLower(summary)
+	for _, fragment := range []string{
+		"/.claude/",
+		"/.cursor/",
+		"/.gemini/",
+		"/.semantica/",
+		"/.git/",
+		"/.kiro/",
+		".gitignore",
+	} {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func isInternalStoryPath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasPrefix(lower, ".claude/") ||
+		strings.HasPrefix(lower, ".cursor/") ||
+		strings.HasPrefix(lower, ".gemini/") ||
+		strings.HasPrefix(lower, ".semantica/") ||
+		strings.HasPrefix(lower, ".git/") ||
+		strings.HasPrefix(lower, ".kiro/") ||
+		lower == ".gitignore"
+}
+
+func implementationContextLine(detail *implementations.ImplementationDetail) string {
+	startRepo, provider := implementationStart(detail)
+	if startRepo == "" {
+		return ""
+	}
+	if provider != "" {
+		return fmt.Sprintf("Started in %s (%s)", startRepo, provider)
+	}
+	return fmt.Sprintf("Started in %s", startRepo)
+}
+
+func implementationStart(detail *implementations.ImplementationDetail) (string, string) {
+	provider := ""
+	if len(detail.Sessions) > 0 {
+		provider = implementationProviderDisplayName(detail.Sessions[0].Provider)
+	}
+	for _, repo := range detail.Repos {
+		if repo.Role == "origin" {
+			return repo.DisplayName, provider
+		}
+	}
+	if len(detail.Repos) > 0 {
+		return detail.Repos[0].DisplayName, provider
+	}
+	if len(detail.Sessions) > 0 {
+		first := detail.Sessions[0]
+		repo := filepath.Base(strings.TrimSpace(first.SourceProjectPath))
+		if repo == "." || repo == string(filepath.Separator) {
+			repo = ""
+		}
+		return repo, provider
+	}
+	return "", ""
+}
+
+func implementationProviderDisplayName(provider string) string {
+	switch provider {
+	case "claude_code":
+		return "Claude"
+	case "cursor":
+		return "Cursor"
+	case "gemini_cli":
+		return "Gemini"
+	case "copilot":
+		return "Copilot"
+	default:
+		return ""
+	}
+}
+
+func wrapImplementationText(text string, width int) []string {
+	if width <= 0 {
+		width = implementationStoryWrapWidth
+	}
+
+	paragraphs := strings.Split(strings.TrimSpace(text), "\n")
+	lines := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			continue
+		}
+		current := words[0]
+		for _, word := range words[1:] {
+			if len(current)+1+len(word) > width {
+				lines = append(lines, current)
+				current = word
+				continue
+			}
+			current += " " + word
+		}
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func buildDetailLines(detail *implementations.ImplementationDetail) []string {
+	type item struct {
+		repo string
+		path string
+		op   string
+	}
+	seen := map[string]bool{}
+	items := make([]item, 0, 8)
+	for i := len(detail.Timeline) - 1; i >= 0; i-- {
+		entry := detail.Timeline[i]
+		if entry.Kind == "commit" {
+			continue
+		}
+		path := entry.FilePath
+		op := entry.FileOp
+		if path == "" {
+			path = extractSummaryPath(entry.Summary, entry.RepoName)
+		}
+		if path == "" || isInternalStoryPath(path) {
+			continue
+		}
+		key := entry.RepoName + "|" + path + "|" + op
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		items = append(items, item{repo: entry.RepoName, path: path, op: op})
+		if len(items) == 8 {
+			break
+		}
+	}
+	lines := make([]string, 0, len(items))
+	for _, it := range items {
+		suffix := ""
+		if it.op != "" {
+			suffix = " (" + it.op + ")"
+		}
+		lines = append(lines, fmt.Sprintf("%-12s %s%s", it.repo, it.path, suffix))
+	}
+	return lines
+}
+
+func buildVerboseTimelineLines(detail *implementations.ImplementationDetail) []string {
+	lines := make([]string, 0, len(detail.Timeline))
+	for _, e := range detail.Timeline {
+		repo := e.RepoName
+		if e.CrossRepo {
+			repo = "-> " + repo
+		}
+		summary := strings.TrimSpace(e.Summary)
+		if e.Kind == "commit" && strings.HasPrefix(strings.ToLower(summary), "commit ") {
+			summary = "Commit " + strings.TrimSpace(summary[len("commit "):])
+		}
+		if summary == "" && e.FilePath != "" {
+			if e.FileOp != "" {
+				summary = fmt.Sprintf("%s (%s)", e.FilePath, e.FileOp)
+			} else {
+				summary = e.FilePath
+			}
+		}
+		if summary == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%-4s  %-16s %s",
+			service.RelativeTime(e.Timestamp),
+			repo,
+			summary))
+	}
+	return lines
 }

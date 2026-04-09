@@ -8,11 +8,7 @@ import (
 func TestParseSuggestImplementationOutput(t *testing.T) {
 	raw := `{
 		"title": "Migrate auth to OAuth2",
-		"summary": "Replaced session-based auth with OAuth2 middleware in the API server and updated the Python SDK to use the new token refresh flow.",
-		"review_priority": [
-			{"priority": "high", "repo": "sdk", "file": "client/auth.py", "reason": "New auth flow"},
-			{"priority": "medium", "repo": "api", "file": "auth/middleware.go", "reason": "Core change"}
-		]
+		"summary": "Replaced session-based auth with OAuth2 middleware in the API server and updated the Python SDK to use the new token refresh flow."
 	}`
 
 	out, err := ParseSuggestImplementationOutput(raw)
@@ -22,16 +18,13 @@ func TestParseSuggestImplementationOutput(t *testing.T) {
 	if out.Title != "Migrate auth to OAuth2" {
 		t.Errorf("title: got %q", out.Title)
 	}
-	if len(out.ReviewPriority) != 2 {
-		t.Errorf("review_priority: got %d items", len(out.ReviewPriority))
-	}
-	if out.ReviewPriority[0].Priority != "high" {
-		t.Errorf("first priority: got %q", out.ReviewPriority[0].Priority)
+	if out.Summary == "" {
+		t.Errorf("summary should be populated")
 	}
 }
 
 func TestParseSuggestImplementationOutput_WrappedInMarkdown(t *testing.T) {
-	raw := "```json\n{\"title\": \"Fix timezone handling\", \"summary\": \"Fixed it.\", \"review_priority\": []}\n```"
+	raw := "```json\n{\"title\": \"Fix timezone handling\", \"summary\": \"Fixed it.\"}\n```"
 
 	out, err := ParseSuggestImplementationOutput(raw)
 	if err != nil {
@@ -43,7 +36,7 @@ func TestParseSuggestImplementationOutput_WrappedInMarkdown(t *testing.T) {
 }
 
 func TestParseSuggestImplementationOutput_EmptyTitle(t *testing.T) {
-	raw := `{"title": "", "summary": "stuff", "review_priority": []}`
+	raw := `{"title": "", "summary": "stuff"}`
 
 	_, err := ParseSuggestImplementationOutput(raw)
 	if err == nil {
@@ -82,15 +75,17 @@ func TestParseSuggestMergeCandidatesOutput(t *testing.T) {
 func TestBuildSuggestImplementationPrompt_ContainsContext(t *testing.T) {
 	prompt := BuildSuggestImplementationPrompt(
 		"active",
+		"api (Claude)",
 		"api (origin), sdk (downstream)",
 		3,
 		"45.2k", "3.8k",
-		"api abc123\nsdk def456",
-		"api edit auth/middleware.go\n-> sdk edit client/auth.py",
+		"api abc123 Add OAuth2 middleware\nsdk def456 Add SDK auth client",
+		"api auth/middleware.go (edited)\nsdk client/auth.py (new)",
 	)
 
 	for _, want := range []string{
 		"active",
+		"api (Claude)",
 		"api (origin), sdk (downstream)",
 		"45.2k",
 		"abc123",

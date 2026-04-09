@@ -163,10 +163,10 @@ func newSuggestImplementationsCmd() *cobra.Command {
 		Long: `Without arguments: suggests titles for untitled implementations and
 identifies merge candidates across all active/dormant implementations.
 
-With an implementation ID: generates a title, summary, and review
-priority ranking for that specific implementation.
+With an implementation ID: generates a title and summary
+for that specific implementation.
 
-All suggestions are advisory. Use --apply to write the suggested title.`,
+All suggestions are advisory. Use --apply to write the suggested title and summary.`,
 		Aliases: []string{"impl"},
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -206,10 +206,10 @@ func suggestSingleImplementation(
 		return err
 	}
 
-	// Apply title before output so --json --apply works correctly.
+	// Apply the suggestion before output so --json --apply works correctly.
 	if apply {
-		if err := implementations.ApplyTitle(cmd.Context(), implID, res.Title); err != nil {
-			return fmt.Errorf("apply title: %w", err)
+		if err := implementations.ApplySuggestion(cmd.Context(), implID, res.Title, res.Summary); err != nil {
+			return fmt.Errorf("apply suggestion: %w", err)
 		}
 	}
 
@@ -222,16 +222,8 @@ func suggestSingleImplementation(
 	_, _ = fmt.Fprintf(out, "Suggested title: %s\n", res.Title)
 	_, _ = fmt.Fprintf(out, "Suggested summary: %s\n", res.Summary)
 
-	if len(res.ReviewPriority) > 0 {
-		_, _ = fmt.Fprintf(out, "\nReview priority:\n")
-		for _, r := range res.ReviewPriority {
-			_, _ = fmt.Fprintf(out, "  %-7s %-12s %-30s %s\n",
-				r.Priority, r.Repo, r.File, r.Reason)
-		}
-	}
-
 	if apply {
-		_, _ = fmt.Fprintf(out, "\nTitle applied.\n")
+		_, _ = fmt.Fprintf(out, "\nTitle and summary applied.\n")
 	}
 
 	return nil

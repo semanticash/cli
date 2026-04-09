@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	impldbgen "github.com/semanticash/cli/internal/store/impldb/db"
 )
 
-func TestApplyTitle(t *testing.T) {
+func TestApplySuggestion(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", dir)
 	ctx := context.Background()
@@ -27,8 +28,8 @@ func TestApplyTitle(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	if err := ApplyTitle(ctx, id, "Migrate auth to OAuth2"); err != nil {
-		t.Fatalf("apply title: %v", err)
+	if err := ApplySuggestion(ctx, id, "Migrate auth to OAuth2", "Moves API and SDK auth to OAuth2."); err != nil {
+		t.Fatalf("apply suggestion: %v", err)
 	}
 
 	h, _ = impldb.Open(ctx, dbPath, impldb.DefaultOpenOptions())
@@ -37,6 +38,9 @@ func TestApplyTitle(t *testing.T) {
 	impl, _ := h.Queries.GetImplementation(ctx, id)
 	if !impl.Title.Valid || impl.Title.String != "Migrate auth to OAuth2" {
 		t.Errorf("title: got %v", impl.Title)
+	}
+	if !impl.MetadataJson.Valid || !strings.Contains(impl.MetadataJson.String, `"summary":"Moves API and SDK auth to OAuth2."`) {
+		t.Errorf("metadata_json: got %v", impl.MetadataJson)
 	}
 }
 
@@ -67,6 +71,25 @@ func TestApplyTitle_ShortID(t *testing.T) {
 	}
 }
 
+func TestImplementationMetadataWithSummary_PreservesExistingFields(t *testing.T) {
+	got, err := implementationMetadataWithSummary(
+		impldb.NullStr(`{"tag":"cross-repo","summary":"old"}`),
+		"New summary",
+	)
+	if err != nil {
+		t.Fatalf("metadata with summary: %v", err)
+	}
+	if !got.Valid {
+		t.Fatal("expected metadata json to stay valid")
+	}
+	if !strings.Contains(got.String, `"tag":"cross-repo"`) {
+		t.Fatalf("expected existing metadata to be preserved: %s", got.String)
+	}
+	if !strings.Contains(got.String, `"summary":"New summary"`) {
+		t.Fatalf("expected summary to be updated: %s", got.String)
+	}
+}
+
 func TestSuggestForImplementation_WithMockLLM(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", dir)
@@ -88,7 +111,7 @@ func TestSuggestForImplementation_WithMockLLM(t *testing.T) {
 	// Mock LLM that returns a fixed JSON response.
 	mockLLM := func(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
 		return &llm.GenerateTextResult{
-			Text:     `{"title": "Add OAuth2 middleware", "summary": "Added OAuth2 support.", "review_priority": []}`,
+			Text:     `{"title": "Add OAuth2 middleware", "summary": "Added OAuth2 support."}`,
 			Provider: "mock",
 			Model:    "test",
 		}, nil
@@ -104,6 +127,27 @@ func TestSuggestForImplementation_WithMockLLM(t *testing.T) {
 	}
 	if res.Provider != "mock" {
 		t.Errorf("provider: got %q", res.Provider)
+	}
+}
+
+func TestSuggestTopFileChanges_FiltersInternalPaths(t *testing.T) {
+	detail := &ImplementationDetail{
+		Timeline: []TimelineEntry{
+			{RepoName: "pulse-api", FilePath: ".claude/settings.json", FileOp: "edited"},
+			{RepoName: "pulse-api", FilePath: "src/roadmap.ts", FileOp: "edited"},
+			{RepoName: "pulse-web", FilePath: "README.md", FileOp: "edited"},
+		},
+	}
+
+	got := suggestTopFileChanges(detail, 10)
+	if len(got) != 2 {
+		t.Fatalf("top file changes: got %d want 2", len(got))
+	}
+	if got[0] != "pulse-web README.md (edited)" {
+		t.Fatalf("unexpected first file change: %q", got[0])
+	}
+	if got[1] != "pulse-api src/roadmap.ts (edited)" {
+		t.Fatalf("unexpected second file change: %q", got[1])
 	}
 }
 
