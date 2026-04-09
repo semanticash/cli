@@ -78,11 +78,11 @@ func TestList_Default_CrossRepoFocus(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 
-	// Default: multi-repo (all states) + active single-repo.
-	// implA (multi-repo active), implC (single-repo active) should appear.
-	// implB (single-repo dormant) should NOT appear.
-	if result.Total != 2 {
-		t.Errorf("got %d items, want 2 (multi-repo + active single-repo)", result.Total)
+	// Default: cross-repo only.
+	// implA (multi-repo active) should appear.
+	// implB (single-repo dormant) and implC (single-repo active) should NOT appear.
+	if result.Total != 1 {
+		t.Errorf("got %d items, want 1 (cross-repo only)", result.Total)
 		for _, item := range result.Items {
 			t.Logf("  %s state=%s repos=%d", item.Title, item.State, item.RepoCount)
 		}

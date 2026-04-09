@@ -20,19 +20,20 @@ import (
 
 // ImplementationDetail is the full view of an implementation with timeline.
 type ImplementationDetail struct {
-	ImplementationID  string          `json:"implementation_id"`
-	Title             string          `json:"title,omitempty"`
-	Summary           string          `json:"summary,omitempty"`
-	State             string          `json:"state"`
-	CreatedAt         int64           `json:"created_at"`
-	LastActivityAt    int64           `json:"last_activity_at"`
-	Repos             []RepoDetail    `json:"repos"`
-	Sessions          []SessionDetail `json:"sessions"`
-	Commits           []CommitDetail  `json:"commits"`
-	Timeline          []TimelineEntry `json:"timeline"`
-	TotalTokensIn     int64           `json:"total_tokens_in"`
-	TotalTokensOut    int64           `json:"total_tokens_out"`
-	TotalTokensCached int64           `json:"total_tokens_cached"`
+	ImplementationID  string            `json:"implementation_id"`
+	Title             string            `json:"title,omitempty"`
+	Summary           string            `json:"summary,omitempty"`
+	State             string            `json:"state"`
+	CreatedAt         int64             `json:"created_at"`
+	LastActivityAt    int64             `json:"last_activity_at"`
+	Repos             []RepoDetail      `json:"repos"`
+	RepoAttribution   []RepoAttribution `json:"repo_attribution,omitempty"`
+	Sessions          []SessionDetail   `json:"sessions"`
+	Commits           []CommitDetail    `json:"commits"`
+	Timeline          []TimelineEntry   `json:"timeline"`
+	TotalTokensIn     int64             `json:"total_tokens_in"`
+	TotalTokensOut    int64             `json:"total_tokens_out"`
+	TotalTokensCached int64             `json:"total_tokens_cached"`
 }
 
 // RepoDetail extends RepoSummary with more info for the detail view.
@@ -42,6 +43,15 @@ type RepoDetail struct {
 	Role          string `json:"role"`
 	FirstSeenAt   int64  `json:"first_seen_at"`
 	SessionCount  int    `json:"session_count"`
+}
+
+// RepoAttribution is the averaged cached AI attribution for a repo's commits
+// within one implementation.
+type RepoAttribution struct {
+	CanonicalPath string  `json:"canonical_path"`
+	DisplayName   string  `json:"display_name"`
+	AIPercentage  float64 `json:"ai_percentage"`
+	CommitCount   int     `json:"commit_count"`
 }
 
 // SessionDetail is a session reference in the detail view.
@@ -183,6 +193,8 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		totalCached += tCached
 	}
 
+	repoAttribution := loadRepoAttribution(ctx, commits)
+
 	// Add commit entries using the consistent display name.
 	for _, c := range commits {
 		timeline = append(timeline, TimelineEntry{
@@ -219,6 +231,7 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		CreatedAt:         impl.CreatedAt,
 		LastActivityAt:    impl.LastActivityAt,
 		Repos:             repos,
+		RepoAttribution:   repoAttribution,
 		Sessions:          sessions,
 		Commits:           commits,
 		Timeline:          timeline,
@@ -347,6 +360,59 @@ func loadRepoTokens(
 		totalCached += stats.TokensCached
 	}
 	return totalIn, totalOut, totalCached
+}
+
+func loadRepoAttribution(ctx context.Context, commits []CommitDetail) []RepoAttribution {
+	type acc struct {
+		sum   float64
+		count int
+	}
+
+	byRepo := make(map[string][]CommitDetail)
+	for _, commit := range commits {
+		byRepo[commit.CanonicalPath] = append(byRepo[commit.CanonicalPath], commit)
+	}
+
+	results := make([]RepoAttribution, 0, len(byRepo))
+	for canonicalPath, repoCommits := range byRepo {
+		dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
+		repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+		if err != nil {
+			continue
+		}
+
+		var stats acc
+		for _, commit := range repoCommits {
+			link, err := repoH.Queries.GetCommitLinkByCommitHash(ctx, commit.CommitHash)
+			if err != nil {
+				continue
+			}
+			cpStats, err := repoH.Queries.GetCheckpointStats(ctx, link.CheckpointID)
+			if err != nil || cpStats.AiPercentage < 0 {
+				continue
+			}
+			stats.sum += cpStats.AiPercentage
+			stats.count++
+		}
+		_ = sqlstore.Close(repoH)
+
+		if stats.count == 0 {
+			continue
+		}
+
+		results = append(results, RepoAttribution{
+			CanonicalPath: canonicalPath,
+			DisplayName:   repoCommits[0].DisplayName,
+			AIPercentage:  stats.sum / float64(stats.count),
+			CommitCount:   stats.count,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].DisplayName < results[j].DisplayName
+	})
+
+	return results
 }
 
 func lookupCommitSubject(ctx context.Context, canonicalPath, commitHash string) string {

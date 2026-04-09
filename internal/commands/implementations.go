@@ -514,6 +514,12 @@ func implementationStats(detail *implementations.ImplementationDetail) []statusF
 		{Label: "Session details", Value: implementationSessionDetails(detail)},
 		{Label: "Commits", Value: fmt.Sprintf("%d", len(detail.Commits))},
 	}
+	if ai := implementationAIAttribution(detail); ai != "" {
+		fields = append(fields, statusField{
+			Label: "AI attribution",
+			Value: ai,
+		})
+	}
 	if detail.TotalTokensIn > 0 || detail.TotalTokensOut > 0 || detail.TotalTokensCached > 0 {
 		tokenValue := fmt.Sprintf("%s in / %s out",
 			service.CompactTokens(detail.TotalTokensIn),
@@ -527,6 +533,17 @@ func implementationStats(detail *implementations.ImplementationDetail) []statusF
 		})
 	}
 	return fields
+}
+
+func implementationAIAttribution(detail *implementations.ImplementationDetail) string {
+	if len(detail.RepoAttribution) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(detail.RepoAttribution))
+	for _, repo := range detail.RepoAttribution {
+		parts = append(parts, fmt.Sprintf("%.0f%% %s", repo.AIPercentage, repo.DisplayName))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func buildImplementationJSON(detail *implementations.ImplementationDetail, verbose bool) implementationDetailJSON {

@@ -75,6 +75,10 @@ func TestRenderImplementationPlain_ShowsCommitFocusedSections(t *testing.T) {
 			{DisplayName: "pulse-api", Role: "origin", FirstSeenAt: 0, SessionCount: 2},
 			{DisplayName: "pulse-web", Role: "downstream", FirstSeenAt: 0, SessionCount: 2},
 		},
+		RepoAttribution: []implementations.RepoAttribution{
+			{DisplayName: "pulse-api", AIPercentage: 78},
+			{DisplayName: "pulse-web", AIPercentage: 91},
+		},
 		Sessions: []implementations.SessionDetail{
 			{Provider: "claude_code", SourceProjectPath: "/tmp/pulse/pulse-api"},
 			{}, {}, {},
@@ -104,6 +108,7 @@ func TestRenderImplementationPlain_ShowsCommitFocusedSections(t *testing.T) {
 		"Stats",
 		"Implementation sessions: 4",
 		"Session details: 2 in pulse-api, 2 in pulse-web",
+		"AI attribution: 78% pulse-api · 91% pulse-web",
 		"Tokens: 957 in / 823 out (+16k cached)",
 	} {
 		if !strings.Contains(got, want) {
@@ -115,6 +120,21 @@ func TestRenderImplementationPlain_ShowsCommitFocusedSections(t *testing.T) {
 	}
 	if strings.Contains(got, ".claude/settings.json") {
 		t.Fatalf("plain detail should filter internal config noise:\n%s", got)
+	}
+}
+
+func TestImplementationAIAttribution(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		RepoAttribution: []implementations.RepoAttribution{
+			{DisplayName: "pulse-api", AIPercentage: 77.6},
+			{DisplayName: "pulse-sdk", AIPercentage: 91.2},
+		},
+	}
+
+	got := implementationAIAttribution(detail)
+	want := "78% pulse-api · 91% pulse-sdk"
+	if got != want {
+		t.Fatalf("ai attribution: got %q want %q", got, want)
 	}
 }
 
