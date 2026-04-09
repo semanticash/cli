@@ -19,6 +19,13 @@ import (
 func tempRepoWithDB(t *testing.T, repoPath string) string {
 	t.Helper()
 
+	// WriteEventsToRepo emits implementation observations into the global
+	// implementations DB, so tests that do not explicitly choose a
+	// SEMANTICA_HOME must never use the developer's real ~/.semantica state.
+	if os.Getenv("SEMANTICA_HOME") == "" {
+		t.Setenv("SEMANTICA_HOME", filepath.Join(filepath.Dir(repoPath), ".semantica-global"))
+	}
+
 	semDir := filepath.Join(repoPath, ".semantica")
 	if err := os.MkdirAll(semDir, 0o755); err != nil {
 		t.Fatal(err)
