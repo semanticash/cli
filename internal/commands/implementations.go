@@ -25,20 +25,22 @@ type implementationCardFieldJSON struct {
 }
 
 type implementationCardJSON struct {
-	Title    string                        `json:"title"`
-	Subtitle string                        `json:"subtitle"`
-	Context  string                        `json:"context,omitempty"`
-	Story    []string                      `json:"story,omitempty"`
-	Repos    []string                      `json:"repos,omitempty"`
-	Commits  []string                      `json:"commits,omitempty"`
-	Stats    []implementationCardFieldJSON `json:"stats,omitempty"`
-	Details  []string                      `json:"details,omitempty"`
-	Timeline []string                      `json:"timeline,omitempty"`
+	Title         string                        `json:"title"`
+	Subtitle      string                        `json:"subtitle"`
+	Context       string                        `json:"context,omitempty"`
+	AIAttribution string                        `json:"ai_attribution,omitempty"`
+	Story         []string                      `json:"story,omitempty"`
+	Repos         []string                      `json:"repos,omitempty"`
+	Commits       []string                      `json:"commits,omitempty"`
+	Stats         []implementationCardFieldJSON `json:"stats,omitempty"`
+	Details       []string                      `json:"details,omitempty"`
+	Timeline      []string                      `json:"timeline,omitempty"`
 }
 
 type implementationDetailJSON struct {
 	*implementations.ImplementationDetail
-	Card implementationCardJSON `json:"card"`
+	AIAttribution string                 `json:"ai_attribution,omitempty"`
+	Card          implementationCardJSON `json:"card"`
 }
 
 func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
@@ -547,16 +549,18 @@ func implementationAIAttribution(detail *implementations.ImplementationDetail) s
 }
 
 func buildImplementationJSON(detail *implementations.ImplementationDetail, verbose bool) implementationDetailJSON {
+	aiAttribution := implementationAIAttribution(detail)
 	card := implementationCardJSON{
 		Title: implementationDisplayTitle(detail),
 		Subtitle: fmt.Sprintf("Implementation %s | %s | last activity %s",
 			util.ShortID(detail.ImplementationID),
 			detail.State,
 			service.RelativeTime(detail.LastActivityAt)),
-		Context: implementationContextLine(detail),
-		Story:   buildSummaryLines(detail),
-		Repos:   buildRepoLines(detail),
-		Commits: buildCommitLines(detail),
+		Context:       implementationContextLine(detail),
+		AIAttribution: aiAttribution,
+		Story:         buildSummaryLines(detail),
+		Repos:         buildRepoLines(detail),
+		Commits:       buildCommitLines(detail),
 	}
 
 	stats := implementationStats(detail)
@@ -572,6 +576,7 @@ func buildImplementationJSON(detail *implementations.ImplementationDetail, verbo
 
 	return implementationDetailJSON{
 		ImplementationDetail: detail,
+		AIAttribution:        aiAttribution,
 		Card:                 card,
 	}
 }

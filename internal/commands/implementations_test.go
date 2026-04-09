@@ -183,8 +183,14 @@ func TestBuildImplementationJSON_ContainsCardSections(t *testing.T) {
 	if got.Card.Title != "Add roadmap voting" {
 		t.Fatalf("card title: got %q", got.Card.Title)
 	}
+	if got.AIAttribution != "78% pulse-api · 91% pulse-web" {
+		t.Fatalf("top-level ai attribution: got %q", got.AIAttribution)
+	}
 	if got.Card.Context != "Started in pulse-api (Claude)" {
 		t.Fatalf("card context: got %q", got.Card.Context)
+	}
+	if got.Card.AIAttribution != "78% pulse-api · 91% pulse-web" {
+		t.Fatalf("card ai attribution: got %q", got.Card.AIAttribution)
 	}
 	if len(got.Card.Story) == 0 || !strings.Contains(got.Card.Story[0], "Adds roadmap voting scaffolding") {
 		t.Fatalf("expected story summary in card json: %#v", got.Card.Story)
