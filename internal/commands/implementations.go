@@ -19,6 +19,28 @@ import (
 const implementationPickerTitleWidth = 64
 const implementationStoryWrapWidth = 86
 
+type implementationCardFieldJSON struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+type implementationCardJSON struct {
+	Title    string                        `json:"title"`
+	Subtitle string                        `json:"subtitle"`
+	Context  string                        `json:"context,omitempty"`
+	Story    []string                      `json:"story,omitempty"`
+	Repos    []string                      `json:"repos,omitempty"`
+	Commits  []string                      `json:"commits,omitempty"`
+	Stats    []implementationCardFieldJSON `json:"stats,omitempty"`
+	Details  []string                      `json:"details,omitempty"`
+	Timeline []string                      `json:"timeline,omitempty"`
+}
+
+type implementationDetailJSON struct {
+	*implementations.ImplementationDetail
+	Card implementationCardJSON `json:"card"`
+}
+
 func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
 		asJSON        bool
@@ -220,7 +242,7 @@ func showImplementation(cmd *cobra.Command, out io.Writer, implID string, asJSON
 	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(detail)
+		return enc.Encode(buildImplementationJSON(detail, verbose))
 	}
 
 	if isTerminalWriter(out) {
@@ -507,6 +529,36 @@ func implementationStats(detail *implementations.ImplementationDetail) []statusF
 	return fields
 }
 
+func buildImplementationJSON(detail *implementations.ImplementationDetail, verbose bool) implementationDetailJSON {
+	card := implementationCardJSON{
+		Title: implementationDisplayTitle(detail),
+		Subtitle: fmt.Sprintf("Implementation %s | %s | last activity %s",
+			util.ShortID(detail.ImplementationID),
+			detail.State,
+			service.RelativeTime(detail.LastActivityAt)),
+		Context: implementationContextLine(detail),
+		Story:   buildSummaryLines(detail),
+		Repos:   buildRepoLines(detail),
+		Commits: buildCommitLines(detail),
+	}
+
+	stats := implementationStats(detail)
+	card.Stats = make([]implementationCardFieldJSON, 0, len(stats))
+	for _, field := range stats {
+		card.Stats = append(card.Stats, implementationCardFieldJSON(field))
+	}
+
+	if verbose {
+		card.Details = buildDetailLines(detail)
+		card.Timeline = buildVerboseTimelineLines(detail)
+	}
+
+	return implementationDetailJSON{
+		ImplementationDetail: detail,
+		Card:                 card,
+	}
+}
+
 func buildSummaryLines(detail *implementations.ImplementationDetail) []string {
 	summary := strings.TrimSpace(detail.Summary)
 	if summary == "" {
@@ -521,47 +573,6 @@ func implementationSessionDetails(detail *implementations.ImplementationDetail) 
 		parts = append(parts, fmt.Sprintf("%d in %s", repo.SessionCount, repo.DisplayName))
 	}
 	return strings.Join(parts, ", ")
-}
-
-func storySummary(e implementations.TimelineEntry) string {
-	summary := strings.TrimSpace(e.Summary)
-	if e.Kind == "commit" {
-		if strings.HasPrefix(strings.ToLower(summary), "commit ") {
-			return "Commit " + strings.TrimSpace(summary[len("commit "):])
-		}
-		return summary
-	}
-
-	if e.FilePath != "" {
-		if isInternalStoryPath(e.FilePath) {
-			return ""
-		}
-		if e.FileOp != "" {
-			return fmt.Sprintf("%s (%s)", e.FilePath, e.FileOp)
-		}
-		return e.FilePath
-	}
-
-	if summary == "" {
-		return ""
-	}
-
-	lower := strings.ToLower(summary)
-	if lower == "read" || lower == "write" || lower == "edit" {
-		return ""
-	}
-
-	if p := extractSummaryPath(summary, e.RepoName); p != "" {
-		if isInternalStoryPath(p) {
-			return ""
-		}
-		return p
-	}
-
-	if containsInternalStoryPath(summary) {
-		return ""
-	}
-	return summary
 }
 
 func extractSummaryPath(summary, repoName string) string {
@@ -581,24 +592,6 @@ func extractSummaryPath(summary, repoName string) string {
 		}
 	}
 	return filepath.Base(path)
-}
-
-func containsInternalStoryPath(summary string) bool {
-	lower := strings.ToLower(summary)
-	for _, fragment := range []string{
-		"/.claude/",
-		"/.cursor/",
-		"/.gemini/",
-		"/.semantica/",
-		"/.git/",
-		"/.kiro/",
-		".gitignore",
-	} {
-		if strings.Contains(lower, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 func isInternalStoryPath(path string) bool {

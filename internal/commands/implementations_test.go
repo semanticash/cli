@@ -132,6 +132,54 @@ func TestBuildSummaryLines_WrapsSummary(t *testing.T) {
 	}
 }
 
+func TestBuildImplementationJSON_ContainsCardSections(t *testing.T) {
+	detail := &implementations.ImplementationDetail{
+		ImplementationID: "4d741c1f-1234-5678-9abc-def012345678",
+		Title:            "Add roadmap voting",
+		Summary:          "Adds roadmap voting scaffolding across the API and web UI.",
+		State:            "active",
+		LastActivityAt:   0,
+		Repos: []implementations.RepoDetail{
+			{DisplayName: "pulse-api", Role: "origin", FirstSeenAt: 0, SessionCount: 2},
+			{DisplayName: "pulse-web", Role: "downstream", FirstSeenAt: 0, SessionCount: 2},
+		},
+		Sessions: []implementations.SessionDetail{
+			{Provider: "claude_code", SourceProjectPath: "/tmp/pulse/pulse-api"},
+			{}, {}, {},
+		},
+		Commits: []implementations.CommitDetail{
+			{DisplayName: "pulse-api", CommitHash: "abc1234", Subject: "Add roadmap voting API stubs"},
+		},
+		Timeline: []implementations.TimelineEntry{
+			{Timestamp: 900, RepoName: "pulse-api", Kind: "tool", FilePath: "internal/voting/handler.go", FileOp: "edited", Summary: "Edit"},
+			{Timestamp: 1000, RepoName: "pulse-api", Kind: "commit", Summary: "commit abc1234"},
+		},
+		TotalTokensIn:     957,
+		TotalTokensOut:    823,
+		TotalTokensCached: 16000,
+	}
+
+	got := buildImplementationJSON(detail, true)
+	if got.Card.Title != "Add roadmap voting" {
+		t.Fatalf("card title: got %q", got.Card.Title)
+	}
+	if got.Card.Context != "Started in pulse-api (Claude)" {
+		t.Fatalf("card context: got %q", got.Card.Context)
+	}
+	if len(got.Card.Story) == 0 || !strings.Contains(got.Card.Story[0], "Adds roadmap voting scaffolding") {
+		t.Fatalf("expected story summary in card json: %#v", got.Card.Story)
+	}
+	if len(got.Card.Commits) != 1 || !strings.Contains(got.Card.Commits[0], "Add roadmap voting API stubs") {
+		t.Fatalf("expected commit lines in card json: %#v", got.Card.Commits)
+	}
+	if len(got.Card.Details) == 0 {
+		t.Fatalf("expected verbose details in card json")
+	}
+	if len(got.Card.Stats) == 0 {
+		t.Fatalf("expected stats in card json")
+	}
+}
+
 func TestBuildCommitLines(t *testing.T) {
 	detail := &implementations.ImplementationDetail{
 		Commits: []implementations.CommitDetail{
