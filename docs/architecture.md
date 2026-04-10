@@ -47,6 +47,9 @@ There are two ingestion paths:
 2. **Worker reconciliation** (secondary) - The background worker flushes any sessions that still have pending capture state, ensuring no events are lost if a capture hook was interrupted.
 
 The broker fans out by file ownership. A capture started from one enabled repo can still write events into another enabled repo when the touched files belong there.
+Cross-repo implementations are indexed separately in a global local database so
+Semantica can map related work into a single implementation story without
+changing the per-repo `lineage.db` schema.
 
 ## Capture
 
@@ -100,24 +103,29 @@ The worker runs as a detached background process after each commit (spawned by t
 
 1. **Session reconciliation** - Flushes any sessions that still have pending capture state (via `reconcileActiveSessions`). This is a catch-up mechanism - the primary capture path is the real-time `semantica capture` command triggered by provider hooks. The worker ensures no events are lost if a capture hook was interrupted or if the agent session outlived the hook call.
 
-2. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous checkpoint's manifest for incremental building.
+2. **Implementation reconciliation** - Processes pending broker observations in
+   the global implementations database and attaches the current commit to a
+   matching implementation when possible. This is how Semantica builds the
+   local cross-repo implementation graph and its story-like timeline.
 
-3. **Checkpoint completion** - Marks the pending checkpoint as complete with the manifest hash and size.
+3. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous checkpoint's manifest for incremental building.
 
-4. **Session linking** - Finds sessions with events in the time window between the previous and current checkpoint. Associates them with the checkpoint in the database.
+4. **Checkpoint completion** - Marks the pending checkpoint as complete with the manifest hash and size.
 
-5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked checkpoint window, then applies bounded carry-forward for eligible created files that were already present in the previous commit-linked manifest but still scored 0 AI in the current window. For each changed line, it uses three match levels:
+5. **Session linking** - Finds sessions with events in the time window between the previous and current checkpoint. Associates them with the checkpoint in the database.
+
+6. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked checkpoint window, then applies bounded carry-forward for eligible created files that were already present in the previous commit-linked manifest but still scored 0 AI in the current window. For each changed line, it uses three match levels:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
    Computes per-file and aggregate AI percentage and stores it on the checkpoint.
 
-6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
+7. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
-7. **Auto-playbook** (optional) - If enabled, spawns a separate detached process (`semantica _auto-playbook`) that calls an LLM to generate a structured summary (title, intent, outcome, learnings, friction, keywords) and stores it on the checkpoint.
+8. **Auto-playbook** (optional) - If enabled, spawns a separate detached process (`semantica _auto-playbook`) that calls an LLM to generate a structured summary (title, intent, outcome, learnings, friction, keywords) and stores it on the checkpoint.
 
-Steps 6 and 7 are best-effort - failures never cause the worker to fail.
+Steps 7 and 8 are best-effort - failures never cause the worker to fail.
 
 ## Storage
 
@@ -177,6 +185,7 @@ The `providers` field is a string array of installed hook provider names (not pa
 | Purpose | Default path | Override |
 | --- | --- | --- |
 | Runtime state (broker registry, global objects, capture state) | `~/.semantica` | `SEMANTICA_HOME` |
+| Global implementations index | `~/.semantica/implementations.db` | `SEMANTICA_HOME` |
 | User config (auth fallback, release check cache) | `~/.config/semantica` | `XDG_CONFIG_HOME` |
 
 Repo-local state still lives in `.semantica/` inside each enabled repository.
@@ -190,6 +199,8 @@ When an AI provider hook fires (e.g., Claude Code's `user-prompt-submit`), the c
 1. Reads the event payload from stdin
 2. Looks up which registered repo(s) contain the affected files (deepest-match rule)
 3. Routes the event to the matching repo database or databases
+4. Records a lightweight observation in the global implementations index for
+   later reconciliation
 
 This allows Semantica to capture AI activity even when the provider's hook system doesn't know about the repo structure. In practice, a hook fired from one workspace can still route events into another Semantica-enabled repo if that repo owns the touched paths.
 
@@ -206,10 +217,12 @@ internal/
     hook_commit_msg.go      Commit-msg hook handler
     rewind.go               Checkpoint rewind logic
     explain.go              Commit explanation and attribution
+    implementations/        Cross-repo implementation services
     sessions.go             Session listing and details
     show.go                 Checkpoint detail display
     playbook.go             LLM playbook generation
     push.go                 Remote endpoint push
+  store/impldb/             Global implementation index
   store/sqlite/             Storage layer
     schema/                 SQL schema definitions
     queries/                SQL query definitions

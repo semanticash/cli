@@ -41,8 +41,12 @@ func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&checkpointID, "checkpoint", "", "checkpoint ID to complete (required)")
 	cmd.Flags().StringVar(&commitHash, "commit", "", "commit hash (for logging)")
 	cmd.Flags().StringVar(&repoRoot, "repo", "", "repository root path (required)")
-	_ = cmd.MarkFlagRequired("checkpoint")
-	_ = cmd.MarkFlagRequired("repo")
+	if err := cmd.MarkFlagRequired("checkpoint"); err != nil {
+		panic(err)
+	}
+	if err := cmd.MarkFlagRequired("repo"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }

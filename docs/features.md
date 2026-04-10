@@ -232,6 +232,61 @@ semantica suggest pr --copy
 
 ---
 
+## Implementations
+
+Implementations are Semantica's concrete local record for agent work that often
+feels like a single story across repositories.
+
+An agent can start in one repo, touch files in another, and produce commits in
+both. Semantica maps those related changes under the implementation umbrella so
+you can inspect the repos, sessions, commits, and timeline as one unit of work.
+
+### What you see
+
+```bash
+semantica implementations
+semantica impl <implementation_id>
+semantica suggest implementations
+semantica implementations link <implementation_id> --session <session_id>
+semantica implementations merge <target_id> <source_id>
+semantica implementations close <implementation_id>
+```
+
+### How it works
+
+- The broker records lightweight cross-repo observations whenever routed agent
+  activity is written to a repo.
+- The background worker reconciles those observations into implementations using
+  deterministic attach rules such as session identity, parent-child session
+  relationships, and active branch context.
+- Each implementation tracks related repos, repo-local sessions, branches, and
+  commits in a global local index.
+- Semantica keeps implementation state as `active`, `dormant`, or `closed`.
+  Dormant implementations can still resume when later activity matches strong
+  identity signals.
+- `semantica suggest implementations` adds an advisory layer for titles,
+  summaries, review-priority hints, and possible merge candidates.
+
+### Story framing
+
+The word **implementation** is the product object. In practice, it is also the
+closest thing to the story of a cross-repo agent effort: one logical piece of
+work with a beginning, related edits, and resulting commits spread across one
+or more repositories.
+
+### Caveats
+
+- Implementations are local-first and depend on Semantica capture on the
+  current machine.
+- Cross-repo grouping only works for repositories that are enabled and visible
+  to the broker on that machine.
+- Manual `link`, `merge`, and `close` commands exist because some long-lived
+  sessions and branch patterns are ambiguous by nature.
+- Suggestions are advisory only. They do not silently rewrite implementation
+  history.
+
+---
+
 ## Optional repo connection
 
 Semantica works fully offline by default. If you want hosted features for a repo, authenticate once and then connect that repo:

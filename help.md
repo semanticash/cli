@@ -159,9 +159,91 @@ semantica suggest pr --copy
 | `--json` | `false` | Output as JSON |
 | `--copy` | `false` | Copy the title and body to the clipboard |
 
+### `semantica suggest implementations [implementation_id]`
+
+Suggests titles, summaries, review priorities, and merge candidates for
+implementations. Without an argument, Semantica analyzes implementation stories
+across the current local graph and suggests titles for untitled items plus
+possible merges. With an implementation ID, it generates a title, summary, and
+review-priority view for that implementation.
+
+```bash
+semantica suggest implementations
+semantica suggest implementations abc123
+semantica suggest implementations abc123 --apply
+semantica suggest implementations abc123 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Output as JSON |
+| `--apply` | `false` | Apply the suggested title in single-implementation mode |
+
+### `semantica implementations [implementation_id]`
+
+Lists cross-repo implementations, or shows the detail view for one
+implementation. Alias: `semantica impl`.
+
+Implementations are Semantica's concrete record for agent work that often feels
+like a single story across repositories.
+
+```bash
+semantica implementations
+semantica implementations --include-single
+semantica implementations --all
+semantica impl abc123
+semantica impl abc123 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--all` | `false` | Show all implementations, including old dormant and single-repo items |
+| `--include-single` | `false` | Include single-repo implementations in the list |
+| `--limit` | `20` | Maximum implementations to list |
+| `--json` | `false` | Output as JSON |
+
+#### `semantica implementations close <implementation_id>`
+
+Closes an implementation. Closing is idempotent.
+
+```bash
+semantica implementations close abc123
+```
+
+#### `semantica implementations link <implementation_id>`
+
+Manually links a session or commit to an implementation.
+
+```bash
+semantica implementations link abc123 --session sess_123
+semantica implementations link abc123 --commit deadbeef
+semantica implementations link abc123 --session sess_123 --repo /path/to/repo --force
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session` | | Session ID to link |
+| `--commit` | | Commit SHA to link |
+| `--repo` | `current repo` | Repository path used for lookup |
+| `--force` | `false` | Move a session from another implementation without confirmation |
+
+#### `semantica implementations merge <target_id> <source_id>`
+
+Merges the source implementation into the target implementation and closes the
+source.
+
+```bash
+semantica implementations merge target123 source456
+```
+
 ### `semantica tidy`
 
-Performs safe housekeeping on transient Semantica state. It can prune stale broker registry entries, remove abandoned capture state files, mark old incomplete checkpoints as failed, and remove orphan playbook FTS rows. By default it runs in dry-run mode and reports what would change.
+Performs safe housekeeping on transient Semantica state. It can prune stale
+broker registry entries, remove abandoned capture state files, mark old
+incomplete checkpoints as failed, remove orphan playbook FTS rows, and report
+implementation cleanup opportunities such as stale dormant implementations and
+unresolved conflicts. By default it runs in dry-run mode and reports what would
+change.
 
 ```bash
 semantica tidy
@@ -395,3 +477,6 @@ Settings live in `.semantica/settings.json`:
 ```
 
 Everything stays local by default. `.semantica/` is added to `.gitignore` automatically by `semantica enable`. Hosted sync only starts after `semantica connect` for the current repo.
+
+Some cross-repo state also lives under Semantica's global home directory
+(`$SEMANTICA_HOME`), including the broker registry and `implementations.db`.

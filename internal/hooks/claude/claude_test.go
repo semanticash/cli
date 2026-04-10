@@ -712,7 +712,7 @@ func TestReadFromOffset_ReadEventsStayLightweight(t *testing.T) {
 	transcript := filepath.Join(dir, "sess.jsonl")
 	lines := []string{
 		`{"type":"assistant","message":{"model":"claude-opus-4-6","id":"msg_read","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"/tmp/step1.txt"}}],"usage":{"input_tokens":3,"output_tokens":77}},"timestamp":"2026-03-23T14:12:33.338Z","sessionId":"sess-1"}`,
-		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_read","type":"tool_result","content":"     1→alpha\n     2→beta"}]},"uuid":"user_read","timestamp":"2026-03-23T14:12:33.339Z","toolUseResult":{"type":"text","file":{"filePath":"/tmp/step1.txt","content":"alpha\nbeta\n","numLines":2,"startLine":1,"totalLines":2}},"sessionId":"sess-1"}`,
+		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_read","type":"tool_result","content":"     1->alpha\n     2->beta"}]},"uuid":"user_read","timestamp":"2026-03-23T14:12:33.339Z","toolUseResult":{"type":"text","file":{"filePath":"/tmp/step1.txt","content":"alpha\nbeta\n","numLines":2,"startLine":1,"totalLines":2}},"sessionId":"sess-1"}`,
 		`{"type":"assistant","message":{"model":"claude-opus-4-6","id":"msg_final","type":"message","role":"assistant","content":[{"type":"text","text":"Done reading."}],"usage":{"input_tokens":1,"output_tokens":5}},"timestamp":"2026-03-23T14:12:34.000Z","sessionId":"sess-1"}`,
 	}
 	if err := os.WriteFile(transcript, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

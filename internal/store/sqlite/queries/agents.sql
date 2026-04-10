@@ -25,6 +25,12 @@ returning *;
 select * from agent_sessions
 where repository_id = ? and provider = ? and provider_session_id = ?;
 
+-- name: ListAgentSessionsByProviderSessionID :many
+-- Search by provider_session_id across all providers in a repo.
+-- Returns multiple rows if different providers reuse the same ID.
+select * from agent_sessions
+where repository_id = ? and provider_session_id = ?;
+
 -- name: InsertAgentEvent :exec
 insert or ignore into agent_events (
     event_id, session_id, repository_id, ts, kind,
@@ -48,6 +54,17 @@ where turn_id = ?
 
 -- name: ListAgentEventsBySession :many
 select * from agent_events where session_id = ? order by ts desc limit ?;
+
+-- name: ListAgentEventsBySessionPaged :many
+-- Keyset pagination: returns the next page of events after the given cursor.
+-- Use after_ts=0, after_event_id='' for the first page. Order is ascending
+-- (chronological) for timeline construction.
+select * from agent_events
+where session_id = sqlc.arg(session_id)
+  and (ts > sqlc.arg(after_ts)
+       or (ts = sqlc.arg(after_ts) and event_id > sqlc.arg(after_event_id)))
+order by ts asc, event_id asc
+limit sqlc.arg(page_limit);
 
 -- name: GetActiveAgentSessionForRepo :one
 select * from agent_sessions where repository_id = ? order by last_seen_at desc limit 1;

@@ -20,7 +20,9 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/store/blobs"
+	"github.com/semanticash/cli/internal/store/impldb"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -98,6 +100,11 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// recovered events are included in this checkpoint.
 	reconcileActiveSessions(ctx)
 
+	// Reconcile implementation observations (best-effort).
+	// Creates implementations.db on first call, processes pending observations.
+	// Commit attachment happens later, after session_checkpoints are written.
+	reconcileImplementations(ctx, in.RepoRoot)
+
 	repo, err := git.OpenRepo(in.RepoRoot)
 	if err != nil {
 		failCheckpoint(ctx, h, in.CheckpointID)
@@ -166,6 +173,13 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 		}); err != nil {
 			wlog("worker: link session %s to checkpoint: %v\n", sid, err)
 		}
+	}
+
+	// Attach this commit to its implementation now that session_checkpoints
+	// exist. AttachCommit depends on commit_links (written by post-commit hook
+	// before the worker) and session_checkpoints (written just above).
+	if in.CommitHash != "" {
+		attachCommitToImplementation(ctx, in.RepoRoot, in.CommitHash)
 	}
 
 	filesChanged := countChangedFiles(prevManifest, manifest.Files)
@@ -725,6 +739,62 @@ func redactPushPayload(p *remotePushPayload) error {
 		p.PlaybookJSON = redacted
 	}
 	return nil
+}
+
+// reconcileImplementations processes pending implementation observations.
+// Best-effort: errors are logged, not propagated.
+// Creates implementations.db on first call.
+// Commit attachment is handled separately by attachCommitToImplementation
+// after session_checkpoints have been written.
+func reconcileImplementations(ctx context.Context, repoRoot string) {
+	base, err := broker.GlobalBase()
+	if err != nil {
+		return
+	}
+	implPath := filepath.Join(base, "implementations.db")
+
+	implH, err := impldb.Open(ctx, implPath, impldb.OpenOptions{
+		BusyTimeout: 5 * time.Second,
+		TxImmediate: true,
+	})
+	if err != nil {
+		wlog("worker: open implementations db: %v\n", err)
+		return
+	}
+	defer func() { _ = impldb.Close(implH) }()
+
+	r := &implementations.Reconciler{}
+	if _, err := r.Reconcile(ctx, implH); err != nil {
+		wlog("worker: reconcile implementations: %v\n", err)
+	}
+}
+
+// attachCommitToImplementation links a commit to its implementation.
+// Must run after session_checkpoints have been written, because AttachCommit
+// depends on commit_links + session_checkpoints to find which sessions
+// belong to the commit's checkpoint.
+func attachCommitToImplementation(ctx context.Context, repoRoot, commitHash string) {
+	base, err := broker.GlobalBase()
+	if err != nil {
+		wlog("worker: resolve implementations base: %v\n", err)
+		return
+	}
+	implPath := filepath.Join(base, "implementations.db")
+
+	implH, err := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	if err != nil {
+		wlog("worker: open implementations db for commit attach: %v\n", err)
+		return
+	}
+	defer func() { _ = impldb.Close(implH) }()
+
+	r := &implementations.Reconciler{}
+	if err := r.AttachCommit(ctx, implH, implementations.AttachCommitInput{
+		RepoPath:   repoRoot,
+		CommitHash: commitHash,
+	}); err != nil {
+		wlog("worker: attach commit to implementation: %v\n", err)
+	}
 }
 
 func failCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string) {

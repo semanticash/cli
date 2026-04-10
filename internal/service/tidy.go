@@ -12,6 +12,8 @@ import (
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/service/implementations"
+	"github.com/semanticash/cli/internal/store/impldb"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -38,6 +40,10 @@ type TidyResult struct {
 	BrokerEntriesPruned  int          `json:"broker_entries_pruned"`
 	CaptureStatesRemoved int          `json:"capture_states_removed"`
 	CheckpointsMarked    int          `json:"checkpoints_marked_failed"`
+	ImplStale            int          `json:"implementations_stale,omitempty"`
+	ImplConflicts        int          `json:"implementations_conflicts,omitempty"`
+	ImplFailedObs        int          `json:"implementations_failed_observations,omitempty"`
+	ImplObsPruned        int          `json:"implementations_observations_pruned,omitempty"`
 	Errors               int          `json:"errors,omitempty"`
 	Actions              []TidyAction `json:"actions,omitempty"`
 }
@@ -57,6 +63,7 @@ func (s *TidyService) Tidy(ctx context.Context, in TidyInput) (*TidyResult, erro
 	if err := s.tidyRepo(ctx, in, result); err != nil {
 		return result, err
 	}
+	s.tidyImplementations(ctx, in.Apply, result)
 
 	return result, nil
 }
@@ -216,6 +223,81 @@ func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyRe
 	}
 
 	return nil
+}
+
+// tidyImplementations reports stale implementations, unresolved conflicts,
+// and prunes reconciled observations. Fail-open: if the global DB doesn't
+// exist or can't be opened, silently skip.
+func (s *TidyService) tidyImplementations(ctx context.Context, apply bool, result *TidyResult) {
+	base, err := broker.GlobalBase()
+	if err != nil {
+		return
+	}
+	implPath := filepath.Join(base, "implementations.db")
+	if isConfirmedMissing(implPath) {
+		return
+	}
+
+	h, err := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
+	if err != nil {
+		return
+	}
+	defer func() { _ = impldb.Close(h) }()
+
+	// 1. Report dormant implementations older than 30 days.
+	staleThreshold := time.Now().Add(-30 * 24 * time.Hour).UnixMilli()
+	staleImpls, err := h.Queries.ListStaleImplementations(ctx, staleThreshold)
+	if err == nil {
+		for _, impl := range staleImpls {
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "implementation",
+				ID:       util.ShortID(impl.ImplementationID),
+				Detail: fmt.Sprintf("dormant since %s",
+					time.UnixMilli(impl.LastActivityAt).UTC().Format(time.RFC3339)),
+			})
+			result.ImplStale++
+		}
+	}
+
+	// 2. Report unresolved observation conflicts (exact count, not capped).
+	conflictCount, err := h.Queries.CountUnresolvedConflicts(ctx)
+	if err == nil && conflictCount > 0 {
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "implementation",
+				ID:       "conflicts",
+				Detail: fmt.Sprintf("%d unresolved - run semantica suggest implementations",
+					conflictCount),
+			})
+		result.ImplConflicts = int(conflictCount)
+	}
+
+	// 3. Report permanently failed observations.
+	failedCount, err := h.Queries.CountFailedObservations(ctx, int64(implementations.MaxRetryAttempts))
+	if err == nil && failedCount > 0 {
+		result.Actions = append(result.Actions, TidyAction{
+			Category: "implementation",
+			ID:       "failed-observations",
+			Detail:   fmt.Sprintf("%d permanently failed observations", failedCount),
+		})
+		result.ImplFailedObs = int(failedCount)
+	}
+
+	// 4. Prune reconciled observations older than 7 days.
+	if apply {
+		pruneThreshold := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+		pruneResult, err := h.Queries.PruneReconciledObservations(ctx, pruneThreshold)
+		if err == nil {
+			pruned, _ := pruneResult.RowsAffected()
+			if pruned > 0 {
+				result.Actions = append(result.Actions, TidyAction{
+					Category: "implementation",
+					ID:       "observations",
+					Detail:   fmt.Sprintf("pruned %d reconciled observations", pruned),
+				})
+				result.ImplObsPruned = int(pruned)
+			}
+		}
+	}
 }
 
 // isConfirmedMissing returns true only for os.ErrNotExist. Permission errors,

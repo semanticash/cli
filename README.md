@@ -19,6 +19,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 ## Why Semantica
 - Make AI-assisted code changes understandable, reviewable, and attributable.
 - Connect agent activity to commits and pull requests so teams can trace how work happened.
+- Track one implementation story even when agents carry the work across multiple repositories.
 - Reduce ambiguity during code review, debugging, handoff, and incident analysis.
 - Keep provenance and attribution local by default, with optional hosted sync for team visibility.
 - Build trust in AI-assisted software development with a clear system of record that supports audit and compliance.
@@ -145,6 +146,25 @@ semantica set trailers enabled
 semantica set trailers disabled    # checkpoint-only commits
 ```
 
+### Cross-repo implementations
+
+Agent work often becomes one story that spans more than one repository: an API
+change in one repo, a client update in another, and a UI or docs follow-up in
+a third. Semantica tracks that work as an **implementation** so the related
+repos, sessions, commits, and summary stay grouped together.
+
+```bash
+semantica implementations or semantica impl        # show current cross-repo implementations
+semantica impl <implementation_id>                 # show the implementation card/details
+semantica suggest impl                             # suggest a title and summary for one implementation 
+semantica suggest impl <implementation_id> --apply # apply the suggested title and summary
+```
+
+<p>
+  <img src="docs/images/semantica-impl-list-view.png" alt="semantica blame output" width="600">
+  <img src="docs/images/semantica-impl-card-view.png" alt="semantica blame output" width="600">
+</p>
+
 ### Checkpoints and rewind
 
 Every commit creates a checkpoint, and you can create checkpoints manually too.
@@ -180,6 +200,7 @@ Generate commit messages and pull request descriptions from your current changes
 ```bash
 semantica suggest commit # generates a concise commit message from your current diff.
 semantica suggest pr # generates a pull request title and description from your branch diff.
+semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
 ```
 
@@ -229,8 +250,10 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `status` | Show AI activity overview |
 | `blame <ref>` | AI attribution for a commit |
 | `explain <commit>` | Explain a commit with AI breakdown |
+| `implementations [id]` | List or inspect cross-repo implementation stories |
 | `suggest commit` | Generate a commit message from uncommitted changes |
 | `suggest pr` | Generate a PR title and body from the current branch diff |
+| `suggest implementations` | Suggest titles, summaries, and merge candidates for implementations |
 | `tidy` | Preview or remove stale local Semantica state |
 | `checkpoint` | Manually create a checkpoint |
 | `rewind <id>` | Restore working tree to a checkpoint |
@@ -255,6 +278,9 @@ Most commands support `--json` for structured output. See [help.md](help.md) for
 
 By default, Semantica keeps all data local to your machine and repository in `.semantica/`.
 It does not write to Git history or create side branches. Hosted sync only starts after `semantica auth login` and `semantica connect`.
+
+Cross-repo implementations are indexed in Semantica's global state under
+`$SEMANTICA_HOME/implementations.db`.
 
 ---
 
