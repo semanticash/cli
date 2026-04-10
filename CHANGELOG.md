@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Existing enabled repositories now backfill the new implementation-summary automation setting on first read so updated installs pick up the default without rerunning `semantica enable`.
 - `semantica set` and `semantica status` now surface the auto-implementation-summary automation alongside the existing automation and trailer settings.
 - Cross-repo implementation documentation now reflects the automatic title and summary flow, with `semantica suggest impl <id> --apply` positioned as the manual apply or override path.
+- CI and checked-in generated database code are now pinned to `sqlc v1.30.0`.
 
 ### Fixed
 
