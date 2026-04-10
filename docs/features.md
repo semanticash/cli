@@ -237,6 +237,9 @@ semantica suggest pr --copy
 Implementations are Semantica's concrete local record for agent work that often
 feels like a single story across repositories.
 
+For the dedicated guide to commands, states, boundaries, and JSON output, see
+[implementations.md](implementations.md).
+
 An agent can start in one repo, touch files in another, and produce commits in
 both. Semantica maps those related changes under the implementation umbrella so
 you can inspect the repos, sessions, commits, and timeline as one unit of work.

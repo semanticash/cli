@@ -159,8 +159,12 @@ semantica impl <implementation_id>                 # show the implementation car
 semantica suggest impl                             # batch suggestions and merge candidates
 semantica suggest impl <implementation_id>         # suggest a title and summary for one implementation
 semantica suggest impl <implementation_id> --apply # apply or override the title and summary
+semantica impl close <implementation_id>           # close an implementation so later work forms a new one
 semantica set auto-implementation-summary disabled # disable background title/summary generation
 ```
+
+For implementation states, boundaries, manual controls, and `--json` usage for
+downstream tools, see the [implementations guide](docs/implementations.md).
 
 <p>
   <img src="docs/images/semantica-impl-list-view.png" alt="semantica blame output" width="600">
@@ -290,6 +294,7 @@ Cross-repo implementations are indexed in Semantica's global state under
 
 - [Changelog](CHANGELOG.md) - notable changes by release
 - [Features](docs/features.md) - detailed guide to each capability
+- [Implementations](docs/implementations.md) - cross-repo implementation states, commands, boundaries, and JSON output
 - [Hosted features](docs/hosted-reporting.md) - optional auth, repo connection, and remote sync behavior
 - [Architecture](docs/architecture.md) - how Semantica works internally
 - [Providers](docs/providers.md) - AI provider integration details
