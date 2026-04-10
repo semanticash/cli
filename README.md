@@ -156,8 +156,10 @@ repos, sessions, commits, and summary stay grouped together.
 ```bash
 semantica implementations or semantica impl        # show current cross-repo implementations
 semantica impl <implementation_id>                 # show the implementation card/details
-semantica suggest impl                             # suggest a title and summary for one implementation 
-semantica suggest impl <implementation_id> --apply # apply the suggested title and summary
+semantica suggest impl                             # batch suggestions and merge candidates
+semantica suggest impl <implementation_id>         # suggest a title and summary for one implementation
+semantica suggest impl <implementation_id> --apply # apply or override the title and summary
+semantica set auto-implementation-summary disabled # disable background title/summary generation
 ```
 
 <p>

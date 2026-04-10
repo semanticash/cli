@@ -33,6 +33,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countImplementationsByStateStmt, err = db.PrepareContext(ctx, countImplementationsByState); err != nil {
 		return nil, fmt.Errorf("error preparing query CountImplementationsByState: %w", err)
 	}
+	if q.countReposForImplementationStmt, err = db.PrepareContext(ctx, countReposForImplementation); err != nil {
+		return nil, fmt.Errorf("error preparing query CountReposForImplementation: %w", err)
+	}
 	if q.countUnresolvedConflictsStmt, err = db.PrepareContext(ctx, countUnresolvedConflicts); err != nil {
 		return nil, fmt.Errorf("error preparing query CountUnresolvedConflicts: %w", err)
 	}
@@ -195,6 +198,11 @@ func (q *Queries) Close() error {
 	if q.countImplementationsByStateStmt != nil {
 		if cerr := q.countImplementationsByStateStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countImplementationsByStateStmt: %w", cerr)
+		}
+	}
+	if q.countReposForImplementationStmt != nil {
+		if cerr := q.countReposForImplementationStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countReposForImplementationStmt: %w", cerr)
 		}
 	}
 	if q.countUnresolvedConflictsStmt != nil {
@@ -479,6 +487,7 @@ type Queries struct {
 	countCommitsForImplementationStmt         *sql.Stmt
 	countFailedObservationsStmt               *sql.Stmt
 	countImplementationsByStateStmt           *sql.Stmt
+	countReposForImplementationStmt           *sql.Stmt
 	countUnresolvedConflictsStmt              *sql.Stmt
 	deleteBranchesForImplementationStmt       *sql.Stmt
 	deleteBranchesForRepoStmt                 *sql.Stmt
@@ -536,6 +545,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		countCommitsForImplementationStmt:         q.countCommitsForImplementationStmt,
 		countFailedObservationsStmt:               q.countFailedObservationsStmt,
 		countImplementationsByStateStmt:           q.countImplementationsByStateStmt,
+		countReposForImplementationStmt:           q.countReposForImplementationStmt,
 		countUnresolvedConflictsStmt:              q.countUnresolvedConflictsStmt,
 		deleteBranchesForImplementationStmt:       q.deleteBranchesForImplementationStmt,
 		deleteBranchesForRepoStmt:                 q.deleteBranchesForRepoStmt,

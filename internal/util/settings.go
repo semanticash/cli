@@ -1,8 +1,10 @@
 package util
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -11,8 +13,13 @@ type PlaybookAutomation struct {
 	Enabled bool `json:"enabled"`
 }
 
+type ImplementationSummaryAutomation struct {
+	Enabled bool `json:"enabled"`
+}
+
 type Automations struct {
-	Playbook PlaybookAutomation `json:"playbook"`
+	Playbook              PlaybookAutomation              `json:"playbook"`
+	ImplementationSummary ImplementationSummaryAutomation `json:"implementation_summary"`
 }
 
 type Settings struct {
@@ -113,6 +120,51 @@ func TrailersEnabled(semDir string) bool {
 		return true
 	}
 	return *s.Trailers
+}
+
+// IsImplementationSummaryEnabled returns true if the auto-implementation-summary automation is enabled.
+// For existing installations that predate this setting, the field is absent in
+// settings.json and defaults to true (matching the semantica enable default).
+// On first read, the setting is backfilled so future reads are explicit.
+func IsImplementationSummaryEnabled(semDir string) bool {
+	s, err := ReadSettings(semDir)
+	if err != nil {
+		return false
+	}
+	if s.Automations == nil {
+		// Very old install with no automations block at all.
+		// Backfill with both defaults matching what semantica enable writes,
+		// so we don't accidentally disable playbook as a side effect.
+		s.Automations = &Automations{
+			Playbook:              PlaybookAutomation{Enabled: true},
+			ImplementationSummary: ImplementationSummaryAutomation{Enabled: true},
+		}
+		if err := WriteSettings(semDir, s); err != nil {
+			log.Printf("semantica: backfill implementation_summary setting: %v", err)
+		}
+		return true
+	}
+
+	// Check if the key is actually present in the raw JSON.
+	// If absent, backfill it as enabled (default for new installs).
+	raw, readErr := os.ReadFile(SettingsPath(semDir))
+	if readErr == nil && !jsonKeyExists(raw, "implementation_summary") {
+		s.Automations.ImplementationSummary.Enabled = true
+		if err := WriteSettings(semDir, s); err != nil {
+			log.Printf("semantica: backfill implementation_summary setting: %v", err)
+		}
+		return true
+	}
+
+	return s.Automations.ImplementationSummary.Enabled
+}
+
+// jsonKeyExists checks whether a key appears anywhere in the raw JSON bytes.
+// This is a simple substring check - sufficient for detecting the presence
+// of a settings key without full JSON path traversal.
+func jsonKeyExists(data []byte, key string) bool {
+	needle := fmt.Sprintf(`"%s"`, key)
+	return bytes.Contains(data, []byte(needle))
 }
 
 // IsPlaybookEnabled returns true if the auto-playbook automation is enabled.

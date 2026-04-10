@@ -208,7 +208,12 @@ func suggestSingleImplementation(
 
 	// Apply the suggestion before output so --json --apply works correctly.
 	if apply {
-		if err := implementations.ApplySuggestion(cmd.Context(), implID, res.Title, res.Summary); err != nil {
+		if err := implementations.ApplySuggestion(cmd.Context(), implementations.ApplySuggestionInput{
+			ImplementationID: implID,
+			Title:            res.Title,
+			Summary:          res.Summary,
+			Source:           implementations.SourceManual,
+		}); err != nil {
 			return fmt.Errorf("apply suggestion: %w", err)
 		}
 	}

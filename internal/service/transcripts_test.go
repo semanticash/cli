@@ -484,7 +484,7 @@ func TestTranscriptDelta_SameSecondCheckpoints(t *testing.T) {
 	assertNotContains(t, delta2, eA, "event A should NOT be in cp2 delta")
 }
 
-// --- Edge-case scenario tests ---
+// Edge-case scenario tests.
 
 // TestTranscriptDelta_ManualCheckpointBetweenCommits verifies that manual and
 // baseline checkpoints between two commits do NOT split the delta window.
@@ -733,7 +733,7 @@ func TestTranscriptDelta_EventAtExactBoundary(t *testing.T) {
 	assertNotContains(t, delta2, eA, "event A should NOT be in cp2 delta (at exact afterTs)")
 }
 
-// --- extractToolFilePaths tests ---
+// extractToolFilePaths tests.
 
 func Test_extractToolFilePaths_NewFormat(t *testing.T) {
 	j := `{"content_types":["tool_use"],"tools":[{"name":"Edit","file_path":"/repo/foo.go","file_op":"edit"},{"name":"Write","file_path":"/repo/bar.go","file_op":"create"}]}`
@@ -803,7 +803,7 @@ func Test_extractToolFilePaths_MixedFilePaths(t *testing.T) {
 	}
 }
 
-// --- normalizeToolPath tests ---
+// normalizeToolPath tests.
 
 const testRepoRoot = "/workspace/myrepo"
 const testRepoFileURI = "file:///workspace/myrepo/main.go"
@@ -851,7 +851,7 @@ func Test_normalizeToolPath_OutsideRepo(t *testing.T) {
 	}
 }
 
-// --- Resolution tests ---
+// Resolution tests.
 
 // TestResolveRef_CheckpointOnly verifies that a ref matching only a checkpoint
 // resolves correctly via prefix.
@@ -1008,7 +1008,7 @@ func TestResolveRef_AmbiguousSessionPrefix(t *testing.T) {
 	}
 }
 
-// --- Assertion helpers ---
+// Assertion helpers.
 
 func assertContains(t *testing.T, ids []string, id, label string) {
 	t.Helper()

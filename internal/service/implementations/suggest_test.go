@@ -28,7 +28,12 @@ func TestApplySuggestion(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	if err := ApplySuggestion(ctx, id, "Migrate auth to OAuth2", "Moves API and SDK auth to OAuth2."); err != nil {
+	if err := ApplySuggestion(ctx, ApplySuggestionInput{
+		ImplementationID: id,
+		Title:            "Migrate auth to OAuth2",
+		Summary:          "Moves API and SDK auth to OAuth2.",
+		Source:           SourceManual,
+	}); err != nil {
 		t.Fatalf("apply suggestion: %v", err)
 	}
 
@@ -58,7 +63,11 @@ func TestApplyTitle_ShortID(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	if err := ApplyTitle(ctx, id[:8], "Short ID title"); err != nil {
+	if err := ApplySuggestion(ctx, ApplySuggestionInput{
+		ImplementationID: id[:8],
+		Title:            "Short ID title",
+		Source:           SourceManual,
+	}); err != nil {
 		t.Fatalf("apply title by short id: %v", err)
 	}
 
@@ -73,7 +82,7 @@ func TestApplyTitle_ShortID(t *testing.T) {
 
 func TestImplementationMetadataWithSummary_PreservesExistingFields(t *testing.T) {
 	got, err := implementationMetadataWithSummary(
-		impldb.NullStr(`{"tag":"cross-repo","summary":"old"}`),
+		impldb.NullStr(`{"title_source":"manual","summary":"old"}`),
 		"New summary",
 	)
 	if err != nil {
@@ -82,7 +91,7 @@ func TestImplementationMetadataWithSummary_PreservesExistingFields(t *testing.T)
 	if !got.Valid {
 		t.Fatal("expected metadata json to stay valid")
 	}
-	if !strings.Contains(got.String, `"tag":"cross-repo"`) {
+	if !strings.Contains(got.String, `"title_source":"manual"`) {
 		t.Fatalf("expected existing metadata to be preserved: %s", got.String)
 	}
 	if !strings.Contains(got.String, `"summary":"New summary"`) {

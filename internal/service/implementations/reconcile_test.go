@@ -73,7 +73,7 @@ func newReconciler(branch string) *Reconciler {
 	}
 }
 
-// --- Basic: single observation creates an implementation ---
+// Basic: single observation creates an implementation.
 
 func TestReconcile_SingleObservation_CreatesImplementation(t *testing.T) {
 	h := openTestDB(t)
@@ -117,7 +117,7 @@ func TestReconcile_SingleObservation_CreatesImplementation(t *testing.T) {
 	}
 }
 
-// --- session_identity: same session attaches to existing implementation ---
+// session_identity: same session attaches to existing implementation.
 
 func TestReconcile_SessionIdentity_SameSession(t *testing.T) {
 	h := openTestDB(t)
@@ -139,7 +139,7 @@ func TestReconcile_SessionIdentity_SameSession(t *testing.T) {
 	}
 }
 
-// --- session_identity: same session, different repo (cross-repo routing) ---
+// session_identity: same session, different repo (cross-repo routing).
 
 func TestReconcile_SessionIdentity_CrossRepo(t *testing.T) {
 	h := openTestDB(t)
@@ -178,7 +178,7 @@ func TestReconcile_SessionIdentity_CrossRepo(t *testing.T) {
 	}
 }
 
-// --- session_identity: parent session links child ---
+// session_identity: parent session links child.
 
 func TestReconcile_SessionIdentity_ParentChild(t *testing.T) {
 	h := openTestDB(t)
@@ -200,7 +200,7 @@ func TestReconcile_SessionIdentity_ParentChild(t *testing.T) {
 	}
 }
 
-// --- branch_active: different session, same branch, active impl ---
+// branch_active: different session, same branch, active impl.
 
 func TestReconcile_BranchActive_AttachesToActive(t *testing.T) {
 	h := openTestDB(t)
@@ -222,7 +222,7 @@ func TestReconcile_BranchActive_AttachesToActive(t *testing.T) {
 	}
 }
 
-// --- branch_active: does NOT attach to dormant ---
+// branch_active: does NOT attach to dormant.
 
 func TestReconcile_BranchActive_DoesNotReviveDormant(t *testing.T) {
 	h := openTestDB(t)
@@ -257,7 +257,7 @@ func TestReconcile_BranchActive_DoesNotReviveDormant(t *testing.T) {
 	}
 }
 
-// --- session_identity: CAN revive dormant ---
+// session_identity: can revive dormant.
 
 func TestReconcile_SessionIdentity_RevivesDormant(t *testing.T) {
 	h := openTestDB(t)
@@ -285,7 +285,7 @@ func TestReconcile_SessionIdentity_RevivesDormant(t *testing.T) {
 	}
 }
 
-// --- Dormancy transition ---
+// Dormancy transition.
 
 func TestReconcile_MarksDormant(t *testing.T) {
 	h := openTestDB(t)
@@ -302,7 +302,7 @@ func TestReconcile_MarksDormant(t *testing.T) {
 	}
 }
 
-// --- Parent/child deferral ---
+// Parent/child deferral.
 
 func TestReconcile_ChildDeferred_ThenResolved(t *testing.T) {
 	h := openTestDB(t)
@@ -372,7 +372,7 @@ func TestReconcile_ChildFallsThrough_AfterDeferMax(t *testing.T) {
 	}
 }
 
-// --- Role assignment ---
+// Role assignment.
 
 func TestReconcile_RoleAssignment_OriginVsDownstream(t *testing.T) {
 	h := openTestDB(t)
@@ -421,7 +421,7 @@ func TestReconcile_RoleAssignment_EmptySourceIsOrigin(t *testing.T) {
 	}
 }
 
-// --- Different sessions, no branch match -> separate implementations ---
+// Different sessions with no branch match create separate implementations.
 
 func TestReconcile_DifferentSessions_NoBranch_SeparateImpls(t *testing.T) {
 	h := openTestDB(t)
@@ -441,7 +441,7 @@ func TestReconcile_DifferentSessions_NoBranch_SeparateImpls(t *testing.T) {
 	}
 }
 
-// --- Observation marked reconciled after processing ---
+// Observation marked reconciled after processing.
 
 func TestReconcile_ObservationMarkedReconciled(t *testing.T) {
 	h := openTestDB(t)
@@ -460,7 +460,7 @@ func TestReconcile_ObservationMarkedReconciled(t *testing.T) {
 	}
 }
 
-// --- Session closed then reattaches to new implementation ---
+// Session closed then reattaches to a new implementation.
 
 func TestReconcile_SessionReattachesAfterClose(t *testing.T) {
 	h := openTestDB(t)
@@ -501,7 +501,7 @@ func TestReconcile_SessionReattachesAfterClose(t *testing.T) {
 	}
 }
 
-// --- AttachCommit: tied session counts skip automatic attachment ---
+// AttachCommit: tied session counts skip automatic attachment.
 
 func TestAttachCommit_TiedSessionCounts_SkipsAttachment(t *testing.T) {
 	h := openTestDB(t)

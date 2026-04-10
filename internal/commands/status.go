@@ -216,6 +216,7 @@ func statusSettingsFields(res *service.StatusResult) []statusField {
 		fields = append(fields, statusField{Label: "Remote", Value: res.RepoProvider})
 	}
 	fields = append(fields, statusField{Label: "Auto-playbook", Value: enabledValue(res.AutoPlaybook)})
+	fields = append(fields, statusField{Label: "Auto-implementation-summary", Value: enabledValue(res.AutoImplSummary)})
 	fields = append(fields, statusField{Label: "Git Trailers", Value: enabledValue(res.GitTrailers)})
 	if len(res.Providers) > 0 {
 		fields = append(fields, statusField{Label: "Agents", Value: strings.Join(res.Providers, ", ")})

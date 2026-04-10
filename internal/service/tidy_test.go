@@ -246,7 +246,7 @@ func TestTidy_EmptyTranscriptRefCaptureStatePreserved(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+// helpers
 
 func insertStaleCheckpoint(t *testing.T, ctx context.Context, dir, cpID string, createdAt int64) {
 	t.Helper()

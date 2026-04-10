@@ -186,7 +186,7 @@ func TestBytes_NoOpReturnsSameSlice(t *testing.T) {
 	}
 }
 
-// --- SanitizeURL tests ---
+// SanitizeURL tests.
 
 func TestSanitizeURL_WithCredentials(t *testing.T) {
 	input := "https://user:ghp_secrettoken@github.com/org/repo.git"
@@ -254,7 +254,7 @@ func TestSanitizeURL_InvalidInput(t *testing.T) {
 	}
 }
 
-// --- Span merging tests ---
+// Span merging tests.
 
 func TestMergeSpans_Overlapping(t *testing.T) {
 	spans := []span{{0, 10}, {5, 15}, {20, 30}}

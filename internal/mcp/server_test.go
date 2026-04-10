@@ -17,7 +17,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// --- Protocol tests ---
+// Protocol tests.
 
 func TestHandleInitialize(t *testing.T) {
 	s := NewServer("/tmp/test")
@@ -133,7 +133,7 @@ func TestHandleNotification_NoResponse(t *testing.T) {
 	}
 }
 
-// --- tools/call error path tests ---
+// tools/call error path tests.
 
 func TestHandleToolsCall_UnknownTool(t *testing.T) {
 	s := NewServer("/tmp/test")
@@ -215,7 +215,7 @@ func TestHandleToolsCall_ExplainBadRepo(t *testing.T) {
 	}
 }
 
-// --- tools/call success path tests ---
+// tools/call success path tests.
 //
 // These tests create a real git repo with .semantica/, run migrations,
 // seed the DB with test data, and call each tool through the server.
@@ -401,8 +401,6 @@ func TestHandleToolsCall_ExplainSuccess(t *testing.T) {
 	}
 }
 
-
-
 func TestHandleToolsCall_ExplainByPrefix(t *testing.T) {
 	repoRoot, commitHash := initTestRepo(t)
 	s := NewServer(repoRoot)
@@ -439,7 +437,7 @@ func TestHandleToolsCall_ExplainByPrefix(t *testing.T) {
 	}
 }
 
-// --- tool definition tests ---
+// tool definition tests.
 
 func TestToolDefinitions_HasRequiredFields(t *testing.T) {
 	tools := toolDefinitions()

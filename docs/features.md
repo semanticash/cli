@@ -246,7 +246,8 @@ you can inspect the repos, sessions, commits, and timeline as one unit of work.
 ```bash
 semantica implementations
 semantica impl <implementation_id>
-semantica suggest implementations
+semantica suggest impl
+semantica suggest impl <implementation_id>
 semantica implementations link <implementation_id> --session <session_id>
 semantica implementations merge <target_id> <source_id>
 semantica implementations close <implementation_id>
@@ -261,10 +262,13 @@ semantica implementations close <implementation_id>
   relationships, and active branch context.
 - Each implementation tracks related repos, repo-local sessions, branches, and
   commits in a global local index.
+- When `auto-implementation-summary` is enabled, the worker also generates a
+  title and summary once an implementation spans multiple repos and refreshes
+  them when the repo scope grows.
 - Semantica keeps implementation state as `active`, `dormant`, or `closed`.
   Dormant implementations can still resume when later activity matches strong
   identity signals.
-- `semantica suggest implementations` adds an advisory layer for titles,
+- `semantica suggest impl` adds an advisory layer for titles,
   summaries, review-priority hints, and possible merge candidates.
 
 ### Story framing

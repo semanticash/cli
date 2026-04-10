@@ -191,6 +191,114 @@ func TestReadSettings_OmitsAutomationsWhenNil(t *testing.T) {
 	}
 }
 
+// Existing install with an automations block but no implementation_summary key.
+// Should backfill to true and persist.
+func TestIsImplementationSummaryEnabled_BackfillMissingKey(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate what an older binary wrote: automations with only playbook,
+	// no implementation_summary key at all. Write raw JSON to avoid the
+	// current struct serializing the zero-value field.
+	rawJSON := `{"enabled":true,"version":1,"automations":{"playbook":{"enabled":true}}}`
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(rawJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write the enabled marker so WriteSettings doesn't remove it.
+	if err := os.WriteFile(filepath.Join(dir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First read should backfill and return true.
+	if !IsImplementationSummaryEnabled(dir) {
+		t.Error("expected true on first read (backfilled)")
+	}
+
+	// Verify it was persisted.
+	s, err := ReadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Automations.ImplementationSummary.Enabled {
+		t.Error("backfilled value should be persisted as true")
+	}
+	// Playbook should be unchanged.
+	if !s.Automations.Playbook.Enabled {
+		t.Error("playbook.enabled should not be affected by backfill")
+	}
+}
+
+// Very old install with no automations block at all. Should create the block
+// with both defaults and return true.
+func TestIsImplementationSummaryEnabled_BackfillNilAutomations(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteSettings(dir, Settings{
+		Enabled: true,
+		Version: 1,
+		// No Automations field at all.
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsImplementationSummaryEnabled(dir) {
+		t.Error("expected true on first read (nil automations backfilled)")
+	}
+
+	// Verify both automations were written with correct defaults.
+	s, err := ReadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Automations == nil {
+		t.Fatal("automations should have been created")
+	}
+	if !s.Automations.ImplementationSummary.Enabled {
+		t.Error("implementation_summary.enabled should be true")
+	}
+	if !s.Automations.Playbook.Enabled {
+		t.Error("playbook.enabled should also be true (matching enable defaults)")
+	}
+}
+
+// Setting explicitly disabled by user. Should stay false, no backfill.
+func TestIsImplementationSummaryEnabled_ExplicitlyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteSettings(dir, Settings{
+		Enabled: true,
+		Version: 1,
+		Automations: &Automations{
+			Playbook:              PlaybookAutomation{Enabled: true},
+			ImplementationSummary: ImplementationSummaryAutomation{Enabled: false},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if IsImplementationSummaryEnabled(dir) {
+		t.Error("expected false when explicitly disabled")
+	}
+}
+
+// New install with both values present. Should return true directly.
+func TestIsImplementationSummaryEnabled_NewInstall(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteSettings(dir, Settings{
+		Enabled: true,
+		Version: 1,
+		Automations: &Automations{
+			Playbook:              PlaybookAutomation{Enabled: true},
+			ImplementationSummary: ImplementationSummaryAutomation{Enabled: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsImplementationSummaryEnabled(dir) {
+		t.Error("expected true for new install")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

@@ -85,7 +85,7 @@ func setupLinkEnv(t *testing.T) (string, string, []testSession) {
 	return dir, repoPath, sessions
 }
 
-// --- LinkSession: fresh link by Semantica UUID ---
+// LinkSession: fresh link by Semantica UUID.
 
 func TestLinkSession_ByLocalUUID(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -144,7 +144,7 @@ func TestLinkSession_ByLocalUUID(t *testing.T) {
 	}
 }
 
-// --- LinkSession: by provider_session_id ---
+// LinkSession: by provider_session_id.
 
 func TestLinkSession_ByProviderSessionID(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -178,7 +178,7 @@ func TestLinkSession_ByProviderSessionID(t *testing.T) {
 	}
 }
 
-// --- LinkSession: force-move preserves cross-repo coverage ---
+// LinkSession: force-move preserves cross-repo coverage.
 
 func TestLinkSession_ForceMove_PreservesCrossRepo(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -286,7 +286,7 @@ func TestLinkSession_ForceMove_PreservesCrossRepo(t *testing.T) {
 	}
 }
 
-// --- LinkSession: force-move without --force returns error ---
+// LinkSession: force-move without --force returns error.
 
 func TestLinkSession_MoveWithoutForce_Errors(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -322,7 +322,7 @@ func TestLinkSession_MoveWithoutForce_Errors(t *testing.T) {
 	}
 }
 
-// --- ForceMove: orphan cleanup preserves repo with commits ---
+// ForceMove: orphan cleanup preserves repo with commits.
 
 func TestLinkSession_ForceMove_PreservesRepoWithCommits(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -388,7 +388,7 @@ func TestLinkSession_ForceMove_PreservesRepoWithCommits(t *testing.T) {
 	}
 }
 
-// --- Ambiguity error propagation ---
+// Ambiguity error propagation.
 
 func TestLinkSession_AmbiguousProviderSessionID_Errors(t *testing.T) {
 	dir := t.TempDir()
@@ -452,7 +452,7 @@ func TestLinkSession_AmbiguousProviderSessionID_Errors(t *testing.T) {
 	}
 }
 
-// --- Idempotent: linking to same target is a no-op ---
+// Idempotent: linking to same target is a no-op.
 
 func TestLinkSession_AlreadyLinkedToTarget_Idempotent(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -486,7 +486,7 @@ func TestLinkSession_AlreadyLinkedToTarget_Idempotent(t *testing.T) {
 	}
 }
 
-// --- Fresh link: repo not in broker registry, resolved session is baseline ---
+// Fresh link: repo not in broker registry, resolved session is baseline.
 
 func TestLinkSession_RepoNotInBroker_StillLinksResolvedSlice(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -529,7 +529,7 @@ func TestLinkSession_RepoNotInBroker_StillLinksResolvedSlice(t *testing.T) {
 	}
 }
 
-// --- Idempotent with backfill: re-link fills missing repo slices ---
+// Idempotent with backfill: re-link fills missing repo slices.
 
 func TestLinkSession_IdempotentBackfillsMissingSlices(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -586,7 +586,7 @@ func TestLinkSession_IdempotentBackfillsMissingSlices(t *testing.T) {
 	}
 }
 
-// --- Fresh link: captures all repo slices of a cross-repo session ---
+// Fresh link: captures all repo slices of a cross-repo session.
 
 func TestLinkSession_FreshLink_AllRepoSlices(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -654,7 +654,7 @@ func TestLinkSession_FreshLink_AllRepoSlices(t *testing.T) {
 	}
 }
 
-// --- Force-move cleans orphaned branches from source ---
+// Force-move cleans orphaned branches from source.
 
 func TestLinkSession_ForceMove_CleansOrphanedBranches(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -717,7 +717,7 @@ func TestLinkSession_ForceMove_CleansOrphanedBranches(t *testing.T) {
 	}
 }
 
-// --- Force-move preserves repo roles from source ---
+// Force-move preserves repo roles from source.
 
 func TestLinkSession_ForceMove_PreservesRepoRoles(t *testing.T) {
 	dir, repoPath, sessions := setupLinkEnv(t)
@@ -780,7 +780,7 @@ func TestLinkSession_ForceMove_PreservesRepoRoles(t *testing.T) {
 	}
 }
 
-// --- Fresh link writes branch rows into target ---
+// Fresh link writes branch rows into target.
 
 func TestLinkSession_FreshLink_WritesBranch(t *testing.T) {
 	dir := t.TempDir()
@@ -853,7 +853,7 @@ func TestLinkSession_FreshLink_WritesBranch(t *testing.T) {
 	}
 }
 
-// --- Idempotent backfill writes branch rows ---
+// Idempotent backfill writes branch rows.
 
 func TestLinkSession_IdempotentBackfill_WritesBranch(t *testing.T) {
 	dir := t.TempDir()
@@ -928,7 +928,7 @@ func TestLinkSession_IdempotentBackfill_WritesBranch(t *testing.T) {
 	}
 }
 
-// --- Repo role upsert never downgrades downstream to related ---
+// Repo role upsert never downgrades downstream to related.
 
 func TestRepoUpsert_NeverDowngradesDownstream(t *testing.T) {
 	dir := t.TempDir()

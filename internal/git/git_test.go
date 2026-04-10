@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// --- findGitRoot tests ---
+// findGitRoot tests.
 
 func TestFindGitRoot_NormalRepo(t *testing.T) {
 	dir := t.TempDir()
@@ -71,7 +71,7 @@ func TestFindGitRoot_NotARepo(t *testing.T) {
 	}
 }
 
-// --- OpenRepo tests ---
+// OpenRepo tests.
 
 func TestOpenRepo_ValidRepo(t *testing.T) {
 	dir := t.TempDir()
@@ -96,7 +96,7 @@ func TestOpenRepo_NotARepo(t *testing.T) {
 	}
 }
 
-// --- RestoreFile tests ---
+// RestoreFile tests.
 
 func TestRestoreFile_RegularFile(t *testing.T) {
 	dir := t.TempDir()
@@ -221,7 +221,7 @@ func TestRestoreFile_CreatesDirectories(t *testing.T) {
 	}
 }
 
-// --- RemoveFile tests ---
+// RemoveFile tests.
 
 func TestRemoveFile_ExistingFile(t *testing.T) {
 	dir := t.TempDir()
@@ -251,7 +251,7 @@ func TestRemoveFile_MissingFile(t *testing.T) {
 	}
 }
 
-// --- Hook script generation tests ---
+// Hook script generation tests.
 
 func TestBuildSemanticaHookScript_PreCommit(t *testing.T) {
 	script := string(buildSemanticaHookScript("pre-commit", "pre-commit", false))

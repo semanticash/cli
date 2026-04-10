@@ -26,7 +26,7 @@ func setupWriteDB(t *testing.T) string {
 	return dir
 }
 
-// --- Close ---
+// Close.
 
 func TestClose_SetsClosedState(t *testing.T) {
 	dir := setupWriteDB(t)
@@ -103,7 +103,7 @@ func TestClose_ShortID(t *testing.T) {
 	}
 }
 
-// --- Merge ---
+// Merge.
 
 func TestMerge_MovesSessionsAndCloseSource(t *testing.T) {
 	dir := setupWriteDB(t)

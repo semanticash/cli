@@ -529,7 +529,7 @@ func TestMissedPromptSubmit_StopProducesNoEvents(t *testing.T) {
 	// This test verifies ParseHookEvent does not fail on the stop hook alone.
 }
 
-// --- helpers ---
+// helpers
 
 func mustMarshal(v interface{}) json.RawMessage {
 	data, _ := json.Marshal(v)

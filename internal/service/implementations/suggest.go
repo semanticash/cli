@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/llm"
 	"github.com/semanticash/cli/internal/store/impldb"
@@ -128,15 +129,25 @@ func (s *SuggestService) SuggestBatch(ctx context.Context) (*SuggestBatchResult,
 	}, nil
 }
 
-// ApplySuggestion writes the suggested title and summary to an implementation.
-func ApplySuggestion(ctx context.Context, implID, title, summary string) error {
+// ApplySuggestionInput contains parameters for writing a suggestion.
+type ApplySuggestionInput struct {
+	ImplementationID string
+	Title            string
+	Summary          string
+	Source           string // SourceAuto or SourceManual
+	RepoCount        int    // current repo count (for auto freshness tracking)
+}
+
+// ApplySuggestion writes the suggested title and summary to an implementation,
+// along with source metadata for manual-override protection.
+func ApplySuggestion(ctx context.Context, in ApplySuggestionInput) error {
 	h, err := openGlobalDB(ctx)
 	if err != nil {
 		return fmt.Errorf("open implementations db: %w", err)
 	}
 	defer func() { _ = impldb.Close(h) }()
 
-	fullID, err := resolveImplID(ctx, h, implID)
+	fullID, err := resolveImplID(ctx, h, in.ImplementationID)
 	if err != nil {
 		return err
 	}
@@ -146,7 +157,17 @@ func ApplySuggestion(ctx context.Context, implID, title, summary string) error {
 		return fmt.Errorf("get implementation: %w", err)
 	}
 
-	metadata, err := implementationMetadataWithSummary(impl.MetadataJson, summary)
+	meta := ReadImplementationMeta(impl.MetadataJson)
+	meta.Summary = strings.TrimSpace(in.Summary)
+	meta.TitleSource = in.Source
+	meta.SummarySource = in.Source
+	if in.Source == SourceAuto {
+		meta.GeneratedRepoCount = in.RepoCount
+		meta.GeneratedAt = time.Now().UnixMilli()
+	}
+	meta.GenerationInProgressAt = 0 // clear in-progress marker
+
+	metadata, err := WriteImplementationMeta(meta)
 	if err != nil {
 		return err
 	}
@@ -159,7 +180,7 @@ func ApplySuggestion(ctx context.Context, implID, title, summary string) error {
 
 	qtx := h.Queries.WithTx(tx)
 	if err := qtx.UpdateImplementationTitle(ctx, impldbgen.UpdateImplementationTitleParams{
-		Title:            impldb.NullStr(title),
+		Title:            impldb.NullStr(in.Title),
 		ImplementationID: fullID,
 	}); err != nil {
 		return fmt.Errorf("update implementation title: %w", err)
@@ -174,12 +195,6 @@ func ApplySuggestion(ctx context.Context, implID, title, summary string) error {
 		return fmt.Errorf("commit implementation update: %w", err)
 	}
 	return nil
-}
-
-// ApplyTitle writes only a suggested title to an implementation.
-// Kept as a convenience wrapper for callers that do not need summary persistence.
-func ApplyTitle(ctx context.Context, implID, title string) error {
-	return ApplySuggestion(ctx, implID, title, "")
 }
 
 // --- prompt construction helpers ---

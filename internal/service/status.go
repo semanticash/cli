@@ -38,6 +38,7 @@ type StatusResult struct {
 	LatestVersion      string              `json:"latest_version,omitempty"`
 	UpdateDownloadURL  string              `json:"update_download_url,omitempty"`
 	AutoPlaybook       bool                `json:"auto_playbook"`
+	AutoImplSummary    bool                `json:"auto_implementation_summary"`
 	GitTrailers        bool                `json:"git_trailers"`
 	LastCheckpoint     *LastCheckpointInfo `json:"last_checkpoint,omitempty"`
 	RecentSessions     []RecentSessionInfo `json:"recent_sessions,omitempty"`
@@ -105,14 +106,15 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 	}
 
 	result := &StatusResult{
-		Enabled:      true,
-		RepoRoot:     repoRoot,
-		Connected:    util.IsConnected(semDir),
-		HasRemote:    hasRemote,
-		Endpoint:     auth.EffectiveEndpoint(),
-		RepoProvider: repoProvider,
-		AutoPlaybook: util.IsPlaybookEnabled(semDir),
-		GitTrailers:  util.TrailersEnabled(semDir),
+		Enabled:         true,
+		RepoRoot:        repoRoot,
+		Connected:       util.IsConnected(semDir),
+		HasRemote:       hasRemote,
+		Endpoint:        auth.EffectiveEndpoint(),
+		RepoProvider:    repoProvider,
+		AutoPlaybook:    util.IsPlaybookEnabled(semDir),
+		AutoImplSummary: util.IsImplementationSummaryEnabled(semDir),
+		GitTrailers:     util.TrailersEnabled(semDir),
 	}
 
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())

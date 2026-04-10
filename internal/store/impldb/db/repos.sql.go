@@ -9,6 +9,18 @@ import (
 	"context"
 )
 
+const countReposForImplementation = `-- name: CountReposForImplementation :one
+select count(distinct canonical_path) from implementation_repos
+where implementation_id = ?
+`
+
+func (q *Queries) CountReposForImplementation(ctx context.Context, implementationID string) (int64, error) {
+	row := q.queryRow(ctx, q.countReposForImplementationStmt, countReposForImplementation, implementationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteOrphanedRepos = `-- name: DeleteOrphanedRepos :exec
 delete from implementation_repos
 where implementation_repos.implementation_id = ?1

@@ -52,6 +52,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewWorkspaceCmd())
 	cmd.AddCommand(NewGeneratePlaybookCmd())
 	cmd.AddCommand(NewAutoPlaybookCmd())
+	cmd.AddCommand(NewAutoImplementationSummaryCmd())
 	cmd.AddCommand(NewCaptureCmd())
 	cmd.AddCommand(NewImplementationsCmd(opts))
 
