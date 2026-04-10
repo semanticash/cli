@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Background implementation summary generation now avoids duplicate work more reliably, clears in-progress markers on failure paths, and preserves unknown implementation metadata keys during updates.
 - The post-commit implementation worker path now reuses its implementations database handle for auto-summary decisions instead of reopening the same store on the same commit path.
+- Refreshed the `gitleaks` archive dependency chain to pull in the patched `rardecode` release and resolve the related Dependabot alert.
 
 ## [0.2.0] - 2026-04-10
 
