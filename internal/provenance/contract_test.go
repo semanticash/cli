@@ -36,7 +36,7 @@ func remoteObjectKey(tenantID, kind, hash string) string {
 func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 	repoRoot := "/workspace/myrepo"
 
-	// --- Simulate what package.go produces ---
+	// Simulate what package.go produces.
 
 	// Raw prompt blob (what gets stored in local CAS).
 	rawPrompt := []byte(`Deploy the service to staging with OPENAI_KEY=sk-abc123.`)
@@ -92,7 +92,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 		},
 	})
 
-	// --- Simulate what sync.go does ---
+	// Simulate what sync.go does.
 
 	// Step 1: Redact prompt and step provenance blobs, get upload hashes.
 	promptUploadHash, promptRedacted, err := DeriveUploadHash(rawPrompt, "prompt", repoRoot)
@@ -149,7 +149,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 		{Kind: "bundle", Hash: bundleUploadHash, SizeBytes: len(bundleRedacted)},
 	}
 
-	// --- Simulate what the remote reader does ---
+	// Simulate what the remote reader does.
 
 	// Parse the uploaded bundle bytes the same way the remote reader would.
 	var uploadedBundle uploadedBundleJSON
@@ -184,7 +184,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 		}
 	}
 
-	// --- Simulate fetching step blobs by uploaded hash ---
+	// Simulate fetching step blobs by uploaded hash.
 
 	tenantID := "tenant-test-uuid"
 

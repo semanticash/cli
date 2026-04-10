@@ -140,7 +140,7 @@ func TestExtractPrimaryFile_Empty(t *testing.T) {
 	}
 }
 
-// --- filterIgnoredSteps tests ---
+// filterIgnoredSteps tests.
 
 func TestFilterIgnoredSteps_IgnoredFileDropped(t *testing.T) {
 	dir := initGitRepoWithIgnore(t, "node_modules/\n")

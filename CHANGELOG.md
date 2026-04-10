@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.2.1] - 2026-04-10
+
+### Added
+
+- Auto-generated titles and summaries for cross-repo implementations when background worker activity expands an implementation across multiple repositories.
+- A repo-local `auto-implementation-summary` automation setting, enabled by default, with `semantica set auto-implementation-summary <enabled|disabled>` for control.
+
+### Changed
+
+- Existing enabled repositories now backfill the new implementation-summary automation setting on first read so updated installs pick up the default without rerunning `semantica enable`.
+- `semantica set` and `semantica status` now surface the auto-implementation-summary automation alongside the existing automation and trailer settings.
+- Cross-repo implementation documentation now reflects the automatic title and summary flow, with `semantica suggest impl <id> --apply` positioned as the manual apply or override path.
+- CI and checked-in generated database code are now pinned to `sqlc v1.30.0`.
+- Added a dedicated implementations guide covering commands, states, boundaries, and JSON output.
+
+### Fixed
+
+- Background implementation summary generation now avoids duplicate work more reliably, clears in-progress markers on failure paths, and preserves unknown implementation metadata keys during updates.
+- The post-commit implementation worker path now reuses its implementations database handle for auto-summary decisions instead of reopening the same store on the same commit path.
+- Refreshed the `gitleaks` archive dependency chain to pull in the patched `rardecode` release and resolve the related Dependabot alert.
+
 ## [0.2.0] - 2026-04-10
 
 ### Added

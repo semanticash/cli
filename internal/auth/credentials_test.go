@@ -10,7 +10,7 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// --- Fake store for abstraction tests ---
+// Fake store for abstraction tests.
 
 type fakeStore struct {
 	creds   *Credentials
@@ -61,7 +61,7 @@ var testCreds = &Credentials{
 	Endpoint:     "https://api.semantica.sh",
 }
 
-// --- Store abstraction tests ---
+// Store abstraction tests.
 
 func TestLoadCredentials_SecureStore(t *testing.T) {
 	secure := &fakeStore{creds: testCreds}
@@ -296,7 +296,7 @@ func TestDeleteCredentials_FileError_Surfaced(t *testing.T) {
 	})
 }
 
-// --- File store integration tests (using real file I/O) ---
+// File store integration tests (using real file I/O).
 
 func TestFileStore_SaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
@@ -356,7 +356,7 @@ func TestFileStore_DeleteRemovesFile(t *testing.T) {
 	}
 }
 
-// --- Utility tests ---
+// Utility tests.
 
 func TestIsExpired(t *testing.T) {
 	tests := []struct {

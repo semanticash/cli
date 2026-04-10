@@ -53,6 +53,12 @@ Examples:
 			}
 			_, _ = fmt.Fprintf(out, "  Auto-playbook:   %s\n", playbookStatus)
 
+			implSummaryStatus := "disabled"
+			if util.IsImplementationSummaryEnabled(semDir) {
+				implSummaryStatus = "enabled"
+			}
+			_, _ = fmt.Fprintf(out, "  Auto-implementation-summary: %s\n", implSummaryStatus)
+
 			trailerStatus := "disabled"
 			if util.TrailersEnabled(semDir) {
 				trailerStatus = "enabled"
@@ -79,6 +85,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newSetAutoPlaybookCmd(rootOpts))
+	cmd.AddCommand(newSetAutoImplementationSummaryCmd(rootOpts))
 	cmd.AddCommand(newSetTrailersCmd(rootOpts))
 
 	return cmd
@@ -164,6 +171,53 @@ func newSetAutoPlaybookCmd(rootOpts *RootOptions) *cobra.Command {
 			case "disabled", "false", "off":
 				s.Automations.Playbook.Enabled = false
 				_, _ = fmt.Fprintln(out, "Auto-playbook: disabled")
+			default:
+				return fmt.Errorf("invalid value: %q (use enabled/disabled)", args[0])
+			}
+
+			if err := util.WriteSettings(semDir, s); err != nil {
+				return fmt.Errorf("write settings: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+func newSetAutoImplementationSummaryCmd(rootOpts *RootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:       "auto-implementation-summary <enabled|disabled>",
+		Short:     "Enable or disable auto-generated titles and summaries for cross-repo implementations",
+		Args:      cobra.ExactArgs(1),
+		ValidArgs: []string{"enabled", "disabled", "on", "off", "true", "false"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := git.OpenRepo(rootOpts.RepoPath)
+			if err != nil {
+				return err
+			}
+			semDir := filepath.Join(repo.Root(), ".semantica")
+
+			if !util.IsEnabled(semDir) {
+				return fmt.Errorf("semantica is not enabled. Run `semantica enable` first")
+			}
+
+			s, err := util.ReadSettings(semDir)
+			if err != nil {
+				return fmt.Errorf("read settings: %w", err)
+			}
+
+			if s.Automations == nil {
+				s.Automations = &util.Automations{}
+			}
+
+			out := cmd.OutOrStdout()
+
+			switch args[0] {
+			case "enabled", "true", "on":
+				s.Automations.ImplementationSummary.Enabled = true
+				_, _ = fmt.Fprintln(out, "Auto-implementation-summary: enabled")
+			case "disabled", "false", "off":
+				s.Automations.ImplementationSummary.Enabled = false
+				_, _ = fmt.Fprintln(out, "Auto-implementation-summary: disabled")
 			default:
 				return fmt.Errorf("invalid value: %q (use enabled/disabled)", args[0])
 			}

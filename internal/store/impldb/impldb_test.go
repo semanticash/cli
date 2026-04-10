@@ -48,7 +48,7 @@ func insertImpl(t *testing.T, ctx context.Context, q *impldbgen.Queries, state s
 	return id
 }
 
-// --- Migration tests ---
+// Migration tests.
 
 func TestMigrate_AppliesCleanly(t *testing.T) {
 	ctx := context.Background()
@@ -68,7 +68,7 @@ func TestMigrate_AppliesCleanly(t *testing.T) {
 	_ = Close(h)
 }
 
-// --- Implementation CRUD ---
+// Implementation CRUD.
 
 func TestInsertAndGetImplementation(t *testing.T) {
 	h := openTestDB(t)
@@ -98,7 +98,7 @@ func TestInsertAndGetImplementation(t *testing.T) {
 	}
 }
 
-// --- Observation lifecycle ---
+// Observation lifecycle.
 
 func TestObservation_InsertListReconcile(t *testing.T) {
 	h := openTestDB(t)
@@ -243,7 +243,7 @@ func TestObservation_PendingSortsParentsFirst(t *testing.T) {
 	}
 }
 
-// --- Provider session: same session can span multiple implementations ---
+// Provider session: same session can span multiple implementations.
 
 func TestProviderSession_SameSessionMultipleImplementations(t *testing.T) {
 	h := openTestDB(t)
@@ -347,7 +347,7 @@ func TestProviderSession_FindFiltersClosedImplementations(t *testing.T) {
 	}
 }
 
-// --- Repo role: origin never downgrades ---
+// Repo role: origin never downgrades.
 
 func TestRepoRole_OriginNeverDowngrades(t *testing.T) {
 	h := openTestDB(t)
@@ -402,7 +402,7 @@ func TestRepoRole_CanPromoteToOrigin(t *testing.T) {
 	}
 }
 
-// --- Branch upsert preserves first_seen_at ---
+// Branch upsert preserves first_seen_at.
 
 func TestBranch_UpsertPreservesFirstSeen(t *testing.T) {
 	h := openTestDB(t)
@@ -433,7 +433,7 @@ func TestBranch_UpsertPreservesFirstSeen(t *testing.T) {
 	}
 }
 
-// --- Commit partial unique index ---
+// Commit partial unique index.
 
 func TestCommit_AutoUniqueIndex(t *testing.T) {
 	h := openTestDB(t)
@@ -481,7 +481,7 @@ func TestCommit_AutoUniqueIndex(t *testing.T) {
 	}
 }
 
-// --- Dormancy ---
+// Dormancy.
 
 func TestMarkDormant(t *testing.T) {
 	h := openTestDB(t)
@@ -517,7 +517,7 @@ func TestMarkDormant(t *testing.T) {
 	}
 }
 
-// --- Repo sessions (multi-repo per provider session) ---
+// Repo sessions (multi-repo per provider session).
 
 func TestRepoSessions_MultiRepo(t *testing.T) {
 	h := openTestDB(t)

@@ -23,6 +23,7 @@ import (
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/store/blobs"
 	"github.com/semanticash/cli/internal/store/impldb"
+	impldbgen "github.com/semanticash/cli/internal/store/impldb/db"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -179,7 +180,7 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// exist. AttachCommit depends on commit_links (written by post-commit hook
 	// before the worker) and session_checkpoints (written just above).
 	if in.CommitHash != "" {
-		attachCommitToImplementation(ctx, in.RepoRoot, in.CommitHash)
+		handleImplementationPostCommit(ctx, semDir, in.RepoRoot, in.CommitHash)
 	}
 
 	filesChanged := countChangedFiles(prevManifest, manifest.Files)
@@ -773,7 +774,7 @@ func reconcileImplementations(ctx context.Context, repoRoot string) {
 // Must run after session_checkpoints have been written, because AttachCommit
 // depends on commit_links + session_checkpoints to find which sessions
 // belong to the commit's checkpoint.
-func attachCommitToImplementation(ctx context.Context, repoRoot, commitHash string) {
+func handleImplementationPostCommit(ctx context.Context, semDir, repoRoot, commitHash string) {
 	base, err := broker.GlobalBase()
 	if err != nil {
 		wlog("worker: resolve implementations base: %v\n", err)
@@ -794,7 +795,70 @@ func attachCommitToImplementation(ctx context.Context, repoRoot, commitHash stri
 		CommitHash: commitHash,
 	}); err != nil {
 		wlog("worker: attach commit to implementation: %v\n", err)
+		return
 	}
+
+	if !util.IsImplementationSummaryEnabled(semDir) {
+		return
+	}
+
+	// Resolve the implementation for this commit before running skip logic.
+	canonicalPath := broker.CanonicalRepoPath(repoRoot)
+	implID, err := implH.Queries.FindImplementationByCommit(ctx, impldbgen.FindImplementationByCommitParams{
+		CanonicalPath: canonicalPath,
+		CommitHash:    commitHash,
+	})
+	if err != nil {
+		return // commit not attached to any implementation
+	}
+
+	// Run skip logic before writing the in-progress marker.
+	if ok, reason := implementations.ShouldAutoSummarize(ctx, implH, implID, implementations.ShouldAutoSummarizeOpts{}); !ok {
+		wlog("worker: auto-impl-summary: skip %s: %s\n", implID[:8], reason)
+		return
+	}
+
+	// Mark the implementation before spawning the background process.
+	if err := implementations.MarkGenerationInProgress(ctx, implH, implID); err != nil {
+		wlog("worker: auto-impl-summary: mark in-progress: %v\n", err)
+		return
+	}
+
+	if !spawnAutoImplementationSummary(semDir, implID) {
+		implementations.ClearGenerationInProgress(ctx, implH, implID)
+	}
+}
+
+// spawnAutoImplementationSummary launches `semantica _auto-implementation-summary`
+// as a detached process. Returns true on success, false on failure.
+func spawnAutoImplementationSummary(semDir, implID string) bool {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "semantica"
+	}
+
+	logFile, err := util.OpenWorkerLog(semDir)
+	if err != nil {
+		wlog("worker: auto-impl-summary: open log failed: %v\n", err)
+		return false
+	}
+
+	cmd := exec.Command(exe, "_auto-implementation-summary",
+		"--impl", implID,
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		wlog("worker: auto-impl-summary: spawn failed: %v\n", err)
+		_ = logFile.Close()
+		return false
+	}
+
+	_ = logFile.Close()
+	wlog("worker: auto-impl-summary spawned for %s\n", implID[:8])
+	return true
 }
 
 func failCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string) {

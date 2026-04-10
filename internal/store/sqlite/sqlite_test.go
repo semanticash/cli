@@ -47,7 +47,7 @@ func insertTestRepo(t *testing.T, ctx context.Context, q *sqldb.Queries, rootPat
 	return id
 }
 
-// --- Migration tests ---
+// Migration tests.
 
 func TestMigratePath_AppliesCleanly(t *testing.T) {
 	ctx := context.Background()
@@ -63,7 +63,7 @@ func TestMigratePath_AppliesCleanly(t *testing.T) {
 	}
 }
 
-// --- Open / Close tests ---
+// Open / Close tests.
 
 func TestOpen_DefaultPragmas(t *testing.T) {
 	h := openTestDB(t)
@@ -96,7 +96,7 @@ func TestOpen_EmptyPath(t *testing.T) {
 	}
 }
 
-// --- EnsureRepository tests ---
+// EnsureRepository tests.
 
 func TestEnsureRepository_Create(t *testing.T) {
 	h := openTestDB(t)
@@ -141,7 +141,7 @@ func TestEnsureRepository_DifferentPaths(t *testing.T) {
 	}
 }
 
-// --- ResolveCheckpointID tests ---
+// ResolveCheckpointID tests.
 
 func TestResolveCheckpointID_FullUUID(t *testing.T) {
 	h := openTestDB(t)
@@ -247,7 +247,7 @@ func insertTestSource(t *testing.T, ctx context.Context, q *sqldb.Queries, repoI
 	return row.SourceID
 }
 
-// --- ResolveSessionID tests ---
+// ResolveSessionID tests.
 
 func TestResolveSessionID_FullUUID(t *testing.T) {
 	h := openTestDB(t)
@@ -324,7 +324,7 @@ func TestResolveSessionID_WrongRepo(t *testing.T) {
 	}
 }
 
-// --- Open with custom options ---
+// Open with custom options.
 
 func TestOpen_CustomSynchronous(t *testing.T) {
 	ctx := context.Background()
@@ -379,7 +379,7 @@ func TestSQLiteDSN_EmbedsBusyTimeoutPragmas(t *testing.T) {
 	}
 }
 
-// --- Ambiguous prefix tests ---
+// Ambiguous prefix tests.
 
 func TestResolveCheckpointID_AmbiguousPrefix(t *testing.T) {
 	h := openTestDB(t)
@@ -470,7 +470,7 @@ func TestResolveSessionID_AmbiguousPrefix(t *testing.T) {
 	}
 }
 
-// --- NullStr / NullInt64 tests ---
+// NullStr / NullInt64 tests.
 
 func TestNullStr(t *testing.T) {
 	if got := NullStr(""); got.Valid {

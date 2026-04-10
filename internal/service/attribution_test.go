@@ -265,7 +265,7 @@ func TestAttribution_MultipleManualCheckpointsBetweenCommits(t *testing.T) {
 	assertContains(t, events, eD, "event D")
 }
 
-// --- Matching helper tests ---
+// Matching helper tests.
 
 func TestNormalizeWhitespace(t *testing.T) {
 	tests := []struct {
@@ -331,7 +331,7 @@ func TestMatchTier2_FormatterChanges(t *testing.T) {
 	}
 }
 
-// --- Hunk-overlap classification tests ---
+// Hunk-overlap classification tests.
 
 func TestParseDiff_GroupsByContiguousAddedLines(t *testing.T) {
 	// A diff with two separate groups of added lines in one file,
@@ -1103,7 +1103,7 @@ func TestScanForTrailers_OldFormatNotDetected(t *testing.T) {
 	}
 }
 
-// --- carryForwardCandidates tests ---
+// carryForwardCandidates tests.
 
 func TestCarryForwardCandidates(t *testing.T) {
 	tests := []struct {
@@ -1166,7 +1166,7 @@ func TestCarryForwardCandidates(t *testing.T) {
 	}
 }
 
-// --- scoreDiffPerFile tests ---
+// scoreDiffPerFile tests.
 
 func TestScoreDiffPerFile_ReturnsPerFileResults(t *testing.T) {
 	cands := aiCandidates{
@@ -1227,27 +1227,27 @@ func TestScoreDiffPerFile_ReturnsPerFileResults(t *testing.T) {
 	}
 }
 
-// --- aggregateFileScores tests ---
+// aggregateFileScores tests.
 
 func TestAggregateFileScores_SumsCorrectly(t *testing.T) {
 	scores := []fileScore{
 		{
-			path:          "a.go",
-			totalLines:    10,
-			exactLines:    5,
+			path:           "a.go",
+			totalLines:     10,
+			exactLines:     5,
 			formattedLines: 2,
-			modifiedLines: 1,
-			humanLines:    2,
-			providerLines: map[string]int{"claude_code": 8},
+			modifiedLines:  1,
+			humanLines:     2,
+			providerLines:  map[string]int{"claude_code": 8},
 		},
 		{
-			path:          "b.go",
-			totalLines:    5,
-			exactLines:    3,
+			path:           "b.go",
+			totalLines:     5,
+			exactLines:     3,
 			formattedLines: 0,
-			modifiedLines: 0,
-			humanLines:    2,
-			providerLines: map[string]int{"cursor": 3},
+			modifiedLines:  0,
+			humanLines:     2,
+			providerLines:  map[string]int{"cursor": 3},
 		},
 	}
 	provModel := map[string]string{
@@ -1284,7 +1284,7 @@ func TestAggregateFileScores_SumsCorrectly(t *testing.T) {
 	}
 }
 
-// --- buildAICandidates eligible-file gating tests ---
+// buildAICandidates eligible-file gating tests.
 
 func TestBuildAICandidates_EligibleFileGating(t *testing.T) {
 	h := testDB(t)
@@ -1344,7 +1344,7 @@ func TestBuildAICandidates_EligibleFileGating(t *testing.T) {
 	}
 }
 
-// --- End-to-end carry-forward tests ---
+// End-to-end carry-forward tests.
 
 // insertEventWithPayload creates a claude_code assistant event with a Write
 // payload for the specified file content. Returns the event ID.
