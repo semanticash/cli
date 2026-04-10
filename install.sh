@@ -32,19 +32,14 @@ fi
 
 # --- Resolve install directory ---
 
-find_writable_dir() {
-  IFS=:
-  for dir in $PATH; do
+if [ -z "$INSTALL_DIR" ]; then
+  # Prefer well-known system directories over arbitrary writable PATH entries.
+  for dir in /usr/local/bin /usr/bin /opt/homebrew/bin; do
     if [ -d "$dir" ] && [ -w "$dir" ]; then
-      echo "$dir"
-      return 0
+      INSTALL_DIR="$dir"
+      break
     fi
   done
-  return 1
-}
-
-if [ -z "$INSTALL_DIR" ]; then
-  INSTALL_DIR=$(find_writable_dir) || true
 fi
 
 if [ -z "$INSTALL_DIR" ]; then
