@@ -37,3 +37,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Notify Discord
+        if: success()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          CHANGELOG=$(cat "$RUNNER_TEMP/release_notes.md" | head -c 1500)
+
+          # Escape special JSON characters.
+          CHANGELOG_ESCAPED=$(printf '%s' "$CHANGELOG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+
+          curl -sf -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d @- <<PAYLOAD
+          {
+            "embeds": [{
+              "title": "Semantica CLI ${VERSION} released",
+              "url": "https://github.com/semanticash/cli/releases/tag/${VERSION}",
+              "color": 5814783,
+              "description": ${CHANGELOG_ESCAPED},
+              "fields": [
+                {
+                  "name": "Install / Update",
+                  "value": "\`\`\`sh\ncurl -fsSL https://semantica.sh/install.sh | sh\n\`\`\`"
+                },
+                {
+                  "name": "Homebrew",
+                  "value": "\`\`\`sh\nbrew upgrade semanticash/tap/semantica\n\`\`\`"
+                }
+              ]
+            }]
+          }
+          PAYLOAD
