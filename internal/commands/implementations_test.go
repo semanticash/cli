@@ -99,7 +99,7 @@ func TestRenderImplementationPlain_ShowsCommitFocusedSections(t *testing.T) {
 	for _, want := range []string{
 		"Add roadmap voting",
 		"Implementation: 4d741c1f",
-		"Started in pulse-api (Claude)",
+		"Started in pulse-api repo (by Claude)",
 		"Story",
 		"Adds roadmap voting scaffolding across the API and web surfaces with a",
 		"Repos",
@@ -190,7 +190,7 @@ func TestBuildImplementationJSON_ContainsCardSections(t *testing.T) {
 	if got.AIAttribution != "78% pulse-api · 91% pulse-web" {
 		t.Fatalf("top-level ai attribution: got %q", got.AIAttribution)
 	}
-	if got.Card.Context != "Started in pulse-api (Claude)" {
+	if got.Card.Context != "Started in pulse-api repo (by Claude)" {
 		t.Fatalf("card context: got %q", got.Card.Context)
 	}
 	if got.Card.AIAttribution != "78% pulse-api · 91% pulse-web" {
@@ -243,7 +243,7 @@ func TestImplementationContextLine_PrefersOriginRepoDisplayName(t *testing.T) {
 	}
 
 	got := implementationContextLine(detail)
-	want := "Started in pulse-api (Claude)"
+	want := "Started in pulse-api repo (by Claude)"
 	if got != want {
 		t.Fatalf("implementation context line: got %q want %q", got, want)
 	}

@@ -639,7 +639,7 @@ func implementationContextLine(detail *implementations.ImplementationDetail) str
 		return ""
 	}
 	if provider != "" {
-		return fmt.Sprintf("Started in %s (%s)", startRepo, provider)
+		return fmt.Sprintf("Started in %s repo (by %s)", startRepo, provider)
 	}
 	return fmt.Sprintf("Started in %s", startRepo)
 }
