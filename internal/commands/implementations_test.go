@@ -3,16 +3,19 @@ package commands
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semanticash/cli/internal/service/implementations"
 )
 
 func TestFormatImplementationOption(t *testing.T) {
+	now := time.Now()
 	item := implementations.ListItem{
 		ImplementationID: "6972dae0-1234-5678-9abc-def012345678",
 		Title:            "Add roadmap voting across pulse repos",
 		State:            "active",
 		CommitCount:      1,
+		LastActivityAt:   now.Add(-2 * time.Hour).UnixMilli(),
 		Repos: []implementations.RepoSummary{
 			{DisplayName: "pulse-api", Role: "origin"},
 			{DisplayName: "pulse-sdk", Role: "downstream"},
@@ -25,6 +28,7 @@ func TestFormatImplementationOption(t *testing.T) {
 		"6972dae0",
 		"Add roadmap voting across pulse repos",
 		"active",
+		"2h",
 		"1 commit",
 		"Repositories: pulse-api, pulse-sdk, pulse-web",
 	} {
@@ -56,6 +60,7 @@ func TestImplementationPickerTitle(t *testing.T) {
 		"ID",
 		"TITLE",
 		"STATE",
+		"LAST",
 		"COMMITS",
 	} {
 		if !strings.Contains(got, want) {

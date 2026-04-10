@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const implementationPickerTitleWidth = 64
+const implementationPickerTitleWidth = 54
 const implementationStoryWrapWidth = 86
 
 var errNoImplementations = fmt.Errorf("no implementations found")
@@ -227,15 +227,15 @@ func listImplementations(cmd *cobra.Command, out io.Writer, in implementations.L
 	}
 
 	_, _ = fmt.Fprintf(out, "IMPLEMENTATIONS\n\n")
-	_, _ = fmt.Fprintf(out, "%-10s %-30s %-18s %-10s %s\n",
-		"ID", "Title", "Repos", "State", "Commits")
+	_, _ = fmt.Fprintf(out, "%-10s %-28s %-16s %-10s %-8s %s\n",
+		"ID", "Title", "Repos", "State", "Last", "Commits")
 
 	for _, item := range result.Items {
 		id := util.ShortID(item.ImplementationID)
-		title := displayImplementationTitle(item.Title, 28)
-		repos := displayImplementationRepos(item.Repos, 16)
-		_, _ = fmt.Fprintf(out, "%-10s %-30s %-18s %-10s %d\n",
-			id, title, repos, item.State, item.CommitCount)
+		title := displayImplementationTitle(item.Title, 26)
+		repos := displayImplementationRepos(item.Repos, 14)
+		_, _ = fmt.Fprintf(out, "%-10s %-28s %-16s %-10s %-8s %d\n",
+			id, title, repos, item.State, service.RelativeTime(item.LastActivityAt), item.CommitCount)
 	}
 
 	return nil
@@ -303,12 +303,14 @@ func formatImplementationOption(item implementations.ListItem) string {
 		commitLabel = "commit"
 	}
 	commitText := fmt.Sprintf("%d %s", item.CommitCount, commitLabel)
+	lastActivity := service.RelativeTime(item.LastActivityAt)
 	labelStyle := lipgloss.NewStyle().Faint(true)
 	repoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	return fmt.Sprintf("%-8s  %-64s  %-8s  %s\n%s %s",
+	return fmt.Sprintf("%-8s  %-54s  %-8s  %-5s  %s\n%s %s",
 		util.ShortID(item.ImplementationID),
 		title,
 		item.State,
+		lastActivity,
 		commitText,
 		labelStyle.Render("Repositories:"),
 		repoStyle.Render(repos))
@@ -316,10 +318,11 @@ func formatImplementationOption(item implementations.ListItem) string {
 
 func implementationPickerTitle() string {
 	return fmt.Sprintf(
-		"Select an implementation\n  %-8s  %-64s  %-8s  %s",
+		"Select an implementation\n  %-8s  %-54s  %-8s  %-5s  %s",
 		"ID",
 		"TITLE",
 		"STATE",
+		"LAST",
 		"COMMITS",
 	)
 }
