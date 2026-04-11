@@ -19,13 +19,11 @@ import (
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
 
-// Golden tests for the public attribution entry points.
+// Regression tests for the public attribution entry points.
 //
 // Provider details are compared in canonical order (AI lines descending, then
 // provider name). File-related slices are canonicalized by path before
 // equality checks.
-
-// --- Helpers ---
 
 func insertProviderFileTouchEvent(t *testing.T, h *sqlstore.Handle, sessID, repoID, provider, toolName string, ts int64, filePath string) string {
 	t.Helper()
@@ -711,4 +709,168 @@ func TestRegression_AttributeCommit_DeletionTouchedFiles(t *testing.T) {
 	}
 	if !deletedFound { t.Error("old.go not found in FilesDeleted") }
 	if result.TotalLines != 0 { t.Errorf("TotalLines = %d, want 0", result.TotalLines) }
+}
+
+// Provider file-touch events should still mark FilesCreated as AI even when
+// there is no line-level payload content.
+
+func TestRegression_FileChangeAI_ProviderTouchNoLineLevelEvidence(t *testing.T) {
+	dir, _ := setupGoldenRepo(t)
+	ctx := context.Background()
+
+	// Add a new file, commit it.
+	_ = os.WriteFile(filepath.Join(dir, "touched.go"), []byte("package touched\nfunc F() {}\n"), 0o644)
+	gitCmd := exec.Command("git", "add", "touched.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+	gitCmd = exec.Command("git", "commit", "-m", "add touched.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+	gitCmd = exec.Command("git", "rev-parse", "HEAD")
+	gitCmd.Dir = dir
+	out, _ := gitCmd.Output()
+	commitHash := strings.TrimSpace(string(out))
+
+	// Insert a provider file-touch event (no payload, no line-level data).
+	repo, _ := git.OpenRepo(dir)
+	dbPath := filepath.Join(repo.Root(), ".semantica", "lineage.db")
+	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repo.Root())
+
+	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/cursor.jsonl")
+	sessID := insertSessionWithProvider(t, h, repoRow.RepositoryID, srcID, "sess-cursor-touch", "cursor")
+	insertProviderFileTouchEvent(t, h, sessID, repoRow.RepositoryID, "cursor", "cursor_edit", 350_000, "touched.go")
+
+	cpID := uuid.NewString()
+	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
+		CreatedAt: 400_000, Kind: "auto", Status: "complete",
+		CompletedAt: sql.NullInt64{Int64: 400_000, Valid: true},
+	})
+	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: commitHash, RepositoryID: repoRow.RepositoryID,
+		CheckpointID: cpID, LinkedAt: 400_000,
+	})
+	_ = sqlstore.Close(h)
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+
+	// The file has no exact/formatted/modified scored lines (no payload),
+	// but it should be marked AI=true in FilesCreated because of the
+	// provider file-touch event.
+	foundInCreated := false
+	for _, fc := range result.FilesCreated {
+		if fc.Path == "touched.go" {
+			foundInCreated = true
+			if !fc.AI {
+				t.Error("touched.go FilesCreated.AI should be true (provider file-touch, zero scored lines)")
+			}
+		}
+	}
+	if !foundInCreated {
+		t.Error("touched.go not found in FilesCreated")
+	}
+
+	// AI percentage is 100% because all lines are AI-Modified via provider touch.
+	if result.AIPercentage != 100 {
+		t.Errorf("AIPercentage = %.1f, want 100", result.AIPercentage)
+	}
+}
+
+// Bash deletion events should still mark FilesDeleted entries as AI even when
+// the commit adds no lines.
+
+func TestRegression_FileChangeAI_BashDeletionZeroScored(t *testing.T) {
+	dir, _ := setupGoldenRepo(t)
+	ctx := context.Background()
+
+	// Create a file, commit, then delete via AI bash command.
+	_ = os.WriteFile(filepath.Join(dir, "doomed.go"), []byte("package doomed\n"), 0o644)
+	gitCmd := exec.Command("git", "add", "doomed.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+	gitCmd = exec.Command("git", "commit", "-m", "add doomed.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+
+	// Delete and commit.
+	_ = os.Remove(filepath.Join(dir, "doomed.go"))
+	gitCmd = exec.Command("git", "add", "doomed.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+	gitCmd = exec.Command("git", "commit", "-m", "remove doomed.go")
+	gitCmd.Dir = dir
+	_, _ = gitCmd.CombinedOutput()
+	gitCmd = exec.Command("git", "rev-parse", "HEAD")
+	gitCmd.Dir = dir
+	out, _ := gitCmd.Output()
+	deleteCommit := strings.TrimSpace(string(out))
+
+	// Insert AI bash rm event.
+	repo, _ := git.OpenRepo(dir)
+	repoRoot := repo.Root()
+	dbPath := filepath.Join(repoRoot, ".semantica", "lineage.db")
+	objectsDir := filepath.Join(repoRoot, ".semantica", "objects")
+	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
+	bs, _ := blobs.NewStore(objectsDir)
+
+	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "sess-rm")
+
+	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, repoRoot)
+	payloadHash, _, _ := bs.Put(ctx, []byte(payload))
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: uuid.NewString(), SessionID: sessID, RepositoryID: repoRow.RepositoryID,
+		Ts: 450_000, Kind: "assistant", Role: sqlstore.NullStr("assistant"),
+		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
+		PayloadHash: sqlstore.NullStr(payloadHash),
+	})
+
+	cpID := uuid.NewString()
+	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
+		CreatedAt: 500_000, Kind: "auto", Status: "complete",
+		CompletedAt: sql.NullInt64{Int64: 500_000, Valid: true},
+	})
+	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: deleteCommit, RepositoryID: repoRow.RepositoryID,
+		CheckpointID: cpID, LinkedAt: 500_000,
+	})
+	_ = sqlstore.Close(h)
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: deleteCommit})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+
+	// Deleted file has zero added lines (TotalLines=0, AIPercentage=0).
+	if result.TotalLines != 0 {
+		t.Errorf("TotalLines = %d, want 0", result.TotalLines)
+	}
+
+	// But FilesDeleted should mark doomed.go with AI=true because
+	// the AI ran the rm command.
+	foundDeleted := false
+	for _, fc := range result.FilesDeleted {
+		if fc.Path == "doomed.go" {
+			foundDeleted = true
+			if !fc.AI {
+				t.Error("doomed.go FilesDeleted.AI should be true (bash rm, zero scored lines)")
+			}
+		}
+	}
+	if !foundDeleted {
+		t.Error("doomed.go not found in FilesDeleted")
+	}
+
+	// Headline AI percentage unchanged (0% because no added lines).
+	if result.AIPercentage != 0 {
+		t.Errorf("AIPercentage = %.1f, want 0 (deleted file only)", result.AIPercentage)
+	}
 }

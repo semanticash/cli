@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -158,7 +159,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		return nil, fmt.Errorf("init blob store: %w", err)
 	}
 
-	events, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
+	windowRows, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
 		RepositoryID: cp.RepositoryID,
 		AfterTs:      afterTs,
 		UpToTs:       cp.CreatedAt,
@@ -167,69 +168,28 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		return nil, fmt.Errorf("list events in window: %w", err)
 	}
 
-	aiLines := make(map[string]map[string]struct{})
-	aiTouchedFiles := make(map[string]bool)
-	providerTouchedFiles := make(map[string]string)
-	fileProvider := make(map[string]string)
-	providerModel := make(map[string]string)
+	eventRows := toEventRows(ctx, bs, windowRows)
+	cands, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
+
+	// Use local names for the extracted candidate sets.
+	aiLines := cands.AILines
+	providerTouchedFiles := cands.ProviderTouchedFiles
+	fileProvider := cands.FileProvider
+	providerModel := cands.ProviderModel
+
+	// Derive aiTouchedFiles from ProviderTouchedFiles keys.
+	// ProviderTouchedFiles includes all touched paths: provider file-touch,
+	// line-level Claude writes/edits, and bash deletion paths.
+	aiTouchedFiles := make(map[string]bool, len(providerTouchedFiles))
+	for fp := range providerTouchedFiles {
+		aiTouchedFiles[fp] = true
+	}
 
 	var diag AttributionDiagnostics
-	diag.EventsConsidered = len(events)
-
-	for _, ev := range events {
-		if ev.Model.Valid && ev.Model.String != "" {
-			providerModel[ev.Provider] = ev.Model.String
-		}
-
-		// Some providers report file touches on tool-role events.
-		if hasProviderFileEdit(ev.ToolUses) {
-			diag.AIToolEvents++
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				providerTouchedFiles[fp] = ev.Provider
-				aiTouchedFiles[fp] = true
-			}
-			continue
-		}
-
-		if ev.Role.String != "assistant" {
-			continue
-		}
-		diag.EventsAssistant++
-
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
-			continue
-		}
-
-		hasBash := ev.ToolUses.Valid && strings.Contains(ev.ToolUses.String, `"Bash"`)
-		if !hasEditOrWrite(ev.ToolUses) && !hasBash {
-			continue
-		}
-		diag.AIToolEvents++
-
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		diag.PayloadsLoaded++
-
-		fileLines, bashCommands := extractClaudeActions(raw, repoRoot)
-		for fp, lines := range fileLines {
-			aiTouchedFiles[fp] = true
-			fileProvider[fp] = ev.Provider
-			if aiLines[fp] == nil {
-				aiLines[fp] = make(map[string]struct{})
-			}
-			for line := range lines {
-				aiLines[fp][line] = struct{}{}
-			}
-		}
-
-		for _, cmd := range bashCommands {
-			for _, fp := range extractDeletedPaths(cmd, repoRoot) {
-				aiTouchedFiles[fp] = true
-			}
-		}
-	}
+	diag.EventsConsidered = evStats.EventsConsidered
+	diag.EventsAssistant = evStats.EventsAssistant
+	diag.PayloadsLoaded = evStats.PayloadsLoaded
+	diag.AIToolEvents = evStats.AIToolEvents
 
 	diffBytes, err := repo.DiffForCommit(ctx, in.CommitHash)
 	if err != nil {
@@ -277,13 +237,14 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 					UpToTs:   prev.CreatedAt,
 				}
 				if histEvents, histErr := loadWindowEvents(ctx, h, histInput); histErr == nil {
-					histCands := buildAICandidates(ctx, bs, histEvents, repoRoot, needsCF)
+					histRows := toEventRows(ctx, bs, histEvents)
+					histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, repoRoot, needsCF)
 					// Merge historical candidates into the main maps.
 					var cfLines int
-					for fp, lines := range histCands.aiLines {
+					for fp, lines := range histNewCands.AILines {
 						aiTouchedFiles[fp] = true
-						if histCands.fileProvider[fp] != "" {
-							fileProvider[fp] = histCands.fileProvider[fp]
+						if histNewCands.FileProvider[fp] != "" {
+							fileProvider[fp] = histNewCands.FileProvider[fp]
 						}
 						if aiLines[fp] == nil {
 							aiLines[fp] = make(map[string]struct{})
@@ -293,11 +254,11 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 							cfLines++
 						}
 					}
-					for fp, prov := range histCands.providerTouchedFiles {
+					for fp, prov := range histNewCands.ProviderTouchedFiles {
 						providerTouchedFiles[fp] = prov
 						aiTouchedFiles[fp] = true
 					}
-					for prov, model := range histCands.providerModel {
+					for prov, model := range histNewCands.ProviderModel {
 						if _, exists := providerModel[prov]; !exists {
 							providerModel[prov] = model
 						}
@@ -663,21 +624,30 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 		return AIPercentResult{}, nil
 	}
 
-	events, err := loadWindowEvents(ctx, h, in)
+	rows, err := loadWindowEvents(ctx, h, in)
 	if err != nil {
 		return AIPercentResult{}, err
 	}
 
-	cands := buildAICandidates(ctx, bs, events, in.RepoRoot, nil)
+	eventRows := toEventRows(ctx, bs, rows)
+	cands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
 
-	if len(cands.aiLines) == 0 && len(cands.providerTouchedFiles) == 0 {
+	if len(cands.AILines) == 0 && len(cands.ProviderTouchedFiles) == 0 {
 		return AIPercentResult{}, nil
 	}
 
-	dr := parseDiff(diffBytes)
-	scores := scoreDiffPerFile(dr, cands)
+	// Adapt candidate data for the existing scoring helpers.
+	oldCands := aiCandidates{
+		aiLines:              cands.AILines,
+		providerTouchedFiles: cands.ProviderTouchedFiles,
+		fileProvider:         cands.FileProvider,
+		providerModel:        cands.ProviderModel,
+	}
 
-	return aggregateFileScores(scores, cands.providerModel, len(dr.files)), nil
+	dr := parseDiff(diffBytes)
+	scores := scoreDiffPerFile(dr, oldCands)
+
+	return aggregateFileScores(scores, oldCands.providerModel, len(dr.files)), nil
 }
 
 // loadWindowEvents queries events in the delta window. Returns
@@ -697,62 +667,41 @@ func loadWindowEvents(ctx context.Context, h *sqlstore.Handle, in ComputeAIPerce
 	return events, nil
 }
 
-// buildAICandidates extracts AI line sets and provider metadata from events.
-// When eligibleFiles is non-nil, only files in the set contribute to candidate
-// maps (gating happens at extraction time, not in the diff loop).
-func buildAICandidates(ctx context.Context, bs *blobs.Store, events []sqldb.ListEventsInWindowRow, repoRoot string, eligibleFiles map[string]bool) aiCandidates {
-	c := aiCandidates{
-		aiLines:              make(map[string]map[string]struct{}),
-		providerTouchedFiles: make(map[string]string),
-		fileProvider:         make(map[string]string),
-		providerModel:        make(map[string]string),
-	}
-
-	for _, ev := range events {
-		if ev.Model.Valid && ev.Model.String != "" {
-			c.providerModel[ev.Provider] = ev.Model.String
+// toEventRows converts DB rows into events.EventRow with pre-loaded payloads.
+// This is the bridge between the service layer (DB/blob access) and the pure
+// domain events package (no infrastructure).
+//
+// Payloads are only loaded for assistant rows with Edit/Write/Bash tool usage,
+// matching the old code's filter chain. This avoids loading blobs for irrelevant
+// events (user messages, tool results, non-file-modifying assistant responses).
+func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsInWindowRow) []attrevents.EventRow {
+	out := make([]attrevents.EventRow, len(rows))
+	for i, r := range rows {
+		out[i] = attrevents.EventRow{
+			Provider:    r.Provider,
+			Role:        r.Role.String,
+			ToolUses:    r.ToolUses.String,
+			PayloadHash: r.PayloadHash.String,
+			Model:       r.Model.String,
 		}
-
-		if hasProviderFileEdit(ev.ToolUses) {
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				if eligibleFiles != nil && !eligibleFiles[fp] {
-					continue
-				}
-				c.providerTouchedFiles[fp] = ev.Provider
-			}
+		// Only load payloads for assistant events with file-modifying tools.
+		// Provider file-touch events (Cursor, Copilot, etc.) don't need payloads.
+		if r.Role.String != "assistant" {
 			continue
 		}
-
-		if ev.Role.String != "assistant" {
+		if !r.PayloadHash.Valid || r.PayloadHash.String == "" || bs == nil {
 			continue
 		}
-
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
+		hasBash := r.ToolUses.Valid && strings.Contains(r.ToolUses.String, `"Bash"`)
+		if !attrevents.HasEditOrWrite(r.ToolUses.String) && !hasBash {
 			continue
 		}
-		if !hasEditOrWrite(ev.ToolUses) {
-			continue
-		}
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		fileLines, _ := extractClaudeActions(raw, repoRoot)
-		for fp, lines := range fileLines {
-			if eligibleFiles != nil && !eligibleFiles[fp] {
-				continue
-			}
-			c.fileProvider[fp] = ev.Provider
-			if c.aiLines[fp] == nil {
-				c.aiLines[fp] = make(map[string]struct{})
-			}
-			for line := range lines {
-				c.aiLines[fp][line] = struct{}{}
-			}
+		raw, err := bs.Get(ctx, r.PayloadHash.String)
+		if err == nil {
+			out[i].Payload = raw
 		}
 	}
-
-	return c
+	return out
 }
 
 // scoreDiffPerFile matches AI candidate maps against a parsed diff and returns
@@ -980,7 +929,12 @@ func attributeWithCarryForward(
 	} else if err != nil {
 		return carryForwardResult{}, err
 	} else {
-		currentCands = buildAICandidates(ctx, bs, events, in.RepoRoot, nil)
+		eventRows := toEventRows(ctx, bs, events)
+		newCands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
+		currentCands = aiCandidates{
+			aiLines: newCands.AILines, providerTouchedFiles: newCands.ProviderTouchedFiles,
+			fileProvider: newCands.FileProvider, providerModel: newCands.ProviderModel,
+		}
 		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
 			currentScores = scoreDiffPerFile(dr, currentCands)
 		}
@@ -1038,7 +992,12 @@ func attributeWithCarryForward(
 		histEvents, histErr := loadWindowEvents(ctx, h, histInput)
 		if histErr == nil {
 			historicalNoEvents = false
-			histCands = buildAICandidates(ctx, bs, histEvents, in.RepoRoot, needsCF)
+			histRows := toEventRows(ctx, bs, histEvents)
+			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
+			histCands = aiCandidates{
+				aiLines: histNewCands.AILines, providerTouchedFiles: histNewCands.ProviderTouchedFiles,
+				fileProvider: histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
+			}
 			if len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 {
 				historicalScores = scoreDiffPerFile(dr, histCands)
 			}

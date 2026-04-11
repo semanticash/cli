@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -1284,7 +1285,8 @@ func TestAggregateFileScores_SumsCorrectly(t *testing.T) {
 	}
 }
 
-// buildAICandidates eligible-file gating tests.
+// Integration test for eligible-file gating through toEventRows and
+// BuildCandidatesFromRows.
 
 func TestBuildAICandidates_EligibleFileGating(t *testing.T) {
 	h := testDB(t)
@@ -1324,23 +1326,24 @@ func TestBuildAICandidates_EligibleFileGating(t *testing.T) {
 	}
 
 	repoRoot := "/test/repo/" + repoID
+	eventRows := toEventRows(context.Background(), bs, events)
 
 	// Without gating: both files should appear.
-	candsAll := buildAICandidates(context.Background(), bs, events, repoRoot, nil)
-	if len(candsAll.aiLines) != 2 {
-		t.Errorf("ungated: expected 2 files in aiLines, got %d", len(candsAll.aiLines))
+	candsAll, _ := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
+	if len(candsAll.AILines) != 2 {
+		t.Errorf("ungated: expected 2 files in AILines, got %d", len(candsAll.AILines))
 	}
 
 	// With gating to a.go only: only a.go should appear.
-	candsGated := buildAICandidates(context.Background(), bs, events, repoRoot, map[string]bool{"a.go": true})
-	if len(candsGated.aiLines) != 1 {
-		t.Fatalf("gated: expected 1 file in aiLines, got %d", len(candsGated.aiLines))
+	candsGated, _ := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, map[string]bool{"a.go": true})
+	if len(candsGated.AILines) != 1 {
+		t.Fatalf("gated: expected 1 file in AILines, got %d", len(candsGated.AILines))
 	}
-	if _, ok := candsGated.aiLines["a.go"]; !ok {
-		t.Error("gated: expected a.go in aiLines")
+	if _, ok := candsGated.AILines["a.go"]; !ok {
+		t.Error("gated: expected a.go in AILines")
 	}
-	if _, ok := candsGated.aiLines["b.go"]; ok {
-		t.Error("gated: b.go should NOT be in aiLines")
+	if _, ok := candsGated.AILines["b.go"]; ok {
+		t.Error("gated: b.go should NOT be in AILines")
 	}
 }
 
