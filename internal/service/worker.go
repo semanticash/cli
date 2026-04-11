@@ -20,10 +20,7 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/redact"
-	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/store/blobs"
-	"github.com/semanticash/cli/internal/store/impldb"
-	impldbgen "github.com/semanticash/cli/internal/store/impldb/db"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -153,176 +150,65 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// recovered events are included in this checkpoint.
 	reconcileActiveSessions(ctx)
 
-	// Reconcile implementation observations (best-effort).
-	// Creates implementations.db on first call, processes pending observations.
-	// Commit attachment happens later, after session_checkpoints are written.
+	// Process pending implementation observations. Errors are logged so the
+	// worker can continue with checkpoint enrichment.
 	reconcileImplementations(ctx, in.RepoRoot)
 
-	h := wctx.h
-	repo := wctx.repo
-	blobStore := wctx.blobStore
-	cp := wctx.cp
-	semDir := wctx.semDir
-
-	paths, err := repo.ListFilesFromGit(ctx)
+	// Build the manifest, link sessions, update stats, and compute AI%.
+	er, err := enrichCheckpoint(ctx, wctx, in)
 	if err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
-		return fmt.Errorf("list files: %w", err)
-	}
-
-	// Load previous manifest for incremental building and later diff counting.
-	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.CreatedAt)
-
-	mr, err := blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, prevManifest.files)
-	if err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
+		failCheckpoint(ctx, wctx.h, in.CheckpointID)
 		return err
 	}
-	manifestHash := mr.ManifestHash
-	totalBytes := mr.TotalBytes
-	manifest := mr.Manifest
 
-	// For session linking / file counting, use GetPreviousCompletedCheckpoint.
-	var afterTs int64
-	prev, prevErr := h.Queries.GetPreviousCompletedCheckpoint(ctx, sqldb.GetPreviousCompletedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
-	})
-	if prevErr == nil {
-		afterTs = prev.CreatedAt
-	}
-
-	// For attribution window, use GetPreviousCommitLinkedCheckpoint
-	// (consistent with hook_commit_msg.go and AttributeCommit).
-	var attrAfterTs int64
-	var prevCLPtr *sqldb.Checkpoint
-	prevCL, prevCLErr := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
-	})
-	if prevCLErr == nil {
-		attrAfterTs = prevCL.CreatedAt
-		prevCLPtr = &prevCL
-	}
-
-	windowSessions, sessErr := h.Queries.ListSessionsWithEventsInWindow(ctx, sqldb.ListSessionsWithEventsInWindowParams{
-		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UpToTs:       cp.CreatedAt,
-	})
-	if sessErr != nil {
-		wlog("worker: list sessions in window: %v\n", sessErr)
-	}
-
-	seen := make(map[string]bool, len(windowSessions))
-	for _, sid := range windowSessions {
-		seen[sid] = true
-	}
-
-	for sid := range seen {
-		if err := h.Queries.InsertSessionCheckpoint(ctx, sqldb.InsertSessionCheckpointParams{
-			SessionID:    sid,
-			CheckpointID: in.CheckpointID,
-		}); err != nil {
-			wlog("worker: link session %s to checkpoint: %v\n", sid, err)
-		}
-	}
-
-	// Attach this commit to its implementation now that session_checkpoints
-	// exist. AttachCommit depends on commit_links (written by post-commit hook
-	// before the worker) and session_checkpoints (written just above).
-	if in.CommitHash != "" {
-		handleImplementationPostCommit(ctx, semDir, in.RepoRoot, in.CommitHash)
-	}
-
-	filesChanged := countChangedFiles(prevManifest, manifest.Files)
-
-	if err := h.Queries.UpsertCheckpointStats(ctx, sqldb.UpsertCheckpointStatsParams{
-		CheckpointID: in.CheckpointID,
-		SessionCount: int64(len(seen)),
-		FilesChanged: filesChanged,
-	}); err != nil {
-		wlog("worker: upsert checkpoint stats: %v\n", err)
-	}
-
-	if in.CommitHash != "" {
-		diffBytes, diffErr := repo.DiffForCommit(ctx, in.CommitHash)
-		if diffErr == nil && len(diffBytes) > 0 {
-			cfr, attrErr := attributeWithCarryForward(ctx, h, blobStore, diffBytes, ComputeAIPercentInput{
-				RepoRoot: in.RepoRoot,
-				RepoID:   cp.RepositoryID,
-				AfterTs:  attrAfterTs,
-				UpToTs:   cp.CreatedAt,
-			}, prevCLPtr, semDir)
-			if attrErr == nil {
-				if err := h.Queries.UpdateCheckpointAIPercentage(ctx, sqldb.UpdateCheckpointAIPercentageParams{
-					AiPercentage: cfr.result.Percent,
-					CheckpointID: in.CheckpointID,
-				}); err != nil {
-					wlog("worker: update AI percentage: %v\n", err)
-				}
-				wlog("worker: AI attribution: %.0f%%\n", cfr.result.Percent)
-			}
-		}
-	}
-
-	// Mark checkpoint complete only after all derived data (session links,
-	// stats, AI percentage) has been written. This ensures readers never
-	// observe a "complete" checkpoint with missing enrichment.
-	if err := h.Queries.CompleteCheckpoint(ctx, sqldb.CompleteCheckpointParams{
-		ManifestHash: sql.NullString{String: manifestHash, Valid: true},
-		SizeBytes:    sql.NullInt64{Int64: totalBytes, Valid: true},
+	// Mark the checkpoint complete only after enrichment is written.
+	if err := wctx.h.Queries.CompleteCheckpoint(ctx, sqldb.CompleteCheckpointParams{
+		ManifestHash: sql.NullString{String: er.manifestHash, Valid: true},
+		SizeBytes:    sql.NullInt64{Int64: er.totalBytes, Valid: true},
 		CompletedAt:  sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
 		CheckpointID: in.CheckpointID,
 	}); err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
+		failCheckpoint(ctx, wctx.h, in.CheckpointID)
 		return fmt.Errorf("complete checkpoint: %w", err)
 	}
 
 	wlog("worker: checkpoint %s complete (%d files, %d changed, %d bytes, commit %s)\n",
-		in.CheckpointID, len(paths), filesChanged, totalBytes, in.CommitHash)
+		in.CheckpointID, er.fileCount, er.filesChanged, er.totalBytes, in.CommitHash)
 
-	// Auto-playbook runs asynchronously and updates the remote view later.
-	if in.CommitHash != "" && util.IsPlaybookEnabled(semDir) {
-		spawnAutoPlaybook(semDir, in.CheckpointID, in.CommitHash, in.RepoRoot)
+	// Run post-completion side effects. Errors are logged and do not fail
+	// the worker after checkpoint completion.
+	if in.CommitHash != "" && util.IsPlaybookEnabled(wctx.semDir) {
+		spawnAutoPlaybook(wctx.semDir, in.CheckpointID, in.CommitHash, in.RepoRoot)
 	}
 
-	// Sync provenance on checkpoint completion (independent of commit).
-	// The checkpoint's created_at serves as the watermark - only sync turns
-	// packaged at or before this checkpoint.
-	if util.IsConnected(semDir) {
-		syncProvenance(ctx, in.RepoRoot, cp.CreatedAt)
+	if util.IsConnected(wctx.semDir) {
+		syncProvenance(ctx, in.RepoRoot, wctx.cp.CreatedAt)
 	}
 
 	livePushRetried := false
-	if in.CommitHash != "" && util.IsConnected(semDir) {
-		pr := pushAttribution(ctx, repo, h, in.CommitHash, in.CheckpointID)
+	if in.CommitHash != "" && util.IsConnected(wctx.semDir) {
+		pr := pushAttribution(ctx, wctx.repo, wctx.h, in.CommitHash, in.CheckpointID)
 
-		// If the live push failed with a retryable error, fold it into the
-		// backfill state so a later checkpoint drain can retry it.
 		if pr.Action == PushRetry {
 			livePushRetried = true
-			s, settingsErr := util.ReadSettings(semDir)
+			s, settingsErr := util.ReadSettings(wctx.semDir)
 			if settingsErr != nil {
 				wlog("worker: backfill: read settings: %v\n", settingsErr)
 			} else if s.ConnectedRepoID == "" {
 				wlog("worker: backfill: connected repo id missing after live retry for %s\n", util.ShortID(in.CommitHash))
 			} else {
-				cl, clErr := h.Queries.GetCommitLinkByCommitHash(ctx, in.CommitHash)
+				cl, clErr := wctx.h.Queries.GetCommitLinkByCommitHash(ctx, in.CommitHash)
 				if clErr != nil {
 					wlog("worker: backfill: load commit link for %s: %v\n", util.ShortID(in.CommitHash), clErr)
-				} else if err := ExtendBackfillCutoff(ctx, h, s.ConnectedRepoID, cl.RepositoryID, cl.CommitHash, cl.LinkedAt); err != nil {
+				} else if err := ExtendBackfillCutoff(ctx, wctx.h, s.ConnectedRepoID, cl.RepositoryID, cl.CommitHash, cl.LinkedAt); err != nil {
 					wlog("worker: backfill: extend cutoff for %s: %v\n", util.ShortID(in.CommitHash), err)
 				}
 			}
 		}
 	}
 
-	// Drain a small batch of historical attribution if a backfill is pending.
-	// Skip when the live push just failed - the same transient issue would
-	// likely fail the drain too, wasting a retry attempt.
-	if util.IsConnected(semDir) && !livePushRetried {
-		drainBackfillFromWorker(ctx, in.RepoRoot, semDir)
+	if util.IsConnected(wctx.semDir) && !livePushRetried {
+		drainBackfillFromWorker(ctx, in.RepoRoot, wctx.semDir)
 	}
 
 	return nil
@@ -368,74 +254,6 @@ func reconcileActiveSessions(ctx context.Context) {
 			wlog("worker: reconcile %s/%s: %v\n", state.Provider, state.SessionID, err)
 		}
 	}
-}
-
-// prevManifestResult holds the result of loading the previous manifest.
-type prevManifestResult struct {
-	files  []blobs.ManifestFile
-	exists bool
-	ok     bool
-}
-
-// loadPreviousManifest returns the previous completed manifest when available.
-func loadPreviousManifest(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, repoID string, cpCreatedAt int64) prevManifestResult {
-	prev, err := h.Queries.GetPreviousCompletedCheckpoint(ctx, sqldb.GetPreviousCompletedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    cpCreatedAt,
-	})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return prevManifestResult{}
-		}
-		wlog("worker: get previous checkpoint: %v\n", err)
-		return prevManifestResult{exists: true}
-	}
-
-	if !prev.ManifestHash.Valid || prev.ManifestHash.String == "" {
-		return prevManifestResult{exists: true}
-	}
-
-	rawManifest, err := bs.Get(ctx, prev.ManifestHash.String)
-	if err != nil {
-		wlog("worker: load previous manifest: %v\n", err)
-		return prevManifestResult{exists: true}
-	}
-
-	var prevManifest blobs.Manifest
-	if err := json.Unmarshal(rawManifest, &prevManifest); err != nil {
-		wlog("worker: unmarshal previous manifest: %v\n", err)
-		return prevManifestResult{exists: true}
-	}
-
-	return prevManifestResult{files: prevManifest.Files, exists: true, ok: true}
-}
-
-// countChangedFiles compares current files to the previous manifest when one
-// is available.
-func countChangedFiles(prev prevManifestResult, currentFiles []blobs.ManifestFile) int64 {
-	if !prev.exists {
-		return int64(len(currentFiles))
-	}
-	if !prev.ok {
-		return 0
-	}
-
-	prevIndex := make(map[string]string, len(prev.files))
-	for _, f := range prev.files {
-		prevIndex[f.Path] = f.Blob
-	}
-
-	var changed int64
-	for _, f := range currentFiles {
-		if prevBlob, ok := prevIndex[f.Path]; !ok || prevBlob != f.Blob {
-			changed++
-		}
-		delete(prevIndex, f.Path)
-	}
-	// Whatever remains in prevIndex are deleted files.
-	changed += int64(len(prevIndex))
-
-	return changed
 }
 
 // spawnAutoPlaybook launches `semantica _auto-playbook` as a detached process.
@@ -792,125 +610,6 @@ func redactPushPayload(p *remotePushPayload) error {
 		p.PlaybookJSON = redacted
 	}
 	return nil
-}
-
-// reconcileImplementations processes pending implementation observations.
-// Best-effort: errors are logged, not propagated.
-// Creates implementations.db on first call.
-// Commit attachment is handled separately by attachCommitToImplementation
-// after session_checkpoints have been written.
-func reconcileImplementations(ctx context.Context, repoRoot string) {
-	base, err := broker.GlobalBase()
-	if err != nil {
-		return
-	}
-	implPath := filepath.Join(base, "implementations.db")
-
-	implH, err := impldb.Open(ctx, implPath, impldb.OpenOptions{
-		BusyTimeout: 5 * time.Second,
-		TxImmediate: true,
-	})
-	if err != nil {
-		wlog("worker: open implementations db: %v\n", err)
-		return
-	}
-	defer func() { _ = impldb.Close(implH) }()
-
-	r := &implementations.Reconciler{}
-	if _, err := r.Reconcile(ctx, implH); err != nil {
-		wlog("worker: reconcile implementations: %v\n", err)
-	}
-}
-
-// attachCommitToImplementation links a commit to its implementation.
-// Must run after session_checkpoints have been written, because AttachCommit
-// depends on commit_links + session_checkpoints to find which sessions
-// belong to the commit's checkpoint.
-func handleImplementationPostCommit(ctx context.Context, semDir, repoRoot, commitHash string) {
-	base, err := broker.GlobalBase()
-	if err != nil {
-		wlog("worker: resolve implementations base: %v\n", err)
-		return
-	}
-	implPath := filepath.Join(base, "implementations.db")
-
-	implH, err := impldb.Open(ctx, implPath, impldb.DefaultOpenOptions())
-	if err != nil {
-		wlog("worker: open implementations db for commit attach: %v\n", err)
-		return
-	}
-	defer func() { _ = impldb.Close(implH) }()
-
-	r := &implementations.Reconciler{}
-	if err := r.AttachCommit(ctx, implH, implementations.AttachCommitInput{
-		RepoPath:   repoRoot,
-		CommitHash: commitHash,
-	}); err != nil {
-		wlog("worker: attach commit to implementation: %v\n", err)
-		return
-	}
-
-	if !util.IsImplementationSummaryEnabled(semDir) {
-		return
-	}
-
-	// Resolve the implementation for this commit before running skip logic.
-	canonicalPath := broker.CanonicalRepoPath(repoRoot)
-	implID, err := implH.Queries.FindImplementationByCommit(ctx, impldbgen.FindImplementationByCommitParams{
-		CanonicalPath: canonicalPath,
-		CommitHash:    commitHash,
-	})
-	if err != nil {
-		return // commit not attached to any implementation
-	}
-
-	// Run skip logic before writing the in-progress marker.
-	if ok, reason := implementations.ShouldAutoSummarize(ctx, implH, implID, implementations.ShouldAutoSummarizeOpts{}); !ok {
-		wlog("worker: auto-impl-summary: skip %s: %s\n", implID[:8], reason)
-		return
-	}
-
-	// Mark the implementation before spawning the background process.
-	if err := implementations.MarkGenerationInProgress(ctx, implH, implID); err != nil {
-		wlog("worker: auto-impl-summary: mark in-progress: %v\n", err)
-		return
-	}
-
-	if !spawnAutoImplementationSummary(semDir, implID) {
-		implementations.ClearGenerationInProgress(ctx, implH, implID)
-	}
-}
-
-// spawnAutoImplementationSummary launches `semantica _auto-implementation-summary`
-// as a detached process. Returns true on success, false on failure.
-func spawnAutoImplementationSummary(semDir, implID string) bool {
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "semantica"
-	}
-
-	logFile, err := util.OpenWorkerLog(semDir)
-	if err != nil {
-		wlog("worker: auto-impl-summary: open log failed: %v\n", err)
-		return false
-	}
-
-	cmd := exec.Command(exe, "_auto-implementation-summary",
-		"--impl", implID,
-	)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		wlog("worker: auto-impl-summary: spawn failed: %v\n", err)
-		_ = logFile.Close()
-		return false
-	}
-
-	_ = logFile.Close()
-	wlog("worker: auto-impl-summary spawned for %s\n", implID[:8])
-	return true
 }
 
 func failCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string) {
