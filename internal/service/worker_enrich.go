@@ -9,8 +9,8 @@ import (
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
 
-// enrichResult carries the outputs of the enrichment stage to completion
-// and post-completion stages.
+// enrichResult carries the outputs of checkpoint enrichment to completion
+// and post-completion work.
 type enrichResult struct {
 	manifestHash string
 	totalBytes   int64
@@ -92,8 +92,8 @@ func linkSessionsToCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpoin
 }
 
 // enrichCheckpoint builds the manifest, links sessions, attaches the commit
-// to its implementation, computes stats and AI percentage. All enrichment
-// must succeed (or be best-effort logged) before the checkpoint is completed.
+// to its implementation, computes stats, and computes AI percentage. All
+// required enrichment must finish before the checkpoint is marked complete.
 func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) (enrichResult, error) {
 	h := wctx.h
 	repo := wctx.repo
