@@ -1197,7 +1197,7 @@ func TestScoreDiffPerFile_ReturnsPerFileResults(t *testing.T) {
 	}, "\n")
 
 	dr := parseDiff([]byte(diff))
-	scores := scoreDiffPerFile(dr, cands)
+	scores, _ := scoreDiffPerFile(dr, cands)
 
 	if len(scores) != 2 {
 		t.Fatalf("expected 2 file scores, got %d", len(scores))

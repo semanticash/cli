@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"unicode"
 
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
+	attrcf "github.com/semanticash/cli/internal/attribution/carryforward"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
@@ -170,7 +171,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	eventRows := toEventRows(ctx, bs, windowRows)
 	cands, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
 
-	// Use local names for the extracted candidate sets.
+	// Use local names for the candidate sets used by scoring and reporting.
 	aiLines := cands.AILines
 	providerTouchedFiles := cands.ProviderTouchedFiles
 	fileProvider := cands.FileProvider
@@ -213,7 +214,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				fileProvider:         fileProvider,
 				providerModel:        providerModel,
 			}
-			currentScores := scoreDiffPerFile(dr, currentCands)
+			currentScores, _ := scoreDiffPerFile(dr, currentCands)
 			scoredAI := make(map[string]bool, len(currentScores))
 			for _, fs := range currentScores {
 				if fileScoreAILines(&fs) > 0 {
@@ -271,167 +272,24 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		}
 	}
 
-	aiLinesNorm := buildNormalizedSet(aiLines)
-
-	result := &AttributionResult{
-		CommitHash:   in.CommitHash,
-		CheckpointID: link.CheckpointID,
+	// Score the diff against the merged candidates.
+	finalCands := aiCandidates{
+		aiLines:              aiLines,
+		providerTouchedFiles: providerTouchedFiles,
+		fileProvider:         fileProvider,
+		providerModel:        providerModel,
 	}
+	scores, matchStats := scoreDiffPerFile(dr, finalCands)
 
-	createdSet := make(map[string]bool, len(dr.filesCreated))
-	for _, f := range dr.filesCreated {
-		createdSet[f] = true
-	}
+	// Assemble the commit result from the scored files and diff metadata.
+	commitInput := buildCommitResultInput(scores, dr, aiTouchedFiles, providerModel)
+	cr := attrreporting.BuildCommitResult(commitInput)
+	result := fromCommitResult(cr, in.CommitHash, link.CheckpointID)
 
-	filesWithAI := make(map[string]bool)
-	providerLines := make(map[string]int) // provider -> AI lines
-
-	for _, fd := range dr.files {
-		fa := FileAttribution{Path: fd.path, DeletedNonBlank: fd.deletedNonBlank}
-
-		provider, isProviderFile := providerTouchedFiles[fd.path]
-		isProviderOnly := isProviderFile && aiLines[fd.path] == nil
-		if isProviderOnly {
-			for _, group := range fd.groups {
-				for _, line := range group.lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
-						continue
-					}
-					fa.TotalLines++
-					fa.AIModifiedLines++
-					diag.ModifiedMatches++
-					providerLines[provider]++
-				}
-			}
-			if fa.TotalLines > 0 {
-				fa.AIPercent = float64(fa.AIModifiedLines) / float64(fa.TotalLines) * 100
-				filesWithAI[fd.path] = true
-			}
-			result.AIModifiedLines += fa.AIModifiedLines
-			result.AILines += fa.AIModifiedLines // Cursor: modified counts in headline
-			result.TotalLines += fa.TotalLines
-			result.Files = append(result.Files, fa)
-
-			isAI := true
-			if createdSet[fd.path] {
-				result.FilesCreated = append(result.FilesCreated, FileChange{Path: fd.path, AI: isAI})
-			} else if fa.TotalLines > 0 {
-				result.FilesEdited = append(result.FilesEdited, FileChange{Path: fd.path, AI: isAI})
-			}
-			continue
-		}
-
-		prov := fileProvider[fd.path]
-		if prov == "" && isProviderFile {
-			prov = provider
-		}
-
-		for _, group := range fd.groups {
-			// Pass 1: classify each line via Tier-1/Tier-2, track overlap.
-			type lineClass struct {
-				tier int // 0=unmatched, 1=exact, 2=normalized
-			}
-			var classes []lineClass
-			hasOverlap := false
-
-			for _, line := range group.lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" {
-					continue
-				}
-				lc := lineClass{}
-
-				// Tier 1: exact trimmed match.
-				if fileSet, ok := aiLines[fd.path]; ok {
-					if _, found := fileSet[trimmed]; found {
-						lc.tier = 1
-						hasOverlap = true
-					}
-				}
-				// Tier 2: whitespace-stripped match (only if Tier 1 missed).
-				if lc.tier == 0 {
-					norm := normalizeWhitespace(trimmed)
-					if normSet, ok := aiLinesNorm[fd.path]; ok {
-						if _, found := normSet[norm]; found {
-							lc.tier = 2
-							hasOverlap = true
-						}
-					}
-				}
-				classes = append(classes, lc)
-			}
-
-			// Pass 2: assign final categories based on group overlap.
-			for _, lc := range classes {
-				fa.TotalLines++
-				switch {
-				case lc.tier == 1:
-					fa.AIExactLines++
-					diag.ExactMatches++
-					providerLines[prov]++
-				case lc.tier == 2:
-					fa.AIFormattedLines++
-					diag.NormalizedMatches++
-					providerLines[prov]++
-				case hasOverlap:
-					fa.AIModifiedLines++
-					diag.ModifiedMatches++
-					providerLines[prov]++
-				default:
-					fa.HumanLines++
-				}
-			}
-		}
-
-		aiAuthored := fa.AIExactLines + fa.AIFormattedLines + fa.AIModifiedLines
-		if fa.TotalLines > 0 && aiAuthored > 0 {
-			fa.AIPercent = float64(aiAuthored) / float64(fa.TotalLines) * 100
-			filesWithAI[fd.path] = true
-		}
-
-		result.AIExactLines += fa.AIExactLines
-		result.AIFormattedLines += fa.AIFormattedLines
-		result.AIModifiedLines += fa.AIModifiedLines
-		result.AILines += aiAuthored
-		result.HumanLines += fa.HumanLines
-		result.TotalLines += fa.TotalLines
-		result.Files = append(result.Files, fa)
-
-		isAI := filesWithAI[fd.path] || aiTouchedFiles[fd.path]
-		if createdSet[fd.path] {
-			result.FilesCreated = append(result.FilesCreated, FileChange{Path: fd.path, AI: isAI})
-		} else if fa.TotalLines > 0 {
-			result.FilesEdited = append(result.FilesEdited, FileChange{Path: fd.path, AI: isAI})
-		}
-	}
-
-	for _, f := range dr.filesDeleted {
-		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f, AI: aiTouchedFiles[f]})
-	}
-
-	result.FilesTotal = len(result.FilesCreated) + len(result.FilesEdited)
-	result.FilesAITouched = len(filesWithAI)
-	if result.TotalLines > 0 {
-		result.AIPercentage = float64(result.AILines) / float64(result.TotalLines) * 100
-	}
-
-	for prov, lines := range providerLines {
-		if lines > 0 {
-			result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
-				Provider: prov,
-				Model:    providerModel[prov],
-				AILines:  lines,
-			})
-		}
-	}
-	sort.Slice(result.ProviderDetails, func(i, j int) bool {
-		if result.ProviderDetails[i].AILines != result.ProviderDetails[j].AILines {
-			return result.ProviderDetails[i].AILines > result.ProviderDetails[j].AILines
-		}
-		return result.ProviderDetails[i].Provider < result.ProviderDetails[j].Provider
-	})
-
+	// Populate diagnostics.
+	diag.ExactMatches = matchStats.ExactMatches
+	diag.NormalizedMatches = matchStats.NormalizedMatches
+	diag.ModifiedMatches = matchStats.ModifiedMatches
 	if result.AIPercentage == 0 {
 		switch {
 		case diag.EventsConsidered == 0:
@@ -644,7 +502,7 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 	}
 
 	dr := parseDiff(diffBytes)
-	scores := scoreDiffPerFile(dr, oldCands)
+	scores, _ := scoreDiffPerFile(dr, oldCands)
 
 	return aggregateFileScores(scores, oldCands.providerModel, len(dr.files)), nil
 }
@@ -705,11 +563,11 @@ func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsIn
 
 // scoreDiffPerFile delegates to attrscoring.ScoreFiles and converts the result
 // back to the local fileScore type used by aggregation helpers.
-func scoreDiffPerFile(dr diffResult, cands aiCandidates) []fileScore {
+func scoreDiffPerFile(dr diffResult, cands aiCandidates) ([]fileScore, attrscoring.MatchStats) {
 	// Convert diffResult to scoring.DiffResult.
 	sDiff := toScoringDiff(dr)
 
-	newScores, _ := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider)
+	newScores, stats := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider)
 
 	// Convert scoring.FileScore back to fileScore.
 	out := make([]fileScore, len(newScores))
@@ -724,7 +582,7 @@ func scoreDiffPerFile(dr diffResult, cands aiCandidates) []fileScore {
 			providerLines:  s.ProviderLines,
 		}
 	}
-	return out
+	return out, stats
 }
 
 // toScoringDiff converts the internal diffResult to attrscoring.DiffResult.
@@ -748,83 +606,50 @@ func toScoringDiff(dr diffResult) attrscoring.DiffResult {
 	}
 }
 
-// aggregateFileScores reduces per-file scores into a single AIPercentResult.
+// aggregateFileScores delegates to attrreporting.AggregatePercent and
+// converts the result back to the local AIPercentResult type.
 func aggregateFileScores(scores []fileScore, providerModel map[string]string, filesTouched int) AIPercentResult {
-	var totalLines, aiAuthored int
-	var exactLines, formattedLines, modifiedLines int
-	providerLines := make(map[string]int)
-
-	for _, fs := range scores {
-		totalLines += fs.totalLines
-		exactLines += fs.exactLines
-		formattedLines += fs.formattedLines
-		modifiedLines += fs.modifiedLines
-		aiAuthored += fs.exactLines + fs.formattedLines + fs.modifiedLines
-		for prov, lines := range fs.providerLines {
-			providerLines[prov] += lines
+	inputs := make([]attrreporting.FileScoreInput, len(scores))
+	for i, fs := range scores {
+		inputs[i] = attrreporting.FileScoreInput{
+			Path:           fs.path,
+			TotalLines:     fs.totalLines,
+			ExactLines:     fs.exactLines,
+			FormattedLines: fs.formattedLines,
+			ModifiedLines:  fs.modifiedLines,
+			HumanLines:     fs.humanLines,
+			ProviderLines:  fs.providerLines,
 		}
 	}
-
-	if totalLines == 0 {
-		return AIPercentResult{}
-	}
-
-	var providers []ProviderAttribution
-	for prov, lines := range providerLines {
-		if lines > 0 {
-			model := ""
-			if providerModel != nil {
-				model = providerModel[prov]
-			}
-			providers = append(providers, ProviderAttribution{
-				Provider: prov,
-				Model:    model,
-				AILines:  lines,
-			})
+	r := attrreporting.AggregatePercent(inputs, providerModel, filesTouched)
+	providers := make([]ProviderAttribution, len(r.Providers))
+	for i, p := range r.Providers {
+		providers[i] = ProviderAttribution{
+			Provider: p.Provider,
+			Model:    p.Model,
+			AILines:  p.AILines,
 		}
 	}
-	sort.Slice(providers, func(i, j int) bool {
-		if providers[i].AILines != providers[j].AILines {
-			return providers[i].AILines > providers[j].AILines
-		}
-		return providers[i].Provider < providers[j].Provider
-	})
-
 	return AIPercentResult{
-		Percent:        float64(aiAuthored) / float64(totalLines) * 100,
-		TotalLines:     totalLines,
-		AILines:        aiAuthored,
-		ExactLines:     exactLines,
-		ModifiedLines:  modifiedLines,
-		FormattedLines: formattedLines,
-		FilesTouched:   filesTouched,
+		Percent:        r.Percent,
+		TotalLines:     r.TotalLines,
+		AILines:        r.AILines,
+		ExactLines:     r.ExactLines,
+		ModifiedLines:  r.ModifiedLines,
+		FormattedLines: r.FormattedLines,
+		FilesTouched:   r.FilesTouched,
 		Providers:      providers,
 	}
 }
 
-// carryForwardCandidates returns files eligible for historical lookback:
-// created in the current diff AND present in the previous commit-linked
-// checkpoint's manifest.
+// carryForwardCandidates delegates to attrcf.IdentifyCandidates and maps
+// blobs.ManifestFile to the carryforward-local ManifestEntry type.
 func carryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
-	if len(dr.filesCreated) == 0 || len(manifestFiles) == 0 {
-		return nil
+	entries := make([]attrcf.ManifestEntry, len(manifestFiles))
+	for i, mf := range manifestFiles {
+		entries[i] = attrcf.ManifestEntry{Path: mf.Path}
 	}
-
-	manifestSet := make(map[string]bool, len(manifestFiles))
-	for _, mf := range manifestFiles {
-		manifestSet[mf.Path] = true
-	}
-
-	var result map[string]bool
-	for _, path := range dr.filesCreated {
-		if manifestSet[path] {
-			if result == nil {
-				result = make(map[string]bool)
-			}
-			result[path] = true
-		}
-	}
-	return result
+	return attrcf.IdentifyCandidates(dr.filesCreated, entries)
 }
 
 // loadManifestForCheckpoint loads the manifest for a checkpoint's manifest hash.
@@ -848,10 +673,92 @@ func loadManifestForCheckpoint(ctx context.Context, bs *blobs.Store, manifestHas
 	return m.Files
 }
 
-// fileScoreAILines returns the total AI lines (exact + formatted + modified)
-// for a single file score.
+// fileScoreAILines delegates to attrreporting.AILines.
 func fileScoreAILines(fs *fileScore) int {
-	return fs.exactLines + fs.formattedLines + fs.modifiedLines
+	input := attrreporting.FileScoreInput{
+		ExactLines:     fs.exactLines,
+		FormattedLines: fs.formattedLines,
+		ModifiedLines:  fs.modifiedLines,
+	}
+	return attrreporting.AILines(&input)
+}
+
+// buildCommitResultInput converts local types to the reporting package's
+// CommitResultInput. Maps fileScore → FileScoreInput, carries diff metadata
+// and the AI-touched file set.
+func buildCommitResultInput(scores []fileScore, dr diffResult, aiTouchedFiles map[string]bool, providerModel map[string]string) attrreporting.CommitResultInput {
+	deletedNonBlank := make(map[string]int, len(dr.files))
+	for _, fd := range dr.files {
+		deletedNonBlank[fd.path] = fd.deletedNonBlank
+	}
+
+	fsInputs := make([]attrreporting.FileScoreInput, len(scores))
+	for i, fs := range scores {
+		fsInputs[i] = attrreporting.FileScoreInput{
+			Path:            fs.path,
+			TotalLines:      fs.totalLines,
+			ExactLines:      fs.exactLines,
+			FormattedLines:  fs.formattedLines,
+			ModifiedLines:   fs.modifiedLines,
+			HumanLines:      fs.humanLines,
+			ProviderLines:   fs.providerLines,
+			DeletedNonBlank: deletedNonBlank[fs.path],
+		}
+	}
+	return attrreporting.CommitResultInput{
+		FileScores:     fsInputs,
+		FilesCreated:   dr.filesCreated,
+		FilesDeleted:   dr.filesDeleted,
+		TouchedFiles:   aiTouchedFiles,
+		ProviderModels: providerModel,
+	}
+}
+
+// fromCommitResult maps reporting.CommitResult back to the service-layer
+// AttributionResult, adding commit hash and checkpoint ID.
+func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID string) *AttributionResult {
+	result := &AttributionResult{
+		CommitHash:       commitHash,
+		CheckpointID:     checkpointID,
+		AIExactLines:     cr.AIExactLines,
+		AIFormattedLines: cr.AIFormattedLines,
+		AIModifiedLines:  cr.AIModifiedLines,
+		AILines:          cr.AILines,
+		HumanLines:       cr.HumanLines,
+		TotalLines:       cr.TotalLines,
+		AIPercentage:     cr.AIPercentage,
+		FilesAITouched:   cr.FilesAITouched,
+		FilesTotal:       cr.FilesTotal,
+	}
+	for _, f := range cr.Files {
+		result.Files = append(result.Files, FileAttribution{
+			Path:             f.Path,
+			AIExactLines:     f.AIExactLines,
+			AIFormattedLines: f.AIFormattedLines,
+			AIModifiedLines:  f.AIModifiedLines,
+			HumanLines:       f.HumanLines,
+			TotalLines:       f.TotalLines,
+			DeletedNonBlank:  f.DeletedNonBlank,
+			AIPercent:        f.AIPercent,
+		})
+	}
+	for _, f := range cr.FilesCreated {
+		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesEdited {
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesDeleted {
+		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, p := range cr.ProviderDetails {
+		result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
+			Provider: p.Provider,
+			Model:    p.Model,
+			AILines:  p.AILines,
+		})
+	}
+	return result
 }
 
 // attributeWithCarryForward scores the current window and applies bounded
@@ -890,7 +797,7 @@ func attributeWithCarryForward(
 			fileProvider: newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
 		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
-			currentScores = scoreDiffPerFile(dr, currentCands)
+			currentScores, _ = scoreDiffPerFile(dr, currentCands)
 		}
 	}
 
@@ -953,7 +860,7 @@ func attributeWithCarryForward(
 				fileProvider: histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
 			}
 			if len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 {
-				historicalScores = scoreDiffPerFile(dr, histCands)
+				historicalScores, _ = scoreDiffPerFile(dr, histCands)
 			}
 		} else if !errors.Is(histErr, ErrNoEventsInWindow) {
 			util.AppendActivityLog(semDir,
