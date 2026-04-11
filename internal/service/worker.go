@@ -48,54 +48,106 @@ type WorkerInput struct {
 	RepoRoot     string
 }
 
+// workerContext carries the shared infrastructure handles opened during
+// checkpoint preparation. Passed to stage functions to avoid threading
+// many parameters through every call.
+type workerContext struct {
+	h         *sqlstore.Handle
+	blobStore *blobs.Store
+	repo      *git.Repo
+	cp        sqldb.Checkpoint
+	semDir    string
+}
+
+func (wc *workerContext) close() { _ = sqlstore.Close(wc.h) }
+
+// prepareResult is the outcome of prepareCheckpoint.
+type prepareResult struct {
+	wctx *workerContext
+	skip bool // true when checkpoint is already complete/failed, not found, or semantica disabled
+}
+
 func wlog(format string, args ...any) {
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "%s  %s", ts, msg)
 }
 
-func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
+// prepareCheckpoint opens the DB, validates the checkpoint is pending,
+// initializes the blob store, and opens the git repo. Returns skip=true
+// when the worker should exit early without error.
+func prepareCheckpoint(ctx context.Context, in WorkerInput) (prepareResult, error) {
 	semDir := filepath.Join(in.RepoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 	objectsDir := filepath.Join(semDir, "objects")
 
 	if !util.IsEnabled(semDir) {
-		return nil
+		return prepareResult{skip: true}, nil
 	}
 
-	// Open DB - worker can afford a longer timeout.
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{
 		BusyTimeout: 5 * time.Second,
 		Synchronous: "NORMAL",
 	})
 	if err != nil {
-		return fmt.Errorf("open db: %w", err)
+		return prepareResult{}, fmt.Errorf("open db: %w", err)
 	}
-	defer func() { _ = sqlstore.Close(h) }()
 
-	// Verify checkpoint exists and is pending.
 	cp, err := h.Queries.GetCheckpointByID(ctx, in.CheckpointID)
 	if err != nil {
+		_ = sqlstore.Close(h)
 		if errors.Is(err, sql.ErrNoRows) {
 			wlog("worker: checkpoint %s not found, skipping\n", in.CheckpointID)
-			return nil
+			return prepareResult{skip: true}, nil
 		}
-		return fmt.Errorf("get checkpoint: %w", err)
+		return prepareResult{}, fmt.Errorf("get checkpoint: %w", err)
 	}
 	switch cp.Status {
 	case "complete":
+		_ = sqlstore.Close(h)
 		wlog("worker: checkpoint %s already complete, skipping\n", in.CheckpointID)
-		return nil
+		return prepareResult{skip: true}, nil
 	case "failed":
+		_ = sqlstore.Close(h)
 		wlog("worker: checkpoint %s marked failed, skipping\n", in.CheckpointID)
-		return nil
+		return prepareResult{skip: true}, nil
 	}
 
 	blobStore, err := blobs.NewStore(objectsDir)
 	if err != nil {
 		failCheckpoint(ctx, h, in.CheckpointID)
-		return fmt.Errorf("init blob store: %w", err)
+		_ = sqlstore.Close(h)
+		return prepareResult{}, fmt.Errorf("init blob store: %w", err)
 	}
+
+	repo, err := git.OpenRepo(in.RepoRoot)
+	if err != nil {
+		failCheckpoint(ctx, h, in.CheckpointID)
+		_ = sqlstore.Close(h)
+		return prepareResult{}, fmt.Errorf("open repo: %w", err)
+	}
+
+	return prepareResult{
+		wctx: &workerContext{
+			h:         h,
+			blobStore: blobStore,
+			repo:      repo,
+			cp:        cp,
+			semDir:    semDir,
+		},
+	}, nil
+}
+
+func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
+	prep, err := prepareCheckpoint(ctx, in)
+	if err != nil {
+		return err
+	}
+	if prep.skip {
+		return nil
+	}
+	wctx := prep.wctx
+	defer wctx.close()
 
 	// Reconciliation must run before manifest/checkpoint completion so
 	// recovered events are included in this checkpoint.
@@ -106,11 +158,11 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// Commit attachment happens later, after session_checkpoints are written.
 	reconcileImplementations(ctx, in.RepoRoot)
 
-	repo, err := git.OpenRepo(in.RepoRoot)
-	if err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
-		return fmt.Errorf("open repo: %w", err)
-	}
+	h := wctx.h
+	repo := wctx.repo
+	blobStore := wctx.blobStore
+	cp := wctx.cp
+	semDir := wctx.semDir
 
 	paths, err := repo.ListFilesFromGit(ctx)
 	if err != nil {
