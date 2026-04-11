@@ -2,8 +2,6 @@
 package service
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,6 +13,7 @@ import (
 	"unicode"
 
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
+	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -668,8 +667,8 @@ func loadWindowEvents(ctx context.Context, h *sqlstore.Handle, in ComputeAIPerce
 }
 
 // toEventRows converts DB rows into events.EventRow with pre-loaded payloads.
-// This is the bridge between the service layer (DB/blob access) and the pure
-// domain events package (no infrastructure).
+// It keeps storage access in the service layer while passing plain event data
+// to the events package.
 //
 // Payloads are only loaded for assistant rows with Edit/Write/Bash tool usage,
 // matching the old code's filter chain. This avoids loading blobs for irrelevant
@@ -704,94 +703,49 @@ func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsIn
 	return out
 }
 
-// scoreDiffPerFile matches AI candidate maps against a parsed diff and returns
-// per-file scores. Each fileScore contains that file's total/exact/formatted/
-// modified/human line counts and per-provider breakdown.
+// scoreDiffPerFile delegates to attrscoring.ScoreFiles and converts the result
+// back to the local fileScore type used by aggregation helpers.
 func scoreDiffPerFile(dr diffResult, cands aiCandidates) []fileScore {
-	aiLinesNorm := buildNormalizedSet(cands.aiLines)
+	// Convert diffResult to scoring.DiffResult.
+	sDiff := toScoringDiff(dr)
 
-	var scores []fileScore
+	newScores, _ := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider)
 
-	for _, fd := range dr.files {
-		fs := fileScore{
-			path:          fd.path,
-			providerLines: make(map[string]int),
+	// Convert scoring.FileScore back to fileScore.
+	out := make([]fileScore, len(newScores))
+	for i, s := range newScores {
+		out[i] = fileScore{
+			path:           s.Path,
+			totalLines:     s.TotalLines,
+			exactLines:     s.ExactLines,
+			formattedLines: s.FormattedLines,
+			modifiedLines:  s.ModifiedLines,
+			humanLines:     s.HumanLines,
+			providerLines:  s.ProviderLines,
 		}
-
-		provider, isProviderFile := cands.providerTouchedFiles[fd.path]
-		isProviderOnly := isProviderFile && cands.aiLines[fd.path] == nil
-		if isProviderOnly {
-			for _, group := range fd.groups {
-				for _, line := range group.lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
-						continue
-					}
-					fs.totalLines++
-					fs.modifiedLines++
-					fs.providerLines[provider]++
-				}
-			}
-			scores = append(scores, fs)
-			continue
-		}
-
-		prov := cands.fileProvider[fd.path]
-		if prov == "" && isProviderFile {
-			prov = provider
-		}
-
-		for _, group := range fd.groups {
-			type lc struct{ tier int }
-			var classes []lc
-			hasOverlap := false
-
-			for _, line := range group.lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" {
-					continue
-				}
-				c := lc{}
-				if fileSet, ok := cands.aiLines[fd.path]; ok {
-					if _, found := fileSet[trimmed]; found {
-						c.tier = 1
-						hasOverlap = true
-					}
-				}
-				if c.tier == 0 {
-					norm := normalizeWhitespace(trimmed)
-					if normSet, ok := aiLinesNorm[fd.path]; ok {
-						if _, found := normSet[norm]; found {
-							c.tier = 2
-							hasOverlap = true
-						}
-					}
-				}
-				classes = append(classes, c)
-			}
-
-			for _, c := range classes {
-				fs.totalLines++
-				switch {
-				case c.tier == 1:
-					fs.exactLines++
-					fs.providerLines[prov]++
-				case c.tier == 2:
-					fs.formattedLines++
-					fs.providerLines[prov]++
-				case c.tier == 0 && hasOverlap:
-					fs.modifiedLines++
-					fs.providerLines[prov]++
-				default:
-					fs.humanLines++
-				}
-			}
-		}
-
-		scores = append(scores, fs)
 	}
+	return out
+}
 
-	return scores
+// toScoringDiff converts the internal diffResult to attrscoring.DiffResult.
+func toScoringDiff(dr diffResult) attrscoring.DiffResult {
+	files := make([]attrscoring.FileDiff, len(dr.files))
+	for i, f := range dr.files {
+		groups := make([]attrscoring.AddedGroup, len(f.groups))
+		for j, g := range f.groups {
+			groups[j] = attrscoring.AddedGroup{Lines: g.lines}
+		}
+		files[i] = attrscoring.FileDiff{
+			Path:            f.path,
+			Groups:          groups,
+			DeletedNonBlank: f.deletedNonBlank,
+		}
+	}
+	return attrscoring.DiffResult{
+		Files:        files,
+		FilesCreated: dr.filesCreated,
+		FilesDeleted: dr.filesDeleted,
+	}
 }
 
 // aggregateFileScores reduces per-file scores into a single AIPercentResult.
@@ -1294,100 +1248,32 @@ type fileDiff struct {
 	deletedNonBlank int          // count of deleted non-blank lines
 }
 
-// parseDiff parses a unified diff (as produced by "git diff") into per-file
-// added lines, and identifies newly created and deleted files.
-//
-// It recognizes:
-//   - "--- /dev/null" + "+++ b/path" -> file created
-//   - "--- a/path" + "+++ /dev/null" -> file deleted
-//   - Lines starting with "+" (excluding the +++ header) -> added lines
-//
-// Diff metadata lines (diff --git, index, @@, new file, deleted file) are
-// skipped. Only the "b/" side path is used for file identification.
+// parseDiff delegates to attrscoring.ParseDiff and converts the result to the
+// local diffResult type used by the remaining service helpers.
 func parseDiff(diffBytes []byte) diffResult {
-	var res diffResult
-	var current *fileDiff
-	var currentOldPath string
-	inAddedRun := false // tracking a contiguous run of "+" lines
+	sd := attrscoring.ParseDiff(diffBytes)
+	return fromScoringDiff(sd)
+}
 
-	// finalizeGroup closes the current contiguous added-line group (if any).
-	finalizeGroup := func() {
-		if !inAddedRun || current == nil {
-			inAddedRun = false
-			return
+// fromScoringDiff converts attrscoring.DiffResult to the internal diffResult.
+func fromScoringDiff(sd attrscoring.DiffResult) diffResult {
+	files := make([]fileDiff, len(sd.Files))
+	for i, f := range sd.Files {
+		groups := make([]addedGroup, len(f.Groups))
+		for j, g := range f.Groups {
+			groups[j] = addedGroup{lines: g.Lines}
 		}
-		inAddedRun = false
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(diffBytes))
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Track the "from" path (--- a/path or --- /dev/null).
-		if strings.HasPrefix(line, "--- ") {
-			finalizeGroup()
-			currentOldPath = strings.TrimPrefix(line, "--- ")
-			continue
-		}
-
-		// Track the "to" path and detect creates/deletes.
-		if strings.HasPrefix(line, "+++ ") {
-			finalizeGroup()
-			newPath := strings.TrimPrefix(line, "+++ ")
-
-			if currentOldPath == "/dev/null" && strings.HasPrefix(newPath, "b/") {
-				path := strings.TrimPrefix(newPath, "b/")
-				res.filesCreated = append(res.filesCreated, path)
-			} else if newPath == "/dev/null" && strings.HasPrefix(currentOldPath, "a/") {
-				path := strings.TrimPrefix(currentOldPath, "a/")
-				res.filesDeleted = append(res.filesDeleted, path)
-			}
-
-			if strings.HasPrefix(newPath, "b/") {
-				path := strings.TrimPrefix(newPath, "b/")
-				res.files = append(res.files, fileDiff{path: path})
-				current = &res.files[len(res.files)-1]
-			} else if newPath == "/dev/null" && strings.HasPrefix(currentOldPath, "a/") {
-				// Deleted file: create a fileDiff so "-" lines are counted.
-				path := strings.TrimPrefix(currentOldPath, "a/")
-				res.files = append(res.files, fileDiff{path: path})
-				current = &res.files[len(res.files)-1]
-			} else {
-				current = nil
-			}
-			currentOldPath = ""
-			continue
-		}
-
-		// Skip diff metadata headers - these also break added-line runs.
-		if strings.HasPrefix(line, "diff --git") ||
-			strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "@@") ||
-			strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") {
-			finalizeGroup()
-			continue
-		}
-
-		// Collect added lines (strip the leading "+") into contiguous groups.
-		if current != nil && strings.HasPrefix(line, "+") {
-			if !inAddedRun {
-				// Start a new group.
-				current.groups = append(current.groups, addedGroup{})
-				inAddedRun = true
-			}
-			g := &current.groups[len(current.groups)-1]
-			g.lines = append(g.lines, line[1:])
-		} else if current != nil && strings.HasPrefix(line, "-") {
-			finalizeGroup()
-			if trimmed := strings.TrimSpace(line[1:]); trimmed != "" {
-				current.deletedNonBlank++
-			}
-		} else {
-			// Context line or anything else breaks the run.
-			finalizeGroup()
+		files[i] = fileDiff{
+			path:            f.Path,
+			groups:          groups,
+			deletedNonBlank: f.DeletedNonBlank,
 		}
 	}
-
-	return res
+	return diffResult{
+		files:        files,
+		filesCreated: sd.FilesCreated,
+		filesDeleted: sd.FilesDeleted,
+	}
 }
 
 // extractClaudeActions parses an assistant payload blob from the content-
