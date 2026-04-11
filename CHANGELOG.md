@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.2.2] - 2026-04-11
+
+### Changed
+
+- Refactored the attribution engine into dedicated `events`, `scoring`, `reporting`, and `carryforward` packages without changing the public CLI output.
+- Unified commit attribution, checkpoint-only blame, and carry-forward logic around shared extraction and reporting paths to keep attribution behavior consistent across commands.
+- Expanded attribution regression coverage to lock down public result shapes and provider-specific behavior during ongoing maintenance work.
+
+### Fixed
+
+- Reduced duplicated attribution code paths in the service layer, making commit and checkpoint attribution easier to maintain and less likely to drift over time.
+
 ## [0.2.1] - 2026-04-10
 
 ### Added
