@@ -19,10 +19,10 @@ type EventRow struct {
 // Deleted paths from bash `rm` commands are folded into ProviderTouchedFiles
 // (they contribute to "AI touched this file", not a separate category).
 type Candidates struct {
-	AILines              map[string]map[string]struct{} // file → set of trimmed lines
-	ProviderTouchedFiles map[string]string              // file → provider (file-level, includes deletions)
-	FileProvider         map[string]string              // file → provider (line-level)
-	ProviderModel        map[string]string              // provider → model
+	AILines              map[string]map[string]struct{} // file -> set of trimmed lines
+	ProviderTouchedFiles map[string]string              // file -> provider (file-level, includes deletions)
+	FileProvider         map[string]string              // file -> provider (line-level)
+	ProviderModel        map[string]string              // provider -> model
 }
 
 // EventStats collects diagnostic counters from event processing.

@@ -122,7 +122,7 @@ func TestAggregatePercent_ProviderSortTiebreaker(t *testing.T) {
 	if len(result.Providers) != 2 {
 		t.Fatalf("Providers count = %d, want 2", len(result.Providers))
 	}
-	// Same AI lines → alphabetical: claude_code < cursor
+	// Same AI lines -> alphabetical: claude_code < cursor
 	if result.Providers[0].Provider != "claude_code" {
 		t.Errorf("Providers[0].Provider = %q, want claude_code", result.Providers[0].Provider)
 	}
@@ -265,7 +265,7 @@ func TestBuildCommitResult_FullAssembly(t *testing.T) {
 }
 
 func TestBuildCommitResult_AIFlagFromTouchedFiles(t *testing.T) {
-	// File has 0 AI scored lines but is in TouchedFiles → AI=true.
+	// File has 0 AI scored lines but is in TouchedFiles -> AI=true.
 	in := CommitResultInput{
 		FileScores: []FileScoreInput{
 			{
@@ -302,6 +302,72 @@ func TestBuildCommitResult_ZeroInput(t *testing.T) {
 	}
 	if r.FilesTotal != 0 {
 		t.Errorf("FilesTotal = %d, want 0", r.FilesTotal)
+	}
+}
+
+func TestBuildCheckpointResult_WithTouchedFiles(t *testing.T) {
+	cr := BuildCheckpointResult(CheckpointResultInput{
+		CheckpointID: "cp-123",
+		TouchedFiles: map[string]bool{"a.go": true, "b.go": true},
+		EventStats: EventStatsInput{
+			EventsConsidered: 5,
+			EventsAssistant:  3,
+			PayloadsLoaded:   2,
+			AIToolEvents:     2,
+		},
+	})
+
+	if cr.CheckpointID != "cp-123" {
+		t.Errorf("CheckpointID = %q, want cp-123", cr.CheckpointID)
+	}
+	if cr.FilesAITouched != 2 {
+		t.Errorf("FilesAITouched = %d, want 2", cr.FilesAITouched)
+	}
+	if cr.FilesTotal != 2 {
+		t.Errorf("FilesTotal = %d, want 2", cr.FilesTotal)
+	}
+	if len(cr.FilesEdited) != 2 {
+		t.Fatalf("FilesEdited = %d, want 2", len(cr.FilesEdited))
+	}
+	for _, f := range cr.FilesEdited {
+		if !f.AI {
+			t.Errorf("FilesEdited %q: AI = false, want true", f.Path)
+		}
+	}
+	if cr.Diagnostics.EventsConsidered != 5 {
+		t.Errorf("Diagnostics.EventsConsidered = %d, want 5", cr.Diagnostics.EventsConsidered)
+	}
+	if cr.Diagnostics.Note != "" {
+		t.Errorf("Diagnostics.Note = %q, want empty (events found with tool calls)", cr.Diagnostics.Note)
+	}
+}
+
+func TestBuildCheckpointResult_NoEvents(t *testing.T) {
+	cr := BuildCheckpointResult(CheckpointResultInput{
+		CheckpointID: "cp-456",
+		EventStats:   EventStatsInput{EventsConsidered: 0},
+	})
+
+	if cr.FilesAITouched != 0 {
+		t.Errorf("FilesAITouched = %d, want 0", cr.FilesAITouched)
+	}
+	if cr.Diagnostics.Note != "No agent events found in the delta window." {
+		t.Errorf("Diagnostics.Note = %q, want no-events note", cr.Diagnostics.Note)
+	}
+}
+
+func TestBuildCheckpointResult_EventsButNoToolCalls(t *testing.T) {
+	cr := BuildCheckpointResult(CheckpointResultInput{
+		CheckpointID: "cp-789",
+		EventStats: EventStatsInput{
+			EventsConsidered: 3,
+			EventsAssistant:  2,
+			AIToolEvents:     0,
+		},
+	})
+
+	if cr.Diagnostics.Note != "Agent events found but none contained file-modifying tool calls (Edit/Write)." {
+		t.Errorf("Diagnostics.Note = %q, want no-tool-calls note", cr.Diagnostics.Note)
 	}
 }
 

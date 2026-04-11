@@ -10,9 +10,9 @@ import (
 // added lines, and identifies newly created and deleted files.
 //
 // It recognizes:
-//   - "--- /dev/null" + "+++ b/path" → file created
-//   - "--- a/path" + "+++ /dev/null" → file deleted
-//   - Lines starting with "+" (excluding the +++ header) → added lines
+//   - "--- /dev/null" + "+++ b/path" -> file created
+//   - "--- a/path" + "+++ /dev/null" -> file deleted
+//   - Lines starting with "+" (excluding the +++ header) -> added lines
 func ParseDiff(diffBytes []byte) DiffResult {
 	var res DiffResult
 	var current *FileDiff

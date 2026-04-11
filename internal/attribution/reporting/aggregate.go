@@ -145,3 +145,37 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 
 	return r
 }
+
+// BuildCheckpointResult assembles a checkpoint-only attribution result.
+// Checkpoint blame has no diff and no line-level scoring - it reports
+// which files were touched by AI and event-level diagnostics.
+func BuildCheckpointResult(in CheckpointResultInput) CheckpointResult {
+	var files []FileChangeOutput
+	for fp := range in.TouchedFiles {
+		files = append(files, FileChangeOutput{Path: fp, AI: true})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+
+	var note string
+	if in.EventStats.EventsConsidered == 0 {
+		note = "No agent events found in the delta window."
+	} else if in.EventStats.AIToolEvents == 0 {
+		note = "Agent events found but none contained file-modifying tool calls (Edit/Write)."
+	}
+
+	return CheckpointResult{
+		CheckpointID:   in.CheckpointID,
+		FilesAITouched: len(in.TouchedFiles),
+		FilesTotal:     len(in.TouchedFiles),
+		FilesEdited:    files,
+		Diagnostics: CheckpointDiagnostics{
+			EventsConsidered: in.EventStats.EventsConsidered,
+			EventsAssistant:  in.EventStats.EventsAssistant,
+			PayloadsLoaded:   in.EventStats.PayloadsLoaded,
+			AIToolEvents:     in.EventStats.AIToolEvents,
+			Note:             note,
+		},
+	}
+}

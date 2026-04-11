@@ -31,7 +31,7 @@ type FileScore struct {
 	FormattedLines int
 	ModifiedLines  int
 	HumanLines     int
-	ProviderLines  map[string]int // provider → AI lines for this file
+	ProviderLines  map[string]int // provider -> AI lines for this file
 }
 
 // MatchStats collects match counters from scoring.

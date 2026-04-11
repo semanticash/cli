@@ -10,7 +10,7 @@ type FileScoreInput struct {
 	FormattedLines  int
 	ModifiedLines   int
 	HumanLines      int
-	ProviderLines   map[string]int // provider → AI lines for this file
+	ProviderLines   map[string]int // provider -> AI lines for this file
 	DeletedNonBlank int            // deleted non-blank lines (display only, not attributed)
 }
 
@@ -42,7 +42,7 @@ type CommitResultInput struct {
 	FilesCreated   []string          // paths created (from /dev/null)
 	FilesDeleted   []string          // paths deleted (to /dev/null)
 	TouchedFiles   map[string]bool   // AI-touched file paths (for AI flag on file changes)
-	ProviderModels map[string]string // provider → model
+	ProviderModels map[string]string // provider -> model
 }
 
 // CommitResult is the full attribution breakdown for a single commit,
@@ -80,4 +80,40 @@ type FileAttributionOutput struct {
 type FileChangeOutput struct {
 	Path string
 	AI   bool
+}
+
+// CheckpointResultInput holds the narrow inputs for assembling a
+// checkpoint-only attribution result (no diff, no line-level scoring).
+type CheckpointResultInput struct {
+	CheckpointID   string
+	TouchedFiles   map[string]bool // AI-touched file paths
+	EventStats     EventStatsInput // for diagnostics
+}
+
+// EventStatsInput carries event-processing counters into reporting.
+type EventStatsInput struct {
+	EventsConsidered int
+	EventsAssistant  int
+	PayloadsLoaded   int
+	AIToolEvents     int
+}
+
+// CheckpointResult is the attribution result for a checkpoint without
+// a linked commit. It reports AI activity but has no line-level scores.
+type CheckpointResult struct {
+	CheckpointID   string
+	FilesAITouched int
+	FilesTotal     int
+	FilesEdited    []FileChangeOutput
+	Diagnostics    CheckpointDiagnostics
+}
+
+// CheckpointDiagnostics holds event stats and a diagnostic note for
+// checkpoint-only blame results.
+type CheckpointDiagnostics struct {
+	EventsConsidered int
+	EventsAssistant  int
+	PayloadsLoaded   int
+	AIToolEvents     int
+	Note             string
 }

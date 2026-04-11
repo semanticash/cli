@@ -9,10 +9,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"unicode"
 
-	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	attrcf "github.com/semanticash/cli/internal/attribution/carryforward"
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
 	"github.com/semanticash/cli/internal/git"
@@ -684,8 +683,8 @@ func fileScoreAILines(fs *fileScore) int {
 }
 
 // buildCommitResultInput converts local types to the reporting package's
-// CommitResultInput. Maps fileScore → FileScoreInput, carries diff metadata
-// and the AI-touched file set.
+// CommitResultInput. It maps fileScore -> FileScoreInput and carries diff
+// metadata and the AI-touched file set.
 func buildCommitResultInput(scores []fileScore, dr diffResult, aiTouchedFiles map[string]bool, providerModel map[string]string) attrreporting.CommitResultInput {
 	deletedNonBlank := make(map[string]int, len(dr.files))
 	for _, fd := range dr.files {
@@ -757,6 +756,27 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 			Model:    p.Model,
 			AILines:  p.AILines,
 		})
+	}
+	return result
+}
+
+// fromCheckpointResult maps reporting.CheckpointResult back to the
+// service-layer AttributionResult.
+func fromCheckpointResult(cr attrreporting.CheckpointResult) *AttributionResult {
+	result := &AttributionResult{
+		CheckpointID:   cr.CheckpointID,
+		FilesAITouched: cr.FilesAITouched,
+		FilesTotal:     cr.FilesTotal,
+	}
+	for _, f := range cr.FilesEdited {
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+	}
+	result.Diagnostics = AttributionDiagnostics{
+		EventsConsidered: cr.Diagnostics.EventsConsidered,
+		EventsAssistant:  cr.Diagnostics.EventsAssistant,
+		PayloadsLoaded:   cr.Diagnostics.PayloadsLoaded,
+		AIToolEvents:     cr.Diagnostics.AIToolEvents,
+		Note:             cr.Diagnostics.Note,
 	}
 	return result
 }
@@ -960,125 +980,26 @@ func (s *AttributionService) blameCheckpoint(
 		return nil, fmt.Errorf("init blob store: %w", err)
 	}
 
-	aiTouchedFiles := make(map[string]bool)
-	var diag AttributionDiagnostics
-	diag.EventsConsidered = len(events)
+	eventRows := toEventRows(ctx, bs, events)
+	candidates, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
 
-	for _, ev := range events {
-		// File-level attribution from tool_uses metadata (Cursor, Copilot).
-		if hasProviderFileEdit(ev.ToolUses) {
-			diag.AIToolEvents++
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				aiTouchedFiles[fp] = true
-			}
-			continue
-		}
-
-		if ev.Role.String != "assistant" {
-			continue
-		}
-		diag.EventsAssistant++
-
-		// Claude path.
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
-			continue
-		}
-
-		hasBash := ev.ToolUses.Valid && strings.Contains(ev.ToolUses.String, `"Bash"`)
-		if !hasEditOrWrite(ev.ToolUses) && !hasBash {
-			continue
-		}
-		diag.AIToolEvents++
-
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		diag.PayloadsLoaded++
-
-		fileLines, bashCommands := extractClaudeActions(raw, repoRoot)
-		for fp := range fileLines {
-			aiTouchedFiles[fp] = true
-		}
-		for _, cmd := range bashCommands {
-			for _, fp := range extractDeletedPaths(cmd, repoRoot) {
-				aiTouchedFiles[fp] = true
-			}
-		}
+	touchedFiles := make(map[string]bool, len(candidates.ProviderTouchedFiles))
+	for fp := range candidates.ProviderTouchedFiles {
+		touchedFiles[fp] = true
 	}
 
-	result := &AttributionResult{
-		CheckpointID:   checkpointID,
-		FilesAITouched: len(aiTouchedFiles),
-	}
+	cr := attrreporting.BuildCheckpointResult(attrreporting.CheckpointResultInput{
+		CheckpointID: checkpointID,
+		TouchedFiles: touchedFiles,
+		EventStats: attrreporting.EventStatsInput{
+			EventsConsidered: evStats.EventsConsidered,
+			EventsAssistant:  evStats.EventsAssistant,
+			PayloadsLoaded:   evStats.PayloadsLoaded,
+			AIToolEvents:     evStats.AIToolEvents,
+		},
+	})
 
-	for fp := range aiTouchedFiles {
-		result.FilesEdited = append(result.FilesEdited, FileChange{Path: fp, AI: true})
-	}
-	result.FilesTotal = len(aiTouchedFiles)
-
-	if diag.EventsConsidered == 0 {
-		diag.Note = "No agent events found in the delta window."
-	} else if diag.AIToolEvents == 0 {
-		diag.Note = "Agent events found but none contained file-modifying tool calls (Edit/Write)."
-	}
-	result.Diagnostics = diag
-
-	return result, nil
-}
-
-// hasEditOrWrite is a fast pre-filter that checks the tool_uses JSON column
-// for Edit or Write tool names without fully parsing the JSON.
-func hasEditOrWrite(toolUses sql.NullString) bool {
-	if !toolUses.Valid || toolUses.String == "" {
-		return false
-	}
-	s := toolUses.String
-	return strings.Contains(s, `"Edit"`) || strings.Contains(s, `"Write"`)
-}
-
-// hasProviderFileEdit checks if the tool_uses column indicates a provider
-// file edit event. Matches tool names from Cursor, Copilot, and Gemini
-// that represent file modifications without line-level payload content.
-func hasProviderFileEdit(toolUses sql.NullString) bool {
-	if !toolUses.Valid || toolUses.String == "" {
-		return false
-	}
-	s := toolUses.String
-	return strings.Contains(s, `"cursor_file_edit"`) ||
-		strings.Contains(s, `"cursor_edit"`) ||
-		strings.Contains(s, `"copilot_file_edit"`) ||
-		strings.Contains(s, `"kiro_file_edit"`) ||
-		strings.Contains(s, `"editFile"`) ||
-		strings.Contains(s, `"createFile"`) ||
-		strings.Contains(s, `"write_file"`) ||
-		strings.Contains(s, `"edit_file"`) ||
-		strings.Contains(s, `"save_file"`) ||
-		strings.Contains(s, `"replace"`)
-}
-
-// extractProviderFileTouches parses the tool_uses JSON from a Cursor or
-// Copilot event and returns repo-relative file paths that the AI touched.
-// Paths are already stored as repo-relative by the ingest pipeline.
-func extractProviderFileTouches(toolUses sql.NullString) []string {
-	if !toolUses.Valid || toolUses.String == "" {
-		return nil
-	}
-	var payload struct {
-		Tools []struct {
-			FilePath string `json:"file_path"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal([]byte(toolUses.String), &payload); err != nil {
-		return nil
-	}
-	var paths []string
-	for _, t := range payload.Tools {
-		if t.FilePath != "" {
-			paths = append(paths, t.FilePath)
-		}
-	}
-	return paths
+	return fromCheckpointResult(cr), nil
 }
 
 // commitWithNoDelta builds an attribution result for a commit that has no
@@ -1181,172 +1102,4 @@ func fromScoringDiff(sd attrscoring.DiffResult) diffResult {
 		filesCreated: sd.FilesCreated,
 		filesDeleted: sd.FilesDeleted,
 	}
-}
-
-// extractClaudeActions parses an assistant payload blob from the content-
-// addressed store and extracts the actions the AI performed:
-//
-//   - Edit tool calls: lines from the "new_string" field (replacement text)
-//   - Write tool calls: lines from the "content" field (full file content)
-//   - Bash tool calls: the raw command string (used to detect file deletions)
-//
-// The payload format is a JSON object with structure:
-//
-//	{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {...}}]}}
-//
-// Returns two values:
-//   - fileLines: map of repo-relative file paths to sets of trimmed line content
-//   - bashCommands: raw command strings from Bash tool calls
-func extractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map[string]struct{}, bashCommands []string) {
-	fileLines = make(map[string]map[string]struct{})
-
-	var payload struct {
-		Type    string `json:"type"`
-		Message struct {
-			Content []json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return
-	}
-	if payload.Type != "assistant" {
-		return
-	}
-
-	for _, blockRaw := range payload.Message.Content {
-		var block struct {
-			Type  string          `json:"type"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-		}
-		if err := json.Unmarshal(blockRaw, &block); err != nil {
-			continue
-		}
-		if block.Type != "tool_use" {
-			continue
-		}
-
-		switch block.Name {
-		case "Edit":
-			var inp struct {
-				FilePath  string `json:"file_path"`
-				NewString string `json:"new_string"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.NewString == "" {
-				continue
-			}
-			relPath := normalizePath(inp.FilePath, repoRoot)
-			addLines(fileLines, relPath, inp.NewString)
-
-		case "Write":
-			var inp struct {
-				FilePath string `json:"file_path"`
-				Content  string `json:"content"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Content == "" {
-				continue
-			}
-			relPath := normalizePath(inp.FilePath, repoRoot)
-			addLines(fileLines, relPath, inp.Content)
-
-		case "Bash":
-			var inp struct {
-				Command string `json:"command"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Command == "" {
-				continue
-			}
-			bashCommands = append(bashCommands, inp.Command)
-		}
-	}
-
-	return
-}
-
-// extractDeletedPaths extracts file paths from a shell command that
-// contains "rm". It tokenizes the command by whitespace and returns
-// repo-relative paths for any token that isn't a flag or the "rm" command
-// itself.
-func extractDeletedPaths(cmd, repoRoot string) []string {
-	if !strings.Contains(cmd, "rm ") {
-		return nil
-	}
-
-	var paths []string
-	for _, token := range strings.Fields(cmd) {
-		if token == "rm" || strings.HasPrefix(token, "-") {
-			continue
-		}
-		rel := normalizePath(token, repoRoot)
-		if rel != "" && rel != "." {
-			paths = append(paths, rel)
-		}
-	}
-	return paths
-}
-
-// addLines splits text into lines and inserts each trimmed, non-blank line
-// into the set for the given file path. This is the core building block for
-// constructing the AI candidate line set.
-func addLines(m map[string]map[string]struct{}, filePath, text string) {
-	if filePath == "" {
-		return
-	}
-	if m[filePath] == nil {
-		m[filePath] = make(map[string]struct{})
-	}
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		m[filePath][trimmed] = struct{}{}
-	}
-}
-
-// normalizePath converts an absolute file path to a repo-relative path
-// using forward slashes, matching the format produced by "git diff".
-// Falls back to the base name if the path cannot be made relative.
-func normalizePath(filePath, repoRoot string) string {
-	if filePath == "" {
-		return ""
-	}
-	rel, err := filepath.Rel(repoRoot, filePath)
-	if err != nil {
-		return filepath.Base(filePath)
-	}
-	return filepath.ToSlash(rel)
-}
-
-// --- Tier-2 and Tier-3 matching helpers ---
-
-// normalizeWhitespace removes all whitespace characters from s.
-// Used as a second-tier match when exact trimmed comparison fails,
-// catching formatter/linter modifications like:
-//
-//	"func foo(){" vs "func foo() {"
-//	"return   x+y" vs "return x + y"
-func normalizeWhitespace(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if !unicode.IsSpace(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// buildNormalizedSet derives a whitespace-stripped line set from the
-// existing AI candidate set. Each trimmed line is stripped of all
-// whitespace and stored per file path.
-func buildNormalizedSet(aiLines map[string]map[string]struct{}) map[string]map[string]struct{} {
-	norm := make(map[string]map[string]struct{}, len(aiLines))
-	for fp, lines := range aiLines {
-		norm[fp] = make(map[string]struct{}, len(lines))
-		for line := range lines {
-			norm[fp][normalizeWhitespace(line)] = struct{}{}
-		}
-	}
-	return norm
 }
