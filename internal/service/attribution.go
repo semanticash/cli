@@ -289,27 +289,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	diag.ExactMatches = matchStats.ExactMatches
 	diag.NormalizedMatches = matchStats.NormalizedMatches
 	diag.ModifiedMatches = matchStats.ModifiedMatches
-	if result.AIPercentage == 0 {
-		switch {
-		case diag.EventsConsidered == 0:
-			diag.Note = "No agent events found in the delta window between checkpoints."
-		case diag.AIToolEvents == 0:
-			diag.Note = "Agent events found but none contained file-modifying tool calls (Edit/Write)."
-		case diag.PayloadsLoaded == 0:
-			diag.Note = "Agent tool calls found but payloads could not be loaded from blob store."
-		default:
-			diag.Note = "Agent tool calls found but no added lines in the commit matched AI-produced output."
-		}
-	} else if diag.NormalizedMatches > 0 || diag.ModifiedMatches > 0 {
-		parts := []string{fmt.Sprintf("%d exact", diag.ExactMatches)}
-		if diag.NormalizedMatches > 0 {
-			parts = append(parts, fmt.Sprintf("%d normalized", diag.NormalizedMatches))
-		}
-		if diag.ModifiedMatches > 0 {
-			parts = append(parts, fmt.Sprintf("%d modified", diag.ModifiedMatches))
-		}
-		diag.Note = fmt.Sprintf("AI matches: %s.", strings.Join(parts, ", "))
-	}
+	diag.Note = attrreporting.RenderDiagnosticNote(attrreporting.DiagnosticsInput{
+		EventStats: attrreporting.EventStatsInput{
+			EventsConsidered: diag.EventsConsidered,
+			EventsAssistant:  diag.EventsAssistant,
+			PayloadsLoaded:   diag.PayloadsLoaded,
+			AIToolEvents:     diag.AIToolEvents,
+		},
+		MatchStats: attrreporting.MatchStatsInput{
+			ExactMatches:      matchStats.ExactMatches,
+			NormalizedMatches: matchStats.NormalizedMatches,
+			ModifiedMatches:   matchStats.ModifiedMatches,
+		},
+		AIPercent: result.AIPercentage,
+	})
 	result.Diagnostics = diag
 
 	return result, nil

@@ -82,6 +82,21 @@ type FileChangeOutput struct {
 	AI   bool
 }
 
+// MatchStatsInput carries match counters from scoring into reporting.
+type MatchStatsInput struct {
+	ExactMatches      int
+	NormalizedMatches int
+	ModifiedMatches   int
+}
+
+// DiagnosticsInput combines event stats, match stats, and the computed
+// AI percentage for rendering the diagnostic note.
+type DiagnosticsInput struct {
+	EventStats EventStatsInput
+	MatchStats MatchStatsInput
+	AIPercent  float64
+}
+
 // CheckpointResultInput holds the narrow inputs for assembling a
 // checkpoint-only attribution result (no diff, no line-level scoring).
 type CheckpointResultInput struct {
