@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Refactored the attribution engine into dedicated `events`, `scoring`, `reporting`, and `carryforward` packages without changing the public CLI output.
 - Unified commit attribution, checkpoint-only blame, and carry-forward logic around shared extraction and reporting paths to keep attribution behavior consistent across commands.
 - Expanded attribution regression coverage to lock down public result shapes and provider-specific behavior during ongoing maintenance work.
+- Reorganized the checkpoint worker into explicit preparation, reconciliation, enrichment, completion, and post-completion stages so checkpoint completion, attribution, and remote sync behavior follow clearer workflow boundaries.
 
 ### Fixed
 
