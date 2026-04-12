@@ -22,6 +22,9 @@ import (
 func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	// Set up an isolated git repo.
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 	globalDir := filepath.Join(dir, ".semantica-global")
 	t.Setenv("SEMANTICA_HOME", globalDir)
 	t.Setenv("HOME", dir)

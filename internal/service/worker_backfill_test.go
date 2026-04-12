@@ -21,6 +21,9 @@ import (
 func TestWorkerRun_SkipsDrainAfterLivePushRetry(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 
 	// Isolate from real global state.
 	t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))
@@ -174,6 +177,9 @@ func TestWorkerRun_SkipsDrainAfterLivePushRetry(t *testing.T) {
 func TestWorkerRun_DrainsBackfillWhenNoPushRetry(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 
 	// Isolate from real global state.
 	t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))

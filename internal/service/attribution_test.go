@@ -1565,6 +1565,9 @@ func TestCarryForward_NoEventsInBothWindows(t *testing.T) {
 // AttributeCommit API.
 func TestAttributeCommit_CarryForward(t *testing.T) {
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 	ctx := context.Background()
 
 	gitInit := exec.Command("git", "init", dir)

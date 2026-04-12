@@ -15,6 +15,11 @@ import (
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// Resolve symlinks so the path matches what OpenRepo returns after
+	// filepath.EvalSymlinks (e.g., /var/folders -> /private/var/folders on macOS).
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 
 	// Isolate broker DB so tests don't hit ~/.semantica/.
 	t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))

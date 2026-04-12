@@ -398,7 +398,7 @@ func (r *Repo) ChangedFilesForCommit(ctx context.Context, hash string) ([]string
 		return nil, fmt.Errorf("commit hash is empty")
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", hash)
+	cmd := exec.CommandContext(ctx, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", "--root", hash)
 	cmd.Dir = r.root
 	out, err := cmd.Output()
 	if err != nil {
