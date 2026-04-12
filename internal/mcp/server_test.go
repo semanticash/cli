@@ -226,6 +226,9 @@ func TestHandleToolsCall_ExplainBadRepo(t *testing.T) {
 func initTestRepo(t *testing.T) (repoRoot string, commitHash string) {
 	t.Helper()
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 
 	// Create a real git repo with one commit.
 	for _, args := range [][]string{

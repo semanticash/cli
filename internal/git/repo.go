@@ -398,7 +398,7 @@ func (r *Repo) ChangedFilesForCommit(ctx context.Context, hash string) ([]string
 		return nil, fmt.Errorf("commit hash is empty")
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", hash)
+	cmd := exec.CommandContext(ctx, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", "--root", hash)
 	cmd.Dir = r.root
 	out, err := cmd.Output()
 	if err != nil {
@@ -432,6 +432,10 @@ func findGitRoot(start string) (string, error) {
 		if st, err := os.Stat(gitPath); err == nil {
 			// Accept both directory (.git) and file (.git) for worktrees.
 			if st.IsDir() || st.Mode().IsRegular() {
+				canonical, err := filepath.EvalSymlinks(dir)
+				if err == nil {
+					return canonical, nil
+				}
 				return dir, nil
 			}
 		}

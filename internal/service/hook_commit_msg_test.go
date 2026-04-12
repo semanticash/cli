@@ -314,6 +314,9 @@ func TestRun_FallbackDiagnosticsTrailer(t *testing.T) {
 // hook path.
 func TestRun_CarryForwardTrailer(t *testing.T) {
 	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
 	ctx := context.Background()
 
 	gitInit := exec.Command("git", "init", dir)

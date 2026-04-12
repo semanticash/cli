@@ -2,18 +2,18 @@
 package service
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
-	"unicode"
 
+	attrcf "github.com/semanticash/cli/internal/attribution/carryforward"
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
+	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -158,7 +158,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		return nil, fmt.Errorf("init blob store: %w", err)
 	}
 
-	events, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
+	windowRows, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
 		RepositoryID: cp.RepositoryID,
 		AfterTs:      afterTs,
 		UpToTs:       cp.CreatedAt,
@@ -167,69 +167,28 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		return nil, fmt.Errorf("list events in window: %w", err)
 	}
 
-	aiLines := make(map[string]map[string]struct{})
-	aiTouchedFiles := make(map[string]bool)
-	providerTouchedFiles := make(map[string]string)
-	fileProvider := make(map[string]string)
-	providerModel := make(map[string]string)
+	eventRows := toEventRows(ctx, bs, windowRows)
+	cands, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
+
+	// Use local names for the candidate sets used by scoring and reporting.
+	aiLines := cands.AILines
+	providerTouchedFiles := cands.ProviderTouchedFiles
+	fileProvider := cands.FileProvider
+	providerModel := cands.ProviderModel
+
+	// Derive aiTouchedFiles from ProviderTouchedFiles keys.
+	// ProviderTouchedFiles includes all touched paths: provider file-touch,
+	// line-level Claude writes/edits, and bash deletion paths.
+	aiTouchedFiles := make(map[string]bool, len(providerTouchedFiles))
+	for fp := range providerTouchedFiles {
+		aiTouchedFiles[fp] = true
+	}
 
 	var diag AttributionDiagnostics
-	diag.EventsConsidered = len(events)
-
-	for _, ev := range events {
-		if ev.Model.Valid && ev.Model.String != "" {
-			providerModel[ev.Provider] = ev.Model.String
-		}
-
-		// Some providers report file touches on tool-role events.
-		if hasProviderFileEdit(ev.ToolUses) {
-			diag.AIToolEvents++
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				providerTouchedFiles[fp] = ev.Provider
-				aiTouchedFiles[fp] = true
-			}
-			continue
-		}
-
-		if ev.Role.String != "assistant" {
-			continue
-		}
-		diag.EventsAssistant++
-
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
-			continue
-		}
-
-		hasBash := ev.ToolUses.Valid && strings.Contains(ev.ToolUses.String, `"Bash"`)
-		if !hasEditOrWrite(ev.ToolUses) && !hasBash {
-			continue
-		}
-		diag.AIToolEvents++
-
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		diag.PayloadsLoaded++
-
-		fileLines, bashCommands := extractClaudeActions(raw, repoRoot)
-		for fp, lines := range fileLines {
-			aiTouchedFiles[fp] = true
-			fileProvider[fp] = ev.Provider
-			if aiLines[fp] == nil {
-				aiLines[fp] = make(map[string]struct{})
-			}
-			for line := range lines {
-				aiLines[fp][line] = struct{}{}
-			}
-		}
-
-		for _, cmd := range bashCommands {
-			for _, fp := range extractDeletedPaths(cmd, repoRoot) {
-				aiTouchedFiles[fp] = true
-			}
-		}
-	}
+	diag.EventsConsidered = evStats.EventsConsidered
+	diag.EventsAssistant = evStats.EventsAssistant
+	diag.PayloadsLoaded = evStats.PayloadsLoaded
+	diag.AIToolEvents = evStats.AIToolEvents
 
 	diffBytes, err := repo.DiffForCommit(ctx, in.CommitHash)
 	if err != nil {
@@ -254,7 +213,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				fileProvider:         fileProvider,
 				providerModel:        providerModel,
 			}
-			currentScores := scoreDiffPerFile(dr, currentCands)
+			currentScores, _ := scoreDiffPerFile(dr, currentCands)
 			scoredAI := make(map[string]bool, len(currentScores))
 			for _, fs := range currentScores {
 				if fileScoreAILines(&fs) > 0 {
@@ -277,13 +236,14 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 					UpToTs:   prev.CreatedAt,
 				}
 				if histEvents, histErr := loadWindowEvents(ctx, h, histInput); histErr == nil {
-					histCands := buildAICandidates(ctx, bs, histEvents, repoRoot, needsCF)
+					histRows := toEventRows(ctx, bs, histEvents)
+					histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, repoRoot, needsCF)
 					// Merge historical candidates into the main maps.
 					var cfLines int
-					for fp, lines := range histCands.aiLines {
+					for fp, lines := range histNewCands.AILines {
 						aiTouchedFiles[fp] = true
-						if histCands.fileProvider[fp] != "" {
-							fileProvider[fp] = histCands.fileProvider[fp]
+						if histNewCands.FileProvider[fp] != "" {
+							fileProvider[fp] = histNewCands.FileProvider[fp]
 						}
 						if aiLines[fp] == nil {
 							aiLines[fp] = make(map[string]struct{})
@@ -293,11 +253,11 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 							cfLines++
 						}
 					}
-					for fp, prov := range histCands.providerTouchedFiles {
+					for fp, prov := range histNewCands.ProviderTouchedFiles {
 						providerTouchedFiles[fp] = prov
 						aiTouchedFiles[fp] = true
 					}
-					for prov, model := range histCands.providerModel {
+					for prov, model := range histNewCands.ProviderModel {
 						if _, exists := providerModel[prov]; !exists {
 							providerModel[prov] = model
 						}
@@ -311,188 +271,38 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		}
 	}
 
-	aiLinesNorm := buildNormalizedSet(aiLines)
-
-	result := &AttributionResult{
-		CommitHash:   in.CommitHash,
-		CheckpointID: link.CheckpointID,
+	// Score the diff against the merged candidates.
+	finalCands := aiCandidates{
+		aiLines:              aiLines,
+		providerTouchedFiles: providerTouchedFiles,
+		fileProvider:         fileProvider,
+		providerModel:        providerModel,
 	}
+	scores, matchStats := scoreDiffPerFile(dr, finalCands)
 
-	createdSet := make(map[string]bool, len(dr.filesCreated))
-	for _, f := range dr.filesCreated {
-		createdSet[f] = true
-	}
+	// Assemble the commit result from the scored files and diff metadata.
+	commitInput := buildCommitResultInput(scores, dr, aiTouchedFiles, providerModel)
+	cr := attrreporting.BuildCommitResult(commitInput)
+	result := fromCommitResult(cr, in.CommitHash, link.CheckpointID)
 
-	filesWithAI := make(map[string]bool)
-	providerLines := make(map[string]int) // provider -> AI lines
-
-	for _, fd := range dr.files {
-		fa := FileAttribution{Path: fd.path, DeletedNonBlank: fd.deletedNonBlank}
-
-		provider, isProviderFile := providerTouchedFiles[fd.path]
-		isProviderOnly := isProviderFile && aiLines[fd.path] == nil
-		if isProviderOnly {
-			for _, group := range fd.groups {
-				for _, line := range group.lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
-						continue
-					}
-					fa.TotalLines++
-					fa.AIModifiedLines++
-					diag.ModifiedMatches++
-					providerLines[provider]++
-				}
-			}
-			if fa.TotalLines > 0 {
-				fa.AIPercent = float64(fa.AIModifiedLines) / float64(fa.TotalLines) * 100
-				filesWithAI[fd.path] = true
-			}
-			result.AIModifiedLines += fa.AIModifiedLines
-			result.AILines += fa.AIModifiedLines // Cursor: modified counts in headline
-			result.TotalLines += fa.TotalLines
-			result.Files = append(result.Files, fa)
-
-			isAI := true
-			if createdSet[fd.path] {
-				result.FilesCreated = append(result.FilesCreated, FileChange{Path: fd.path, AI: isAI})
-			} else if fa.TotalLines > 0 {
-				result.FilesEdited = append(result.FilesEdited, FileChange{Path: fd.path, AI: isAI})
-			}
-			continue
-		}
-
-		prov := fileProvider[fd.path]
-		if prov == "" && isProviderFile {
-			prov = provider
-		}
-
-		for _, group := range fd.groups {
-			// Pass 1: classify each line via Tier-1/Tier-2, track overlap.
-			type lineClass struct {
-				tier int // 0=unmatched, 1=exact, 2=normalized
-			}
-			var classes []lineClass
-			hasOverlap := false
-
-			for _, line := range group.lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" {
-					continue
-				}
-				lc := lineClass{}
-
-				// Tier 1: exact trimmed match.
-				if fileSet, ok := aiLines[fd.path]; ok {
-					if _, found := fileSet[trimmed]; found {
-						lc.tier = 1
-						hasOverlap = true
-					}
-				}
-				// Tier 2: whitespace-stripped match (only if Tier 1 missed).
-				if lc.tier == 0 {
-					norm := normalizeWhitespace(trimmed)
-					if normSet, ok := aiLinesNorm[fd.path]; ok {
-						if _, found := normSet[norm]; found {
-							lc.tier = 2
-							hasOverlap = true
-						}
-					}
-				}
-				classes = append(classes, lc)
-			}
-
-			// Pass 2: assign final categories based on group overlap.
-			for _, lc := range classes {
-				fa.TotalLines++
-				switch {
-				case lc.tier == 1:
-					fa.AIExactLines++
-					diag.ExactMatches++
-					providerLines[prov]++
-				case lc.tier == 2:
-					fa.AIFormattedLines++
-					diag.NormalizedMatches++
-					providerLines[prov]++
-				case hasOverlap:
-					fa.AIModifiedLines++
-					diag.ModifiedMatches++
-					providerLines[prov]++
-				default:
-					fa.HumanLines++
-				}
-			}
-		}
-
-		aiAuthored := fa.AIExactLines + fa.AIFormattedLines + fa.AIModifiedLines
-		if fa.TotalLines > 0 && aiAuthored > 0 {
-			fa.AIPercent = float64(aiAuthored) / float64(fa.TotalLines) * 100
-			filesWithAI[fd.path] = true
-		}
-
-		result.AIExactLines += fa.AIExactLines
-		result.AIFormattedLines += fa.AIFormattedLines
-		result.AIModifiedLines += fa.AIModifiedLines
-		result.AILines += aiAuthored
-		result.HumanLines += fa.HumanLines
-		result.TotalLines += fa.TotalLines
-		result.Files = append(result.Files, fa)
-
-		isAI := filesWithAI[fd.path] || aiTouchedFiles[fd.path]
-		if createdSet[fd.path] {
-			result.FilesCreated = append(result.FilesCreated, FileChange{Path: fd.path, AI: isAI})
-		} else if fa.TotalLines > 0 {
-			result.FilesEdited = append(result.FilesEdited, FileChange{Path: fd.path, AI: isAI})
-		}
-	}
-
-	for _, f := range dr.filesDeleted {
-		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f, AI: aiTouchedFiles[f]})
-	}
-
-	result.FilesTotal = len(result.FilesCreated) + len(result.FilesEdited)
-	result.FilesAITouched = len(filesWithAI)
-	if result.TotalLines > 0 {
-		result.AIPercentage = float64(result.AILines) / float64(result.TotalLines) * 100
-	}
-
-	for prov, lines := range providerLines {
-		if lines > 0 {
-			result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
-				Provider: prov,
-				Model:    providerModel[prov],
-				AILines:  lines,
-			})
-		}
-	}
-	sort.Slice(result.ProviderDetails, func(i, j int) bool {
-		if result.ProviderDetails[i].AILines != result.ProviderDetails[j].AILines {
-			return result.ProviderDetails[i].AILines > result.ProviderDetails[j].AILines
-		}
-		return result.ProviderDetails[i].Provider < result.ProviderDetails[j].Provider
+	// Populate diagnostics.
+	diag.ExactMatches = matchStats.ExactMatches
+	diag.NormalizedMatches = matchStats.NormalizedMatches
+	diag.ModifiedMatches = matchStats.ModifiedMatches
+	diag.Note = attrreporting.RenderDiagnosticNote(attrreporting.DiagnosticsInput{
+		EventStats: attrreporting.EventStatsInput{
+			EventsConsidered: diag.EventsConsidered,
+			EventsAssistant:  diag.EventsAssistant,
+			PayloadsLoaded:   diag.PayloadsLoaded,
+			AIToolEvents:     diag.AIToolEvents,
+		},
+		MatchStats: attrreporting.MatchStatsInput{
+			ExactMatches:      matchStats.ExactMatches,
+			NormalizedMatches: matchStats.NormalizedMatches,
+			ModifiedMatches:   matchStats.ModifiedMatches,
+		},
+		AIPercent: result.AIPercentage,
 	})
-
-	if result.AIPercentage == 0 {
-		switch {
-		case diag.EventsConsidered == 0:
-			diag.Note = "No agent events found in the delta window between checkpoints."
-		case diag.AIToolEvents == 0:
-			diag.Note = "Agent events found but none contained file-modifying tool calls (Edit/Write)."
-		case diag.PayloadsLoaded == 0:
-			diag.Note = "Agent tool calls found but payloads could not be loaded from blob store."
-		default:
-			diag.Note = "Agent tool calls found but no added lines in the commit matched AI-produced output."
-		}
-	} else if diag.NormalizedMatches > 0 || diag.ModifiedMatches > 0 {
-		parts := []string{fmt.Sprintf("%d exact", diag.ExactMatches)}
-		if diag.NormalizedMatches > 0 {
-			parts = append(parts, fmt.Sprintf("%d normalized", diag.NormalizedMatches))
-		}
-		if diag.ModifiedMatches > 0 {
-			parts = append(parts, fmt.Sprintf("%d modified", diag.ModifiedMatches))
-		}
-		diag.Note = fmt.Sprintf("AI matches: %s.", strings.Join(parts, ", "))
-	}
 	result.Diagnostics = diag
 
 	return result, nil
@@ -663,21 +473,30 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 		return AIPercentResult{}, nil
 	}
 
-	events, err := loadWindowEvents(ctx, h, in)
+	rows, err := loadWindowEvents(ctx, h, in)
 	if err != nil {
 		return AIPercentResult{}, err
 	}
 
-	cands := buildAICandidates(ctx, bs, events, in.RepoRoot, nil)
+	eventRows := toEventRows(ctx, bs, rows)
+	cands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
 
-	if len(cands.aiLines) == 0 && len(cands.providerTouchedFiles) == 0 {
+	if len(cands.AILines) == 0 && len(cands.ProviderTouchedFiles) == 0 {
 		return AIPercentResult{}, nil
 	}
 
-	dr := parseDiff(diffBytes)
-	scores := scoreDiffPerFile(dr, cands)
+	// Adapt candidate data for the existing scoring helpers.
+	oldCands := aiCandidates{
+		aiLines:              cands.AILines,
+		providerTouchedFiles: cands.ProviderTouchedFiles,
+		fileProvider:         cands.FileProvider,
+		providerModel:        cands.ProviderModel,
+	}
 
-	return aggregateFileScores(scores, cands.providerModel, len(dr.files)), nil
+	dr := parseDiff(diffBytes)
+	scores, _ := scoreDiffPerFile(dr, oldCands)
+
+	return aggregateFileScores(scores, oldCands.providerModel, len(dr.files)), nil
 }
 
 // loadWindowEvents queries events in the delta window. Returns
@@ -697,231 +516,132 @@ func loadWindowEvents(ctx context.Context, h *sqlstore.Handle, in ComputeAIPerce
 	return events, nil
 }
 
-// buildAICandidates extracts AI line sets and provider metadata from events.
-// When eligibleFiles is non-nil, only files in the set contribute to candidate
-// maps (gating happens at extraction time, not in the diff loop).
-func buildAICandidates(ctx context.Context, bs *blobs.Store, events []sqldb.ListEventsInWindowRow, repoRoot string, eligibleFiles map[string]bool) aiCandidates {
-	c := aiCandidates{
-		aiLines:              make(map[string]map[string]struct{}),
-		providerTouchedFiles: make(map[string]string),
-		fileProvider:         make(map[string]string),
-		providerModel:        make(map[string]string),
-	}
-
-	for _, ev := range events {
-		if ev.Model.Valid && ev.Model.String != "" {
-			c.providerModel[ev.Provider] = ev.Model.String
+// toEventRows converts DB rows into events.EventRow with pre-loaded payloads.
+// It keeps storage access in the service layer while passing plain event data
+// to the events package.
+//
+// Payloads are only loaded for assistant rows with Edit/Write/Bash tool usage,
+// matching the old code's filter chain. This avoids loading blobs for irrelevant
+// events (user messages, tool results, non-file-modifying assistant responses).
+func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsInWindowRow) []attrevents.EventRow {
+	out := make([]attrevents.EventRow, len(rows))
+	for i, r := range rows {
+		out[i] = attrevents.EventRow{
+			Provider:    r.Provider,
+			Role:        r.Role.String,
+			ToolUses:    r.ToolUses.String,
+			PayloadHash: r.PayloadHash.String,
+			Model:       r.Model.String,
 		}
-
-		if hasProviderFileEdit(ev.ToolUses) {
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				if eligibleFiles != nil && !eligibleFiles[fp] {
-					continue
-				}
-				c.providerTouchedFiles[fp] = ev.Provider
-			}
+		// Only load payloads for assistant events with file-modifying tools.
+		// Provider file-touch events (Cursor, Copilot, etc.) don't need payloads.
+		if r.Role.String != "assistant" {
 			continue
 		}
-
-		if ev.Role.String != "assistant" {
+		if !r.PayloadHash.Valid || r.PayloadHash.String == "" || bs == nil {
 			continue
 		}
-
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
+		hasBash := r.ToolUses.Valid && strings.Contains(r.ToolUses.String, `"Bash"`)
+		if !attrevents.HasEditOrWrite(r.ToolUses.String) && !hasBash {
 			continue
 		}
-		if !hasEditOrWrite(ev.ToolUses) {
-			continue
-		}
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		fileLines, _ := extractClaudeActions(raw, repoRoot)
-		for fp, lines := range fileLines {
-			if eligibleFiles != nil && !eligibleFiles[fp] {
-				continue
-			}
-			c.fileProvider[fp] = ev.Provider
-			if c.aiLines[fp] == nil {
-				c.aiLines[fp] = make(map[string]struct{})
-			}
-			for line := range lines {
-				c.aiLines[fp][line] = struct{}{}
-			}
+		raw, err := bs.Get(ctx, r.PayloadHash.String)
+		if err == nil {
+			out[i].Payload = raw
 		}
 	}
-
-	return c
+	return out
 }
 
-// scoreDiffPerFile matches AI candidate maps against a parsed diff and returns
-// per-file scores. Each fileScore contains that file's total/exact/formatted/
-// modified/human line counts and per-provider breakdown.
-func scoreDiffPerFile(dr diffResult, cands aiCandidates) []fileScore {
-	aiLinesNorm := buildNormalizedSet(cands.aiLines)
+// scoreDiffPerFile delegates to attrscoring.ScoreFiles and converts the result
+// back to the local fileScore type used by aggregation helpers.
+func scoreDiffPerFile(dr diffResult, cands aiCandidates) ([]fileScore, attrscoring.MatchStats) {
+	// Convert diffResult to scoring.DiffResult.
+	sDiff := toScoringDiff(dr)
 
-	var scores []fileScore
+	newScores, stats := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider)
 
-	for _, fd := range dr.files {
-		fs := fileScore{
-			path:          fd.path,
-			providerLines: make(map[string]int),
+	// Convert scoring.FileScore back to fileScore.
+	out := make([]fileScore, len(newScores))
+	for i, s := range newScores {
+		out[i] = fileScore{
+			path:           s.Path,
+			totalLines:     s.TotalLines,
+			exactLines:     s.ExactLines,
+			formattedLines: s.FormattedLines,
+			modifiedLines:  s.ModifiedLines,
+			humanLines:     s.HumanLines,
+			providerLines:  s.ProviderLines,
 		}
-
-		provider, isProviderFile := cands.providerTouchedFiles[fd.path]
-		isProviderOnly := isProviderFile && cands.aiLines[fd.path] == nil
-		if isProviderOnly {
-			for _, group := range fd.groups {
-				for _, line := range group.lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" {
-						continue
-					}
-					fs.totalLines++
-					fs.modifiedLines++
-					fs.providerLines[provider]++
-				}
-			}
-			scores = append(scores, fs)
-			continue
-		}
-
-		prov := cands.fileProvider[fd.path]
-		if prov == "" && isProviderFile {
-			prov = provider
-		}
-
-		for _, group := range fd.groups {
-			type lc struct{ tier int }
-			var classes []lc
-			hasOverlap := false
-
-			for _, line := range group.lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" {
-					continue
-				}
-				c := lc{}
-				if fileSet, ok := cands.aiLines[fd.path]; ok {
-					if _, found := fileSet[trimmed]; found {
-						c.tier = 1
-						hasOverlap = true
-					}
-				}
-				if c.tier == 0 {
-					norm := normalizeWhitespace(trimmed)
-					if normSet, ok := aiLinesNorm[fd.path]; ok {
-						if _, found := normSet[norm]; found {
-							c.tier = 2
-							hasOverlap = true
-						}
-					}
-				}
-				classes = append(classes, c)
-			}
-
-			for _, c := range classes {
-				fs.totalLines++
-				switch {
-				case c.tier == 1:
-					fs.exactLines++
-					fs.providerLines[prov]++
-				case c.tier == 2:
-					fs.formattedLines++
-					fs.providerLines[prov]++
-				case c.tier == 0 && hasOverlap:
-					fs.modifiedLines++
-					fs.providerLines[prov]++
-				default:
-					fs.humanLines++
-				}
-			}
-		}
-
-		scores = append(scores, fs)
 	}
-
-	return scores
+	return out, stats
 }
 
-// aggregateFileScores reduces per-file scores into a single AIPercentResult.
+// toScoringDiff converts the internal diffResult to attrscoring.DiffResult.
+func toScoringDiff(dr diffResult) attrscoring.DiffResult {
+	files := make([]attrscoring.FileDiff, len(dr.files))
+	for i, f := range dr.files {
+		groups := make([]attrscoring.AddedGroup, len(f.groups))
+		for j, g := range f.groups {
+			groups[j] = attrscoring.AddedGroup{Lines: g.lines}
+		}
+		files[i] = attrscoring.FileDiff{
+			Path:            f.path,
+			Groups:          groups,
+			DeletedNonBlank: f.deletedNonBlank,
+		}
+	}
+	return attrscoring.DiffResult{
+		Files:        files,
+		FilesCreated: dr.filesCreated,
+		FilesDeleted: dr.filesDeleted,
+	}
+}
+
+// aggregateFileScores delegates to attrreporting.AggregatePercent and
+// converts the result back to the local AIPercentResult type.
 func aggregateFileScores(scores []fileScore, providerModel map[string]string, filesTouched int) AIPercentResult {
-	var totalLines, aiAuthored int
-	var exactLines, formattedLines, modifiedLines int
-	providerLines := make(map[string]int)
-
-	for _, fs := range scores {
-		totalLines += fs.totalLines
-		exactLines += fs.exactLines
-		formattedLines += fs.formattedLines
-		modifiedLines += fs.modifiedLines
-		aiAuthored += fs.exactLines + fs.formattedLines + fs.modifiedLines
-		for prov, lines := range fs.providerLines {
-			providerLines[prov] += lines
+	inputs := make([]attrreporting.FileScoreInput, len(scores))
+	for i, fs := range scores {
+		inputs[i] = attrreporting.FileScoreInput{
+			Path:           fs.path,
+			TotalLines:     fs.totalLines,
+			ExactLines:     fs.exactLines,
+			FormattedLines: fs.formattedLines,
+			ModifiedLines:  fs.modifiedLines,
+			HumanLines:     fs.humanLines,
+			ProviderLines:  fs.providerLines,
 		}
 	}
-
-	if totalLines == 0 {
-		return AIPercentResult{}
-	}
-
-	var providers []ProviderAttribution
-	for prov, lines := range providerLines {
-		if lines > 0 {
-			model := ""
-			if providerModel != nil {
-				model = providerModel[prov]
-			}
-			providers = append(providers, ProviderAttribution{
-				Provider: prov,
-				Model:    model,
-				AILines:  lines,
-			})
+	r := attrreporting.AggregatePercent(inputs, providerModel, filesTouched)
+	providers := make([]ProviderAttribution, len(r.Providers))
+	for i, p := range r.Providers {
+		providers[i] = ProviderAttribution{
+			Provider: p.Provider,
+			Model:    p.Model,
+			AILines:  p.AILines,
 		}
 	}
-	sort.Slice(providers, func(i, j int) bool {
-		if providers[i].AILines != providers[j].AILines {
-			return providers[i].AILines > providers[j].AILines
-		}
-		return providers[i].Provider < providers[j].Provider
-	})
-
 	return AIPercentResult{
-		Percent:        float64(aiAuthored) / float64(totalLines) * 100,
-		TotalLines:     totalLines,
-		AILines:        aiAuthored,
-		ExactLines:     exactLines,
-		ModifiedLines:  modifiedLines,
-		FormattedLines: formattedLines,
-		FilesTouched:   filesTouched,
+		Percent:        r.Percent,
+		TotalLines:     r.TotalLines,
+		AILines:        r.AILines,
+		ExactLines:     r.ExactLines,
+		ModifiedLines:  r.ModifiedLines,
+		FormattedLines: r.FormattedLines,
+		FilesTouched:   r.FilesTouched,
 		Providers:      providers,
 	}
 }
 
-// carryForwardCandidates returns files eligible for historical lookback:
-// created in the current diff AND present in the previous commit-linked
-// checkpoint's manifest.
+// carryForwardCandidates delegates to attrcf.IdentifyCandidates and maps
+// blobs.ManifestFile to the carryforward-local ManifestEntry type.
 func carryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
-	if len(dr.filesCreated) == 0 || len(manifestFiles) == 0 {
-		return nil
+	entries := make([]attrcf.ManifestEntry, len(manifestFiles))
+	for i, mf := range manifestFiles {
+		entries[i] = attrcf.ManifestEntry{Path: mf.Path}
 	}
-
-	manifestSet := make(map[string]bool, len(manifestFiles))
-	for _, mf := range manifestFiles {
-		manifestSet[mf.Path] = true
-	}
-
-	var result map[string]bool
-	for _, path := range dr.filesCreated {
-		if manifestSet[path] {
-			if result == nil {
-				result = make(map[string]bool)
-			}
-			result[path] = true
-		}
-	}
-	return result
+	return attrcf.IdentifyCandidates(dr.filesCreated, entries)
 }
 
 // loadManifestForCheckpoint loads the manifest for a checkpoint's manifest hash.
@@ -945,10 +665,113 @@ func loadManifestForCheckpoint(ctx context.Context, bs *blobs.Store, manifestHas
 	return m.Files
 }
 
-// fileScoreAILines returns the total AI lines (exact + formatted + modified)
-// for a single file score.
+// fileScoreAILines delegates to attrreporting.AILines.
 func fileScoreAILines(fs *fileScore) int {
-	return fs.exactLines + fs.formattedLines + fs.modifiedLines
+	input := attrreporting.FileScoreInput{
+		ExactLines:     fs.exactLines,
+		FormattedLines: fs.formattedLines,
+		ModifiedLines:  fs.modifiedLines,
+	}
+	return attrreporting.AILines(&input)
+}
+
+// buildCommitResultInput converts local types to the reporting package's
+// CommitResultInput. It maps fileScore -> FileScoreInput and carries diff
+// metadata and the AI-touched file set.
+func buildCommitResultInput(scores []fileScore, dr diffResult, aiTouchedFiles map[string]bool, providerModel map[string]string) attrreporting.CommitResultInput {
+	deletedNonBlank := make(map[string]int, len(dr.files))
+	for _, fd := range dr.files {
+		deletedNonBlank[fd.path] = fd.deletedNonBlank
+	}
+
+	fsInputs := make([]attrreporting.FileScoreInput, len(scores))
+	for i, fs := range scores {
+		fsInputs[i] = attrreporting.FileScoreInput{
+			Path:            fs.path,
+			TotalLines:      fs.totalLines,
+			ExactLines:      fs.exactLines,
+			FormattedLines:  fs.formattedLines,
+			ModifiedLines:   fs.modifiedLines,
+			HumanLines:      fs.humanLines,
+			ProviderLines:   fs.providerLines,
+			DeletedNonBlank: deletedNonBlank[fs.path],
+		}
+	}
+	return attrreporting.CommitResultInput{
+		FileScores:     fsInputs,
+		FilesCreated:   dr.filesCreated,
+		FilesDeleted:   dr.filesDeleted,
+		TouchedFiles:   aiTouchedFiles,
+		ProviderModels: providerModel,
+	}
+}
+
+// fromCommitResult maps reporting.CommitResult back to the service-layer
+// AttributionResult, adding commit hash and checkpoint ID.
+func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID string) *AttributionResult {
+	result := &AttributionResult{
+		CommitHash:       commitHash,
+		CheckpointID:     checkpointID,
+		AIExactLines:     cr.AIExactLines,
+		AIFormattedLines: cr.AIFormattedLines,
+		AIModifiedLines:  cr.AIModifiedLines,
+		AILines:          cr.AILines,
+		HumanLines:       cr.HumanLines,
+		TotalLines:       cr.TotalLines,
+		AIPercentage:     cr.AIPercentage,
+		FilesAITouched:   cr.FilesAITouched,
+		FilesTotal:       cr.FilesTotal,
+	}
+	for _, f := range cr.Files {
+		result.Files = append(result.Files, FileAttribution{
+			Path:             f.Path,
+			AIExactLines:     f.AIExactLines,
+			AIFormattedLines: f.AIFormattedLines,
+			AIModifiedLines:  f.AIModifiedLines,
+			HumanLines:       f.HumanLines,
+			TotalLines:       f.TotalLines,
+			DeletedNonBlank:  f.DeletedNonBlank,
+			AIPercent:        f.AIPercent,
+		})
+	}
+	for _, f := range cr.FilesCreated {
+		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesEdited {
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesDeleted {
+		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, p := range cr.ProviderDetails {
+		result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
+			Provider: p.Provider,
+			Model:    p.Model,
+			AILines:  p.AILines,
+		})
+	}
+	return result
+}
+
+// fromCheckpointResult maps reporting.CheckpointResult back to the
+// service-layer AttributionResult.
+func fromCheckpointResult(cr attrreporting.CheckpointResult) *AttributionResult {
+	result := &AttributionResult{
+		CheckpointID:   cr.CheckpointID,
+		FilesAITouched: cr.FilesAITouched,
+		FilesTotal:     cr.FilesTotal,
+	}
+	for _, f := range cr.FilesEdited {
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+	}
+	result.Diagnostics = AttributionDiagnostics{
+		EventsConsidered: cr.Diagnostics.EventsConsidered,
+		EventsAssistant:  cr.Diagnostics.EventsAssistant,
+		PayloadsLoaded:   cr.Diagnostics.PayloadsLoaded,
+		AIToolEvents:     cr.Diagnostics.AIToolEvents,
+		Note:             cr.Diagnostics.Note,
+	}
+	return result
 }
 
 // attributeWithCarryForward scores the current window and applies bounded
@@ -980,9 +803,14 @@ func attributeWithCarryForward(
 	} else if err != nil {
 		return carryForwardResult{}, err
 	} else {
-		currentCands = buildAICandidates(ctx, bs, events, in.RepoRoot, nil)
+		eventRows := toEventRows(ctx, bs, events)
+		newCands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
+		currentCands = aiCandidates{
+			aiLines: newCands.AILines, providerTouchedFiles: newCands.ProviderTouchedFiles,
+			fileProvider: newCands.FileProvider, providerModel: newCands.ProviderModel,
+		}
 		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
-			currentScores = scoreDiffPerFile(dr, currentCands)
+			currentScores, _ = scoreDiffPerFile(dr, currentCands)
 		}
 	}
 
@@ -1038,9 +866,14 @@ func attributeWithCarryForward(
 		histEvents, histErr := loadWindowEvents(ctx, h, histInput)
 		if histErr == nil {
 			historicalNoEvents = false
-			histCands = buildAICandidates(ctx, bs, histEvents, in.RepoRoot, needsCF)
+			histRows := toEventRows(ctx, bs, histEvents)
+			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
+			histCands = aiCandidates{
+				aiLines: histNewCands.AILines, providerTouchedFiles: histNewCands.ProviderTouchedFiles,
+				fileProvider: histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
+			}
 			if len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 {
-				historicalScores = scoreDiffPerFile(dr, histCands)
+				historicalScores, _ = scoreDiffPerFile(dr, histCands)
 			}
 		} else if !errors.Is(histErr, ErrNoEventsInWindow) {
 			util.AppendActivityLog(semDir,
@@ -1140,125 +973,26 @@ func (s *AttributionService) blameCheckpoint(
 		return nil, fmt.Errorf("init blob store: %w", err)
 	}
 
-	aiTouchedFiles := make(map[string]bool)
-	var diag AttributionDiagnostics
-	diag.EventsConsidered = len(events)
+	eventRows := toEventRows(ctx, bs, events)
+	candidates, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
 
-	for _, ev := range events {
-		// File-level attribution from tool_uses metadata (Cursor, Copilot).
-		if hasProviderFileEdit(ev.ToolUses) {
-			diag.AIToolEvents++
-			for _, fp := range extractProviderFileTouches(ev.ToolUses) {
-				aiTouchedFiles[fp] = true
-			}
-			continue
-		}
-
-		if ev.Role.String != "assistant" {
-			continue
-		}
-		diag.EventsAssistant++
-
-		// Claude path.
-		if !ev.PayloadHash.Valid || ev.PayloadHash.String == "" {
-			continue
-		}
-
-		hasBash := ev.ToolUses.Valid && strings.Contains(ev.ToolUses.String, `"Bash"`)
-		if !hasEditOrWrite(ev.ToolUses) && !hasBash {
-			continue
-		}
-		diag.AIToolEvents++
-
-		raw, err := bs.Get(ctx, ev.PayloadHash.String)
-		if err != nil {
-			continue
-		}
-		diag.PayloadsLoaded++
-
-		fileLines, bashCommands := extractClaudeActions(raw, repoRoot)
-		for fp := range fileLines {
-			aiTouchedFiles[fp] = true
-		}
-		for _, cmd := range bashCommands {
-			for _, fp := range extractDeletedPaths(cmd, repoRoot) {
-				aiTouchedFiles[fp] = true
-			}
-		}
+	touchedFiles := make(map[string]bool, len(candidates.ProviderTouchedFiles))
+	for fp := range candidates.ProviderTouchedFiles {
+		touchedFiles[fp] = true
 	}
 
-	result := &AttributionResult{
-		CheckpointID:   checkpointID,
-		FilesAITouched: len(aiTouchedFiles),
-	}
+	cr := attrreporting.BuildCheckpointResult(attrreporting.CheckpointResultInput{
+		CheckpointID: checkpointID,
+		TouchedFiles: touchedFiles,
+		EventStats: attrreporting.EventStatsInput{
+			EventsConsidered: evStats.EventsConsidered,
+			EventsAssistant:  evStats.EventsAssistant,
+			PayloadsLoaded:   evStats.PayloadsLoaded,
+			AIToolEvents:     evStats.AIToolEvents,
+		},
+	})
 
-	for fp := range aiTouchedFiles {
-		result.FilesEdited = append(result.FilesEdited, FileChange{Path: fp, AI: true})
-	}
-	result.FilesTotal = len(aiTouchedFiles)
-
-	if diag.EventsConsidered == 0 {
-		diag.Note = "No agent events found in the delta window."
-	} else if diag.AIToolEvents == 0 {
-		diag.Note = "Agent events found but none contained file-modifying tool calls (Edit/Write)."
-	}
-	result.Diagnostics = diag
-
-	return result, nil
-}
-
-// hasEditOrWrite is a fast pre-filter that checks the tool_uses JSON column
-// for Edit or Write tool names without fully parsing the JSON.
-func hasEditOrWrite(toolUses sql.NullString) bool {
-	if !toolUses.Valid || toolUses.String == "" {
-		return false
-	}
-	s := toolUses.String
-	return strings.Contains(s, `"Edit"`) || strings.Contains(s, `"Write"`)
-}
-
-// hasProviderFileEdit checks if the tool_uses column indicates a provider
-// file edit event. Matches tool names from Cursor, Copilot, and Gemini
-// that represent file modifications without line-level payload content.
-func hasProviderFileEdit(toolUses sql.NullString) bool {
-	if !toolUses.Valid || toolUses.String == "" {
-		return false
-	}
-	s := toolUses.String
-	return strings.Contains(s, `"cursor_file_edit"`) ||
-		strings.Contains(s, `"cursor_edit"`) ||
-		strings.Contains(s, `"copilot_file_edit"`) ||
-		strings.Contains(s, `"kiro_file_edit"`) ||
-		strings.Contains(s, `"editFile"`) ||
-		strings.Contains(s, `"createFile"`) ||
-		strings.Contains(s, `"write_file"`) ||
-		strings.Contains(s, `"edit_file"`) ||
-		strings.Contains(s, `"save_file"`) ||
-		strings.Contains(s, `"replace"`)
-}
-
-// extractProviderFileTouches parses the tool_uses JSON from a Cursor or
-// Copilot event and returns repo-relative file paths that the AI touched.
-// Paths are already stored as repo-relative by the ingest pipeline.
-func extractProviderFileTouches(toolUses sql.NullString) []string {
-	if !toolUses.Valid || toolUses.String == "" {
-		return nil
-	}
-	var payload struct {
-		Tools []struct {
-			FilePath string `json:"file_path"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal([]byte(toolUses.String), &payload); err != nil {
-		return nil
-	}
-	var paths []string
-	for _, t := range payload.Tools {
-		if t.FilePath != "" {
-			paths = append(paths, t.FilePath)
-		}
-	}
-	return paths
+	return fromCheckpointResult(cr), nil
 }
 
 // commitWithNoDelta builds an attribution result for a commit that has no
@@ -1335,266 +1069,30 @@ type fileDiff struct {
 	deletedNonBlank int          // count of deleted non-blank lines
 }
 
-// parseDiff parses a unified diff (as produced by "git diff") into per-file
-// added lines, and identifies newly created and deleted files.
-//
-// It recognizes:
-//   - "--- /dev/null" + "+++ b/path" -> file created
-//   - "--- a/path" + "+++ /dev/null" -> file deleted
-//   - Lines starting with "+" (excluding the +++ header) -> added lines
-//
-// Diff metadata lines (diff --git, index, @@, new file, deleted file) are
-// skipped. Only the "b/" side path is used for file identification.
+// parseDiff delegates to attrscoring.ParseDiff and converts the result to the
+// local diffResult type used by the remaining service helpers.
 func parseDiff(diffBytes []byte) diffResult {
-	var res diffResult
-	var current *fileDiff
-	var currentOldPath string
-	inAddedRun := false // tracking a contiguous run of "+" lines
-
-	// finalizeGroup closes the current contiguous added-line group (if any).
-	finalizeGroup := func() {
-		if !inAddedRun || current == nil {
-			inAddedRun = false
-			return
-		}
-		inAddedRun = false
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(diffBytes))
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Track the "from" path (--- a/path or --- /dev/null).
-		if strings.HasPrefix(line, "--- ") {
-			finalizeGroup()
-			currentOldPath = strings.TrimPrefix(line, "--- ")
-			continue
-		}
-
-		// Track the "to" path and detect creates/deletes.
-		if strings.HasPrefix(line, "+++ ") {
-			finalizeGroup()
-			newPath := strings.TrimPrefix(line, "+++ ")
-
-			if currentOldPath == "/dev/null" && strings.HasPrefix(newPath, "b/") {
-				path := strings.TrimPrefix(newPath, "b/")
-				res.filesCreated = append(res.filesCreated, path)
-			} else if newPath == "/dev/null" && strings.HasPrefix(currentOldPath, "a/") {
-				path := strings.TrimPrefix(currentOldPath, "a/")
-				res.filesDeleted = append(res.filesDeleted, path)
-			}
-
-			if strings.HasPrefix(newPath, "b/") {
-				path := strings.TrimPrefix(newPath, "b/")
-				res.files = append(res.files, fileDiff{path: path})
-				current = &res.files[len(res.files)-1]
-			} else if newPath == "/dev/null" && strings.HasPrefix(currentOldPath, "a/") {
-				// Deleted file: create a fileDiff so "-" lines are counted.
-				path := strings.TrimPrefix(currentOldPath, "a/")
-				res.files = append(res.files, fileDiff{path: path})
-				current = &res.files[len(res.files)-1]
-			} else {
-				current = nil
-			}
-			currentOldPath = ""
-			continue
-		}
-
-		// Skip diff metadata headers - these also break added-line runs.
-		if strings.HasPrefix(line, "diff --git") ||
-			strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "@@") ||
-			strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") {
-			finalizeGroup()
-			continue
-		}
-
-		// Collect added lines (strip the leading "+") into contiguous groups.
-		if current != nil && strings.HasPrefix(line, "+") {
-			if !inAddedRun {
-				// Start a new group.
-				current.groups = append(current.groups, addedGroup{})
-				inAddedRun = true
-			}
-			g := &current.groups[len(current.groups)-1]
-			g.lines = append(g.lines, line[1:])
-		} else if current != nil && strings.HasPrefix(line, "-") {
-			finalizeGroup()
-			if trimmed := strings.TrimSpace(line[1:]); trimmed != "" {
-				current.deletedNonBlank++
-			}
-		} else {
-			// Context line or anything else breaks the run.
-			finalizeGroup()
-		}
-	}
-
-	return res
+	sd := attrscoring.ParseDiff(diffBytes)
+	return fromScoringDiff(sd)
 }
 
-// extractClaudeActions parses an assistant payload blob from the content-
-// addressed store and extracts the actions the AI performed:
-//
-//   - Edit tool calls: lines from the "new_string" field (replacement text)
-//   - Write tool calls: lines from the "content" field (full file content)
-//   - Bash tool calls: the raw command string (used to detect file deletions)
-//
-// The payload format is a JSON object with structure:
-//
-//	{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {...}}]}}
-//
-// Returns two values:
-//   - fileLines: map of repo-relative file paths to sets of trimmed line content
-//   - bashCommands: raw command strings from Bash tool calls
-func extractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map[string]struct{}, bashCommands []string) {
-	fileLines = make(map[string]map[string]struct{})
-
-	var payload struct {
-		Type    string `json:"type"`
-		Message struct {
-			Content []json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return
-	}
-	if payload.Type != "assistant" {
-		return
-	}
-
-	for _, blockRaw := range payload.Message.Content {
-		var block struct {
-			Type  string          `json:"type"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+// fromScoringDiff converts attrscoring.DiffResult to the internal diffResult.
+func fromScoringDiff(sd attrscoring.DiffResult) diffResult {
+	files := make([]fileDiff, len(sd.Files))
+	for i, f := range sd.Files {
+		groups := make([]addedGroup, len(f.Groups))
+		for j, g := range f.Groups {
+			groups[j] = addedGroup{lines: g.Lines}
 		}
-		if err := json.Unmarshal(blockRaw, &block); err != nil {
-			continue
-		}
-		if block.Type != "tool_use" {
-			continue
-		}
-
-		switch block.Name {
-		case "Edit":
-			var inp struct {
-				FilePath  string `json:"file_path"`
-				NewString string `json:"new_string"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.NewString == "" {
-				continue
-			}
-			relPath := normalizePath(inp.FilePath, repoRoot)
-			addLines(fileLines, relPath, inp.NewString)
-
-		case "Write":
-			var inp struct {
-				FilePath string `json:"file_path"`
-				Content  string `json:"content"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Content == "" {
-				continue
-			}
-			relPath := normalizePath(inp.FilePath, repoRoot)
-			addLines(fileLines, relPath, inp.Content)
-
-		case "Bash":
-			var inp struct {
-				Command string `json:"command"`
-			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Command == "" {
-				continue
-			}
-			bashCommands = append(bashCommands, inp.Command)
+		files[i] = fileDiff{
+			path:            f.Path,
+			groups:          groups,
+			deletedNonBlank: f.DeletedNonBlank,
 		}
 	}
-
-	return
-}
-
-// extractDeletedPaths extracts file paths from a shell command that
-// contains "rm". It tokenizes the command by whitespace and returns
-// repo-relative paths for any token that isn't a flag or the "rm" command
-// itself.
-func extractDeletedPaths(cmd, repoRoot string) []string {
-	if !strings.Contains(cmd, "rm ") {
-		return nil
+	return diffResult{
+		files:        files,
+		filesCreated: sd.FilesCreated,
+		filesDeleted: sd.FilesDeleted,
 	}
-
-	var paths []string
-	for _, token := range strings.Fields(cmd) {
-		if token == "rm" || strings.HasPrefix(token, "-") {
-			continue
-		}
-		rel := normalizePath(token, repoRoot)
-		if rel != "" && rel != "." {
-			paths = append(paths, rel)
-		}
-	}
-	return paths
-}
-
-// addLines splits text into lines and inserts each trimmed, non-blank line
-// into the set for the given file path. This is the core building block for
-// constructing the AI candidate line set.
-func addLines(m map[string]map[string]struct{}, filePath, text string) {
-	if filePath == "" {
-		return
-	}
-	if m[filePath] == nil {
-		m[filePath] = make(map[string]struct{})
-	}
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		m[filePath][trimmed] = struct{}{}
-	}
-}
-
-// normalizePath converts an absolute file path to a repo-relative path
-// using forward slashes, matching the format produced by "git diff".
-// Falls back to the base name if the path cannot be made relative.
-func normalizePath(filePath, repoRoot string) string {
-	if filePath == "" {
-		return ""
-	}
-	rel, err := filepath.Rel(repoRoot, filePath)
-	if err != nil {
-		return filepath.Base(filePath)
-	}
-	return filepath.ToSlash(rel)
-}
-
-// --- Tier-2 and Tier-3 matching helpers ---
-
-// normalizeWhitespace removes all whitespace characters from s.
-// Used as a second-tier match when exact trimmed comparison fails,
-// catching formatter/linter modifications like:
-//
-//	"func foo(){" vs "func foo() {"
-//	"return   x+y" vs "return x + y"
-func normalizeWhitespace(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if !unicode.IsSpace(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// buildNormalizedSet derives a whitespace-stripped line set from the
-// existing AI candidate set. Each trimmed line is stripped of all
-// whitespace and stored per file path.
-func buildNormalizedSet(aiLines map[string]map[string]struct{}) map[string]map[string]struct{} {
-	norm := make(map[string]map[string]struct{}, len(aiLines))
-	for fp, lines := range aiLines {
-		norm[fp] = make(map[string]struct{}, len(lines))
-		for line := range lines {
-			norm[fp][normalizeWhitespace(line)] = struct{}{}
-		}
-	}
-	return norm
 }
