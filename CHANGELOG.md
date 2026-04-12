@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-## [0.2.2] - 2026-04-11
+## [0.2.2] - 2026-04-12
 
 ### Changed
 
@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Reduced duplicated attribution code paths in the service layer, making commit and checkpoint attribution easier to maintain and less likely to drift over time.
+- Resolves symlinks in findGitRoot so test comparisons match on systems with symlinked temp directories.
 
 ## [0.2.1] - 2026-04-10
 
