@@ -432,6 +432,10 @@ func findGitRoot(start string) (string, error) {
 		if st, err := os.Stat(gitPath); err == nil {
 			// Accept both directory (.git) and file (.git) for worktrees.
 			if st.IsDir() || st.Mode().IsRegular() {
+				canonical, err := filepath.EvalSymlinks(dir)
+				if err == nil {
+					return canonical, nil
+				}
 				return dir, nil
 			}
 		}

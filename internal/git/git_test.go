@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+func canonicalPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return canonical
+}
+
 // findGitRoot tests.
 
 func TestFindGitRoot_NormalRepo(t *testing.T) {
@@ -19,8 +28,9 @@ func TestFindGitRoot_NormalRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != dir {
-		t.Errorf("findGitRoot = %q, want %q", got, dir)
+	want := canonicalPath(t, dir)
+	if got != want {
+		t.Errorf("findGitRoot = %q, want %q", got, want)
 	}
 }
 
@@ -38,8 +48,9 @@ func TestFindGitRoot_Subdirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != dir {
-		t.Errorf("findGitRoot from subdirectory = %q, want %q", got, dir)
+	want := canonicalPath(t, dir)
+	if got != want {
+		t.Errorf("findGitRoot from subdirectory = %q, want %q", got, want)
 	}
 }
 
@@ -55,8 +66,9 @@ func TestFindGitRoot_WorktreeFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != dir {
-		t.Errorf("findGitRoot with .git file = %q, want %q", got, dir)
+	want := canonicalPath(t, dir)
+	if got != want {
+		t.Errorf("findGitRoot with .git file = %q, want %q", got, want)
 	}
 }
 
@@ -83,8 +95,9 @@ func TestOpenRepo_ValidRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Root() != dir {
-		t.Errorf("Root() = %q, want %q", r.Root(), dir)
+	want := canonicalPath(t, dir)
+	if r.Root() != want {
+		t.Errorf("Root() = %q, want %q", r.Root(), want)
 	}
 }
 
@@ -93,6 +106,28 @@ func TestOpenRepo_NotARepo(t *testing.T) {
 	_, err := OpenRepo(dir)
 	if err == nil {
 		t.Fatal("expected error for non-repo directory")
+	}
+}
+
+func TestOpenRepo_CanonicalizesSymlinkedRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	linkParent := t.TempDir()
+	link := filepath.Join(linkParent, "repo-link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	r, err := OpenRepo(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := canonicalPath(t, dir)
+	if r.Root() != want {
+		t.Errorf("Root() = %q, want canonical root %q", r.Root(), want)
 	}
 }
 
