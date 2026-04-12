@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -559,6 +560,102 @@ func TestRegression_AttributeCommit_FullResult(t *testing.T) {
 	}
 	if result.Diagnostics.EventsConsidered != 1 { t.Errorf("EventsConsidered = %d, want 1", result.Diagnostics.EventsConsidered) }
 	if result.Diagnostics.PayloadsLoaded != 1 { t.Errorf("PayloadsLoaded = %d, want 1", result.Diagnostics.PayloadsLoaded) }
+}
+
+// Evidence integration: verify evidence fields reach the public result.
+
+func TestRegression_AttributeCommit_EvidenceFields(t *testing.T) {
+	dir, commitHash := setupGoldenRepo(t)
+	ctx := context.Background()
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
+	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
+
+	// Commit-level evidence label should be present (all files exact).
+	if result.EvidenceLabel == "" {
+		t.Error("EvidenceLabel is empty, expected a label for commits with AI lines")
+	}
+	if result.EvidenceLabel != "Strong evidence" {
+		t.Errorf("EvidenceLabel = %q, want 'Strong evidence' (all exact)", result.EvidenceLabel)
+	}
+	if result.FallbackCount != 0 {
+		t.Errorf("FallbackCount = %d, want 0", result.FallbackCount)
+	}
+
+	// Per-file evidence class should be set.
+	if len(result.Files) != 1 {
+		t.Fatalf("Files count = %d, want 1", len(result.Files))
+	}
+	if result.Files[0].EvidenceClass == "" {
+		t.Error("EvidenceClass is empty on file row")
+	}
+	if result.Files[0].EvidenceClass != "exact" {
+		t.Errorf("EvidenceClass = %q, want 'exact'", result.Files[0].EvidenceClass)
+	}
+}
+
+func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
+	// A file goes through carry-forward but the historical window has no
+	// matching events either. The file should NOT get carry_forward evidence
+	// because it scored zero AI lines.
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+
+	// CP1 has a manifest with utils.go but NO events with matching content.
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	})
+	// CP2: current window, also no matching events.
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Diff creates utils.go. Carry-forward will attempt historical lookup
+	// but find nothing, so the file should remain human-only.
+	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,1 @@\n+package utils\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, _ := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+
+	// The file should have 0 AI lines and no carry-forward evidence.
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (no matching historical events)", cfr.result.AILines)
+	}
+	// Verify via the reporting path: build the commit result with the same
+	// inputs the orchestrator would use, and check evidence.
+	scores := []fileScore{{
+		path: "utils.go", totalLines: 1, humanLines: 1,
+	}}
+	dr := parseDiff([]byte(diff))
+	// actualCF should be empty because the file scored 0 AI lines.
+	actualCF := make(map[string]bool)
+	for _, fs := range scores {
+		if fs.path == "utils.go" && fileScoreAILines(&fs) > 0 {
+			actualCF["utils.go"] = true
+		}
+	}
+	input := buildCommitResultInput(scores, dr, commitResultContext{
+		aiTouchedFiles:    map[string]bool{},
+		providerModel:     map[string]string{},
+		fileTouchOrigins:  map[string]attrreporting.TouchOrigin{},
+		carryForwardFiles: actualCF,
+	})
+	cr := attrreporting.BuildCommitResult(input)
+	if len(cr.Files) != 1 {
+		t.Fatalf("Files = %d, want 1", len(cr.Files))
+	}
+	if string(cr.Files[0].PrimaryEvidence) == "carry_forward" {
+		t.Error("file with 0 AI lines should NOT have carry_forward evidence")
+	}
+	if cr.Files[0].PrimaryEvidence != attrreporting.EvidenceNone {
+		t.Errorf("PrimaryEvidence = %q, want 'none'", cr.Files[0].PrimaryEvidence)
+	}
 }
 
 // Blame entry points should converge to AttributeCommit for linked commits.

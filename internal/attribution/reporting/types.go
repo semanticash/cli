@@ -35,14 +35,43 @@ type AggregateResult struct {
 	Providers      []ProviderAttribution
 }
 
+// EvidenceClass describes how a file's AI attribution was determined.
+// Internal taxonomy for the evaluation harness and detailed diagnostics.
+// User-facing output collapses these into three labels: Strong, Mixed, Limited.
+type EvidenceClass string
+
+const (
+	EvidenceExact          EvidenceClass = "exact"           // trimmed exact line match
+	EvidenceNormalized     EvidenceClass = "normalized"      // whitespace-normalized match
+	EvidenceModified       EvidenceClass = "modified"        // overlap-based modified attribution
+	EvidenceProviderTouch  EvidenceClass = "provider_touch"  // explicit file-edit tool event from provider
+	EvidenceProviderCoarse EvidenceClass = "provider_coarse" // session-level linkage without direct file-edit event
+	EvidenceCarryForward   EvidenceClass = "carry_forward"   // attributed from previous checkpoint window
+	EvidenceDeletion       EvidenceClass = "deletion"        // inferred from bash rm / provider deletion
+	EvidenceNone           EvidenceClass = "none"            // no AI evidence (human file)
+)
+
+// TouchOrigin describes how a file entered the AI-touched set.
+// The orchestrator derives this from the candidates produced by the events package.
+type TouchOrigin string
+
+const (
+	TouchOriginProviderEdit TouchOrigin = "provider_edit" // explicit file-edit tool event (Cursor, Kiro, etc.)
+	TouchOriginLineLevel    TouchOrigin = "line_level"    // Claude Edit/Write with payload content
+	TouchOriginDeletion     TouchOrigin = "deletion"      // bash rm or provider deletion event
+	TouchOriginCoarse       TouchOrigin = "coarse"        // session-level linkage only
+)
+
 // CommitResultInput holds the narrow inputs needed to assemble a full
 // commit attribution result from scored data and diff metadata.
 type CommitResultInput struct {
-	FileScores     []FileScoreInput  // one per diff file, in diff order
-	FilesCreated   []string          // paths created (from /dev/null)
-	FilesDeleted   []string          // paths deleted (to /dev/null)
-	TouchedFiles   map[string]bool   // AI-touched file paths (for AI flag on file changes)
-	ProviderModels map[string]string // provider -> model
+	FileScores       []FileScoreInput         // one per diff file, in diff order
+	FilesCreated     []string                 // paths created (from /dev/null)
+	FilesDeleted     []string                 // paths deleted (to /dev/null)
+	TouchedFiles     map[string]bool          // AI-touched file paths (for AI flag on file changes)
+	ProviderModels   map[string]string        // provider -> model
+	FileTouchOrigins map[string]TouchOrigin   // per-file touch provenance (for evidence classification)
+	CarryForwardFiles map[string]bool         // files attributed via carry-forward
 }
 
 // CommitResult is the full attribution breakdown for a single commit,
@@ -62,6 +91,8 @@ type CommitResult struct {
 	FilesDeleted     []FileChangeOutput
 	Files            []FileAttributionOutput
 	ProviderDetails  []ProviderAttribution
+	EvidenceLabel    string // user-facing: "Strong evidence", "Mixed evidence", "Limited evidence"
+	FallbackCount    int    // number of AI-attributed files with provider-touch or weaker evidence
 }
 
 // FileAttributionOutput holds per-file attribution scores in the commit result.
@@ -73,7 +104,9 @@ type FileAttributionOutput struct {
 	HumanLines       int
 	TotalLines       int
 	DeletedNonBlank  int
-	AIPercent        float64 // (exact + formatted + modified) / total * 100
+	AIPercent        float64       // (exact + formatted + modified) / total * 100
+	PrimaryEvidence  EvidenceClass // highest-quality evidence for display
+	AllEvidence      []EvidenceClass // all contributing evidence classes (for evaluation)
 }
 
 // FileChangeOutput records whether a file change was performed by AI.
