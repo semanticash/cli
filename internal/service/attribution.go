@@ -97,7 +97,7 @@ type AttributionResult struct {
 	Files            []FileAttribution      `json:"files,omitempty"`
 	ProviderDetails  []ProviderAttribution  `json:"provider_details,omitempty"`
 	Diagnostics      AttributionDiagnostics `json:"diagnostics"`
-	EvidenceLabel    string                 `json:"evidence_label,omitempty"`  // user-facing: "Strong evidence", "Mixed evidence", "Limited evidence"
+	Evidence         string                 `json:"evidence,omitempty"`        // "High", "Medium", "Low"
 	FallbackCount    int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
 }
 
@@ -796,7 +796,7 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		AIPercentage:     cr.AIPercentage,
 		FilesAITouched:   cr.FilesAITouched,
 		FilesTotal:       cr.FilesTotal,
-		EvidenceLabel:    cr.EvidenceLabel,
+		Evidence:         cr.Evidence,
 		FallbackCount:    cr.FallbackCount,
 	}
 	for _, f := range cr.Files {

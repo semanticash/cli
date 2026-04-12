@@ -1,5 +1,7 @@
 package reporting
 
+import "fmt"
+
 // ResolveFileEvidence determines the primary evidence class for a file
 // based on its scored lines, touch origin, and carry-forward status.
 // Returns the highest-quality evidence class that applies.
@@ -77,50 +79,110 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	return classes
 }
 
-// isFallbackEvidence returns true for evidence classes that represent
-// weaker, non-line-level attribution paths.
-func isFallbackEvidence(ec EvidenceClass) bool {
-	switch ec {
-	case EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion:
-		return true
-	}
-	return false
-}
-
-// CommitEvidenceLabel derives a user-facing evidence label and fallback count
-// from per-file evidence. The label is one of:
-//   - "Strong evidence" -- all AI-attributed files have exact or normalized primary evidence
-//   - "Mixed evidence" -- at least one AI-attributed file uses weaker evidence
-//   - "Limited evidence" -- majority of AI-attributed files use fallback evidence
+// CommitConfidence computes a confidence level, score, and fallback count
+// from per-file evidence using a weighted formula.
 //
-// Initial policy, subject to corpus calibration.
-func CommitEvidenceLabel(files []FileAttributionOutput) (label string, fallbackCount int) {
-	var aiFiles, strongFiles int
+// Line-evidence score (0-1):
+//
+//	LineScore = (1.00*Exact + 0.85*Normalized + 0.55*Modified) / max(1, AILines)
+//
+// File-evidence penalty (0-1):
+//
+//	FallbackPenalty = (0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
+//
+// Combined score:
+//
+//	Score = clamp(LineScore - FallbackPenalty, 0, 1)
+//
+// Buckets:
+//
+//	High:   Score >= 0.75
+//	Medium: 0.45 <= Score < 0.75
+//	Low:    Score < 0.45
+//
+// Thresholds may be tuned as the evaluation corpus grows.
+func CommitConfidence(files []FileAttributionOutput) (level string, fallbackCount int) {
+	var exactLines, normLines, modLines int
+	var aiFiles int
+	var tpd, tpc, cf, del int
 
 	for _, f := range files {
 		if f.PrimaryEvidence == EvidenceNone {
-			continue // not AI-attributed
+			continue
 		}
 		aiFiles++
-		if isFallbackEvidence(f.PrimaryEvidence) {
+		exactLines += f.AIExactLines
+		normLines += f.AIFormattedLines
+		modLines += f.AIModifiedLines
+
+		switch f.PrimaryEvidence {
+		case EvidenceProviderTouch:
+			tpd++
 			fallbackCount++
-		}
-		if f.PrimaryEvidence == EvidenceExact || f.PrimaryEvidence == EvidenceNormalized {
-			strongFiles++
+		case EvidenceProviderCoarse:
+			tpc++
+			fallbackCount++
+		case EvidenceCarryForward:
+			cf++
+			fallbackCount++
+		case EvidenceDeletion:
+			del++
+			fallbackCount++
 		}
 	}
 
-	if aiFiles == 0 {
+	aiLines := exactLines + normLines + modLines
+	if aiFiles == 0 && aiLines == 0 {
 		return "", 0
 	}
 
-	switch {
-	case strongFiles == aiFiles:
-		label = "Strong evidence"
-	case fallbackCount > aiFiles/2:
-		label = "Limited evidence"
-	default:
-		label = "Mixed evidence"
+	denom := aiLines
+	if denom < 1 {
+		denom = 1
 	}
-	return label, fallbackCount
+	lineScore := (1.00*float64(exactLines) + 0.85*float64(normLines) + 0.55*float64(modLines)) / float64(denom)
+
+	fileDenom := aiFiles
+	if fileDenom < 1 {
+		fileDenom = 1
+	}
+	fallbackPenalty := (0.18*float64(tpd) + 0.30*float64(tpc) + 0.25*float64(cf) + 0.35*float64(del)) / float64(fileDenom)
+
+	score := lineScore - fallbackPenalty
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+
+	switch {
+	case score >= 0.75:
+		level = "High"
+	case score >= 0.45:
+		level = "Medium"
+	default:
+		level = "Low"
+	}
+	return level, fallbackCount
+}
+
+// ConfidenceExplanation returns a short sentence explaining the confidence level.
+func ConfidenceExplanation(level string, fallbackCount int) string {
+	switch level {
+	case "High":
+		return "all files matched by direct line comparison"
+	case "Medium":
+		if fallbackCount == 1 {
+			return "1 file attributed without direct line evidence"
+		}
+		return fmt.Sprintf("%d files attributed without direct line evidence", fallbackCount)
+	case "Low":
+		if fallbackCount == 1 {
+			return "most files attributed via indirect provider signals"
+		}
+		return "most files attributed via indirect provider signals"
+	default:
+		return ""
+	}
 }

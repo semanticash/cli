@@ -37,7 +37,7 @@ type AggregateResult struct {
 
 // EvidenceClass describes how a file's AI attribution was determined.
 // Internal taxonomy for the evaluation harness and detailed diagnostics.
-// User-facing output collapses these into three labels: Strong, Mixed, Limited.
+// User-facing output uses factual notes rather than exposing raw classes.
 type EvidenceClass string
 
 const (
@@ -91,7 +91,7 @@ type CommitResult struct {
 	FilesDeleted     []FileChangeOutput
 	Files            []FileAttributionOutput
 	ProviderDetails  []ProviderAttribution
-	EvidenceLabel    string // user-facing: "Strong evidence", "Mixed evidence", "Limited evidence"
+	Evidence         string // evidence-strength level: "High", "Medium", "Low"
 	FallbackCount    int    // number of AI-attributed files with provider-touch or weaker evidence
 }
 

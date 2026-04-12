@@ -149,7 +149,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		return r.ProviderDetails[i].Provider < r.ProviderDetails[j].Provider
 	})
 
-	r.EvidenceLabel, r.FallbackCount = CommitEvidenceLabel(r.Files)
+	r.Evidence, r.FallbackCount = CommitConfidence(r.Files)
 
 	return r
 }

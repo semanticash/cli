@@ -121,87 +121,130 @@ func TestCollectFileEvidence_NoneWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestCommitEvidenceLabel_AllExact(t *testing.T) {
+func TestCommitConfidence_AllExact(t *testing.T) {
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceNone}, // human file, ignored
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 50},
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 30},
+		{PrimaryEvidence: EvidenceNone, HumanLines: 20},
 	}
-	label, fallback := CommitEvidenceLabel(files)
-	if label != "Strong evidence" {
-		t.Errorf("label = %q, want Strong evidence", label)
+	level, fallback := CommitConfidence(files)
+	if level != "High" {
+		t.Errorf("level = %q, want High", level)
 	}
 	if fallback != 0 {
 		t.Errorf("fallback = %d, want 0", fallback)
 	}
 }
 
-func TestCommitEvidenceLabel_MixedWithOneFallback(t *testing.T) {
+func TestCommitConfidence_MixedWithSmallFallback(t *testing.T) {
+	// 100 exact lines + 5 provider-touch lines -> High (95%+ strong).
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceProviderTouch}, // fallback
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 100},
+		{PrimaryEvidence: EvidenceProviderTouch, AIModifiedLines: 5},
 	}
-	label, fallback := CommitEvidenceLabel(files)
-	if label != "Mixed evidence" {
-		t.Errorf("label = %q, want Mixed evidence", label)
+	level, fallback := CommitConfidence(files)
+	if level != "High" {
+		t.Errorf("level = %q, want High (95%% strong)", level)
 	}
 	if fallback != 1 {
 		t.Errorf("fallback = %d, want 1", fallback)
 	}
 }
 
-func TestCommitEvidenceLabel_LimitedWhenMajorityFallback(t *testing.T) {
+func TestCommitConfidence_MediumWhenFallbackSignificant(t *testing.T) {
+	// 60 exact + 40 provider-touch -> Medium (60% strong, 40% fallback).
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceProviderTouch},
-		{PrimaryEvidence: EvidenceProviderCoarse},
-		{PrimaryEvidence: EvidenceCarryForward},
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 60},
+		{PrimaryEvidence: EvidenceProviderTouch, AIModifiedLines: 40},
 	}
-	label, fallback := CommitEvidenceLabel(files)
-	if label != "Limited evidence" {
-		t.Errorf("label = %q, want Limited evidence", label)
+	level, fallback := CommitConfidence(files)
+	if level != "Medium" {
+		t.Errorf("level = %q, want Medium", level)
 	}
-	if fallback != 3 {
-		t.Errorf("fallback = %d, want 3", fallback)
+	if fallback != 1 {
+		t.Errorf("fallback = %d, want 1", fallback)
 	}
 }
 
-func TestCommitEvidenceLabel_StrongIncludesNormalized(t *testing.T) {
+func TestCommitConfidence_LowWhenMostlyFallback(t *testing.T) {
+	// 5 exact + 3 provider-touch + 3 provider-coarse + 3 carry-forward + 3 deletion.
+	// LineScore = (5 + 0.55*12) / 17 = 11.6/17 = 0.682
+	// FallbackPenalty = (0.18 + 0.30 + 0.25 + 0.35) / 5 = 0.216
+	// Score = 0.682 - 0.216 = 0.466 -> Medium (just barely).
+	// To get Low, need heavier fallback. Use all-fallback files:
+	// 0 exact + 5 provider-coarse modified lines.
+	// LineScore = 0.55*5/5 = 0.55
+	// FallbackPenalty = 0.30*1/1 = 0.30
+	// Score = 0.25 -> Low
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceNormalized},
+		{PrimaryEvidence: EvidenceProviderCoarse, AIModifiedLines: 5},
 	}
-	label, _ := CommitEvidenceLabel(files)
-	if label != "Strong evidence" {
-		t.Errorf("label = %q, want Strong evidence (normalized counts as strong)", label)
+	level, fallback := CommitConfidence(files)
+	if level != "Low" {
+		t.Errorf("level = %q, want Low", level)
+	}
+	if fallback != 1 {
+		t.Errorf("fallback = %d, want 1", fallback)
 	}
 }
 
-func TestCommitEvidenceLabel_ModifiedIsMixed(t *testing.T) {
+func TestCommitConfidence_HighIncludesNormalized(t *testing.T) {
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceExact},
-		{PrimaryEvidence: EvidenceModified},
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 40},
+		{PrimaryEvidence: EvidenceNormalized, AIFormattedLines: 10},
 	}
-	label, fallback := CommitEvidenceLabel(files)
-	if label != "Mixed evidence" {
-		t.Errorf("label = %q, want Mixed evidence", label)
+	level, _ := CommitConfidence(files)
+	if level != "High" {
+		t.Errorf("level = %q, want High (normalized counts as high)", level)
+	}
+}
+
+func TestCommitConfidence_SmallModifiedStaysHigh(t *testing.T) {
+	// 998 exact + 2 modified -> High (99.8% strong).
+	// This is the "1000 lines, 2 modified" scenario.
+	files := []FileAttributionOutput{
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 998},
+		{PrimaryEvidence: EvidenceModified, AIModifiedLines: 2},
+	}
+	level, fallback := CommitConfidence(files)
+	if level != "High" {
+		t.Errorf("level = %q, want High (2 modified out of 1000 should not drop confidence)", level)
 	}
 	if fallback != 0 {
 		t.Errorf("fallback = %d, want 0 (modified is not fallback)", fallback)
 	}
 }
 
-func TestCommitEvidenceLabel_NoAIFiles(t *testing.T) {
+func TestCommitConfidence_NoAIFiles(t *testing.T) {
 	files := []FileAttributionOutput{
-		{PrimaryEvidence: EvidenceNone},
-		{PrimaryEvidence: EvidenceNone},
+		{PrimaryEvidence: EvidenceNone, HumanLines: 20},
+		{PrimaryEvidence: EvidenceNone, HumanLines: 30},
 	}
-	label, fallback := CommitEvidenceLabel(files)
-	if label != "" {
-		t.Errorf("label = %q, want empty (no AI files)", label)
+	level, fallback := CommitConfidence(files)
+	if level != "" {
+		t.Errorf("level = %q, want empty (no AI files)", level)
 	}
 	if fallback != 0 {
 		t.Errorf("fallback = %d, want 0", fallback)
+	}
+}
+
+func TestConfidenceExplanation(t *testing.T) {
+	tests := []struct {
+		level    string
+		fallback int
+		want     string
+	}{
+		{"High", 0, "all files matched by direct line comparison"},
+		{"Medium", 1, "1 file attributed without direct line evidence"},
+		{"Medium", 3, "3 files attributed without direct line evidence"},
+		{"Low", 2, "most files attributed via indirect provider signals"},
+		{"", 0, ""},
+	}
+	for _, tt := range tests {
+		got := ConfidenceExplanation(tt.level, tt.fallback)
+		if got != tt.want {
+			t.Errorf("ConfidenceExplanation(%q, %d) = %q, want %q", tt.level, tt.fallback, got, tt.want)
+		}
 	}
 }

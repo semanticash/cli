@@ -79,6 +79,30 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 					res.Diagnostics.ExactMatches, res.Diagnostics.NormalizedMatches, res.Diagnostics.ModifiedMatches)
 			}
 
+			// Factual notes about weaker attribution methods used.
+			var notes []string
+			if res.FallbackCount > 0 {
+				notes = append(notes, fmt.Sprintf("%d file(s) attributed using weaker fallback signals.", res.FallbackCount))
+			}
+			for _, f := range res.Files {
+				if f.EvidenceClass == "carry_forward" {
+					notes = append(notes, "Attribution includes historical carry-forward.")
+					break
+				}
+			}
+			for _, f := range res.Files {
+				if f.EvidenceClass == "deletion" {
+					notes = append(notes, "Some file attribution is inferred from deletion events.")
+					break
+				}
+			}
+			if len(notes) > 0 {
+				_, _ = fmt.Fprintln(out, "Notes:")
+				for _, n := range notes {
+					_, _ = fmt.Fprintf(out, "  %s\n", n)
+				}
+			}
+
 			if nCreated > 0 {
 				_, _ = fmt.Fprintln(out)
 				_, _ = fmt.Fprintln(out, "Files created:")

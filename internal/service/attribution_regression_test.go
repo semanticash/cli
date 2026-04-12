@@ -573,11 +573,11 @@ func TestRegression_AttributeCommit_EvidenceFields(t *testing.T) {
 	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
 
 	// Commit-level evidence label should be present (all files exact).
-	if result.EvidenceLabel == "" {
-		t.Error("EvidenceLabel is empty, expected a label for commits with AI lines")
+	if result.Evidence == "" {
+		t.Error("Evidence is empty, expected a level for commits with AI lines")
 	}
-	if result.EvidenceLabel != "Strong evidence" {
-		t.Errorf("EvidenceLabel = %q, want 'Strong evidence' (all exact)", result.EvidenceLabel)
+	if result.Evidence != "High" {
+		t.Errorf("Confidence = %q, want 'High' (all exact)", result.Evidence)
 	}
 	if result.FallbackCount != 0 {
 		t.Errorf("FallbackCount = %d, want 0", result.FallbackCount)
