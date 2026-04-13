@@ -80,7 +80,7 @@ func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) 
 		return out
 	}
 
-	// Step 1: POST /v1/provenance/prepare.
+	// POST /v1/provenance/prepare.
 	prepareBody := prepareRequestBody{
 		ConnectedRepoID: env.ConnectedRepoID,
 	}
@@ -94,7 +94,7 @@ func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) 
 		return out
 	}
 
-	// Step 2: PUT blobs to presigned S3 URLs in parallel.
+	// PUT blobs to presigned S3 URLs in parallel.
 	type putResult struct {
 		kind, hash string
 		err        error
@@ -118,7 +118,7 @@ func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) 
 		}
 	}
 
-	// Step 3: POST /v1/provenance/complete with the full envelope.
+	// POST /v1/provenance/complete with the full envelope.
 	if err := callComplete(ctx, endpoint, token, result.Envelope); err != nil {
 		out.Err = fmt.Errorf("complete: %w", err)
 		return out

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -82,17 +83,39 @@ func assertResultsEqual(t *testing.T, label string, got, want AttributionResult)
 	w := canonicalizeResult(&want)
 
 	// Headline counts.
-	if g.CommitHash != w.CommitHash { t.Errorf("%s CommitHash: got %q, want %q", label, g.CommitHash, w.CommitHash) }
-	if g.CheckpointID != w.CheckpointID { t.Errorf("%s CheckpointID: got %q, want %q", label, g.CheckpointID, w.CheckpointID) }
-	if g.AILines != w.AILines { t.Errorf("%s AILines: got %d, want %d", label, g.AILines, w.AILines) }
-	if g.AIExactLines != w.AIExactLines { t.Errorf("%s AIExactLines: got %d, want %d", label, g.AIExactLines, w.AIExactLines) }
-	if g.AIFormattedLines != w.AIFormattedLines { t.Errorf("%s AIFormattedLines: got %d, want %d", label, g.AIFormattedLines, w.AIFormattedLines) }
-	if g.AIModifiedLines != w.AIModifiedLines { t.Errorf("%s AIModifiedLines: got %d, want %d", label, g.AIModifiedLines, w.AIModifiedLines) }
-	if g.HumanLines != w.HumanLines { t.Errorf("%s HumanLines: got %d, want %d", label, g.HumanLines, w.HumanLines) }
-	if g.TotalLines != w.TotalLines { t.Errorf("%s TotalLines: got %d, want %d", label, g.TotalLines, w.TotalLines) }
-	if g.AIPercentage != w.AIPercentage { t.Errorf("%s AIPercentage: got %.1f, want %.1f", label, g.AIPercentage, w.AIPercentage) }
-	if g.FilesTotal != w.FilesTotal { t.Errorf("%s FilesTotal: got %d, want %d", label, g.FilesTotal, w.FilesTotal) }
-	if g.FilesAITouched != w.FilesAITouched { t.Errorf("%s FilesAITouched: got %d, want %d", label, g.FilesAITouched, w.FilesAITouched) }
+	if g.CommitHash != w.CommitHash {
+		t.Errorf("%s CommitHash: got %q, want %q", label, g.CommitHash, w.CommitHash)
+	}
+	if g.CheckpointID != w.CheckpointID {
+		t.Errorf("%s CheckpointID: got %q, want %q", label, g.CheckpointID, w.CheckpointID)
+	}
+	if g.AILines != w.AILines {
+		t.Errorf("%s AILines: got %d, want %d", label, g.AILines, w.AILines)
+	}
+	if g.AIExactLines != w.AIExactLines {
+		t.Errorf("%s AIExactLines: got %d, want %d", label, g.AIExactLines, w.AIExactLines)
+	}
+	if g.AIFormattedLines != w.AIFormattedLines {
+		t.Errorf("%s AIFormattedLines: got %d, want %d", label, g.AIFormattedLines, w.AIFormattedLines)
+	}
+	if g.AIModifiedLines != w.AIModifiedLines {
+		t.Errorf("%s AIModifiedLines: got %d, want %d", label, g.AIModifiedLines, w.AIModifiedLines)
+	}
+	if g.HumanLines != w.HumanLines {
+		t.Errorf("%s HumanLines: got %d, want %d", label, g.HumanLines, w.HumanLines)
+	}
+	if g.TotalLines != w.TotalLines {
+		t.Errorf("%s TotalLines: got %d, want %d", label, g.TotalLines, w.TotalLines)
+	}
+	if g.AIPercentage != w.AIPercentage {
+		t.Errorf("%s AIPercentage: got %.1f, want %.1f", label, g.AIPercentage, w.AIPercentage)
+	}
+	if g.FilesTotal != w.FilesTotal {
+		t.Errorf("%s FilesTotal: got %d, want %d", label, g.FilesTotal, w.FilesTotal)
+	}
+	if g.FilesAITouched != w.FilesAITouched {
+		t.Errorf("%s FilesAITouched: got %d, want %d", label, g.FilesAITouched, w.FilesAITouched)
+	}
 
 	// Per-file attribution rows (canonicalized: sorted by path).
 	if len(g.Files) != len(w.Files) {
@@ -289,16 +312,36 @@ func TestRegression_ComputeAIPercent_ClaudeLineLevel(t *testing.T) {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
 	}
 
-	if result.TotalLines != 4 { t.Errorf("TotalLines = %d, want 4", result.TotalLines) }
-	if result.AILines != 4 { t.Errorf("AILines = %d, want 4", result.AILines) }
-	if result.ExactLines != 4 { t.Errorf("ExactLines = %d, want 4", result.ExactLines) }
-	if result.FormattedLines != 0 { t.Errorf("FormattedLines = %d, want 0", result.FormattedLines) }
-	if result.ModifiedLines != 0 { t.Errorf("ModifiedLines = %d, want 0", result.ModifiedLines) }
-	if result.Percent != 100 { t.Errorf("Percent = %.1f, want 100", result.Percent) }
-	if result.FilesTouched != 1 { t.Errorf("FilesTouched = %d, want 1", result.FilesTouched) }
-	if len(result.Providers) != 1 { t.Fatalf("Providers count = %d, want 1", len(result.Providers)) }
-	if result.Providers[0].Provider != "claude_code" { t.Errorf("Provider = %q, want claude_code", result.Providers[0].Provider) }
-	if result.Providers[0].AILines != 4 { t.Errorf("Provider AILines = %d, want 4", result.Providers[0].AILines) }
+	if result.TotalLines != 4 {
+		t.Errorf("TotalLines = %d, want 4", result.TotalLines)
+	}
+	if result.AILines != 4 {
+		t.Errorf("AILines = %d, want 4", result.AILines)
+	}
+	if result.ExactLines != 4 {
+		t.Errorf("ExactLines = %d, want 4", result.ExactLines)
+	}
+	if result.FormattedLines != 0 {
+		t.Errorf("FormattedLines = %d, want 0", result.FormattedLines)
+	}
+	if result.ModifiedLines != 0 {
+		t.Errorf("ModifiedLines = %d, want 0", result.ModifiedLines)
+	}
+	if result.Percent != 100 {
+		t.Errorf("Percent = %.1f, want 100", result.Percent)
+	}
+	if result.FilesTouched != 1 {
+		t.Errorf("FilesTouched = %d, want 1", result.FilesTouched)
+	}
+	if len(result.Providers) != 1 {
+		t.Fatalf("Providers count = %d, want 1", len(result.Providers))
+	}
+	if result.Providers[0].Provider != "claude_code" {
+		t.Errorf("Provider = %q, want claude_code", result.Providers[0].Provider)
+	}
+	if result.Providers[0].AILines != 4 {
+		t.Errorf("Provider AILines = %d, want 4", result.Providers[0].AILines)
+	}
 	_ = cpID
 }
 
@@ -326,11 +369,19 @@ func TestRegression_ComputeAIPercent_CursorFileTouchOnly(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
 	})
-	if err != nil { t.Fatalf("ComputeAIPercentFromDiff: %v", err) }
+	if err != nil {
+		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
+	}
 
-	if result.TotalLines != 3 { t.Errorf("TotalLines = %d, want 3", result.TotalLines) }
-	if result.AILines != 3 { t.Errorf("AILines = %d, want 3", result.AILines) }
-	if result.Percent != 100 { t.Errorf("Percent = %.1f, want 100", result.Percent) }
+	if result.TotalLines != 3 {
+		t.Errorf("TotalLines = %d, want 3", result.TotalLines)
+	}
+	if result.AILines != 3 {
+		t.Errorf("AILines = %d, want 3", result.AILines)
+	}
+	if result.Percent != 100 {
+		t.Errorf("Percent = %.1f, want 100", result.Percent)
+	}
 	if len(result.Providers) != 1 || result.Providers[0].Provider != "cursor" {
 		t.Errorf("Providers = %v, want [cursor]", result.Providers)
 	}
@@ -351,7 +402,9 @@ func TestRegression_ComputeAIPercent_NoEventsInWindow(t *testing.T) {
 	_, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
 	})
-	if !errors.Is(err, ErrNoEventsInWindow) { t.Errorf("expected ErrNoEventsInWindow, got %v", err) }
+	if !errors.Is(err, ErrNoEventsInWindow) {
+		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
+	}
 }
 
 func TestRegression_ComputeAIPercent_EmptyDiff(t *testing.T) {
@@ -363,9 +416,15 @@ func TestRegression_ComputeAIPercent_EmptyDiff(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, nil, ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
 	})
-	if err != nil { t.Fatalf("expected no error, got %v", err) }
-	if result.TotalLines != 0 { t.Errorf("TotalLines = %d, want 0", result.TotalLines) }
-	if result.Percent != 0 { t.Errorf("Percent = %.1f, want 0", result.Percent) }
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if result.TotalLines != 0 {
+		t.Errorf("TotalLines = %d, want 0", result.TotalLines)
+	}
+	if result.Percent != 0 {
+		t.Errorf("Percent = %.1f, want 0", result.Percent)
+	}
 }
 
 // Carry-forward behavior.
@@ -393,12 +452,22 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
 	}, &cp1, semDir)
-	if err != nil { t.Fatalf("attributeWithCarryForward: %v", err) }
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
 
-	if cfr.noEvents { t.Error("noEvents should be false") }
-	if cfr.result.TotalLines != 2 { t.Errorf("TotalLines = %d, want 2", cfr.result.TotalLines) }
-	if cfr.result.AILines != 2 { t.Errorf("AILines = %d, want 2", cfr.result.AILines) }
-	if cfr.result.Percent != 100 { t.Errorf("Percent = %.1f, want 100", cfr.result.Percent) }
+	if cfr.noEvents {
+		t.Error("noEvents should be false")
+	}
+	if cfr.result.TotalLines != 2 {
+		t.Errorf("TotalLines = %d, want 2", cfr.result.TotalLines)
+	}
+	if cfr.result.AILines != 2 {
+		t.Errorf("AILines = %d, want 2", cfr.result.AILines)
+	}
+	if cfr.result.Percent != 100 {
+		t.Errorf("Percent = %.1f, want 100", cfr.result.Percent)
+	}
 }
 
 func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
@@ -417,8 +486,12 @@ func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
 	}, &cp1, semDir)
-	if !errors.Is(err, ErrNoEventsInWindow) { t.Errorf("expected ErrNoEventsInWindow, got %v", err) }
-	if !cfr.noEvents { t.Error("noEvents should be true") }
+	if !errors.Is(err, ErrNoEventsInWindow) {
+		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
+	}
+	if !cfr.noEvents {
+		t.Error("noEvents should be true")
+	}
 }
 
 func TestRegression_CarryForward_NilPrevCP(t *testing.T) {
@@ -431,8 +504,12 @@ func TestRegression_CarryForward_NilPrevCP(t *testing.T) {
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 0, UpToTs: 300_000,
 	}, nil, semDir)
-	if !errors.Is(err, ErrNoEventsInWindow) { t.Errorf("expected ErrNoEventsInWindow, got %v", err) }
-	if !cfr.noEvents { t.Error("noEvents should be true") }
+	if !errors.Is(err, ErrNoEventsInWindow) {
+		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
+	}
+	if !cfr.noEvents {
+		t.Error("noEvents should be true")
+	}
 }
 
 func TestRegression_CarryForward_HistoricalEmpty_PreservesCurrent(t *testing.T) {
@@ -457,10 +534,18 @@ func TestRegression_CarryForward_HistoricalEmpty_PreservesCurrent(t *testing.T) 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
 	}, &cp1, semDir)
-	if err != nil { t.Fatalf("attributeWithCarryForward: %v", err) }
-	if cfr.noEvents { t.Error("noEvents should be false") }
-	if cfr.result.AILines == 0 { t.Error("expected AILines > 0") }
-	if cfr.result.TotalLines < 2 { t.Errorf("TotalLines = %d, want >= 2", cfr.result.TotalLines) }
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	if cfr.noEvents {
+		t.Error("noEvents should be false")
+	}
+	if cfr.result.AILines == 0 {
+		t.Error("expected AILines > 0")
+	}
+	if cfr.result.TotalLines < 2 {
+		t.Errorf("TotalLines = %d, want >= 2", cfr.result.TotalLines)
+	}
 }
 
 // Mixed-provider attribution.
@@ -485,19 +570,37 @@ func TestRegression_ComputeAIPercent_MixedProviders(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
 	})
-	if err != nil { t.Fatalf("ComputeAIPercentFromDiff: %v", err) }
+	if err != nil {
+		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
+	}
 
-	if result.TotalLines != 4 { t.Errorf("TotalLines = %d, want 4", result.TotalLines) }
-	if result.AILines != 4 { t.Errorf("AILines = %d, want 4", result.AILines) }
-	if result.Percent != 100 { t.Errorf("Percent = %.1f, want 100", result.Percent) }
-	if len(result.Providers) != 2 { t.Fatalf("Providers count = %d, want 2", len(result.Providers)) }
+	if result.TotalLines != 4 {
+		t.Errorf("TotalLines = %d, want 4", result.TotalLines)
+	}
+	if result.AILines != 4 {
+		t.Errorf("AILines = %d, want 4", result.AILines)
+	}
+	if result.Percent != 100 {
+		t.Errorf("Percent = %.1f, want 100", result.Percent)
+	}
+	if len(result.Providers) != 2 {
+		t.Fatalf("Providers count = %d, want 2", len(result.Providers))
+	}
 	if result.Providers[0].Provider != "claude_code" || result.Providers[1].Provider != "cursor" {
 		t.Errorf("provider order: got [%s, %s]", result.Providers[0].Provider, result.Providers[1].Provider)
 	}
-	if result.Providers[0].AILines != 2 { t.Errorf("claude AILines = %d, want 2", result.Providers[0].AILines) }
-	if result.Providers[1].AILines != 2 { t.Errorf("cursor AILines = %d, want 2", result.Providers[1].AILines) }
-	if result.ExactLines != 2 { t.Errorf("ExactLines = %d, want 2", result.ExactLines) }
-	if result.ModifiedLines != 2 { t.Errorf("ModifiedLines = %d, want 2", result.ModifiedLines) }
+	if result.Providers[0].AILines != 2 {
+		t.Errorf("claude AILines = %d, want 2", result.Providers[0].AILines)
+	}
+	if result.Providers[1].AILines != 2 {
+		t.Errorf("cursor AILines = %d, want 2", result.Providers[1].AILines)
+	}
+	if result.ExactLines != 2 {
+		t.Errorf("ExactLines = %d, want 2", result.ExactLines)
+	}
+	if result.ModifiedLines != 2 {
+		t.Errorf("ModifiedLines = %d, want 2", result.ModifiedLines)
+	}
 }
 
 // Deletion path through bash-derived file touches.
@@ -518,7 +621,7 @@ func TestRegression_ComputeAIPercent_DeletionPath(t *testing.T) {
 	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: eventID, SessionID: sessID, RepositoryID: repoID, Ts: 200_000,
 		Kind: "assistant", Role: sqlstore.NullStr("assistant"),
-		ToolUses: sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
+		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
 		PayloadHash: sqlstore.NullStr(payloadHash), Summary: sqlstore.NullStr("Ran bash"),
 	})
 	insertCommitCheckpoint(t, h, repoID, "commit1abc", 300_000)
@@ -528,8 +631,12 @@ func TestRegression_ComputeAIPercent_DeletionPath(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
 	})
-	if err != nil { t.Fatalf("ComputeAIPercentFromDiff: %v", err) }
-	if result.TotalLines != 0 { t.Errorf("TotalLines = %d, want 0", result.TotalLines) }
+	if err != nil {
+		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
+	}
+	if result.TotalLines != 0 {
+		t.Errorf("TotalLines = %d, want 0", result.TotalLines)
+	}
 }
 
 // AttributeCommit full result.
@@ -540,25 +647,147 @@ func TestRegression_AttributeCommit_FullResult(t *testing.T) {
 
 	svc := NewAttributionService()
 	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
-	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
 
-	if result.CommitHash != commitHash { t.Errorf("CommitHash = %q, want %q", result.CommitHash, commitHash) }
-	if result.CheckpointID == "" { t.Error("expected non-empty CheckpointID") }
-	if result.FilesTotal != 1 { t.Errorf("FilesTotal = %d, want 1", result.FilesTotal) }
-	if len(result.Files) != 1 { t.Fatalf("Files count = %d, want 1", len(result.Files)) }
-	if result.Files[0].Path != "handler.go" { t.Errorf("File = %q, want handler.go", result.Files[0].Path) }
-	if result.Files[0].TotalLines != 2 { t.Errorf("handler.go TotalLines = %d, want 2", result.Files[0].TotalLines) }
-	if result.TotalLines != 2 { t.Errorf("TotalLines = %d, want 2", result.TotalLines) }
-	if result.AILines != 2 { t.Errorf("AILines = %d, want 2", result.AILines) }
-	if result.AIPercentage != 100 { t.Errorf("AIPercentage = %.1f, want 100", result.AIPercentage) }
+	if result.CommitHash != commitHash {
+		t.Errorf("CommitHash = %q, want %q", result.CommitHash, commitHash)
+	}
+	if result.CheckpointID == "" {
+		t.Error("expected non-empty CheckpointID")
+	}
+	if result.FilesTotal != 1 {
+		t.Errorf("FilesTotal = %d, want 1", result.FilesTotal)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("Files count = %d, want 1", len(result.Files))
+	}
+	if result.Files[0].Path != "handler.go" {
+		t.Errorf("File = %q, want handler.go", result.Files[0].Path)
+	}
+	if result.Files[0].TotalLines != 2 {
+		t.Errorf("handler.go TotalLines = %d, want 2", result.Files[0].TotalLines)
+	}
+	if result.TotalLines != 2 {
+		t.Errorf("TotalLines = %d, want 2", result.TotalLines)
+	}
+	if result.AILines != 2 {
+		t.Errorf("AILines = %d, want 2", result.AILines)
+	}
+	if result.AIPercentage != 100 {
+		t.Errorf("AIPercentage = %.1f, want 100", result.AIPercentage)
+	}
 	if len(result.FilesCreated) != 1 || result.FilesCreated[0].Path != "handler.go" {
 		t.Errorf("FilesCreated = %v, want [handler.go]", result.FilesCreated)
 	}
 	if len(result.ProviderDetails) != 1 || result.ProviderDetails[0].Provider != "claude_code" {
 		t.Errorf("ProviderDetails = %v, want [claude_code]", result.ProviderDetails)
 	}
-	if result.Diagnostics.EventsConsidered != 1 { t.Errorf("EventsConsidered = %d, want 1", result.Diagnostics.EventsConsidered) }
-	if result.Diagnostics.PayloadsLoaded != 1 { t.Errorf("PayloadsLoaded = %d, want 1", result.Diagnostics.PayloadsLoaded) }
+	if result.Diagnostics.EventsConsidered != 1 {
+		t.Errorf("EventsConsidered = %d, want 1", result.Diagnostics.EventsConsidered)
+	}
+	if result.Diagnostics.PayloadsLoaded != 1 {
+		t.Errorf("PayloadsLoaded = %d, want 1", result.Diagnostics.PayloadsLoaded)
+	}
+}
+
+// Evidence integration: verify evidence fields reach the public result.
+
+func TestRegression_AttributeCommit_EvidenceFields(t *testing.T) {
+	dir, commitHash := setupGoldenRepo(t)
+	ctx := context.Background()
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+
+	// Commit-level evidence label should be present (all files exact).
+	if result.Evidence == "" {
+		t.Error("Evidence is empty, expected a level for commits with AI lines")
+	}
+	if result.Evidence != "High" {
+		t.Errorf("Evidence = %q, want 'High' (all exact)", result.Evidence)
+	}
+	if result.FallbackCount != 0 {
+		t.Errorf("FallbackCount = %d, want 0", result.FallbackCount)
+	}
+
+	// Per-file evidence class should be set.
+	if len(result.Files) != 1 {
+		t.Fatalf("Files count = %d, want 1", len(result.Files))
+	}
+	if result.Files[0].EvidenceClass == "" {
+		t.Error("EvidenceClass is empty on file row")
+	}
+	if result.Files[0].EvidenceClass != "exact" {
+		t.Errorf("EvidenceClass = %q, want 'exact'", result.Files[0].EvidenceClass)
+	}
+}
+
+func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
+	// A file goes through carry-forward but the historical window has no
+	// matching events either. The file should NOT get carry_forward evidence
+	// because it scored zero AI lines.
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+
+	// CP1 has a manifest with utils.go but NO events with matching content.
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	})
+	// CP2: current window, also no matching events.
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Diff creates utils.go. Carry-forward will attempt historical lookup
+	// but find nothing, so the file should remain human-only.
+	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,1 @@\n+package utils\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, _ := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+
+	// The file should have 0 AI lines and no carry-forward evidence.
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (no matching historical events)", cfr.result.AILines)
+	}
+	// Verify via the reporting path: build the commit result with the same
+	// inputs the orchestrator would use, and check evidence.
+	scores := []fileScore{{
+		path: "utils.go", totalLines: 1, humanLines: 1,
+	}}
+	dr := parseDiff([]byte(diff))
+	// actualCF should be empty because the file scored 0 AI lines.
+	actualCF := make(map[string]bool)
+	for _, fs := range scores {
+		if fs.path == "utils.go" && fileScoreAILines(&fs) > 0 {
+			actualCF["utils.go"] = true
+		}
+	}
+	input := buildCommitResultInput(scores, dr, commitResultContext{
+		aiTouchedFiles:    map[string]bool{},
+		providerModel:     map[string]string{},
+		fileTouchOrigins:  map[string]attrreporting.TouchOrigin{},
+		carryForwardFiles: actualCF,
+	})
+	cr := attrreporting.BuildCommitResult(input)
+	if len(cr.Files) != 1 {
+		t.Fatalf("Files = %d, want 1", len(cr.Files))
+	}
+	if string(cr.Files[0].PrimaryEvidence) == "carry_forward" {
+		t.Error("file with 0 AI lines should NOT have carry_forward evidence")
+	}
+	if cr.Files[0].PrimaryEvidence != attrreporting.EvidenceNone {
+		t.Errorf("PrimaryEvidence = %q, want 'none'", cr.Files[0].PrimaryEvidence)
+	}
 }
 
 // Blame entry points should converge to AttributeCommit for linked commits.
@@ -568,9 +797,13 @@ func TestRegression_Blame_CommitRef(t *testing.T) {
 	ctx := context.Background()
 	svc := NewAttributionService()
 	direct, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
-	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
 	blame, err := svc.Blame(ctx, BlameInput{RepoPath: dir, Ref: commitHash})
-	if err != nil { t.Fatalf("Blame(commit): %v", err) }
+	if err != nil {
+		t.Fatalf("Blame(commit): %v", err)
+	}
 	assertResultsEqual(t, "Blame(commitHash)", *blame, *direct)
 }
 
@@ -579,9 +812,13 @@ func TestRegression_Blame_CommitPrefix(t *testing.T) {
 	ctx := context.Background()
 	svc := NewAttributionService()
 	direct, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
-	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
 	blame, err := svc.Blame(ctx, BlameInput{RepoPath: dir, Ref: commitHash[:8]})
-	if err != nil { t.Fatalf("Blame(prefix): %v", err) }
+	if err != nil {
+		t.Fatalf("Blame(prefix): %v", err)
+	}
 	assertResultsEqual(t, "Blame(prefix)", *blame, *direct)
 }
 
@@ -590,7 +827,9 @@ func TestRegression_Blame_CheckpointRef(t *testing.T) {
 	ctx := context.Background()
 	svc := NewAttributionService()
 	direct, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: commitHash})
-	if err != nil { t.Fatalf("AttributeCommit: %v", err) }
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
 
 	repo, _ := git.OpenRepo(dir)
 	dbPath := filepath.Join(repo.Root(), ".semantica", "lineage.db")
@@ -600,7 +839,9 @@ func TestRegression_Blame_CheckpointRef(t *testing.T) {
 	_ = sqlstore.Close(h)
 
 	blame, err := svc.Blame(ctx, BlameInput{RepoPath: dir, Ref: cpID})
-	if err != nil { t.Fatalf("Blame(checkpoint): %v", err) }
+	if err != nil {
+		t.Fatalf("Blame(checkpoint): %v", err)
+	}
 	assertResultsEqual(t, "Blame(checkpointRef)", *blame, *direct)
 }
 
@@ -611,7 +852,9 @@ func TestRegression_Blame_UnknownRef(t *testing.T) {
 	ctx := context.Background()
 	svc := NewAttributionService()
 	_, err := svc.Blame(ctx, BlameInput{RepoPath: dir, Ref: "nonexistent-ref-xyz"})
-	if err == nil { t.Fatal("expected error for unknown ref") }
+	if err == nil {
+		t.Fatal("expected error for unknown ref")
+	}
 	if !strings.Contains(err.Error(), "not a known commit or checkpoint") {
 		t.Errorf("expected 'not a known commit or checkpoint', got: %v", err)
 	}
@@ -646,12 +889,22 @@ func TestRegression_Blame_CheckpointWithoutCommit(t *testing.T) {
 
 	svc := NewAttributionService()
 	result, err := svc.Blame(ctx, BlameInput{RepoPath: dir, Ref: cpID})
-	if err != nil { t.Fatalf("Blame(unlinked): %v", err) }
+	if err != nil {
+		t.Fatalf("Blame(unlinked): %v", err)
+	}
 
-	if result.CommitHash != "" { t.Errorf("CommitHash = %q, want empty", result.CommitHash) }
-	if result.CheckpointID != cpID { t.Errorf("CheckpointID = %q, want %q", result.CheckpointID, cpID) }
-	if result.Diagnostics.EventsConsidered != 1 { t.Errorf("EventsConsidered = %d, want 1", result.Diagnostics.EventsConsidered) }
-	if result.Diagnostics.AIToolEvents != 1 { t.Errorf("AIToolEvents = %d, want 1", result.Diagnostics.AIToolEvents) }
+	if result.CommitHash != "" {
+		t.Errorf("CommitHash = %q, want empty", result.CommitHash)
+	}
+	if result.CheckpointID != cpID {
+		t.Errorf("CheckpointID = %q, want %q", result.CheckpointID, cpID)
+	}
+	if result.Diagnostics.EventsConsidered != 1 {
+		t.Errorf("EventsConsidered = %d, want 1", result.Diagnostics.EventsConsidered)
+	}
+	if result.Diagnostics.AIToolEvents != 1 {
+		t.Errorf("AIToolEvents = %d, want 1", result.Diagnostics.AIToolEvents)
+	}
 }
 
 // AttributeCommit preserves deleted-file reporting.
@@ -701,14 +954,22 @@ func TestRegression_AttributeCommit_DeletionTouchedFiles(t *testing.T) {
 
 	svc := NewAttributionService()
 	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: deleteCommit})
-	if err != nil { t.Fatalf("AttributeCommit(delete): %v", err) }
+	if err != nil {
+		t.Fatalf("AttributeCommit(delete): %v", err)
+	}
 
 	deletedFound := false
 	for _, fc := range result.FilesDeleted {
-		if fc.Path == "old.go" { deletedFound = true }
+		if fc.Path == "old.go" {
+			deletedFound = true
+		}
 	}
-	if !deletedFound { t.Error("old.go not found in FilesDeleted") }
-	if result.TotalLines != 0 { t.Errorf("TotalLines = %d, want 0", result.TotalLines) }
+	if !deletedFound {
+		t.Error("old.go not found in FilesDeleted")
+	}
+	if result.TotalLines != 0 {
+		t.Errorf("TotalLines = %d, want 0", result.TotalLines)
+	}
 }
 
 // Provider file-touch events should still mark FilesCreated as AI even when

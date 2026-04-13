@@ -93,6 +93,12 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 			filesWithAI[fs.Path] = true
 		}
 
+		// Derive evidence classification.
+		touch := in.FileTouchOrigins[fs.Path]
+		isCF := in.CarryForwardFiles[fs.Path]
+		fa.PrimaryEvidence = ResolveFileEvidence(fs, touch, isCF)
+		fa.AllEvidence = CollectFileEvidence(fs, touch, isCF)
+
 		r.AIExactLines += fa.AIExactLines
 		r.AIFormattedLines += fa.AIFormattedLines
 		r.AIModifiedLines += fa.AIModifiedLines
@@ -142,6 +148,8 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		}
 		return r.ProviderDetails[i].Provider < r.ProviderDetails[j].Provider
 	})
+
+	r.Evidence, r.FallbackCount = CommitEvidence(r.Files)
 
 	return r
 }

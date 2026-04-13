@@ -52,8 +52,9 @@ type FileAttribution struct {
 	AIModifiedLines  int     `json:"ai_modified_lines"`
 	HumanLines       int     `json:"human_lines"`
 	TotalLines       int     `json:"total_lines"`
-	DeletedNonBlank  int     `json:"deleted_non_blank"` // deleted non-blank lines (not attributed, display only)
-	AIPercent        float64 `json:"ai_percentage"`     // (exact + formatted + modified) / total * 100
+	DeletedNonBlank  int     `json:"deleted_non_blank"`        // deleted non-blank lines (not attributed, display only)
+	AIPercent        float64 `json:"ai_percentage"`            // (exact + formatted + modified) / total * 100
+	EvidenceClass    string  `json:"evidence_class,omitempty"` // primary evidence class for this file
 }
 
 // FileChange records a file that was created, edited, or deleted in a commit,
@@ -96,6 +97,8 @@ type AttributionResult struct {
 	Files            []FileAttribution      `json:"files,omitempty"`
 	ProviderDetails  []ProviderAttribution  `json:"provider_details,omitempty"`
 	Diagnostics      AttributionDiagnostics `json:"diagnostics"`
+	Evidence         string                 `json:"evidence,omitempty"`        // "High", "Medium", "Low"
+	FallbackCount    int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
 }
 
 // AttributeCommit computes the AI attribution breakdown for a single commit.
@@ -200,6 +203,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	// Per-file carry-forward: for created files with 0 AI in the current
 	// window that exist in the previous checkpoint's manifest, query
 	// historical events and merge their AI candidates.
+	var needsCF map[string]bool
 	if prevErr == nil {
 		manifestFiles := loadManifestForCheckpoint(ctx, bs, prev.ManifestHash, semDir)
 		cfCandidates := carryForwardCandidates(dr, manifestFiles)
@@ -220,7 +224,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 					scoredAI[fs.path] = true
 				}
 			}
-			needsCF := make(map[string]bool)
+			needsCF = make(map[string]bool)
 			for path := range cfCandidates {
 				if !scoredAI[path] {
 					needsCF[path] = true
@@ -280,8 +284,29 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	}
 	scores, matchStats := scoreDiffPerFile(dr, finalCands)
 
+	// Build per-file touch origins for evidence classification.
+	touchOrigins := deriveFileTouchOrigins(aiTouchedFiles, aiLines, providerTouchedFiles, fileProvider)
+
+	// Narrow carry-forward set to files that actually scored AI lines.
+	// needsCF is the set of files that needed historical retry; some may
+	// still have zero AI lines after carry-forward if the historical window
+	// also had no matching candidates.
+	actualCF := make(map[string]bool)
+	if len(needsCF) > 0 {
+		for _, fs := range scores {
+			if needsCF[fs.path] && fileScoreAILines(&fs) > 0 {
+				actualCF[fs.path] = true
+			}
+		}
+	}
+
 	// Assemble the commit result from the scored files and diff metadata.
-	commitInput := buildCommitResultInput(scores, dr, aiTouchedFiles, providerModel)
+	commitInput := buildCommitResultInput(scores, dr, commitResultContext{
+		aiTouchedFiles:    aiTouchedFiles,
+		providerModel:     providerModel,
+		fileTouchOrigins:  touchOrigins,
+		carryForwardFiles: actualCF,
+	})
 	cr := attrreporting.BuildCommitResult(commitInput)
 	result := fromCommitResult(cr, in.CommitHash, link.CheckpointID)
 
@@ -678,7 +703,55 @@ func fileScoreAILines(fs *fileScore) int {
 // buildCommitResultInput converts local types to the reporting package's
 // CommitResultInput. It maps fileScore -> FileScoreInput and carries diff
 // metadata and the AI-touched file set.
-func buildCommitResultInput(scores []fileScore, dr diffResult, aiTouchedFiles map[string]bool, providerModel map[string]string) attrreporting.CommitResultInput {
+// deriveFileTouchOrigins classifies how each file entered the AI-touched set.
+// Uses the data already available from candidate building:
+//   - aiLines: files with line-level content -> TouchOriginLineLevel
+//   - fileProvider: files with a line-level provider -> TouchOriginLineLevel
+//   - providerTouchedFiles: files from provider file-edit events -> TouchOriginProviderEdit
+//   - remaining touched files -> TouchOriginCoarse
+func deriveFileTouchOrigins(
+	aiTouchedFiles map[string]bool,
+	aiLines map[string]map[string]struct{},
+	providerTouchedFiles map[string]string,
+	fileProvider map[string]string,
+) map[string]attrreporting.TouchOrigin {
+	origins := make(map[string]attrreporting.TouchOrigin, len(aiTouchedFiles))
+	for fp := range aiTouchedFiles {
+		switch {
+		case len(aiLines[fp]) > 0 || fileProvider[fp] != "":
+			// File has line-level AI content from payload extraction
+			// (Claude Edit/Write tool calls with content).
+			origins[fp] = attrreporting.TouchOriginLineLevel
+
+		case providerTouchedFiles[fp] == "claude_code":
+			// File touched by Claude but without line-level content.
+			// In BuildCandidatesFromRows, Claude files without aiLines/fileProvider
+			// enter ProviderTouchedFiles only via bash deletion extraction.
+			origins[fp] = attrreporting.TouchOriginDeletion
+
+		case providerTouchedFiles[fp] != "":
+			// File entered via provider file-edit event (Cursor, Kiro, etc.)
+			// without line-level content. In BuildCandidatesFromRows, non-Claude
+			// providers enter ProviderTouchedFiles via the HasProviderFileEdit path.
+			origins[fp] = attrreporting.TouchOriginProviderEdit
+
+		default:
+			origins[fp] = attrreporting.TouchOriginCoarse
+		}
+	}
+	return origins
+}
+
+// commitResultContext carries the metadata needed by buildCommitResultInput
+// beyond scores and diff data.
+type commitResultContext struct {
+	aiTouchedFiles    map[string]bool
+	providerModel     map[string]string
+	fileTouchOrigins  map[string]attrreporting.TouchOrigin
+	carryForwardFiles map[string]bool
+}
+
+func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultContext) attrreporting.CommitResultInput {
 	deletedNonBlank := make(map[string]int, len(dr.files))
 	for _, fd := range dr.files {
 		deletedNonBlank[fd.path] = fd.deletedNonBlank
@@ -698,11 +771,13 @@ func buildCommitResultInput(scores []fileScore, dr diffResult, aiTouchedFiles ma
 		}
 	}
 	return attrreporting.CommitResultInput{
-		FileScores:     fsInputs,
-		FilesCreated:   dr.filesCreated,
-		FilesDeleted:   dr.filesDeleted,
-		TouchedFiles:   aiTouchedFiles,
-		ProviderModels: providerModel,
+		FileScores:        fsInputs,
+		FilesCreated:      dr.filesCreated,
+		FilesDeleted:      dr.filesDeleted,
+		TouchedFiles:      ctx.aiTouchedFiles,
+		ProviderModels:    ctx.providerModel,
+		FileTouchOrigins:  ctx.fileTouchOrigins,
+		CarryForwardFiles: ctx.carryForwardFiles,
 	}
 }
 
@@ -721,6 +796,8 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		AIPercentage:     cr.AIPercentage,
 		FilesAITouched:   cr.FilesAITouched,
 		FilesTotal:       cr.FilesTotal,
+		Evidence:         cr.Evidence,
+		FallbackCount:    cr.FallbackCount,
 	}
 	for _, f := range cr.Files {
 		result.Files = append(result.Files, FileAttribution{
@@ -732,6 +809,7 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 			TotalLines:       f.TotalLines,
 			DeletedNonBlank:  f.DeletedNonBlank,
 			AIPercent:        f.AIPercent,
+			EvidenceClass:    string(f.PrimaryEvidence),
 		})
 	}
 	for _, f := range cr.FilesCreated {

@@ -49,6 +49,8 @@ type remotePushPayload struct {
 	Providers        []string               `json:"providers,omitempty"`
 	ProviderDetails  []providerDetail       `json:"provider_details,omitempty"`
 	PlaybookJSON     json.RawMessage        `json:"playbook_json,omitempty"`
+	Evidence         string                 `json:"evidence,omitempty"`
+	FallbackCount    int                    `json:"fallback_count,omitempty"`
 	CLIVersion       string                 `json:"cli_version,omitempty"`
 	AttrVersion      string                 `json:"attribution_version"`
 	PushedAt         int64                  `json:"pushed_at"`
@@ -119,6 +121,8 @@ func buildPushPayload(ctx context.Context, h *sqlstore.Handle, result *Attributi
 		Providers:        providers,
 		ProviderDetails:  details,
 		PlaybookJSON:     playbookJSON,
+		Evidence:         result.Evidence,
+		FallbackCount:    result.FallbackCount,
 		CLIVersion:       version.Version,
 		AttrVersion:      "v1",
 		PushedAt:         time.Now().UnixMilli(),

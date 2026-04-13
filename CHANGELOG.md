@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.2.3] - 2026-04-13
+
+### Added
+- Added attribution evidence notes to `blame` output when weaker methods are used
+- Added per-file evidence classification to push payload for PR comments
+- Added evaluation harness for attribution quality testing
+
+### Changed
+
+### Fixed
+- Fixed carry-forward evidence for files that scored zero AI lines
+- Fixed `git diff-tree` on root commits (first commit in a repo)
+- Fixed symlink resolution in `findGitRoot` for macOS `/tmp` paths
+
 ## [0.2.2] - 2026-04-12
 
 ### Changed
