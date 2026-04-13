@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -402,9 +403,44 @@ func TestConfigDir_Default(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".config", "semantica")
+	var want string
+	if runtime.GOOS == "windows" {
+		want = filepath.Join(os.Getenv("APPDATA"), "semantica")
+	} else {
+		home, _ := os.UserHomeDir()
+		want = filepath.Join(home, ".config", "semantica")
+	}
 	if got != want {
 		t.Errorf("ConfigDir() = %q, want %q", got, want)
+	}
+}
+
+// TestConfigDir_UnixStability pins the credentials path on macOS/Linux.
+// If this test fails, it means the plaintext fallback credentials location
+// changed, which would orphan existing credentials files on user machines.
+func TestConfigDir_UnixStability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-only stability test")
+	}
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	got, err := ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, _ := os.UserHomeDir()
+	// This is the path users have on existing macOS/Linux installs.
+	// Changing it would orphan their stored credentials.
+	if got != filepath.Join(home, ".config", "semantica") {
+		t.Errorf("ConfigDir() = %q, expected ~/.config/semantica on Unix", got)
+	}
+
+	credPath, err := CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credPath != filepath.Join(home, ".config", "semantica", "credentials.json") {
+		t.Errorf("CredentialsPath() = %q, expected ~/.config/semantica/credentials.json", credPath)
 	}
 }

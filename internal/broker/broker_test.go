@@ -173,7 +173,7 @@ func TestOpen_Persistence(t *testing.T) {
 }
 
 func TestCanonicalRepoPath(t *testing.T) {
-	got := CanonicalRepoPath("/workspace/./projects/../projects/cli/")
+	got := filepath.ToSlash(CanonicalRepoPath("/workspace/./projects/../projects/cli/"))
 	want := "/workspace/projects/cli"
 	if got != want {
 		t.Errorf("CanonicalRepoPath = %q, want %q", got, want)
