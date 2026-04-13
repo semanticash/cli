@@ -13,11 +13,20 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
+    env:
+      # Use a workspace-local temp dir for Go build artifacts.
+      # The system temp dir on Windows is scanned by Defender, which
+      # locks test binaries briefly after execution and causes
+      # "Access is denied" errors during cleanup.
+      GOTMPDIR: ${{ github.workspace }}\.gotmp
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      - name: Create Go temp dir
+        run: mkdir -p $env:GOTMPDIR
 
       - name: Build (compilation gate)
         run: go build ./...
