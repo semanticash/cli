@@ -29,7 +29,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 ## Requirements
 
 - **Git** - Semantica hooks into the Git commit lifecycle
-- **macOS or Linux** - the only supported platforms ([details](docs/limitations.md))
+- **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
 - **At least one supported AI provider** for capture (Claude Code, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
 - **At least one supported CLI version** for `suggest commit`, `suggest pr`, and playbook generation (`claude`, `agent`, `gemini`, or `copilot`) - not required for core capture and attribution
 
@@ -50,6 +50,15 @@ brew install semanticash/tap/semantica
 ```
 
 The Homebrew cask installs the `semantica` binary plus shell completions for Bash, Zsh, and Fish.
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add semanticash https://github.com/semanticash/scoop-bucket
+scoop install semantica
+```
+
+Or download the `.zip` from [GitHub Releases](https://github.com/semanticash/cli/releases) and add `semantica.exe` to your PATH.
 
 ### From source
 

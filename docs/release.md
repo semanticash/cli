@@ -8,10 +8,11 @@ Semantica uses [GoReleaser](https://goreleaser.com/) to build, package, and publ
 
 Releases are cross-compiled for:
 
-| OS | Architecture |
-|----|-------------|
-| macOS (darwin) | amd64, arm64 |
-| Linux | amd64, arm64 |
+| OS | Architecture | Archive |
+|----|-------------|---------|
+| macOS (darwin) | amd64, arm64 | tar.gz |
+| Linux | amd64, arm64 | tar.gz |
+| Windows | amd64, arm64 | zip |
 
 Binaries are statically linked (`CGO_ENABLED=0`).
 
@@ -21,7 +22,7 @@ Binaries are statically linked (`CGO_ENABLED=0`).
 
 Each tagged release creates a GitHub Release with:
 
-- `semantica_<os>_<arch>.tar.gz` archives
+- `semantica_<os>_<arch>.tar.gz` archives (`.zip` on Windows)
 - `checksums.txt` (SHA-256)
 - each archive includes:
   - the `semantica` binary
@@ -49,6 +50,15 @@ curl -fsSL https://semantica.sh/install.sh | sh
 ```
 
 Supports `VERSION` and `INSTALL_DIR` environment variables for pinning.
+
+### Scoop (Windows)
+
+GoReleaser pushes a manifest to `semanticash/scoop-bucket` on each release:
+
+```powershell
+scoop bucket add semanticash https://github.com/semanticash/scoop-bucket
+scoop install semantica
+```
 
 ## Creating a release
 

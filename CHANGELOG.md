@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Windows support: native builds for Windows amd64 and arm64
+- Windows install via Scoop: `scoop install semanticash/semantica`
+- Windows CI pipeline (`ci-windows.yml`) with compilation, unit test, and integration test gates
+- `internal/platform` package for cross-platform file locking, process detachment, signal handling, and safe file rename
+- CRLF normalization for git command output on Windows
+- MSYS path normalization for Claude Code payloads on Windows (other providers use native paths and work without normalization)
+- Windows clipboard support via `clip`
+- Windows config path probes for Kiro CLI and Kiro IDE
 
 ### Changed
 
