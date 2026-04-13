@@ -107,7 +107,9 @@ func NormalizePath(filePath, repoRoot string) string {
 	if runtime.GOOS == "windows" && len(filePath) >= 3 && filePath[0] == '/' && filePath[2] == '/' {
 		filePath = strings.ToUpper(string(filePath[1])) + ":" + filePath[2:]
 	}
-	rel, err := filepath.Rel(repoRoot, filePath)
+	// Clean both paths so mixed separators (forward vs back) are normalized
+	// before filepath.Rel computes the relative path.
+	rel, err := filepath.Rel(filepath.Clean(repoRoot), filepath.Clean(filePath))
 	if err != nil {
 		return filepath.Base(filePath)
 	}

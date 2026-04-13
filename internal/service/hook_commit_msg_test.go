@@ -414,8 +414,9 @@ func TestRun_CarryForwardTrailer(t *testing.T) {
 	insertEvt := func(ts int64, filePath, content string) {
 		t.Helper()
 		eventID := uuid.NewString()
+		// Use forward slashes so Windows paths don't produce invalid JSON.
 		payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/%s","content":"%s"}}]}}`,
-			dir, filePath, strings.ReplaceAll(content, "\n", "\\n"))
+			filepath.ToSlash(dir), filePath, strings.ReplaceAll(content, "\n", "\\n"))
 		payloadHash, _, _ := bs.Put(ctx, []byte(payload))
 		tuJSON := fmt.Sprintf(`{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"%s","file_op":"write"}]}`, filePath)
 		if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{

@@ -3,6 +3,7 @@ package git
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,9 @@ func TestRestoreFile_RegularFile(t *testing.T) {
 }
 
 func TestRestoreFile_ExecutableMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission bits are not supported on Windows")
+	}
 	dir := t.TempDir()
 	r := &Repo{root: dir}
 
@@ -168,6 +172,9 @@ func TestRestoreFile_ExecutableMode(t *testing.T) {
 }
 
 func TestRestoreFile_ZeroModeFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission bits are not supported on Windows")
+	}
 	dir := t.TempDir()
 	r := &Repo{root: dir}
 

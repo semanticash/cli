@@ -2,6 +2,7 @@ package platform
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -19,5 +20,10 @@ func LooksAbsolutePath(path string) bool {
 	if path[0] == '/' {
 		return true
 	}
-	return strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`)
+	if strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`) {
+		return true
+	}
+	// On Windows, a root-relative path (\workspace\...) is drive-rooted and
+	// behaves as absolute even though filepath.IsAbs returns false for it.
+	return runtime.GOOS == "windows" && path[0] == '\\'
 }

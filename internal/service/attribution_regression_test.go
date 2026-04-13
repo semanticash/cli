@@ -1083,7 +1083,8 @@ func TestRegression_FileChangeAI_BashDeletionZeroScored(t *testing.T) {
 	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session.jsonl")
 	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "sess-rm")
 
-	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, repoRoot)
+	// Use forward slashes so Windows paths don't produce invalid JSON.
+	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, filepath.ToSlash(repoRoot))
 	payloadHash, _, _ := bs.Put(ctx, []byte(payload))
 	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: uuid.NewString(), SessionID: sessID, RepositoryID: repoRow.RepositoryID,

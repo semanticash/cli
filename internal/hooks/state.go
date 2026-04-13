@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/semanticash/cli/internal/platform"
@@ -62,6 +63,10 @@ func stateFilePath(sessionID string) (string, error) {
 	}
 	// Sanitize session ID to prevent path traversal.
 	safe := filepath.Base(sessionID)
+	// Colon is forbidden in Windows filenames; replace with underscore.
+	if runtime.GOOS == "windows" {
+		safe = strings.ReplaceAll(safe, ":", "_")
+	}
 	return filepath.Join(dir, fmt.Sprintf("capture-%s.json", safe)), nil
 }
 
