@@ -26,7 +26,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Create Go temp dir
-        run: mkdir -p $env:GOTMPDIR
+        run: New-Item -ItemType Directory -Force -Path $env:GOTMPDIR
 
       - name: Build (compilation gate)
         run: go build ./...
