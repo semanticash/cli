@@ -94,7 +94,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 
 	// Simulate what sync.go does.
 
-	// Step 1: Redact prompt and step provenance blobs, get upload hashes.
+	// Redact prompt and step provenance blobs, get upload hashes.
 	promptUploadHash, promptRedacted, err := DeriveUploadHash(rawPrompt, "prompt", repoRoot)
 	if err != nil {
 		t.Fatalf("DeriveUploadHash(prompt): %v", err)
@@ -122,7 +122,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 		t.Error("step_write: expected hash to differ after path normalization")
 	}
 
-	// Step 2: Build hash map and rewrite bundle.
+	// Build hash map and rewrite bundle.
 	hashMap := map[string]string{
 		localPromptHash:    promptUploadHash,
 		localStepWriteHash: stepWriteUploadHash,
@@ -130,7 +130,7 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 	}
 	rewrittenBundle := RewriteBundleHashes(rawBundle, hashMap)
 
-	// Step 3: Redact the rewritten bundle.
+	// Redact the rewritten bundle.
 	bundleUploadHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoRoot)
 	if err != nil {
 		t.Fatalf("DeriveUploadHash(bundle): %v", err)

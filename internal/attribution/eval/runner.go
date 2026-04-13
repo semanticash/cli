@@ -18,7 +18,7 @@ type CaseResult struct {
 
 	// Observed values for summary reporting.
 	AIPercentage  float64
-	Evidence string
+	Evidence      string
 	FallbackCount int
 	FileResults   []FileResult
 }
@@ -123,16 +123,14 @@ func isFallback(ec reporting.EvidenceClass) bool {
 func RunCase(tc EvalCase) CaseResult {
 	cr := CaseResult{Name: tc.Name}
 
-	// Step 1: Parse diff.
 	diff := scoring.ParseDiff([]byte(tc.Diff))
 
-	// Step 2: Build candidates from events.
+	// Build candidates from events.
 	cands, _ := events.BuildCandidatesFromRows(tc.Events, tc.RepoRoot, nil)
 
-	// Step 3: Score files.
 	scores, _ := scoring.ScoreFiles(diff, cands.AILines, cands.ProviderTouchedFiles, cands.FileProvider)
 
-	// Step 4: Build touch origins (mirrors deriveFileTouchOrigins in the service).
+	// Build touch origins (mirrors deriveFileTouchOrigins in the service).
 	touchOrigins := make(map[string]reporting.TouchOrigin)
 	for fp, prov := range cands.ProviderTouchedFiles {
 		switch {
@@ -150,7 +148,7 @@ func RunCase(tc EvalCase) CaseResult {
 		touchOrigins[fp] = origin
 	}
 
-	// Step 5: Build reporting input.
+	// Build reporting input.
 	fsInputs := make([]reporting.FileScoreInput, len(scores))
 	for i, s := range scores {
 		fsInputs[i] = reporting.FileScoreInput{

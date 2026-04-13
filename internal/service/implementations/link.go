@@ -24,9 +24,9 @@ type LinkSessionInput struct {
 
 // LinkSessionResult reports what happened.
 type LinkSessionResult struct {
-	LinkedProvider    string
-	LinkedSessionID   string
-	MovedFrom         string // previous implementation ID, if moved
+	LinkedProvider  string
+	LinkedSessionID string
+	MovedFrom       string // previous implementation ID, if moved
 }
 
 // resolvedSession holds all the identity info needed to fully link a session.
@@ -53,7 +53,7 @@ func LinkSession(ctx context.Context, in LinkSessionInput) (*LinkSessionResult, 
 		return nil, fmt.Errorf("implementation %s not found", in.ImplementationID)
 	}
 
-	// Step 1: Try to find by repo-local Semantica session UUID in existing
+	// Try to find by repo-local Semantica session UUID in existing
 	// implementation_repo_sessions.
 	impls, err := h.Queries.FindImplementationsByLocalSession(ctx, in.SessionID)
 	if err == nil && len(impls) > 0 {
@@ -71,7 +71,7 @@ func LinkSession(ctx context.Context, in LinkSessionInput) (*LinkSessionResult, 
 		}
 	}
 
-	// Step 2: Search repo lineage DBs by Semantica session UUID/prefix
+	// Search repo lineage DBs by Semantica session UUID/prefix
 	// OR provider_session_id match.
 	resolved, err := resolveSessionFromRepos(ctx, in.SessionID, in.RepoPath)
 	if err != nil {

@@ -86,7 +86,7 @@ func TestAttachCommit_AfterSessionCheckpoints(t *testing.T) {
 		CreatedAt:         now,
 	})
 
-	// Step 1: Reconcile (creates the implementation from the observation).
+	// Reconcile (creates the implementation from the observation).
 	r := &Reconciler{
 		DetectBranch: func(_ context.Context, _ string) string { return "main" },
 	}
@@ -98,7 +98,7 @@ func TestAttachCommit_AfterSessionCheckpoints(t *testing.T) {
 		t.Fatalf("expected 1 processed observation, got %d", result.Processed)
 	}
 
-	// Step 2: AttachCommit BEFORE session_checkpoints - should find nothing.
+	// AttachCommit BEFORE session_checkpoints - should find nothing.
 	err = r.AttachCommit(ctx, implH, AttachCommitInput{
 		RepoPath: repoPath, CommitHash: commitHash,
 	})
@@ -115,14 +115,14 @@ func TestAttachCommit_AfterSessionCheckpoints(t *testing.T) {
 		t.Fatal("commit should NOT be attached before session_checkpoints exist")
 	}
 
-	// Step 3: Now simulate the worker writing session_checkpoints.
+	// Now simulate the worker writing session_checkpoints.
 	repoH, _ = sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
 	_ = repoH.Queries.InsertSessionCheckpoint(ctx, sqldb.InsertSessionCheckpointParams{
 		SessionID: sess.SessionID, CheckpointID: cpID,
 	})
 	_ = sqlstore.Close(repoH)
 
-	// Step 4: AttachCommit AFTER session_checkpoints - should succeed.
+	// AttachCommit AFTER session_checkpoints - should succeed.
 	err = r.AttachCommit(ctx, implH, AttachCommitInput{
 		RepoPath: repoPath, CommitHash: commitHash,
 	})

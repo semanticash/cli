@@ -79,20 +79,12 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	return classes
 }
 
-// CommitConfidence computes a confidence level, score, and fallback count
+// CommitEvidence computes the evidence level, score, and fallback count
 // from per-file evidence using a weighted formula.
 //
-// Line-evidence score (0-1):
-//
-//	LineScore = (1.00*Exact + 0.85*Normalized + 0.55*Modified) / max(1, AILines)
-//
-// File-evidence penalty (0-1):
-//
-//	FallbackPenalty = (0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
-//
-// Combined score:
-//
-//	Score = clamp(LineScore - FallbackPenalty, 0, 1)
+// Line-evidence score (0-1): LineScore = (1.00*Exact + 0.85*Normalized + 0.55*Modified) / max(1, AILines)
+// File-evidence penalty (0-1): FallbackPenalty = (0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
+// Combined score: Score = clamp(LineScore - FallbackPenalty, 0, 1)
 //
 // Buckets:
 //
@@ -101,7 +93,7 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 //	Low:    Score < 0.45
 //
 // Thresholds may be tuned as the evaluation corpus grows.
-func CommitConfidence(files []FileAttributionOutput) (level string, fallbackCount int) {
+func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount int) {
 	var exactLines, normLines, modLines int
 	var aiFiles int
 	var tpd, tpc, cf, del int
@@ -167,8 +159,8 @@ func CommitConfidence(files []FileAttributionOutput) (level string, fallbackCoun
 	return level, fallbackCount
 }
 
-// ConfidenceExplanation returns a short sentence explaining the confidence level.
-func ConfidenceExplanation(level string, fallbackCount int) string {
+// EvidenceExplanation returns a short sentence explaining the evidence level.
+func EvidenceExplanation(level string, fallbackCount int) string {
 	switch level {
 	case "High":
 		return "all files matched by direct line comparison"

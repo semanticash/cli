@@ -121,13 +121,13 @@ func TestCollectFileEvidence_NoneWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestCommitConfidence_AllExact(t *testing.T) {
+func TestCommitEvidence_AllExact(t *testing.T) {
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 50},
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 30},
 		{PrimaryEvidence: EvidenceNone, HumanLines: 20},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "High" {
 		t.Errorf("level = %q, want High", level)
 	}
@@ -136,13 +136,13 @@ func TestCommitConfidence_AllExact(t *testing.T) {
 	}
 }
 
-func TestCommitConfidence_MixedWithSmallFallback(t *testing.T) {
+func TestCommitEvidence_MixedWithSmallFallback(t *testing.T) {
 	// 100 exact lines + 5 provider-touch lines -> High (95%+ strong).
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 100},
 		{PrimaryEvidence: EvidenceProviderTouch, AIModifiedLines: 5},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "High" {
 		t.Errorf("level = %q, want High (95%% strong)", level)
 	}
@@ -151,13 +151,13 @@ func TestCommitConfidence_MixedWithSmallFallback(t *testing.T) {
 	}
 }
 
-func TestCommitConfidence_MediumWhenFallbackSignificant(t *testing.T) {
+func TestCommitEvidence_MediumWhenFallbackSignificant(t *testing.T) {
 	// 60 exact + 40 provider-touch -> Medium (60% strong, 40% fallback).
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 60},
 		{PrimaryEvidence: EvidenceProviderTouch, AIModifiedLines: 40},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "Medium" {
 		t.Errorf("level = %q, want Medium", level)
 	}
@@ -166,7 +166,7 @@ func TestCommitConfidence_MediumWhenFallbackSignificant(t *testing.T) {
 	}
 }
 
-func TestCommitConfidence_LowWhenMostlyFallback(t *testing.T) {
+func TestCommitEvidence_LowWhenMostlyFallback(t *testing.T) {
 	// 5 exact + 3 provider-touch + 3 provider-coarse + 3 carry-forward + 3 deletion.
 	// LineScore = (5 + 0.55*12) / 17 = 11.6/17 = 0.682
 	// FallbackPenalty = (0.18 + 0.30 + 0.25 + 0.35) / 5 = 0.216
@@ -179,7 +179,7 @@ func TestCommitConfidence_LowWhenMostlyFallback(t *testing.T) {
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceProviderCoarse, AIModifiedLines: 5},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "Low" {
 		t.Errorf("level = %q, want Low", level)
 	}
@@ -188,39 +188,39 @@ func TestCommitConfidence_LowWhenMostlyFallback(t *testing.T) {
 	}
 }
 
-func TestCommitConfidence_HighIncludesNormalized(t *testing.T) {
+func TestCommitEvidence_HighIncludesNormalized(t *testing.T) {
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 40},
 		{PrimaryEvidence: EvidenceNormalized, AIFormattedLines: 10},
 	}
-	level, _ := CommitConfidence(files)
+	level, _ := CommitEvidence(files)
 	if level != "High" {
 		t.Errorf("level = %q, want High (normalized counts as high)", level)
 	}
 }
 
-func TestCommitConfidence_SmallModifiedStaysHigh(t *testing.T) {
+func TestCommitEvidence_SmallModifiedStaysHigh(t *testing.T) {
 	// 998 exact + 2 modified -> High (99.8% strong).
 	// This is the "1000 lines, 2 modified" scenario.
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceExact, AIExactLines: 998},
 		{PrimaryEvidence: EvidenceModified, AIModifiedLines: 2},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "High" {
-		t.Errorf("level = %q, want High (2 modified out of 1000 should not drop confidence)", level)
+		t.Errorf("level = %q, want High (2 modified out of 1000 should not drop evidence)", level)
 	}
 	if fallback != 0 {
 		t.Errorf("fallback = %d, want 0 (modified is not fallback)", fallback)
 	}
 }
 
-func TestCommitConfidence_NoAIFiles(t *testing.T) {
+func TestCommitEvidence_NoAIFiles(t *testing.T) {
 	files := []FileAttributionOutput{
 		{PrimaryEvidence: EvidenceNone, HumanLines: 20},
 		{PrimaryEvidence: EvidenceNone, HumanLines: 30},
 	}
-	level, fallback := CommitConfidence(files)
+	level, fallback := CommitEvidence(files)
 	if level != "" {
 		t.Errorf("level = %q, want empty (no AI files)", level)
 	}
@@ -229,7 +229,7 @@ func TestCommitConfidence_NoAIFiles(t *testing.T) {
 	}
 }
 
-func TestConfidenceExplanation(t *testing.T) {
+func TestEvidenceExplanation(t *testing.T) {
 	tests := []struct {
 		level    string
 		fallback int
@@ -242,9 +242,9 @@ func TestConfidenceExplanation(t *testing.T) {
 		{"", 0, ""},
 	}
 	for _, tt := range tests {
-		got := ConfidenceExplanation(tt.level, tt.fallback)
+		got := EvidenceExplanation(tt.level, tt.fallback)
 		if got != tt.want {
-			t.Errorf("ConfidenceExplanation(%q, %d) = %q, want %q", tt.level, tt.fallback, got, tt.want)
+			t.Errorf("EvidenceExplanation(%q, %d) = %q, want %q", tt.level, tt.fallback, got, tt.want)
 		}
 	}
 }
