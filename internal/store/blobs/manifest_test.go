@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -84,7 +85,7 @@ func TestBuildManifest_FileModes(t *testing.T) {
 				t.Errorf("regular.txt should not be executable: mode = %o", mf.Mode)
 			}
 		case "script.sh":
-			if mf.Mode&0o111 == 0 {
+			if runtime.GOOS != "windows" && mf.Mode&0o111 == 0 {
 				t.Errorf("script.sh should be executable: mode = %o", mf.Mode)
 			}
 		}

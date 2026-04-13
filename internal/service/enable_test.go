@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -144,10 +145,12 @@ func TestEnable_InstallsGitHooks(t *testing.T) {
 			t.Errorf("hook %s missing semantica hook invocation", hookName)
 		}
 
-		// Verify executable
-		info, _ := os.Stat(hookPath)
-		if info.Mode()&0o100 == 0 {
-			t.Errorf("hook %s is not executable", hookName)
+		// Verify executable (Windows ignores permission bits).
+		if runtime.GOOS != "windows" {
+			info, _ := os.Stat(hookPath)
+			if info.Mode()&0o100 == 0 {
+				t.Errorf("hook %s is not executable", hookName)
+			}
 		}
 	}
 }
