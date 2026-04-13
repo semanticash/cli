@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/redact"
 )
 
@@ -278,7 +279,7 @@ func normalizePath(p string, repoRoot string) string {
 	if repoRoot == "" || p == "" {
 		return p
 	}
-	if filepath.IsAbs(p) {
+	if platform.LooksAbsolutePath(p) {
 		rel, err := filepath.Rel(repoRoot, p)
 		if err != nil {
 			return ""

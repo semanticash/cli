@@ -10,6 +10,7 @@ import (
 
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/util"
@@ -613,7 +614,7 @@ func extractSummaryPath(summary, repoName string) string {
 		return ""
 	}
 	path := strings.TrimSpace(summary[start+1 : end])
-	if !filepath.IsAbs(path) {
+	if !platform.LooksAbsolutePath(path) {
 		return ""
 	}
 	if repoName != "" {

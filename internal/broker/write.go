@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/doctor"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -373,7 +374,7 @@ func relativizeToolPaths(toolUsesJSON, repoPath string) string {
 
 	changed := false
 	for i, t := range p.Tools {
-		if filepath.IsAbs(t.FilePath) {
+		if platform.LooksAbsolutePath(t.FilePath) {
 			if rel, err := filepath.Rel(repoPath, t.FilePath); err == nil && !strings.HasPrefix(rel, "..") {
 				p.Tools[i].FilePath = rel
 				changed = true
