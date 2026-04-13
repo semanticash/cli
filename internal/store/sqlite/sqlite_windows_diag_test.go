@@ -61,7 +61,7 @@ func TestWindowsDiag_SQLiteBasicOpen(t *testing.T) {
 	}
 	t.Log("step 4: schema_migrations table OK")
 
-	// Step 5: golang-migrate WithInstance
+	// Step 5: golang-migrate WithInstance on the warm handle
 	driver, err := migratesqlite.WithInstance(db, &migratesqlite.Config{})
 	if err != nil {
 		t.Fatalf("step 5: migratesqlite.WithInstance failed: %v", err)
@@ -69,12 +69,28 @@ func TestWindowsDiag_SQLiteBasicOpen(t *testing.T) {
 	_ = driver
 	t.Log("step 5: migratesqlite.WithInstance OK")
 
-	// Step 6: full MigratePath through our code
-	_ = db.Close()
-	if err := MigratePath(t.Context(), dbPath); err != nil {
-		t.Fatalf("step 6: MigratePath failed: %v", err)
+	// Step 6: migrateDB on the same warm handle (the production path)
+	if err := migrateDB(t.Context(), db); err != nil {
+		t.Fatalf("step 6: migrateDB (same handle) failed: %v", err)
 	}
-	t.Log("step 6: MigratePath OK")
+	t.Log("step 6: migrateDB OK")
+
+	// Step 7: full Open flow (single handle: open, ping, pragma, migrate)
+	_ = db.Close()
+	dbPath2 := filepath.Join(t.TempDir(), "open_test.db")
+	h, err := Open(t.Context(), dbPath2, DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("step 7: Open failed: %v", err)
+	}
+	_ = Close(h)
+	t.Log("step 7: Open (full flow) OK")
+
+	// Step 8: MigratePath standalone (opens its own warm handle)
+	dbPath3 := filepath.Join(t.TempDir(), "migrate_standalone.db")
+	if err := MigratePath(t.Context(), dbPath3); err != nil {
+		t.Fatalf("step 8: MigratePath standalone failed: %v", err)
+	}
+	t.Log("step 8: MigratePath standalone OK")
 }
 
 // TestWindowsDiag_SimpleDSN tests with the simplest possible DSN
