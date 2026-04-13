@@ -6,9 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/llm"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
@@ -222,7 +222,7 @@ func spawnGenerateBackground(cmd *cobra.Command, repoPath string, res *service.E
 	}
 
 	proc := exec.Command(self, args...)
-	proc.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	platform.SetProcessGroup(proc)
 	proc.Stdout = nil
 	proc.Stderr = nil
 	proc.Stdin = nil

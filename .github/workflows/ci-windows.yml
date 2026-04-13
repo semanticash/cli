@@ -1,0 +1,32 @@
+name: CI (Windows)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    # TODO: Remove continue-on-error once all compile blockers are fixed.
+    # Baseline captured: syscall.Flock, Setsid, Setpgid, SIGTERM.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build (compilation gate)
+        run: go build ./...
+
+      - name: Fast tests (runtime correctness)
+        run: go test -short ./... -count=1
+
+      - name: Integration tests (locking, detachment, concurrency)
+        run: go test -run "Integration|CrossProcess|Stress|E2E" ./... -count=1 -timeout 5m

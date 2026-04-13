@@ -5,10 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/store/impldb"
 	impldbgen "github.com/semanticash/cli/internal/store/impldb/db"
@@ -118,7 +118,7 @@ func spawnAutoImplementationSummary(semDir, implID string) bool {
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	platform.DetachProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		wlog("worker: auto-impl-summary: spawn failed: %v\n", err)

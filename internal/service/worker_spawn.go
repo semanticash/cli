@@ -3,8 +3,8 @@ package service
 import (
 	"os"
 	"os/exec"
-	"syscall"
 
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -28,7 +28,7 @@ func spawnAutoPlaybook(semDir, checkpointID, commitHash, repoRoot string) {
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	platform.DetachProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		wlog("worker: auto-playbook: spawn failed: %v\n", err)
