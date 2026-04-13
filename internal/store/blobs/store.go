@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/semanticash/cli/internal/platform"
 )
 
 type Store struct {
@@ -75,8 +76,8 @@ func (s *Store) Put(ctx context.Context, b []byte) (hash string, size int64, err
 		return "", 0, fmt.Errorf("close blob temp: %w", err)
 	}
 
-	// Atomic move into place
-	if err := os.Rename(tmpName, finalPath); err != nil {
+	// Move blob into place (safe overwrite on Windows).
+	if err := platform.SafeRename(tmpName, finalPath); err != nil {
 		if st, statErr := os.Stat(finalPath); statErr == nil && st.Mode().IsRegular() {
 			return hash, size, nil
 		}
@@ -187,7 +188,7 @@ func (s *Store) rawCopy(srcPath, dstPath string) error {
 		return fmt.Errorf("close blob copy: %w", err)
 	}
 
-	if err := os.Rename(tmpName, dstPath); err != nil {
+	if err := platform.SafeRename(tmpName, dstPath); err != nil {
 		if st, statErr := os.Stat(dstPath); statErr == nil && st.Mode().IsRegular() {
 			return nil
 		}

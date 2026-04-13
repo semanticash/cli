@@ -144,6 +144,13 @@ func KiroGlobalStorageDir() (string, error) {
 	if _, err := os.Stat(dir); err == nil {
 		return dir, nil
 	}
+	// Windows
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dir = filepath.Join(appData, "Kiro", "User", "globalStorage", "kiro.kiroagent")
+		if _, err := os.Stat(dir); err == nil {
+			return dir, nil
+		}
+	}
 	// Linux
 	dir = filepath.Join(home, ".config", "Kiro", "User", "globalStorage", "kiro.kiroagent")
 	if _, err := os.Stat(dir); err == nil {

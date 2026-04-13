@@ -20,10 +20,19 @@ func kiroCLIDBPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// macOS
 	p := filepath.Join(home, "Library", "Application Support", "kiro-cli", "data.sqlite3")
 	if _, err := os.Stat(p); err == nil {
 		return p, nil
 	}
+	// Windows
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		p = filepath.Join(appData, "kiro-cli", "data.sqlite3")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	// Linux
 	for _, dir := range []string{".local/share/kiro-cli", ".config/kiro-cli"} {
 		p = filepath.Join(home, dir, "data.sqlite3")
 		if _, err := os.Stat(p); err == nil {

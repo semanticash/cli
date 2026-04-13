@@ -613,7 +613,7 @@ func extractSummaryPath(summary, repoName string) string {
 		return ""
 	}
 	path := strings.TrimSpace(summary[start+1 : end])
-	if !strings.HasPrefix(path, "/") {
+	if !filepath.IsAbs(path) {
 		return ""
 	}
 	if repoName != "" {

@@ -252,7 +252,7 @@ func (h *Handle) mutate(fn func([]RegisteredRepo) []RegisteredRepo) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, h.path); err != nil {
+	if err := platform.SafeRename(tmpPath, h.path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}

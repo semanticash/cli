@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/zalando/go-keyring"
 )
@@ -236,7 +237,7 @@ func (f *fileStore) save(c *Credentials) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := platform.SafeRename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename credentials: %w", err)
 	}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/semanticash/cli/internal/platform"
+
 	"github.com/semanticash/cli/internal/broker"
 )
 
@@ -88,7 +90,7 @@ func SaveCaptureState(state *CaptureState) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write capture state: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := platform.SafeRename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename capture state: %w", err)
 	}

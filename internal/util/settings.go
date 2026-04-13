@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 type PlaybookAutomation struct {
@@ -71,7 +73,7 @@ func WriteSettings(semDir string, s Settings) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := platform.SafeRename(tmp, path); err != nil {
 		return err
 	}
 
