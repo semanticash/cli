@@ -162,39 +162,80 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 
 	// Load commits using the repo display name from implementation_repos.
 	commitRows, _ := h.Queries.ListImplementationCommits(ctx, fullID)
+	commitsByRepo := make(map[string][]CommitDetail)
 	commits := make([]CommitDetail, 0, len(commitRows))
 	for _, c := range commitRows {
 		dn := displayNameByPath[c.CanonicalPath]
 		if dn == "" {
-			dn = filepath.Base(c.CanonicalPath) // fallback
+			dn = filepath.Base(c.CanonicalPath)
 		}
-		subject := lookupCommitSubject(ctx, c.CanonicalPath, c.CommitHash)
-		commits = append(commits, CommitDetail{
+		cd := CommitDetail{
 			CanonicalPath: c.CanonicalPath,
 			DisplayName:   dn,
 			CommitHash:    c.CommitHash,
-			Subject:       subject,
 			AttachedAt:    c.AttachedAt,
 			AttachRule:    c.AttachRule,
-		})
+		}
+		commits = append(commits, cd)
+		commitsByRepo[c.CanonicalPath] = append(commitsByRepo[c.CanonicalPath], cd)
 	}
 
-	// Build timeline and compute tokens via deduplicated session stats.
+	// Pre-group session IDs by canonical path from the already-fetched rows.
+	sessIDsByRepo := make(map[string][]string)
+	for _, rs := range repoSessionRows {
+		sessIDsByRepo[rs.CanonicalPath] = append(sessIDsByRepo[rs.CanonicalPath], rs.SessionID)
+	}
+
+	// Per-repo pass: open each lineage.db once for timeline, tokens, and
+	// attribution. Also batch commit subject lookups per git repo.
 	var timeline []TimelineEntry
 	var totalIn, totalOut, totalCached int64
+	var repoAttribution []RepoAttribution
 
 	for _, repo := range repos {
-		entries := loadRepoTimeline(ctx, h, fullID, repo.CanonicalPath, repo.DisplayName)
+		sessIDs := sessIDsByRepo[repo.CanonicalPath]
+
+		// Look up commit subjects in batch (one git.OpenRepo per repo).
+		lookupSubjects(ctx, repo.CanonicalPath, commits)
+
+		if len(sessIDs) == 0 && len(commitsByRepo[repo.CanonicalPath]) == 0 {
+			continue
+		}
+
+		dbPath := filepath.Join(repo.CanonicalPath, ".semantica", "lineage.db")
+		repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+		if err != nil {
+			continue
+		}
+
+		// Timeline from events.
+		entries := loadRepoTimelineFromHandle(ctx, repoH, sessIDs, repo.CanonicalPath, repo.DisplayName)
 		timeline = append(timeline, entries...)
 
-		// Token totals: use GetSessionWithStats (deduplicated) per session.
-		tIn, tOut, tCached := loadRepoTokens(ctx, fullID, h, repo.CanonicalPath)
-		totalIn += tIn
-		totalOut += tOut
-		totalCached += tCached
+		// Token totals.
+		for _, sessID := range sessIDs {
+			stats, err := repoH.Queries.GetSessionWithStats(ctx, sessID)
+			if err != nil {
+				continue
+			}
+			totalIn += stats.TokensIn
+			totalOut += stats.TokensOut
+			totalCached += stats.TokensCached
+		}
+
+		// Attribution from checkpoint stats.
+		if rc := commitsByRepo[repo.CanonicalPath]; len(rc) > 0 {
+			if ra := loadRepoAttributionFromHandle(ctx, repoH, rc); ra != nil {
+				repoAttribution = append(repoAttribution, *ra)
+			}
+		}
+
+		_ = sqlstore.Close(repoH)
 	}
 
-	repoAttribution := loadRepoAttribution(ctx, commits)
+	sort.Slice(repoAttribution, func(i, j int) bool {
+		return repoAttribution[i].DisplayName < repoAttribution[j].DisplayName
+	})
 
 	// Add commit entries using the consistent display name.
 	for _, c := range commits {
@@ -244,32 +285,14 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 
 const timelinePageSize int64 = 500
 
-// loadRepoTimeline opens a repo's lineage.db and fetches all events for
-// sessions linked to this implementation via keyset pagination.
-func loadRepoTimeline(
+// loadRepoTimelineFromHandle fetches all events for the given sessions
+// from an already-open lineage.db handle.
+func loadRepoTimelineFromHandle(
 	ctx context.Context,
-	h *impldb.Handle,
-	implID, canonicalPath, displayName string,
+	repoH *sqlstore.Handle,
+	sessionIDs []string,
+	canonicalPath, displayName string,
 ) []TimelineEntry {
-	allRepoSessions, _ := h.Queries.ListRepoSessionsForImplementation(ctx, implID)
-
-	var sessionIDs []string
-	for _, rs := range allRepoSessions {
-		if rs.CanonicalPath == canonicalPath {
-			sessionIDs = append(sessionIDs, rs.SessionID)
-		}
-	}
-	if len(sessionIDs) == 0 {
-		return nil
-	}
-
-	dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
-	repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = sqlstore.Close(repoH) }()
-
 	var entries []TimelineEntry
 	for _, sessID := range sessionIDs {
 		var afterTs int64
@@ -315,117 +338,60 @@ func loadRepoTimeline(
 			afterEventID = last.EventID
 
 			if int64(len(page)) < timelinePageSize {
-				break // last page
+				break
 			}
 		}
 	}
-
 	return entries
 }
 
-// loadRepoTokens uses GetSessionWithStats (deduplicated token logic) for
-// each session linked to this implementation in the given repo.
-func loadRepoTokens(
+// loadRepoAttributionFromHandle computes averaged AI attribution for a
+// repo's commits using an already-open lineage.db handle.
+func loadRepoAttributionFromHandle(
 	ctx context.Context,
-	implID string,
-	h *impldb.Handle,
-	canonicalPath string,
-) (int64, int64, int64) {
-	allRepoSessions, _ := h.Queries.ListRepoSessionsForImplementation(ctx, implID)
-
-	var sessionIDs []string
-	for _, rs := range allRepoSessions {
-		if rs.CanonicalPath == canonicalPath {
-			sessionIDs = append(sessionIDs, rs.SessionID)
-		}
-	}
-	if len(sessionIDs) == 0 {
-		return 0, 0, 0
-	}
-
-	dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
-	repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	if err != nil {
-		return 0, 0, 0
-	}
-	defer func() { _ = sqlstore.Close(repoH) }()
-
-	var totalIn, totalOut, totalCached int64
-	for _, sessID := range sessionIDs {
-		stats, err := repoH.Queries.GetSessionWithStats(ctx, sessID)
+	repoH *sqlstore.Handle,
+	repoCommits []CommitDetail,
+) *RepoAttribution {
+	var sum float64
+	var count int
+	for _, commit := range repoCommits {
+		link, err := repoH.Queries.GetCommitLinkByCommitHash(ctx, commit.CommitHash)
 		if err != nil {
 			continue
 		}
-		totalIn += stats.TokensIn
-		totalOut += stats.TokensOut
-		totalCached += stats.TokensCached
-	}
-	return totalIn, totalOut, totalCached
-}
-
-func loadRepoAttribution(ctx context.Context, commits []CommitDetail) []RepoAttribution {
-	type acc struct {
-		sum   float64
-		count int
-	}
-
-	byRepo := make(map[string][]CommitDetail)
-	for _, commit := range commits {
-		byRepo[commit.CanonicalPath] = append(byRepo[commit.CanonicalPath], commit)
-	}
-
-	results := make([]RepoAttribution, 0, len(byRepo))
-	for canonicalPath, repoCommits := range byRepo {
-		dbPath := filepath.Join(canonicalPath, ".semantica", "lineage.db")
-		repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-		if err != nil {
+		cpStats, err := repoH.Queries.GetCheckpointStats(ctx, link.CheckpointID)
+		if err != nil || cpStats.AiPercentage < 0 {
 			continue
 		}
-
-		var stats acc
-		for _, commit := range repoCommits {
-			link, err := repoH.Queries.GetCommitLinkByCommitHash(ctx, commit.CommitHash)
-			if err != nil {
-				continue
-			}
-			cpStats, err := repoH.Queries.GetCheckpointStats(ctx, link.CheckpointID)
-			if err != nil || cpStats.AiPercentage < 0 {
-				continue
-			}
-			stats.sum += cpStats.AiPercentage
-			stats.count++
-		}
-		_ = sqlstore.Close(repoH)
-
-		if stats.count == 0 {
-			continue
-		}
-
-		results = append(results, RepoAttribution{
-			CanonicalPath: canonicalPath,
-			DisplayName:   repoCommits[0].DisplayName,
-			AIPercentage:  stats.sum / float64(stats.count),
-			CommitCount:   stats.count,
-		})
+		sum += cpStats.AiPercentage
+		count++
 	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].DisplayName < results[j].DisplayName
-	})
-
-	return results
+	if count == 0 {
+		return nil
+	}
+	return &RepoAttribution{
+		CanonicalPath: repoCommits[0].CanonicalPath,
+		DisplayName:   repoCommits[0].DisplayName,
+		AIPercentage:  sum / float64(count),
+		CommitCount:   count,
+	}
 }
 
-func lookupCommitSubject(ctx context.Context, canonicalPath, commitHash string) string {
+// lookupSubjects fills in commit subjects for all commits matching the
+// given canonical path, using a single git.OpenRepo call.
+func lookupSubjects(ctx context.Context, canonicalPath string, commits []CommitDetail) {
 	repo, err := git.OpenRepo(canonicalPath)
 	if err != nil {
-		return ""
+		return
 	}
-	subject, err := repo.CommitSubject(ctx, commitHash)
-	if err != nil {
-		return ""
+	for i := range commits {
+		if commits[i].CanonicalPath != canonicalPath {
+			continue
+		}
+		if subject, err := repo.CommitSubject(ctx, commits[i].CommitHash); err == nil {
+			commits[i].Subject = subject
+		}
 	}
-	return subject
 }
 
 // resolveImplID resolves a short ID prefix to a full implementation ID.

@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.1] - 2026-04-14
+
+### Changed
+
+- Detect Claude Code installed via VS Code extension or desktop app by checking for `~/.claude` directory when the CLI binary is not on PATH
+- Reduce redundant database opens in implementation detail view by sharing a single lineage.db handle per repo for timeline, tokens, and attribution
+- Batch commit subject lookups per repo instead of opening a git repo per commit
+
+### Fixed
+
+- Fix Windows CI workflow failing on Go toolchain temp file cleanup
+
 ## [0.3.0] - 2026-04-14
 
 ### Added

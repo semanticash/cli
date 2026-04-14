@@ -35,7 +35,17 @@ func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Claude Code" }
 
 func (p *Provider) IsAvailable() bool {
-	return util.ResolveExecutable([]string{"claude"}) != ""
+	if util.ResolveExecutable([]string{"claude"}) != "" {
+		return true
+	}
+	// Claude Code installed via VS Code extension or desktop app creates
+	// ~/.claude without adding the CLI binary to PATH.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".claude"))
+	return err == nil
 }
 
 type hookMatcher struct {
