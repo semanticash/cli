@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.2] - 2026-04-15
+
+### Added
+
+- `semantica version` subcommand showing CLI version, Go version, and OS/Arch
+- Agent reload instructions in README and provider docs for post-enable workflows
+- Validation on agent selector requiring at least one agent to be selected
+
+### Changed
+
+- Agent selector during `semantica enable` now uses bracket-style checkboxes with Semantica green for selected items
+- Generic agent reload note replaces the Cursor-specific warning after `semantica enable`
+- Ctrl+C during agent selection cleanly aborts without enabling
+
+### Fixed
+
+- Fixed Windows drive letter case mismatch in event routing (`C:` vs `c:` caused 0% attribution on Windows)
+
 ## [0.3.1] - 2026-04-14
 
 ### Changed
