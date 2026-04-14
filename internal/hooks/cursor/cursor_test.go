@@ -284,7 +284,7 @@ func TestParseHookEvent_BeforeSubmitPrompt_DerivesTranscriptPath(t *testing.T) {
 	if event.TranscriptRef == "" {
 		t.Fatal("expected transcript path fallback")
 	}
-	if !strings.Contains(event.TranscriptRef, "/.cursor/projects/tmp-demo-project/agent-transcripts/conv-123/conv-123.jsonl") {
+	if !strings.Contains(filepath.ToSlash(event.TranscriptRef), "/.cursor/projects/tmp-demo-project/agent-transcripts/conv-123/conv-123.jsonl") {
 		t.Errorf("unexpected transcript path: %q", event.TranscriptRef)
 	}
 	if event.CWD != "/tmp/demo-project" {

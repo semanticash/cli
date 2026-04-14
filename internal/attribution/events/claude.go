@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -97,11 +98,18 @@ func ExtractDeletedPaths(cmd, repoRoot string) []string {
 
 // NormalizePath converts an absolute file path to a repo-relative path
 // using forward slashes, matching the format produced by "git diff".
+// Handles MSYS-style paths (/c/Users/...) from Claude Code on Windows.
 func NormalizePath(filePath, repoRoot string) string {
 	if filePath == "" {
 		return ""
 	}
-	rel, err := filepath.Rel(repoRoot, filePath)
+	// Convert MSYS paths (/c/Users/...) to Windows paths (C:/Users/...).
+	if runtime.GOOS == "windows" && len(filePath) >= 3 && filePath[0] == '/' && filePath[2] == '/' {
+		filePath = strings.ToUpper(string(filePath[1])) + ":" + filePath[2:]
+	}
+	// Clean both paths so mixed separators (forward vs back) are normalized
+	// before filepath.Rel computes the relative path.
+	rel, err := filepath.Rel(filepath.Clean(repoRoot), filepath.Clean(filePath))
 	if err != nil {
 		return filepath.Base(filePath)
 	}

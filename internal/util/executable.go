@@ -85,11 +85,13 @@ func executableSearchDirs(
 		)
 	}
 
-	dirs = append(dirs,
-		"/opt/homebrew/bin",
-		"/usr/local/bin",
-		"/snap/bin",
-	)
+	if runtime.GOOS != "windows" {
+		dirs = append(dirs,
+			"/opt/homebrew/bin",
+			"/usr/local/bin",
+			"/snap/bin",
+		)
+	}
 
 	return dirs
 }

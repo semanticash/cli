@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,7 +82,7 @@ func TestParseLine_ToolExecComplete_DoubleDeserialization(t *testing.T) {
 	if len(pl.FilePaths) != 2 {
 		t.Fatalf("file_paths: got %d, want 2", len(pl.FilePaths))
 	}
-	if pl.FilePaths[0] != testCopilotProjectPath+"/hello.txt" {
+	if filepath.ToSlash(pl.FilePaths[0]) != testCopilotProjectPath+"/hello.txt" {
 		t.Errorf("file_paths[0]: got %q", pl.FilePaths[0])
 	}
 	if len(pl.ToolUses) != 2 {

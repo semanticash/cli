@@ -70,7 +70,7 @@ func TestRedactBundle_NormalizesPathsAndDropsTranscriptRef(t *testing.T) {
 	if strings.Contains(string(result), testRepoMainFile) {
 		t.Error("expected absolute file path to be normalized to repo-relative")
 	}
-	if !strings.Contains(string(result), filepath.Join("src", "main.go")) {
+	if !strings.Contains(string(result), "src/main.go") {
 		t.Error("expected repo-relative file path in output")
 	}
 }
@@ -368,13 +368,13 @@ func TestNormalizePath_RepoRelative(t *testing.T) {
 		repoRoot string
 		want     string
 	}{
-		{filepath.Join(testGenericRepoRoot, "src", "main.go"), testGenericRepoRoot, filepath.Join("src", "main.go")},
+		{filepath.Join(testGenericRepoRoot, "src", "main.go"), testGenericRepoRoot, "src/main.go"},
 		{testGenericRepoRoot, testGenericRepoRoot, "."},
-		{"/other/path/file.go", testGenericRepoRoot, ""},                                                     // absolute outside repo - dropped
-		{"relative/path.go", testGenericRepoRoot, "relative/path.go"},                                        // already relative inside repo
-		{"../secret.txt", testGenericRepoRoot, ""},                                                           // relative escape - dropped
-		{"../../other-repo/file.go", testGenericRepoRoot, ""},                                                // relative escape - dropped
-		{filepath.Join("src", "..", "src", "main.go"), testGenericRepoRoot, filepath.Join("src", "main.go")}, // cleaned but still inside repo
+		{"/other/path/file.go", testGenericRepoRoot, ""},                                     // absolute outside repo - dropped
+		{"relative/path.go", testGenericRepoRoot, "relative/path.go"},                        // already relative inside repo
+		{"../secret.txt", testGenericRepoRoot, ""},                                           // relative escape - dropped
+		{"../../other-repo/file.go", testGenericRepoRoot, ""},                                // relative escape - dropped
+		{filepath.Join("src", "..", "src", "main.go"), testGenericRepoRoot, "src/main.go"},   // cleaned but still inside repo
 		{"", testGenericRepoRoot, ""},
 	}
 	for _, tc := range cases {

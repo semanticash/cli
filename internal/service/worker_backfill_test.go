@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,7 +21,18 @@ import (
 // proving the livePushRetried skip path works.
 func TestWorkerRun_SkipsDrainAfterLivePushRetry(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "TestWorkerRun_SkipsDrain*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// On Windows, spawned background processes hold worker.log open briefly
+	// after the worker returns. Give them time to exit before cleanup.
+	t.Cleanup(func() {
+		if runtime.GOOS == "windows" {
+			time.Sleep(500 * time.Millisecond)
+		}
+		_ = os.RemoveAll(dir)
+	})
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}

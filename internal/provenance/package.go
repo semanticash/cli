@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/semanticash/cli/internal/doctor"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -708,15 +709,16 @@ func toRepoRelative(p, repoRoot string) string {
 	if repoRoot == "" || p == "" {
 		return p
 	}
-	if filepath.IsAbs(p) {
-		rel, err := filepath.Rel(repoRoot, p)
+	if platform.LooksAbsolutePath(p) {
+		rel, err := filepath.Rel(filepath.Clean(repoRoot), filepath.Clean(p))
 		if err != nil {
 			return ""
 		}
 		p = rel
 	}
-	if strings.HasPrefix(filepath.Clean(p), "..") {
+	cleaned := filepath.ToSlash(filepath.Clean(p))
+	if strings.HasPrefix(cleaned, "..") {
 		return ""
 	}
-	return filepath.Clean(p)
+	return cleaned
 }

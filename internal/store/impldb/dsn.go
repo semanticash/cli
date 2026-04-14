@@ -8,11 +8,6 @@ import (
 )
 
 func sqliteDSN(dbPath string, opts OpenOptions) string {
-	u := &url.URL{
-		Scheme: "file",
-		Path:   filepath.ToSlash(dbPath),
-	}
-
 	busyMS := int(opts.BusyTimeout / time.Millisecond)
 	if busyMS < 0 {
 		busyMS = 0
@@ -26,7 +21,9 @@ func sqliteDSN(dbPath string, opts OpenOptions) string {
 	if opts.TxImmediate {
 		q.Add("_txlock", "immediate")
 	}
-	u.RawQuery = q.Encode()
 
-	return u.String()
+	// Use "file:path?query" format, not "file:///path?query".
+	// SQLite URI expects "file:" followed directly by the path.
+	// url.URL adds an authority ("//") which breaks on Windows drive paths.
+	return "file:" + filepath.ToSlash(dbPath) + "?" + q.Encode()
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -21,7 +22,18 @@ import (
 // commit row and the required session_checkpoints dependency has been written.
 func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	// Set up an isolated git repo.
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "TestWorkerRun_AttachesCommit*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// On Windows, spawned background processes hold worker.log open briefly
+	// after the worker returns. Give them time to exit before cleanup.
+	t.Cleanup(func() {
+		if runtime.GOOS == "windows" {
+			time.Sleep(500 * time.Millisecond)
+		}
+		_ = os.RemoveAll(dir)
+	})
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}

@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.0] - 2026-04-14
+
+### Added
+
+- Windows support: native builds for Windows amd64 and arm64
+- Windows install via Scoop: `scoop install semanticash/semantica`
+- Windows CI pipeline (`ci-windows.yml`) with compilation, unit test, and integration test gates
+- `internal/platform` package for cross-platform file locking, process detachment, signal handling, and safe file rename
+- CRLF normalization for git command output on Windows
+- MSYS path normalization for Claude Code payloads on Windows (other providers use native paths and work without normalization)
+- Windows clipboard support via `clip`
+- Windows config path probes for Kiro CLI and Kiro IDE
+
+### Fixed
+
+- Fixed SQLite DSN construction to use `file:path` format instead of `file:///path`, which broke on Windows drive letter paths
+- Fixed SQLite migration to use a single database handle instead of opening a second connection, which failed on Windows
+- Fixed colon characters in capture state filenames on Windows (colons are forbidden in Windows filenames)
+- Fixed absolute path detection for agent payload paths that use POSIX conventions on Windows hosts
+- Fixed path separator mismatches in event routing and provenance normalization on Windows
+
 ## [0.2.3] - 2026-04-13
 
 ### Added

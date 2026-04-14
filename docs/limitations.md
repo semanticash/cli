@@ -6,8 +6,10 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Platform support
 
-- Official release targets are **macOS and Linux** (amd64, arm64). There is no Windows release target today.
-- Clipboard support for `semantica suggest commit` and `semantica suggest pr --copy` requires `pbcopy` (macOS) or `wl-copy`/`xclip`/`xsel` (Linux). The commands still work without clipboard support - they print to stdout.
+- Official release targets are **macOS, Linux, and Windows** (amd64, arm64).
+- Windows support requires Git for Windows, which provides the POSIX shell used by Git hooks.
+- Clipboard support for `semantica suggest commit` and `semantica suggest pr --copy` requires `pbcopy` (macOS), `wl-copy`/`xclip`/`xsel` (Linux), or `clip` (Windows). The commands still work without clipboard support - they print to stdout.
+- On Windows, `semantica rewind` cannot restore symlinks without Developer Mode enabled or administrator privileges.
 
 ## Capture scope
 

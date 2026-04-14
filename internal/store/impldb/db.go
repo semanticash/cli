@@ -43,17 +43,11 @@ func Open(ctx context.Context, dbPath string, opts OpenOptions) (*Handle, error)
 		return nil, fmt.Errorf("mkdir db dir: %w", err)
 	}
 
-	// Defaults
 	if opts.BusyTimeout <= 0 {
 		opts.BusyTimeout = 250 * time.Millisecond
 	}
 	if opts.Synchronous == "" {
 		opts.Synchronous = "NORMAL"
-	}
-
-	// Apply pending schema migrations before opening.
-	if err := migratePath(ctx, dbPath, opts); err != nil {
-		return nil, fmt.Errorf("auto-migrate: %w", err)
 	}
 
 	dsn := sqliteDSN(dbPath, opts)
@@ -66,9 +60,17 @@ func Open(ctx context.Context, dbPath string, opts OpenOptions) (*Handle, error)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping: %w", err)
+	}
 	if err := applyPragmas(ctx, db, opts); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if err := migrateDB(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("auto-migrate: %w", err)
 	}
 
 	h := &Handle{

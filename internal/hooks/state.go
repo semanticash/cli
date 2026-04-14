@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 
 	"github.com/semanticash/cli/internal/broker"
 )
@@ -60,6 +63,10 @@ func stateFilePath(sessionID string) (string, error) {
 	}
 	// Sanitize session ID to prevent path traversal.
 	safe := filepath.Base(sessionID)
+	// Colon is forbidden in Windows filenames; replace with underscore.
+	if runtime.GOOS == "windows" {
+		safe = strings.ReplaceAll(safe, ":", "_")
+	}
 	return filepath.Join(dir, fmt.Sprintf("capture-%s.json", safe)), nil
 }
 
@@ -88,7 +95,7 @@ func SaveCaptureState(state *CaptureState) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write capture state: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := platform.SafeRename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename capture state: %w", err)
 	}

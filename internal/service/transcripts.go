@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -678,7 +679,7 @@ func normalizeToolPath(fp, repoRoot string) string {
 	}
 
 	// If absolute, make relative to repoRoot.
-	if filepath.IsAbs(fp) {
+	if platform.LooksAbsolutePath(fp) {
 		rel, err := filepath.Rel(repoRoot, fp)
 		if err != nil {
 			return ""

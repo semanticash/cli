@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -66,7 +66,7 @@ func Execute() {
 
 	// Handle interrupts
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigChan, platform.TermSignals()...)
 	go func() {
 		<-sigChan
 		cancel()

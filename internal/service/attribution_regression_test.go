@@ -169,12 +169,12 @@ func assertFileChangesEqual(t *testing.T, label string, got, want []FileChange) 
 func setupGoldenRepo(t *testing.T) (string, string) {
 	t.Helper()
 
-	// Use /tmp directly so the test paths are stable across macOS temp-dir aliases.
-	dir, err := os.MkdirTemp("/tmp", "golden-repo-*")
-	if err != nil {
-		t.Fatal(err)
+	// Use t.TempDir and resolve symlinks so paths are stable across
+	// macOS temp-dir aliases and work on Windows.
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))
 	t.Setenv("HOME", dir)
 
@@ -1083,7 +1083,8 @@ func TestRegression_FileChangeAI_BashDeletionZeroScored(t *testing.T) {
 	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session.jsonl")
 	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "sess-rm")
 
-	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, repoRoot)
+	// Use forward slashes so Windows paths don't produce invalid JSON.
+	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, filepath.ToSlash(repoRoot))
 	payloadHash, _, _ := bs.Put(ctx, []byte(payload))
 	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: uuid.NewString(), SessionID: sessID, RepositoryID: repoRow.RepositoryID,

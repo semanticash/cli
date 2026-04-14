@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestRenderStatusCard(t *testing.T) {
 		"Code, with provenance.",
 		"Enabled in /tmp/repo",
 		"Authenticated: yes (dev@example.com)",
-		"Store: /tmp/repo/.semantica",
+		"Store: " + filepath.Join("/tmp/repo", ".semantica"),
 		"Workspace tier: Free",
 		"Connected: no",
 		"Endpoint: https://example.com",

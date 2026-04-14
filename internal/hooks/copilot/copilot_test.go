@@ -532,7 +532,7 @@ func TestReadFromOffset(t *testing.T) {
 	if events[2].Role != "tool" {
 		t.Errorf("event[2] role: got %q, want %q", events[2].Role, "tool")
 	}
-	if len(events[2].FilePaths) != 1 || events[2].FilePaths[0] != "/projects/myrepo/hello.txt" {
+	if len(events[2].FilePaths) != 1 || filepath.ToSlash(events[2].FilePaths[0]) != "/projects/myrepo/hello.txt" {
 		t.Errorf("event[2] file_paths: got %v", events[2].FilePaths)
 	}
 	if events[2].ToolName != "copilot_file_edit" {

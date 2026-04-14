@@ -13,10 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // RegisteredRepo represents a repository entry in the JSON registry.
@@ -210,10 +210,10 @@ func (h *Handle) mutate(fn func([]RegisteredRepo) []RegisteredRepo) error {
 	}
 	defer func() { _ = lockFile.Close() }()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := platform.LockFile(lockFile); err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
+	defer func() { _ = platform.UnlockFile(lockFile) }()
 
 	// Re-read from disk under the lock to get latest state.
 	var reg registry
@@ -252,7 +252,7 @@ func (h *Handle) mutate(fn func([]RegisteredRepo) []RegisteredRepo) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpPath, h.path); err != nil {
+	if err := platform.SafeRename(tmpPath, h.path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
@@ -273,8 +273,8 @@ func CanonicalRepoPath(repoRoot string) string {
 // of repoRoot, after canonicalization. This handles the common case where a
 // tool session is launched from a subdirectory inside a registered repo.
 func PathBelongsToRepo(path, repoRoot string) bool {
-	cp := canonicalBestEffort(path)
-	cr := canonicalBestEffort(repoRoot)
+	cp := filepath.ToSlash(canonicalBestEffort(path))
+	cr := filepath.ToSlash(canonicalBestEffort(repoRoot))
 	if cp == cr {
 		return true
 	}

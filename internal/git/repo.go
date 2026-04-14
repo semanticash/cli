@@ -15,6 +15,12 @@ type Repo struct {
 	root string
 }
 
+// cleanGitOutput strips Windows \r\n line endings from git command output.
+// Git on Windows may produce \r\n when core.autocrlf is set.
+func cleanGitOutput(out []byte) string {
+	return strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n")
+}
+
 func OpenRepo(repoPath string) (*Repo, error) {
 	start := repoPath
 	if start == "" {
@@ -161,7 +167,7 @@ func (r *Repo) ResolveRef(ctx context.Context, ref string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("not a valid git ref: %s", ref)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return cleanGitOutput(out), nil
 }
 
 // CurrentBranch returns the current branch name (e.g. "main", "feature-x").
@@ -173,7 +179,7 @@ func (r *Repo) CurrentBranch(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get current branch: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return cleanGitOutput(out), nil
 }
 
 // RemoteURL returns the URL of the "origin" remote.
@@ -184,7 +190,7 @@ func (r *Repo) RemoteURL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get remote.origin.url: %w", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return cleanGitOutput(out), nil
 }
 
 func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, error) {
@@ -197,7 +203,7 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return cleanGitOutput(out), nil
 }
 
 // parentForCommit resolves the first parent of a commit hash, returning the
@@ -210,7 +216,7 @@ func (r *Repo) parentForCommit(ctx context.Context, hash string) (string, error)
 		return "", fmt.Errorf("git rev-list failed for %s: %w", hash, err)
 	}
 
-	parts := strings.Fields(strings.TrimSpace(string(out)))
+	parts := strings.Fields(cleanGitOutput(out))
 	if len(parts) < 2 {
 		// Initial commit - diff against empty tree
 		return "4b825dc642cb6eb9a060e54bf8d69288fbee4904", nil
@@ -301,7 +307,7 @@ func (r *Repo) listUntrackedFiles(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(cleanGitOutput(out), "\n") {
 		if line != "" {
 			files = append(files, line)
 		}
@@ -362,7 +368,7 @@ func (r *Repo) DiffStatForCommit(ctx context.Context, hash string) ([]FileStat, 
 	}
 
 	var stats []FileStat
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(cleanGitOutput(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -409,7 +415,7 @@ func (r *Repo) ChangedFilesForCommit(ctx context.Context, hash string) ([]string
 	}
 
 	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(cleanGitOutput(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -480,7 +486,7 @@ func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("merge-base %s %s: %w", a, b, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return cleanGitOutput(out), nil
 }
 
 // DiffBetween returns the unified diff between two refs (three-dot: from
@@ -506,7 +512,7 @@ func (r *Repo) CommitSubjectsBetween(ctx context.Context, base, head string, lim
 	if err != nil {
 		return nil, fmt.Errorf("log %s..%s: %w", base, head, err)
 	}
-	raw := strings.TrimSpace(string(out))
+	raw := cleanGitOutput(out)
 	if raw == "" {
 		return nil, nil
 	}

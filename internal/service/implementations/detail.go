@@ -13,6 +13,7 @@ import (
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/impldb"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -595,7 +596,7 @@ func normalizeTimelineToolPath(fp, repoRoot string) string {
 		}
 	}
 
-	if filepath.IsAbs(fp) {
+	if platform.LooksAbsolutePath(fp) {
 		rel, err := filepath.Rel(repoRoot, fp)
 		if err != nil {
 			return ""

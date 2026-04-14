@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/platform"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -188,7 +188,7 @@ func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	platform.DetachProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		util.AppendActivityLog(semDir, "post-commit warning: spawn worker failed: %v", err)

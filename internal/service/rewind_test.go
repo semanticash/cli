@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -824,7 +825,7 @@ func TestRewind_ExecutableBits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
 		t.Errorf("executable bits not restored: mode = %o", fi.Mode().Perm())
 	}
 	if got := readFile(t, dir, "script.sh"); got != "#!/bin/sh\necho hello\n" {
@@ -1061,7 +1062,7 @@ func TestRewind_MixedFileTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
 		t.Errorf("run.sh executable bits not restored: mode = %o", fi.Mode().Perm())
 	}
 

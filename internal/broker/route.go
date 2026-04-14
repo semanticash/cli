@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // RouteEvents matches raw events to registered repos by file path containment.
@@ -34,7 +36,7 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 	}
 	entries := make([]repoEntry, len(repos))
 	for i, r := range repos {
-		p := r.CanonicalPath
+		p := filepath.ToSlash(r.CanonicalPath)
 		if !strings.HasSuffix(p, "/") {
 			p += "/"
 		}
@@ -53,7 +55,9 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 		// Collect unique repos per event to avoid duplicates.
 		repoSet := make(map[string]bool)
 		for _, fp := range ev.FilePaths {
-			cleaned := filepath.Clean(fp)
+			// Normalize to forward slashes for consistent prefix matching
+			// across platforms (Windows filepath.Clean produces backslashes).
+			cleaned := filepath.ToSlash(filepath.Clean(fp))
 			var bestCP string
 			var bestLen int
 			for _, entry := range entries {
@@ -125,7 +129,8 @@ func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectP
 }
 
 // ExtractFilePaths parses the tool_uses JSON and returns all unique absolute
-// file paths found. Only returns paths that look absolute (start with /).
+// file paths found. Recognizes both POSIX and Windows absolute path formats
+// since agent payloads may use either regardless of host OS.
 func ExtractFilePaths(toolUsesJSON string) []string {
 	if toolUsesJSON == "" {
 		return nil
@@ -154,10 +159,10 @@ func ExtractFilePaths(toolUsesJSON string) []string {
 		if t.FilePath == "" {
 			continue
 		}
-		if !filepath.IsAbs(t.FilePath) {
+		if !platform.LooksAbsolutePath(t.FilePath) {
 			continue
 		}
-		cleaned := filepath.Clean(t.FilePath)
+		cleaned := filepath.ToSlash(filepath.Clean(t.FilePath))
 		if !seen[cleaned] {
 			seen[cleaned] = true
 			paths = append(paths, cleaned)
