@@ -27,3 +27,15 @@ func LooksAbsolutePath(path string) bool {
 	// behaves as absolute even though filepath.IsAbs returns false for it.
 	return runtime.GOOS == "windows" && path[0] == '\\'
 }
+
+// NormalizePathForCompare returns a path suitable for case-aware prefix
+// matching. On Windows, paths are lowercased because the filesystem is
+// case-insensitive (C:\Users and c:\Users are the same path). On
+// macOS/Linux, the path is returned unchanged.
+func NormalizePathForCompare(p string) string {
+	s := filepath.ToSlash(filepath.Clean(p))
+	if runtime.GOOS == "windows" {
+		s = strings.ToLower(s)
+	}
+	return s
+}

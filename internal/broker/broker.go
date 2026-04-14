@@ -273,8 +273,8 @@ func CanonicalRepoPath(repoRoot string) string {
 // of repoRoot, after canonicalization. This handles the common case where a
 // tool session is launched from a subdirectory inside a registered repo.
 func PathBelongsToRepo(path, repoRoot string) bool {
-	cp := filepath.ToSlash(canonicalBestEffort(path))
-	cr := filepath.ToSlash(canonicalBestEffort(repoRoot))
+	cp := platform.NormalizePathForCompare(canonicalBestEffort(path))
+	cr := platform.NormalizePathForCompare(canonicalBestEffort(repoRoot))
 	if cp == cr {
 		return true
 	}

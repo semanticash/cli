@@ -36,7 +36,7 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 	}
 	entries := make([]repoEntry, len(repos))
 	for i, r := range repos {
-		p := filepath.ToSlash(r.CanonicalPath)
+		p := platform.NormalizePathForCompare(r.CanonicalPath)
 		if !strings.HasSuffix(p, "/") {
 			p += "/"
 		}
@@ -55,9 +55,7 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 		// Collect unique repos per event to avoid duplicates.
 		repoSet := make(map[string]bool)
 		for _, fp := range ev.FilePaths {
-			// Normalize to forward slashes for consistent prefix matching
-			// across platforms (Windows filepath.Clean produces backslashes).
-			cleaned := filepath.ToSlash(filepath.Clean(fp))
+			cleaned := platform.NormalizePathForCompare(fp)
 			var bestCP string
 			var bestLen int
 			for _, entry := range entries {
