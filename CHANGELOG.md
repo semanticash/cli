@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `semantica version` subcommand showing CLI version, Go version, and OS/Arch
 - Agent reload instructions in README and provider docs for post-enable workflows
 - Validation on agent selector requiring at least one agent to be selected
+- Confirmation prompt before `semantica rewind` showing checkpoint details, linked commit, and impact warnings
+- `--yes` / `-y` flag on `semantica rewind` to skip confirmation
 
 ### Changed
 
