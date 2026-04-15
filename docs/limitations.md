@@ -33,7 +33,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Playbooks and suggestions
 
-- Require at least one supported LLM CLI installed and authenticated: Claude Code (`claude`), Cursor CLI (`agent`), Gemini CLI (`gemini`), or Copilot CLI (`copilot`).
+- Require at least one supported LLM CLI installed and authenticated: Claude Code (`claude`), Cursor CLI (`agent`), Gemini CLI (`gemini`), or Copilot CLI (`copilot`). For Claude Code, the binary bundled inside the VS Code extension is also discovered automatically when the standalone CLI is not on PATH.
 - Playbook generation uses bounded diff input to stay within LLM context limits. Commit message and PR suggestions use structured change summaries plus selected per-file excerpts. Large diffs may still produce less precise summaries.
 - `semantica suggest pr` uses the committed branch diff against the base ref. Uncommitted working-tree changes are not included in the suggestion.
 - `semantica suggest pr` detects the base branch best-effort. Repos with non-standard default branch names may need `--base` explicitly.

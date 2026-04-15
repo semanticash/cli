@@ -17,3 +17,7 @@ func DetachProcess(cmd *exec.Cmd) {
 func SetProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
+
+// HideWindow is a no-op on Unix. On Windows it suppresses console
+// window creation for subprocess invocations from detached workers.
+func HideWindow(_ *exec.Cmd) {}

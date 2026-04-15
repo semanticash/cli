@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // checkGitIgnored tests which paths are ignored by Git ignore rules
@@ -26,6 +28,7 @@ func checkGitIgnored(ctx context.Context, repoRoot string, paths []string) map[s
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "check-ignore", "--stdin", "-z")
+	platform.HideWindow(cmd)
 	cmd.Stdin = &stdin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

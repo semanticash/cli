@@ -231,7 +231,7 @@ The `task` tool is the main delegated-work signal in the current Copilot CLI sur
 
 ## Provider detection
 
-When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`), and some check for provider-managed global storage (Kiro IDE). Detected providers are recorded as a string array in `.semantica/settings.json`:
+When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`), and some check for provider-managed global storage (Kiro IDE). For Claude Code, the CLI also discovers the native binary bundled inside the VS Code extension (`~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude`) when the standalone CLI is not on PATH. Detected providers are recorded as a string array in `.semantica/settings.json`:
 
 ```json
 {

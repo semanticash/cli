@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 type Repo struct {
@@ -40,6 +42,15 @@ func OpenRepo(repoPath string) (*Repo, error) {
 
 func (r *Repo) Root() string { return r.root }
 
+// gitCmd creates a git command configured for this repo. On Windows,
+// suppresses console window allocation for detached worker processes.
+func (r *Repo) gitCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = r.root
+	platform.HideWindow(cmd)
+	return cmd
+}
+
 func (r *Repo) ListFilesFromGit(ctx context.Context) ([]string, error) {
 	// Includes:
 	//  - tracked files (--cached)
@@ -48,8 +59,7 @@ func (r *Repo) ListFilesFromGit(ctx context.Context) ([]string, error) {
 	//  - ignored files (--exclude-standard)
 	//
 	// -z ensures NUL-separated output, robust for weird filenames.
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -144,8 +154,7 @@ func (r *Repo) RemoveFile(relPath string) error {
 // IsDirty returns true if the working tree has any changes:
 // -modified, staged, deleted, untracked
 func (r *Repo) IsDirty(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "status", "--porcelain", "-z")
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -161,8 +170,7 @@ func (r *Repo) IsDirty(ctx context.Context) (bool, error) {
 // ResolveRef resolves a git ref (HEAD, branch name, tag, commit prefix) to a
 // full commit hash. Returns an error if the ref is not valid.
 func (r *Repo) ResolveRef(ctx context.Context, ref string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "rev-parse", "--verify", ref)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a valid git ref: %s", ref)
@@ -173,8 +181,7 @@ func (r *Repo) ResolveRef(ctx context.Context, ref string) (string, error) {
 // CurrentBranch returns the current branch name (e.g. "main", "feature-x").
 // Returns "HEAD" for detached HEAD state.
 func (r *Repo) CurrentBranch(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("get current branch: %w", err)
@@ -184,8 +191,7 @@ func (r *Repo) CurrentBranch(ctx context.Context) (string, error) {
 
 // RemoteURL returns the URL of the "origin" remote.
 func (r *Repo) RemoteURL(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote.origin.url")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "config", "--get", "remote.origin.url")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("get remote.origin.url: %w", err)
@@ -197,8 +203,7 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 	if strings.TrimSpace(commitHash) == "" {
 		return "", fmt.Errorf("commit hash is empty")
 	}
-	cmd := exec.CommandContext(ctx, "git", "show", "-s", "--format=%s", commitHash)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "show", "-s", "--format=%s", commitHash)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -209,8 +214,7 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 // parentForCommit resolves the first parent of a commit hash, returning the
 // magic empty-tree SHA for the initial commit (no parents).
 func (r *Repo) parentForCommit(ctx context.Context, hash string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--parents", "-n1", hash)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "rev-list", "--parents", "-n1", hash)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-list failed for %s: %w", hash, err)
@@ -229,8 +233,7 @@ func (r *Repo) parentForCommit(ctx context.Context, hash string) (string, error)
 // Used by the commit-msg hook to compute AI attribution before the commit
 // is finalized (the commit hash doesn't exist yet at that point).
 func (r *Repo) DiffCached(ctx context.Context) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--no-color")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "diff", "--cached", "--no-color")
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -246,13 +249,11 @@ func (r *Repo) DiffCached(ctx context.Context) ([]byte, error) {
 // new-file diffs so the LLM sees their full content.
 func (r *Repo) DiffAll(ctx context.Context) ([]byte, error) {
 	// Staged + unstaged tracked changes.
-	cmd := exec.CommandContext(ctx, "git", "diff", "HEAD", "--no-color")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "diff", "HEAD", "--no-color")
 	out, err := cmd.Output()
 	if err != nil {
 		// HEAD may not exist (initial commit) - fall back to staged + unstaged.
-		cmd2 := exec.CommandContext(ctx, "git", "diff", "--no-color")
-		cmd2.Dir = r.root
+		cmd2 := r.gitCmd(ctx, "diff", "--no-color")
 		out, err = cmd2.Output()
 		if err != nil {
 			return nil, fmt.Errorf("git diff failed: %w", err)
@@ -300,8 +301,7 @@ func (r *Repo) DiffAll(ctx context.Context) ([]byte, error) {
 
 // listUntrackedFiles returns repo-relative paths of untracked files.
 func (r *Repo) listUntrackedFiles(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "ls-files", "--others", "--exclude-standard")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -325,8 +325,7 @@ func (r *Repo) DiffForCommit(ctx context.Context, hash string) ([]byte, error) {
 		return nil, err
 	}
 
-	diffCmd := exec.CommandContext(ctx, "git", "diff", "--no-color", parent, hash)
-	diffCmd.Dir = r.root
+	diffCmd := r.gitCmd(ctx, "diff", "--no-color", parent, hash)
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -357,8 +356,7 @@ func (r *Repo) DiffStatForCommit(ctx context.Context, hash string) ([]FileStat, 
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff", "--numstat", "-M", parent, hash)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "diff", "--numstat", "-M", parent, hash)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -404,8 +402,7 @@ func (r *Repo) ChangedFilesForCommit(ctx context.Context, hash string) ([]string
 		return nil, fmt.Errorf("commit hash is empty")
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", "--root", hash)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "diff-tree", "--no-commit-id", "--name-only", "-r", "-M", "--root", hash)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -469,8 +466,7 @@ func (r *Repo) DefaultBaseRef(ctx context.Context) (string, error) {
 		"master",
 	}
 	for _, ref := range candidates {
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref)
-		cmd.Dir = r.root
+		cmd := r.gitCmd(ctx, "rev-parse", "--verify", "--quiet", ref)
 		if err := cmd.Run(); err == nil {
 			return ref, nil
 		}
@@ -480,8 +476,7 @@ func (r *Repo) DefaultBaseRef(ctx context.Context) (string, error) {
 
 // MergeBase returns the best common ancestor of two refs.
 func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", a, b)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "merge-base", a, b)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("merge-base %s %s: %w", a, b, err)
@@ -493,8 +488,7 @@ func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, error) {
 // merge-base of a and b to b). This shows only changes introduced on the
 // feature branch, not upstream drift.
 func (r *Repo) DiffBetween(ctx context.Context, base, head string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--no-color", base+"..."+head)
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "diff", "--no-color", base+"..."+head)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("diff %s...%s: %w", base, head, err)
@@ -505,9 +499,8 @@ func (r *Repo) DiffBetween(ctx context.Context, base, head string) ([]byte, erro
 // CommitSubjectsBetween returns commit subject lines (no hashes) for
 // commits reachable from head but not from base, newest first, capped at limit.
 func (r *Repo) CommitSubjectsBetween(ctx context.Context, base, head string, limit int) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "log", "--format=%s",
+	cmd := r.gitCmd(ctx, "log", "--format=%s",
 		fmt.Sprintf("-%d", limit), base+".."+head)
-	cmd.Dir = r.root
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("log %s..%s: %w", base, head, err)

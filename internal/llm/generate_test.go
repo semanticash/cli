@@ -1,6 +1,9 @@
 package llm
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -104,4 +107,41 @@ func TestFindClaude_ReturnsEmptyWhenNotInstalled(t *testing.T) {
 func TestFindCursorAgent_ReturnsEmptyWhenNotInstalled(t *testing.T) {
 	// Same - verify it doesn't panic.
 	_ = findCursorAgent()
+}
+
+func TestVSCodeClaudeBinaries_FindsBundledBinary(t *testing.T) {
+	home := t.TempDir()
+
+	bin := "claude"
+	if runtime.GOOS == "windows" {
+		bin = "claude.exe"
+	}
+
+	// Create two fake extension versions with native binaries.
+	for _, ver := range []string{"1.0.0-darwin-arm64", "2.0.0-darwin-arm64"} {
+		dir := filepath.Join(home, ".vscode", "extensions", "anthropic.claude-code-"+ver, "resources", "native-binary")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := vsCodeClaudeBinaries(home)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d: %v", len(got), got)
+	}
+	// Newest version should be first.
+	if filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(got[0])))) != "anthropic.claude-code-2.0.0-darwin-arm64" {
+		t.Errorf("expected newest version first, got %s", got[0])
+	}
+}
+
+func TestVSCodeClaudeBinaries_EmptyWhenNoExtension(t *testing.T) {
+	home := t.TempDir()
+	got := vsCodeClaudeBinaries(home)
+	if len(got) != 0 {
+		t.Errorf("expected 0 candidates, got %d: %v", len(got), got)
+	}
 }

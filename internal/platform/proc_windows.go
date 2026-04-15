@@ -23,3 +23,13 @@ func SetProcessGroup(cmd *exec.Cmd) {
 		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP,
 	}
 }
+
+// HideWindow sets CREATE_NO_WINDOW on the command so that console
+// applications (like git.exe) do not flash a visible console window
+// when spawned from a detached worker process that has no console.
+func HideWindow(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
+}
