@@ -99,6 +99,11 @@ That's it. Every commit now automatically:
 3. Computes AI attribution (how much of the commit is AI-attributed)
 4. Links everything to the commit hash
 
+> **Note:** If an AI agent session is already active when you enable Semantica, restart
+> or reload the agent session so it picks up the new hooks. See
+> [provider reload instructions](docs/providers.md#reloading-agents-after-enable)
+> for details.
+
 All capture and attribution data are stored locally in `.semantica/` - a directory alongside `.git`, added to `.gitignore` automatically. 
 Semantica never writes to Git history or creates side branches; lineage metadata lives in its own database and content-addressed blob store.
 

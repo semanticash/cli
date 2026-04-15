@@ -24,7 +24,7 @@ func NewRootCmd() *cobra.Command {
 		Short:   "Code, with provenance.",
 		Version: version.Display(),
 	}
-	cmd.SetVersionTemplate("semantica {{.Version}}\n")
+	cmd.SetVersionTemplate("{{.Version}}\n")
 
 	cmd.PersistentFlags().StringVar(&opts.RepoPath, "repo", "", "path to git repository (default: current directory)")
 
@@ -55,8 +55,19 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewAutoImplementationSummaryCmd())
 	cmd.AddCommand(NewCaptureCmd())
 	cmd.AddCommand(NewImplementationsCmd(opts))
+	cmd.AddCommand(newVersionCmd())
 
 	return cmd
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), version.Display())
+		},
+	}
 }
 
 func Execute() {

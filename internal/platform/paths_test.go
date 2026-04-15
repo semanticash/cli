@@ -42,3 +42,33 @@ func TestLooksAbsolutePath(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePathForCompare_NoOpOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-only: verifies no lowercasing on case-sensitive filesystems")
+	}
+	got := NormalizePathForCompare("/Users/Dev/Repo/Main.go")
+	want := "/Users/Dev/Repo/Main.go"
+	if got != want {
+		t.Errorf("NormalizePathForCompare = %q, want %q (case preserved on Unix)", got, want)
+	}
+}
+
+func TestNormalizePathForCompare_LowercasesOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only: verifies case normalization")
+	}
+	got := NormalizePathForCompare("C:\\Users\\Dev\\Repo\\Main.go")
+	want := "c:/users/dev/repo/main.go"
+	if got != want {
+		t.Errorf("NormalizePathForCompare = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizePathForCompare_ForwardSlashes(t *testing.T) {
+	// On all platforms, backslashes should become forward slashes.
+	got := NormalizePathForCompare("/workspace/repo/src/main.go")
+	if got != "/workspace/repo/src/main.go" {
+		t.Errorf("NormalizePathForCompare = %q, want forward slashes", got)
+	}
+}

@@ -21,8 +21,7 @@ type HookInstallOptions struct {
 }
 
 func (r *Repo) HooksDir(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "hooks")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "rev-parse", "--git-path", "hooks")
 
 	out, err := cmd.Output()
 	if err != nil {

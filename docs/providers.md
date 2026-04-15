@@ -81,7 +81,8 @@ Cursor CLI still shares the same configuration file, but its hook surface is cur
 
 If Cursor IDE is already running when you enable Semantica, it may not pick up
 changes to `.cursor/hooks.json` immediately. Reload the Cursor window or restart
-Cursor after `semantica enable` so the new hooks are loaded.
+Cursor after `semantica enable` so the new hooks are loaded. See the
+[agent reload note](#reloading-agents-after-enable) below.
 
 ### Limitations
 
@@ -230,7 +231,7 @@ The `task` tool is the main delegated-work signal in the current Copilot CLI sur
 
 ## Provider detection
 
-When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`), and some check for provider-managed global storage (Kiro IDE). Detected providers are recorded as a string array in `.semantica/settings.json`:
+When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`), and some check for provider-managed global storage (Kiro IDE). For Claude Code, the CLI also discovers the native binary bundled inside the VS Code extension (`~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude`) when the standalone CLI is not on PATH. Detected providers are recorded as a string array in `.semantica/settings.json`:
 
 ```json
 {
@@ -241,6 +242,28 @@ When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` m
 Re-run `semantica enable --force` to re-detect providers after installing a new AI tool. Use `semantica agents` to interactively toggle which providers have hooks installed.
 
 ## Adding provider support
+
+## Reloading agents after enable
+
+When `semantica enable` installs hooks, agents that are already running may not
+pick up the new configuration immediately. Most agents read their hook config at
+session or workspace start, not continuously.
+
+If an agent is already running when you enable Semantica, restart or reload/resume it:
+
+| Provider | How to reload |
+|----------|---------------|
+| Claude Code | Type `/reload-plugins` in the active session, or start a new session |
+| Cursor IDE | Reload the window (Ctrl+Shift+P > Reload Window) or restart Cursor |
+| Gemini CLI | Start a new session |
+| GitHub Copilot | Restart the IDE or CLI session |
+| Kiro IDE | Reload the workspace or restart Kiro |
+| Kiro CLI | Start a new session |
+
+Until the agent reloads, Semantica cannot capture events from that session and
+commits will show 0% AI attribution.
+
+---
 
 Provider integrations live in `internal/hooks/<provider>/`. Each provider implements the `HookProvider` interface: detection, hook install/uninstall, event parsing, transcript reading.
 

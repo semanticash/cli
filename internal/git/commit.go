@@ -9,8 +9,7 @@ import (
 )
 
 func (r *Repo) HeadCommitHash(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = r.root
+	cmd := r.gitCmd(ctx, "rev-parse", "HEAD")
 
 	out, err := cmd.Output()
 	if err != nil {

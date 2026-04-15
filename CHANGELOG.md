@@ -13,6 +13,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.2] - 2026-04-15
+
+### Added
+
+- `semantica suggest` commands now discover the Claude Code binary bundled inside the VS Code extension when the standalone CLI is not on PATH
+- `semantica version` subcommand showing CLI version, Go version, and OS/Arch
+- Agent reload instructions in README and provider docs for post-enable workflows
+- Validation on agent selector requiring at least one agent to be selected
+- Confirmation prompt before `semantica rewind` showing checkpoint details, linked commit, and impact warnings
+- `--yes` / `-y` flag on `semantica rewind` to skip confirmation
+
+### Changed
+
+- Agent selector during `semantica enable` now uses bracket-style checkboxes with Semantica green for selected items
+- Generic agent reload note replaces the Cursor-specific warning after `semantica enable`
+- Ctrl+C during agent selection cleanly aborts without enabling
+
+### Fixed
+
+- Fixed Windows drive letter case mismatch in event routing (`C:` vs `c:` caused 0% attribution on Windows)
+- Fixed console window flashing on Windows when the detached worker spawns git and LLM CLI subprocesses (added `CREATE_NO_WINDOW` flag)
+
 ## [0.3.1] - 2026-04-14
 
 ### Changed

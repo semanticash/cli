@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/redact"
 	"github.com/semanticash/cli/internal/util"
 )
@@ -183,6 +186,7 @@ func runClaude(ctx context.Context, claudePath, prompt string) (string, error) {
 		"--model", defaultModel,
 		"--setting-sources", "",
 	)
+	platform.HideWindow(cmd)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv(os.Environ())
@@ -210,6 +214,7 @@ func runCursor(ctx context.Context, agentPath, prompt string) (string, error) {
 		"--output-format", "text",
 		prompt,
 	)
+	platform.HideWindow(cmd)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv(os.Environ())
 
@@ -230,6 +235,7 @@ func runGemini(ctx context.Context, geminiPath, prompt string) (string, error) {
 		"-p",
 		prompt,
 	)
+	platform.HideWindow(cmd)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv(os.Environ())
 
@@ -250,6 +256,7 @@ func runCopilot(ctx context.Context, copilotPath, prompt string) (string, error)
 		"-p",
 		prompt,
 	)
+	platform.HideWindow(cmd)
 	cmd.Dir = os.TempDir()
 	cmd.Env = cleanEnv(os.Environ())
 
@@ -267,7 +274,31 @@ func runCopilot(ctx context.Context, copilotPath, prompt string) (string, error)
 // --- Provider discovery ---
 
 func findClaude() string {
-	return util.ResolveExecutable([]string{"claude"})
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return util.ResolveExecutable([]string{"claude"})
+	}
+	return util.ResolveExecutable([]string{"claude"}, vsCodeClaudeBinaries(home)...)
+}
+
+// vsCodeClaudeBinaries returns paths to the Claude binary bundled inside
+// VS Code (and VS Code Insiders) extensions, newest version first.
+func vsCodeClaudeBinaries(home string) []string {
+	bin := "claude"
+	if runtime.GOOS == "windows" {
+		bin = "claude.exe"
+	}
+	var candidates []string
+	for _, dir := range []string{".vscode", ".vscode-insiders"} {
+		pattern := filepath.Join(home, dir, "extensions", "anthropic.claude-code-*", "resources", "native-binary", bin)
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			continue
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+		candidates = append(candidates, matches...)
+	}
+	return candidates
 }
 
 func findCursorAgent() string {

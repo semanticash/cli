@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semanticash/cli/internal/platform"
+
 	"github.com/google/uuid"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/store/impldb"
@@ -32,6 +34,7 @@ type Reconciler struct {
 // Safe to call from the worker (off hot path).
 func GitDetectBranch(ctx context.Context, repoPath string) string {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	platform.HideWindow(cmd)
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {

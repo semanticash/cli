@@ -32,7 +32,7 @@ func TestRenderEnablePlain(t *testing.T) {
 		"Update available",
 		"Version: v0.2.0",
 		"Install: " + cliUpgradeCommand,
-		"Note: If Cursor is open, reopen this project for hooks to take effect.",
+		"Note: If any agents are already running, restart or reload them",
 		"Tip: Run `semantica connect` to sync attribution to your dashboard.",
 	} {
 		if !strings.Contains(got, want) {

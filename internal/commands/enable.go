@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"github.com/semanticash/cli/internal/version"
 	"github.com/spf13/cobra"
 )
+
+var errAborted = errors.New("aborted")
 
 func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
@@ -42,6 +45,10 @@ func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 				var err error
 				selected, err = resolveProviders(providers)
 				if err != nil {
+					if errors.Is(err, errAborted) {
+						_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted by the user.")
+						return nil
+					}
 					return err
 				}
 			}
@@ -137,6 +144,9 @@ func resolveProviders(explicit []string) ([]string, error) {
 
 		selected, err := promptProviderSelection(available)
 		if err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return nil, errAborted
+			}
 			// TTY unavailable (e.g. sandboxed env) - fall back to all.
 			names := make([]string, len(available))
 			for i, p := range available {
@@ -152,44 +162,47 @@ func resolveProviders(explicit []string) ([]string, error) {
 // All detected agents start selected - user deselects what they don't want.
 func promptProviderSelection(available []hooks.HookProvider) ([]string, error) {
 	options := make([]huh.Option[string], len(available))
-	defaults := make([]string, len(available))
 	for i, p := range available {
-		options[i] = huh.NewOption(p.DisplayName(), p.Name())
-		defaults[i] = p.Name()
+		options[i] = huh.NewOption(p.DisplayName(), p.Name()).Selected(true)
 	}
 
-	selected := defaults
+	var selected []string
+
+	selectTheme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
+		s := huh.ThemeCharm(isDark)
+		green := lipgloss.Color("#02BA84")
+		s.Focused.SelectedPrefix = lipgloss.NewStyle().Foreground(green).SetString("[•] ")
+		s.Focused.UnselectedPrefix = lipgloss.NewStyle().SetString("[ ] ")
+		s.Blurred.SelectedPrefix = lipgloss.NewStyle().Foreground(green).SetString("[•] ")
+		s.Blurred.UnselectedPrefix = lipgloss.NewStyle().SetString("[ ] ")
+		return s
+	})
 
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
-				Title("Select AI agents to capture").
-				Description("x: toggle | enter: confirm").
+				Title("Select AI agents to capture (Detected agents are auto-selected)").
+				Description("space: toggle | enter: confirm").
 				Options(options...).
 				Height(len(options) + 2).
+				Validate(func(s []string) error {
+					if len(s) == 0 {
+						return errors.New("please select at least one agent")
+					}
+					return nil
+				}).
 				Value(&selected),
 		),
-	)
+	).WithTheme(selectTheme)
 
 	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("provider selection: %w", err)
 	}
 
-	if len(selected) == 0 {
-		fmt.Fprintln(os.Stderr, "No providers selected. Enabling without provider hooks.")
-		return []string{}, nil
-	}
-
 	return selected, nil
-}
-
-func hasCursorProvider(providers []string) bool {
-	for _, p := range providers {
-		if p == "cursor" {
-			return true
-		}
-	}
-	return false
 }
 
 func isTerminal() bool {
@@ -230,9 +243,10 @@ func renderEnablePlain(res *service.EnableResult) string {
 		b.WriteString(renderUpgradePlain(res.LatestVersion))
 	}
 
-	if hasCursorProvider(res.Providers) {
+	if len(res.Providers) > 0 {
 		b.WriteString("\n")
-		b.WriteString("Note: If Cursor is open, reopen this project for hooks to take effect.\n")
+		b.WriteString("Note: If any agents are already running, restart or reload them\n")
+		b.WriteString("      for Semantica to start capturing.\n")
 	}
 
 	b.WriteString("\n")
@@ -278,8 +292,8 @@ func renderEnableCard(res *service.EnableResult) string {
 		rows = append(rows, enableCardRow(labelStyle, valueStyle, "Agents", strings.Join(res.Providers, ", ")))
 	}
 
-	if hasCursorProvider(res.Providers) {
-		rows = append(rows, subtleStyle.Render("Note: If Cursor is open, reopen this project for hooks to take effect."))
+	if len(res.Providers) > 0 {
+		rows = append(rows, subtleStyle.Render("Note: If any agents are already running, restart or reload them for Semantica to start capturing."))
 	}
 
 	tip := lipgloss.JoinHorizontal(lipgloss.Top,
