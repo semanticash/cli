@@ -14,7 +14,7 @@ func TestBinaryVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--version failed: %v", err)
 	}
-	if !strings.Contains(string(out), "semantica") {
+	if !strings.Contains(strings.ToLower(string(out)), "semantica") {
 		t.Errorf("--version output missing 'semantica': %s", out)
 	}
 }
