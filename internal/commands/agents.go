@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/util"
@@ -65,18 +67,39 @@ func NewAgentsCmd(rootOpts *RootOptions) *cobra.Command {
 			}
 
 			var selected []string
+
+			selectTheme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
+				s := huh.ThemeCharm(isDark)
+				green := lipgloss.Color("#02BA84")
+				s.Focused.SelectedPrefix = lipgloss.NewStyle().Foreground(green).SetString("[•] ")
+				s.Focused.UnselectedPrefix = lipgloss.NewStyle().SetString("[ ] ")
+				s.Blurred.SelectedPrefix = lipgloss.NewStyle().Foreground(green).SetString("[•] ")
+				s.Blurred.UnselectedPrefix = lipgloss.NewStyle().SetString("[ ] ")
+				return s
+			})
+
 			form := huh.NewForm(
 				huh.NewGroup(
 					huh.NewMultiSelect[string]().
-						Title("AI agents").
-						Description("x: toggle | enter: confirm").
+						Title("Select AI agents to capture (Installed agents are pre-selected)").
+						Description("space: toggle | enter: confirm").
 						Options(options...).
 						Height(len(options) + 2).
+						Validate(func(s []string) error {
+							if len(s) == 0 {
+								return errors.New("please select at least one agent")
+							}
+							return nil
+						}).
 						Value(&selected),
 				),
-			)
+			).WithTheme(selectTheme)
 
 			if err := form.Run(); err != nil {
+				if errors.Is(err, huh.ErrUserAborted) {
+					_, _ = fmt.Fprintln(out, "Aborted by the user.")
+					return nil
+				}
 				// TTY error - fall back to status table.
 				return printAgentsTable(ctx, out, repoRoot, allProviders)
 			}
@@ -129,6 +152,12 @@ func NewAgentsCmd(rootOpts *RootOptions) *cobra.Command {
 			}
 			if len(installed) == 0 && len(removed) == 0 {
 				_, _ = fmt.Fprintln(out, "No changes.")
+			}
+
+			if len(installed) > 0 || len(removed) > 0 {
+				_, _ = fmt.Fprintln(out)
+				_, _ = fmt.Fprintln(out, "Note: If any agents are already running, restart or reload them")
+				_, _ = fmt.Fprintln(out, "      for Semantica to start capturing.")
 			}
 
 			return nil

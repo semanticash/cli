@@ -27,8 +27,8 @@ func NewShowCmd(rootOpts *RootOptions) *cobra.Command {
 			}
 
 			checkpointID, err := resolveRef(cmd.Context(), rootOpts.RepoPath, args)
-			if err != nil {
-				return err
+			if aborted, rerr := handleAbort(cmd.OutOrStdout(), err); aborted || rerr != nil {
+				return rerr
 			}
 
 			svc := service.NewShowService()

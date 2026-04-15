@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -79,7 +80,9 @@ func NewImplementationsCmd(rootOpts *RootOptions) *cobra.Command {
 						_, _ = fmt.Fprintln(out, "No implementations found.")
 						return nil
 					}
-					return err
+					if aborted, rerr := handleAbort(out, err); aborted || rerr != nil {
+						return rerr
+					}
 				}
 				return showImplementation(cmd, out, implID, false, verbose)
 			}
@@ -288,10 +291,13 @@ func pickImplementation(ctx context.Context, in implementations.ListInput) (stri
 		),
 	)
 	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", errAborted
+		}
 		return "", fmt.Errorf("no implementation selected")
 	}
 	if selected == "" {
-		return "", fmt.Errorf("no implementation selected")
+		return "", errAborted
 	}
 	return selected, nil
 }
