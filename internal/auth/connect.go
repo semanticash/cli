@@ -169,6 +169,44 @@ func PollConnectRepo(ctx context.Context, state string, interval int) (*ConnectR
 	}
 }
 
+// DisconnectRepo calls POST /v1/repos/{repositoryID}/disconnect to notify the
+// API that this CLI is no longer syncing. Best-effort - callers should proceed
+// with local cleanup even if this fails (offline, unauthenticated, etc.).
+func DisconnectRepo(ctx context.Context, repositoryID string) error {
+	if repositoryID == "" {
+		return fmt.Errorf("no repository ID")
+	}
+
+	token, err := AccessToken(ctx)
+	if err != nil || token == "" {
+		return fmt.Errorf("not authenticated")
+	}
+
+	endpoint := EffectiveEndpoint()
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, "POST", endpoint+"/v1/repos/"+repositoryID+"/disconnect", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", version.UserAgent())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("disconnect request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("disconnect failed: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 // AccessRequestResponse is the response from POST /v1/workspaces/access-requests.
 type AccessRequestResponse struct {
 	WorkspaceName string `json:"workspace_name"`
