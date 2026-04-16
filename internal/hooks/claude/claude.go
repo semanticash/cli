@@ -61,7 +61,7 @@ type hookEntry struct {
 const semanticaMarker = "semantica capture claude-code"
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
-	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+	settingsPath := filepath.Join(repoRoot, ".claude", "settings.local.json")
 
 	// Read existing settings.
 	var raw map[string]json.RawMessage
@@ -93,16 +93,16 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		matcher   string
 		command   string
 	}{
-		{"UserPromptSubmit", "", bin + " capture claude-code user-prompt-submit"},
-		{"Stop", "", bin + " capture claude-code stop"},
-		{"PostToolUse", "Task", bin + " capture claude-code post-task"},
-		{"PreToolUse", "Agent", bin + " capture claude-code pre-agent"},
-		{"PostToolUse", "Agent", bin + " capture claude-code post-agent"},
-		{"PostToolUse", "Write", bin + " capture claude-code post-write"},
-		{"PostToolUse", "Edit", bin + " capture claude-code post-edit"},
-		{"PostToolUse", "Bash", bin + " capture claude-code post-bash"},
-		{"SessionStart", "", bin + " capture claude-code session-start"},
-		{"SessionEnd", "", bin + " capture claude-code session-end"},
+		{"UserPromptSubmit", "", hooks.GuardedCommand(bin, "capture claude-code user-prompt-submit")},
+		{"Stop", "", hooks.GuardedCommand(bin, "capture claude-code stop")},
+		{"PostToolUse", "Task", hooks.GuardedCommand(bin, "capture claude-code post-task")},
+		{"PreToolUse", "Agent", hooks.GuardedCommand(bin, "capture claude-code pre-agent")},
+		{"PostToolUse", "Agent", hooks.GuardedCommand(bin, "capture claude-code post-agent")},
+		{"PostToolUse", "Write", hooks.GuardedCommand(bin, "capture claude-code post-write")},
+		{"PostToolUse", "Edit", hooks.GuardedCommand(bin, "capture claude-code post-edit")},
+		{"PostToolUse", "Bash", hooks.GuardedCommand(bin, "capture claude-code post-bash")},
+		{"SessionStart", "", hooks.GuardedCommand(bin, "capture claude-code session-start")},
+		{"SessionEnd", "", hooks.GuardedCommand(bin, "capture claude-code session-end")},
 	}
 
 	count := 0
@@ -137,10 +137,18 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		count++
 	}
 
-	hooksJSON, _ := json.Marshal(existingHooks)
-	raw["hooks"] = hooksJSON
+	var hooksBuf bytes.Buffer
+	hooksEnc := json.NewEncoder(&hooksBuf)
+	hooksEnc.SetEscapeHTML(false)
+	_ = hooksEnc.Encode(existingHooks)
+	raw["hooks"] = json.RawMessage(bytes.TrimRight(hooksBuf.Bytes(), "\n"))
 
-	out, err := json.MarshalIndent(raw, "", "  ")
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	err = enc.Encode(raw)
+	out := bytes.TrimRight(buf.Bytes(), "\n")
 	if err != nil {
 		return 0, fmt.Errorf("marshal settings: %w", err)
 	}
@@ -156,36 +164,48 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 }
 
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
-	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+	// Remove from both settings.local.json (current) and settings.json (legacy)
+	// so upgrades from older versions clean up properly.
+	for _, name := range []string{"settings.local.json", "settings.json"} {
+		removeSemanticaHooksFromFile(filepath.Join(repoRoot, ".claude", name))
+	}
+	return nil
+}
 
+// removeSemanticaHooksFromFile strips Semantica hook entries from a Claude
+// settings file, preserving all other content.
+func removeSemanticaHooksFromFile(settingsPath string) {
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
-		return nil // No settings file - nothing to uninstall.
+		return
 	}
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
+		return
 	}
 
 	hooksRaw, ok := raw["hooks"]
 	if !ok {
-		return nil
+		return
 	}
 
 	var hooksMap map[string][]hookMatcher
 	if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
-		return nil
+		return
 	}
 
+	changed := false
 	for hookPoint, matchers := range hooksMap {
 		var kept []hookMatcher
 		for _, m := range matchers {
 			var keptHooks []hookEntry
 			for _, h := range m.Hooks {
-				if !strings.Contains(h.Command, semanticaMarker) {
-					keptHooks = append(keptHooks, h)
+				if strings.Contains(h.Command, semanticaMarker) {
+					changed = true
+					continue
 				}
+				keptHooks = append(keptHooks, h)
 			}
 			if len(keptHooks) > 0 {
 				m.Hooks = keptHooks
@@ -199,47 +219,58 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		}
 	}
 
+	if !changed {
+		return
+	}
+
 	hooksJSON, _ := json.Marshal(hooksMap)
 	raw["hooks"] = hooksJSON
 	out, _ := json.MarshalIndent(raw, "", "  ")
-	return os.WriteFile(settingsPath, out, 0o644)
+	_ = os.WriteFile(settingsPath, out, 0o644)
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.json"))
-	if err != nil {
-		return false
+	// Check both settings.local.json (current) and settings.json (legacy).
+	for _, name := range []string{"settings.local.json", "settings.json"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", name))
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), semanticaMarker) {
+			return true
+		}
 	}
-	return strings.Contains(string(data), semanticaMarker)
+	return false
 }
 
 func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.json"))
-	if err != nil {
-		return "", err
-	}
+	// Check both settings.local.json (current) and settings.json (legacy).
+	for _, name := range []string{"settings.local.json", "settings.json"} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", name))
+		if err != nil {
+			continue
+		}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", err
-	}
-	hooksRaw, ok := raw["hooks"]
-	if !ok {
-		return "", fmt.Errorf("no hooks in settings")
-	}
-	var hooksMap map[string][]hookMatcher
-	if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
-		return "", err
-	}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			continue
+		}
+		hooksRaw, ok := raw["hooks"]
+		if !ok {
+			continue
+		}
+		var hooksMap map[string][]hookMatcher
+		if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
+			continue
+		}
 
-	// Find any semantica command and extract the binary token.
-	for _, matchers := range hooksMap {
-		for _, m := range matchers {
-			for _, h := range m.Hooks {
-				if strings.Contains(h.Command, semanticaMarker) {
-					parts := strings.Fields(h.Command)
-					if len(parts) > 0 {
-						return parts[0], nil
+		for _, matchers := range hooksMap {
+			for _, m := range matchers {
+				for _, h := range m.Hooks {
+					if strings.Contains(h.Command, semanticaMarker) {
+						if bin := hooks.ExtractBinary(h.Command); bin != "" {
+							return bin, nil
+						}
 					}
 				}
 			}

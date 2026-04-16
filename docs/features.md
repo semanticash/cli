@@ -354,7 +354,7 @@ Real-time capture of AI agent activity via provider-specific hooks.
 
 ### How it works
 
-When `semantica enable` detects an AI provider, it installs hooks in the provider's configuration file. These hooks call `semantica capture <provider> <hook-name>` with event metadata on stdin.
+When `semantica enable` detects an AI provider, it installs hooks in the provider's configuration file. These hooks are wrapped with a shell guard that silently no-ops when `semantica` is not on PATH, so teammates who clone the repo without Semantica installed see no errors.
 
 The capture lifecycle follows this pattern:
 
@@ -382,7 +382,7 @@ Events are matched to repositories by file path (deepest-match rule). Events wit
 ### Prerequisites
 
 - Provider detected and hooks installed (`semantica enable` or `semantica agents`)
-- `semantica` binary on PATH (hooks invoke it by absolute path or via `command -v`)
+- `semantica` binary on PATH (hooks silently no-op when the binary is absent)
 
 ### Caveats
 

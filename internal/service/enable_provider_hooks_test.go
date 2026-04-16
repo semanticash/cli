@@ -24,14 +24,17 @@ func TestEnable_InstallsProviderHooksWithManagedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "\"command\": \"semantica capture claude-code stop\"") {
-		t.Fatalf("expected Claude hooks to use bare semantica command, got: %s", content)
+	if !strings.Contains(content, "semantica capture claude-code stop") {
+		t.Fatalf("expected Claude hooks to contain capture command, got: %s", content)
+	}
+	if !strings.Contains(content, "command -v semantica") {
+		t.Fatalf("expected Claude hooks to have shell guard, got: %s", content)
 	}
 	if strings.Contains(content, "/usr/local/bin/semantica") || strings.Contains(content, "/opt/homebrew/bin/semantica") {
 		t.Fatalf("expected no absolute semantica path in provider hooks, got: %s", content)

@@ -53,7 +53,7 @@ changing the per-repo `lineage.db` schema.
 
 ## Capture
 
-The `semantica capture` command is the primary ingestion path for AI agent activity. It is invoked by provider hooks (not by the user directly). Each provider registers hooks in its own configuration file (e.g., `.claude/settings.json`, `.cursor/hooks.json`) that call `semantica capture <provider> <hook-name>` with event metadata on stdin.
+The `semantica capture` command is the primary ingestion path for AI agent activity. It is invoked by provider hooks (not by the user directly). Each provider registers hooks in its own configuration file (e.g., `.claude/settings.local.json`, `.cursor/hooks.json`) that call `semantica capture <provider> <hook-name>` with event metadata on stdin.
 
 The capture command:
 

@@ -37,7 +37,7 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		t.Errorf("count: got %d, want 10", count)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -63,8 +63,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 			for _, h := range m.Hooks {
 				if strings.Contains(h.Command, semanticaMarker) {
 					found = true
-					if !strings.HasPrefix(h.Command, "/usr/local/bin/semantica") {
-						t.Errorf("%s: command doesn't start with binary path: %q", hp, h.Command)
+					if !strings.Contains(h.Command, "/usr/local/bin/semantica") {
+						t.Errorf("%s: command doesn't contain binary path: %q", hp, h.Command)
 					}
 				}
 			}
@@ -106,7 +106,7 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 		t.Fatalf("second install: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestInstallHooks_PreservesExistingSettings(t *testing.T) {
   },
   "allowedTools": ["Edit"]
 }`
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.local.json"), []byte(existing), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestInstallHooks_PreservesExistingSettings(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.local.json"))
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestUninstallHooks_RemovesSemanticaEntries(t *testing.T) {
 		t.Fatalf("uninstall: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestUninstallHooks_PreservesOtherEntries(t *testing.T) {
 	}
 
 	// Add a custom hook alongside the semantica one.
-	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	settingsPath := filepath.Join(dir, ".claude", "settings.local.json")
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("read settings: %v", err)

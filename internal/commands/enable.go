@@ -21,6 +21,21 @@ import (
 
 var errAborted = errors.New("aborted")
 
+// handleAbort prints a consistent cancellation message and returns nil when
+// the error is a user abort (Ctrl+C, Esc, empty selection). Returns the
+// original error otherwise. Use at the top of a cobra RunE handler so
+// interactive commands exit cleanly without stack-trace-style output.
+func handleAbort(out io.Writer, err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, errAborted) || errors.Is(err, huh.ErrUserAborted) {
+		_, _ = fmt.Fprintln(out, "Aborted by the user.")
+		return true, nil
+	}
+	return false, err
+}
+
 func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
 		force     bool

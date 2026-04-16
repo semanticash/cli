@@ -82,7 +82,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 			Description: "Pin the Kiro session when the user submits a prompt",
 			Version:     "1",
 			When:        kiroHookWhen{Type: "promptSubmit"},
-			Then:        kiroHookThen{Type: "runCommand", Command: bin + " capture kiro-ide prompt-submit", Timeout: 10},
+			Then:        kiroHookThen{Type: "runCommand", Command: hooks.GuardedCommand(bin, "capture kiro-ide prompt-submit"), Timeout: 10},
 		},
 		{
 			ID:          "semantica-agent-stop",
@@ -91,7 +91,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 			Description: "Capture Kiro execution after agent completes",
 			Version:     "1",
 			When:        kiroHookWhen{Type: "agentStop"},
-			Then:        kiroHookThen{Type: "runCommand", Command: bin + " capture kiro-ide stop", Timeout: 60},
+			Then:        kiroHookThen{Type: "runCommand", Command: hooks.GuardedCommand(bin, "capture kiro-ide stop"), Timeout: 60},
 		},
 	}
 
@@ -181,9 +181,8 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 			continue
 		}
 		if strings.Contains(h.Then.Command, semanticaMarker) {
-			parts := strings.Fields(h.Then.Command)
-			if len(parts) > 0 {
-				return parts[0], nil
+			if bin := hooks.ExtractBinary(h.Then.Command); bin != "" {
+				return bin, nil
 			}
 		}
 	}

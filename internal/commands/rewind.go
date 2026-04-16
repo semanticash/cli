@@ -30,8 +30,8 @@ func NewRewindCmd(rootOpts *RootOptions) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			checkpointID, err := resolveRef(cmd.Context(), rootOpts.RepoPath, args)
-			if err != nil {
-				return err
+			if aborted, rerr := handleAbort(cmd.OutOrStdout(), err); aborted || rerr != nil {
+				return rerr
 			}
 
 			repo, err := git.OpenRepo(rootOpts.RepoPath)

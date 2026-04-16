@@ -19,13 +19,13 @@ The exact storage and offset model is provider-specific. Some providers read fro
 
 ## Claude Code
 
-**Hook config**: `.claude/settings.json`
+**Hook config**: `.claude/settings.local.json`
 
 Claude Code stores conversation transcripts as JSONL files in project-specific directories under `~/.claude/projects/`. Each line is a typed event (`system`, `human`, `assistant`, `result`).
 
 ### Hooks
 
-Semantica registers the following hooks in `.claude/settings.json`:
+Semantica registers the following hooks in `.claude/settings.local.json`:
 
 - **`UserPromptSubmit`** - Saves the current transcript offset and records the prompt.
 - **`PostToolUse[Write]`**, **`PostToolUse[Edit]`**, **`PostToolUse[Bash]`** - Capture direct file and shell provenance from hook payloads.

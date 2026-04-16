@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -57,11 +58,14 @@ func pickCheckpoint(ctx context.Context, repoPath string) (string, error) {
 	)
 
 	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", errAborted
+		}
 		return "", fmt.Errorf("missing argument: <ref>")
 	}
 
 	if selected == "" {
-		return "", fmt.Errorf("no checkpoint selected")
+		return "", errAborted
 	}
 
 	return selected, nil

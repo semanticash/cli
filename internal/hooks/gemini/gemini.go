@@ -87,15 +87,15 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		name      string
 		command   string
 	}{
-		{"BeforeAgent", "", "semantica-before-agent", bin + " capture gemini-cli before-agent"},
-		{"AfterAgent", "", "semantica-after-agent", bin + " capture gemini-cli after-agent"},
-		{"SessionStart", "", "semantica-session-start", bin + " capture gemini-cli session-start"},
-		{"SessionEnd", "exit", "semantica-session-end-exit", bin + " capture gemini-cli session-end"},
-		{"SessionEnd", "logout", "semantica-session-end-logout", bin + " capture gemini-cli session-end"},
-		{"PreCompress", "", "semantica-pre-compress", bin + " capture gemini-cli pre-compress"},
-		{"BeforeModel", "", "semantica-before-model", bin + " capture gemini-cli before-model"},
-		{"BeforeTool", "*", "semantica-before-tool", bin + " capture gemini-cli before-tool"},
-		{"AfterTool", "*", "semantica-after-tool", bin + " capture gemini-cli after-tool"},
+		{"BeforeAgent", "", "semantica-before-agent", hooks.GuardedCommand(bin, "capture gemini-cli before-agent")},
+		{"AfterAgent", "", "semantica-after-agent", hooks.GuardedCommand(bin, "capture gemini-cli after-agent")},
+		{"SessionStart", "", "semantica-session-start", hooks.GuardedCommand(bin, "capture gemini-cli session-start")},
+		{"SessionEnd", "exit", "semantica-session-end-exit", hooks.GuardedCommand(bin, "capture gemini-cli session-end")},
+		{"SessionEnd", "logout", "semantica-session-end-logout", hooks.GuardedCommand(bin, "capture gemini-cli session-end")},
+		{"PreCompress", "", "semantica-pre-compress", hooks.GuardedCommand(bin, "capture gemini-cli pre-compress")},
+		{"BeforeModel", "", "semantica-before-model", hooks.GuardedCommand(bin, "capture gemini-cli before-model")},
+		{"BeforeTool", "*", "semantica-before-tool", hooks.GuardedCommand(bin, "capture gemini-cli before-tool")},
+		{"AfterTool", "*", "semantica-after-tool", hooks.GuardedCommand(bin, "capture gemini-cli after-tool")},
 	}
 
 	count := 0
@@ -220,9 +220,8 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 		for _, m := range matchers {
 			for _, h := range m.Hooks {
 				if strings.Contains(h.Command, semanticaMarker) {
-					parts := strings.Fields(h.Command)
-					if len(parts) > 0 {
-						return parts[0], nil
+					if bin := hooks.ExtractBinary(h.Command); bin != "" {
+						return bin, nil
 					}
 				}
 			}

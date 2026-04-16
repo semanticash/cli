@@ -99,11 +99,11 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		command string
 		timeout int
 	}{
-		{"userPromptSubmit", bin + " capture kiro-cli user-prompt-submit", 10000},
-		{"stop", bin + " capture kiro-cli stop", 60000},
-		{"postToolUse", bin + " capture kiro-cli post-tool-use", 10000},
-		{"preToolUse", bin + " capture kiro-cli pre-tool-use", 10000},
-		{"agentSpawn", bin + " capture kiro-cli agent-spawn", 5000},
+		{"userPromptSubmit", hooks.GuardedCommand(bin, "capture kiro-cli user-prompt-submit"), 10000},
+		{"stop", hooks.GuardedCommand(bin, "capture kiro-cli stop"), 60000},
+		{"postToolUse", hooks.GuardedCommand(bin, "capture kiro-cli post-tool-use"), 10000},
+		{"preToolUse", hooks.GuardedCommand(bin, "capture kiro-cli pre-tool-use"), 10000},
+		{"agentSpawn", hooks.GuardedCommand(bin, "capture kiro-cli agent-spawn"), 5000},
 	}
 
 	count := 0
@@ -210,9 +210,8 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 	for _, entries := range hooksMap {
 		for _, e := range entries {
 			if strings.Contains(e.Command, semanticaMarker) {
-				parts := strings.Fields(e.Command)
-				if len(parts) > 0 {
-					return parts[0], nil
+				if bin := hooks.ExtractBinary(e.Command); bin != "" {
+					return bin, nil
 				}
 			}
 		}

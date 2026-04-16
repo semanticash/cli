@@ -35,7 +35,7 @@ func NewDisconnectCmd(rootOpts *RootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "disconnect",
 		Short: "Disconnect this repo from Semantica",
-		Long:  "Stops syncing attribution from this repo. The repo stays connected on the backend.",
+		Long:  "Stops syncing attribution from this repo to the dashboard. Local capture continues.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repo, err := git.OpenRepo(rootOpts.RepoPath)
@@ -56,6 +56,14 @@ func NewDisconnectCmd(rootOpts *RootOptions) *cobra.Command {
 			if !s.Connected {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Not connected.")
 				return nil
+			}
+
+			// Notify the API that this CLI is no longer syncing.
+			// Best-effort: local disconnect proceeds regardless.
+			if s.ConnectedRepoID != "" {
+				if err := auth.DisconnectRepo(cmd.Context(), s.ConnectedRepoID); err != nil {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Note: could not notify the dashboard: %v\n", err)
+				}
 			}
 
 			s.Connected = false

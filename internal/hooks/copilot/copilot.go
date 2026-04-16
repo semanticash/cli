@@ -81,13 +81,13 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		hookPoint string
 		command   string
 	}{
-		{"userPromptSubmitted", bin + " capture copilot user-prompt-submitted"},
-		{"preToolUse", bin + " capture copilot pre-tool-use"},
-		{"postToolUse", bin + " capture copilot post-tool-use"},
-		{"agentStop", bin + " capture copilot agent-stop"},
-		{"sessionStart", bin + " capture copilot session-start"},
-		{"sessionEnd", bin + " capture copilot session-end"},
-		{"subagentStop", bin + " capture copilot subagent-stop"},
+		{"userPromptSubmitted", hooks.GuardedCommand(bin, "capture copilot user-prompt-submitted")},
+		{"preToolUse", hooks.GuardedCommand(bin, "capture copilot pre-tool-use")},
+		{"postToolUse", hooks.GuardedCommand(bin, "capture copilot post-tool-use")},
+		{"agentStop", hooks.GuardedCommand(bin, "capture copilot agent-stop")},
+		{"sessionStart", hooks.GuardedCommand(bin, "capture copilot session-start")},
+		{"sessionEnd", hooks.GuardedCommand(bin, "capture copilot session-end")},
+		{"subagentStop", hooks.GuardedCommand(bin, "capture copilot subagent-stop")},
 	}
 
 	count := 0
@@ -180,9 +180,8 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 	for _, defs := range cfg.Hooks {
 		for _, h := range defs {
 			if strings.Contains(h.Bash, semanticaMarker) {
-				parts := strings.Fields(h.Bash)
-				if len(parts) > 0 {
-					return parts[0], nil
+				if bin := hooks.ExtractBinary(h.Bash); bin != "" {
+					return bin, nil
 				}
 			}
 		}

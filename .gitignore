@@ -20,12 +20,10 @@ reports/
 
 # Semantica
 .semantica/
-.claude
 CLAUDE.md
 GEMINI.md
 .gemini
 .cursor
-.claude/settings.json
 .github/hooks/semantica.json
 .cursor/hooks.json
 .gemini/settings.json
