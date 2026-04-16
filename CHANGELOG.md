@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Claude Code hooks now install to `.claude/settings.local.json` instead of `.claude/settings.json`, keeping team-shared Claude config clean and avoiding hook pollution for teammates who don't use Semantica
+- All provider hook commands are now wrapped with a shell guard that silently no-ops when `semantica` is not on PATH, preventing exec errors for teammates who clone a repo without Semantica installed
 - `semantica agents` picker now matches `semantica enable` styling: bracket-style checkboxes in Semantica green, pre-selected installed agents, validation requiring at least one selection, and a post-change reload reminder
 - Interactive prompts across `blame`, `explain`, `show`, `rewind`, `transcripts`, `impl`, and `agents` now print "Aborted by the user." on Ctrl+C instead of surfacing cryptic errors
 

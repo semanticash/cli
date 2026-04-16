@@ -82,15 +82,15 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		hookPoint string
 		command   string
 	}{
-		{"sessionStart", bin + " capture cursor session-start"},
-		{"sessionEnd", bin + " capture cursor session-end"},
-		{"beforeSubmitPrompt", bin + " capture cursor before-submit-prompt"},
-		{"preToolUse", bin + " capture cursor pre-tool-use"},
-		{"postToolUse", bin + " capture cursor post-tool-use"},
-		{"afterFileEdit", bin + " capture cursor after-file-edit"},
-		{"stop", bin + " capture cursor stop"},
-		{"subagentStop", bin + " capture cursor subagent-stop"},
-		{"preCompact", bin + " capture cursor pre-compact"},
+		{"sessionStart", hooks.GuardedCommand(bin, "capture cursor session-start")},
+		{"sessionEnd", hooks.GuardedCommand(bin, "capture cursor session-end")},
+		{"beforeSubmitPrompt", hooks.GuardedCommand(bin, "capture cursor before-submit-prompt")},
+		{"preToolUse", hooks.GuardedCommand(bin, "capture cursor pre-tool-use")},
+		{"postToolUse", hooks.GuardedCommand(bin, "capture cursor post-tool-use")},
+		{"afterFileEdit", hooks.GuardedCommand(bin, "capture cursor after-file-edit")},
+		{"stop", hooks.GuardedCommand(bin, "capture cursor stop")},
+		{"subagentStop", hooks.GuardedCommand(bin, "capture cursor subagent-stop")},
+		{"preCompact", hooks.GuardedCommand(bin, "capture cursor pre-compact")},
 	}
 
 	count := 0
@@ -175,9 +175,8 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 	for _, defs := range cfg.Hooks {
 		for _, h := range defs {
 			if strings.Contains(h.Command, semanticaMarker) {
-				parts := strings.Fields(h.Command)
-				if len(parts) > 0 {
-					return parts[0], nil
+				if bin := hooks.ExtractBinary(h.Command); bin != "" {
+					return bin, nil
 				}
 			}
 		}

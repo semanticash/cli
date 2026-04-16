@@ -60,8 +60,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		if !strings.Contains(defs[0].Command, semanticaMarker) {
 			t.Errorf("%s: command doesn't contain marker: %q", hp, defs[0].Command)
 		}
-		if !strings.HasPrefix(defs[0].Command, "/usr/local/bin/semantica") {
-			t.Errorf("%s: command doesn't start with binary path: %q", hp, defs[0].Command)
+		if !strings.Contains(defs[0].Command, "/usr/local/bin/semantica") {
+			t.Errorf("%s: command doesn't contain binary path: %q", hp, defs[0].Command)
 		}
 	}
 }

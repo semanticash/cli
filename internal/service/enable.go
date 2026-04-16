@@ -75,13 +75,13 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 			return nil, fmt.Errorf("semantica already enabled in this repo (db exists at %s). Use --force to reinitialize", dbPath)
 		}
 		if !opts.Force {
-			preExisting := snapshotProviderConfigs(repoRoot)
+			preExisting := SnapshotProviderConfigs(repoRoot)
 			installed, hookErr := installProviderHooks(ctx, repoRoot, opts.Providers)
 			if hookErr != nil {
 				return nil, fmt.Errorf("install provider hooks: %w", hookErr)
 			}
 
-			if err := ensureProviderGitignore(repoRoot, installed, preExisting); err != nil {
+			if err := EnsureProviderGitignore(repoRoot, installed, preExisting); err != nil {
 				fmt.Fprintf(os.Stderr, "semantica: warning: failed to update .gitignore for providers: %v\n", err)
 			}
 
@@ -111,7 +111,7 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 		return nil, localErr
 	}
 
-	preExisting := snapshotProviderConfigs(repoRoot)
+	preExisting := SnapshotProviderConfigs(repoRoot)
 	installed, hookErr := installProviderHooks(ctx, repoRoot, opts.Providers)
 	if hookErr != nil {
 		return nil, fmt.Errorf("install provider hooks: %w", hookErr)
@@ -126,7 +126,7 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 	}
 	result.Providers = installed
 
-	if err := ensureProviderGitignore(repoRoot, installed, preExisting); err != nil {
+	if err := EnsureProviderGitignore(repoRoot, installed, preExisting); err != nil {
 		fmt.Fprintf(os.Stderr, "semantica: warning: failed to update .gitignore for providers: %v\n", err)
 	}
 
@@ -303,8 +303,9 @@ func ensureSemanticaGitignore(repoRoot string) error {
 	return util.EnsureGitignoreEntries(repoRoot, []string{".semantica/"})
 }
 
-// providerGitignorePaths maps hook provider names to repo-local config files.
-var providerGitignorePaths = map[string]string{
+// ProviderGitignorePaths maps hook provider names to repo-local config files
+// that should be gitignored when created by Semantica.
+var ProviderGitignorePaths = map[string]string{
 	"claude-code": ".claude/settings.local.json",
 	"cursor":      ".cursor/hooks.json",
 	"gemini":      ".gemini/settings.json",
@@ -313,10 +314,10 @@ var providerGitignorePaths = map[string]string{
 	"kiro-cli":    ".kiro/agents/semantica.json",
 }
 
-// snapshotProviderConfigs returns provider config files that already exist.
-func snapshotProviderConfigs(repoRoot string) map[string]bool {
+// SnapshotProviderConfigs returns provider config files that already exist.
+func SnapshotProviderConfigs(repoRoot string) map[string]bool {
 	existing := make(map[string]bool)
-	for _, rel := range providerGitignorePaths {
+	for _, rel := range ProviderGitignorePaths {
 		if _, err := os.Stat(filepath.Join(repoRoot, rel)); err == nil {
 			existing[rel] = true
 		}
@@ -324,11 +325,12 @@ func snapshotProviderConfigs(repoRoot string) map[string]bool {
 	return existing
 }
 
-// ensureProviderGitignore ignores only provider config files created by enable.
-func ensureProviderGitignore(repoRoot string, installedProviders []string, preExisting map[string]bool) error {
+// EnsureProviderGitignore adds gitignore entries for provider config files
+// that were created by Semantica (not pre-existing).
+func EnsureProviderGitignore(repoRoot string, installedProviders []string, preExisting map[string]bool) error {
 	var entries []string
 	for _, name := range installedProviders {
-		if rel, ok := providerGitignorePaths[name]; ok && !preExisting[rel] {
+		if rel, ok := ProviderGitignorePaths[name]; ok && !preExisting[rel] {
 			entries = append(entries, rel)
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
 )
@@ -128,6 +129,11 @@ func NewAgentsCmd(rootOpts *RootOptions) *cobra.Command {
 					}
 					removed = append(removed, p.Name())
 				}
+			}
+
+			// Ensure gitignore entries for all selected providers.
+			if err := service.EnsureProviderGitignore(repoRoot, selected, make(map[string]bool)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update .gitignore: %v\n", err)
 			}
 
 			// Update settings with final state.
