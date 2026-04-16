@@ -20,9 +20,9 @@ type HookProvider interface {
 	// machine, either via an executable or provider-specific local state.
 	IsAvailable() bool
 
-	// InstallHooks writes hook configuration to the provider's repo-local
-	// config file (e.g., <repoRoot>/.claude/settings.json). Returns the
-	// number of hooks installed.
+	// InstallHooks writes hook configuration to the provider's config file
+	// (e.g., <repoRoot>/.claude/settings.local.json). Returns the number
+	// of hooks installed.
 	InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error)
 
 	// UninstallHooks removes Semantica hooks from the provider's repo-local

@@ -305,7 +305,7 @@ func ensureSemanticaGitignore(repoRoot string) error {
 
 // providerGitignorePaths maps hook provider names to repo-local config files.
 var providerGitignorePaths = map[string]string{
-	"claude-code": ".claude/settings.json",
+	"claude-code": ".claude/settings.local.json",
 	"cursor":      ".cursor/hooks.json",
 	"gemini":      ".gemini/settings.json",
 	"copilot":     ".github/hooks/semantica.json",

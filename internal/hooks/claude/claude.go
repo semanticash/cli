@@ -61,7 +61,7 @@ type hookEntry struct {
 const semanticaMarker = "semantica capture claude-code"
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
-	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+	settingsPath := filepath.Join(repoRoot, ".claude", "settings.local.json")
 
 	// Read existing settings.
 	var raw map[string]json.RawMessage
@@ -156,7 +156,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 }
 
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
-	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+	settingsPath := filepath.Join(repoRoot, ".claude", "settings.local.json")
 
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -206,7 +206,7 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.local.json"))
 	if err != nil {
 		return false
 	}
@@ -214,7 +214,7 @@ func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool 
 }
 
 func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".claude", "settings.local.json"))
 	if err != nil {
 		return "", err
 	}

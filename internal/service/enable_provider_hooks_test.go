@@ -24,7 +24,7 @@ func TestEnable_InstallsProviderHooksWithManagedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
