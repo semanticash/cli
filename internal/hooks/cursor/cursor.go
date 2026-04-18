@@ -534,11 +534,12 @@ func (p *Provider) SubagentStateKey(subagentTranscriptRef string) string {
 // associated with the given conversation ID, then distributes those paths
 // across assistant events that have no FilePaths of their own.
 //
-// This bridges the gap where Cursor IDE transcripts are text-only but the
-// IDE still records file associations for the conversation.
+// Cursor IDE transcripts can be text-only even when the IDE has file
+// associations for the conversation. This query uses that sidecar data
+// to recover the affected files.
 //
 // sinceTs (unix ms) scopes the query to hashes created after the last capture,
-// preventing files from earlier turns being smeared onto the current turn.
+// preventing files from earlier turns being assigned to the current turn.
 // Pass 0 to disable filtering (first capture of a conversation).
 //
 // File paths are stored as absolute in ToolUsesJSON. WriteEventsToRepo

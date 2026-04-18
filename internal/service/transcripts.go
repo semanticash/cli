@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -225,6 +226,20 @@ func (s *TranscriptService) TranscriptsForCheckpoint(ctx context.Context, in Tra
 		Events: make([]TranscriptEvent, 0, len(events)),
 	}
 
+	// Request-scoped payload cache. Claude Code's tool-use pattern
+	// often repeats the same PayloadHash across events in a session,
+	// so deduping cuts blob-store round-trips. payloadSeen records
+	// every hash we've already attempted (including failures and
+	// empty payloads) so we don't retry in the same request.
+	var (
+		payloadCache map[string]string
+		payloadSeen  map[string]bool
+	)
+	if in.Raw && bs != nil {
+		payloadCache = make(map[string]string)
+		payloadSeen = make(map[string]bool)
+	}
+
 	for _, e := range events {
 		ev := TranscriptEvent{
 			EventID:           e.EventID,
@@ -249,8 +264,20 @@ func (s *TranscriptService) TranscriptsForCheckpoint(ctx context.Context, in Tra
 		enrichFromToolUses(&ev)
 
 		if in.Raw && bs != nil && ev.PayloadHash != "" {
-			if raw, err := bs.Get(ctx, ev.PayloadHash); err == nil && len(raw) > 0 {
-				ev.Payload = string(raw)
+			if cached, ok := payloadCache[ev.PayloadHash]; ok {
+				ev.Payload = cached
+			} else if !payloadSeen[ev.PayloadHash] {
+				raw, err := bs.Get(ctx, ev.PayloadHash)
+				payloadSeen[ev.PayloadHash] = true
+				if err != nil {
+					slog.Warn("transcripts: payload load failed",
+						"event_id", ev.EventID,
+						"payload_hash", ev.PayloadHash,
+						"err", err)
+				} else if len(raw) > 0 {
+					ev.Payload = string(raw)
+					payloadCache[ev.PayloadHash] = ev.Payload
+				}
 			}
 		}
 

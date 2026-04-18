@@ -25,5 +25,5 @@ func TestDetachProcess_IntegrationChildSurvivesParent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: detached process survival test")
 	}
-	t.Skip("TODO: implement child-survives-parent test in Phase 1")
+	t.Skip("integration test not implemented yet")
 }

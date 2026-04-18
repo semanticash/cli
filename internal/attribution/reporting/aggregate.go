@@ -74,6 +74,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 
 	filesWithAI := make(map[string]bool)
 	providerLines := make(map[string]int)
+	filesSeen := make(map[string]bool, len(in.FileScores)+len(in.FilesDeleted))
 	var r CommitResult
 
 	for _, fs := range in.FileScores {
@@ -106,6 +107,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		r.HumanLines += fa.HumanLines
 		r.TotalLines += fa.TotalLines
 		r.Files = append(r.Files, fa)
+		filesSeen[fa.Path] = true
 
 		isAI := filesWithAI[fs.Path] || in.TouchedFiles[fs.Path]
 		if createdSet[fs.Path] {
@@ -119,8 +121,32 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		}
 	}
 
+	// Pure-deletion pass. Each path in FilesDeleted must also appear in
+	// r.Files so downstream consumers can inspect per-file evidence.
+	// Production scoring already emits zero-line entries for deleted
+	// paths, so this branch mainly protects callers that provide
+	// FilesDeleted without matching FileScores. The appended rows keep
+	// zero line counts and resolve evidence from the same touch metadata
+	// used by scored deletions.
 	for _, f := range in.FilesDeleted {
 		r.FilesDeleted = append(r.FilesDeleted, FileChangeOutput{Path: f, AI: in.TouchedFiles[f]})
+		if filesSeen[f] {
+			continue
+		}
+		touch := in.FileTouchOrigins[f]
+		if touch == "" && in.TouchedFiles[f] {
+			// Caller populated TouchedFiles but not FileTouchOrigins -
+			// an AI-touched pure deletion with no explicit origin is
+			// by definition a deletion-origin touch.
+			touch = TouchOriginDeletion
+		}
+		emptyFS := FileScoreInput{Path: f}
+		r.Files = append(r.Files, FileAttributionOutput{
+			Path:            f,
+			PrimaryEvidence: ResolveFileEvidence(emptyFS, touch, false),
+			AllEvidence:     CollectFileEvidence(emptyFS, touch, false),
+		})
+		filesSeen[f] = true
 	}
 
 	r.FilesTotal = len(r.FilesCreated) + len(r.FilesEdited)
@@ -183,7 +209,7 @@ func BuildCheckpointResult(in CheckpointResultInput) CheckpointResult {
 			EventsAssistant:  in.EventStats.EventsAssistant,
 			PayloadsLoaded:   in.EventStats.PayloadsLoaded,
 			AIToolEvents:     in.EventStats.AIToolEvents,
-			Note:             note,
+			Notes:            AssembleCheckpointNotes(note),
 		},
 	}
 }

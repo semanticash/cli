@@ -68,9 +68,6 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 				_, _ = fmt.Fprintf(out, "Deleted:      %d\n", nDeleted)
 			}
 
-			if res.Diagnostics.Note != "" && (res.AIPercentage == 0 || res.Diagnostics.NormalizedMatches > 0 || res.Diagnostics.ModifiedMatches > 0) {
-				_, _ = fmt.Fprintf(out, "Note:         %s\n", res.Diagnostics.Note)
-			}
 			_, _ = fmt.Fprintf(out, "Events:       %d considered, %d assistant, %d with tools, %d payloads loaded\n",
 				res.Diagnostics.EventsConsidered, res.Diagnostics.EventsAssistant,
 				res.Diagnostics.AIToolEvents, res.Diagnostics.PayloadsLoaded)
@@ -79,26 +76,13 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 					res.Diagnostics.ExactMatches, res.Diagnostics.NormalizedMatches, res.Diagnostics.ModifiedMatches)
 			}
 
-			// Factual notes about weaker attribution methods used.
-			var notes []string
-			if res.FallbackCount > 0 {
-				notes = append(notes, fmt.Sprintf("%d file(s) attributed using weaker fallback signals.", res.FallbackCount))
-			}
-			for _, f := range res.Files {
-				if f.EvidenceClass == "carry_forward" {
-					notes = append(notes, "Attribution includes historical carry-forward.")
-					break
-				}
-			}
-			for _, f := range res.Files {
-				if f.EvidenceClass == "deletion" {
-					notes = append(notes, "Some file attribution is inferred from deletion events.")
-					break
-				}
-			}
-			if len(notes) > 0 {
+			// Notes bundle - pipeline-state message (if present) followed
+			// by factual notes (fallback, carry-forward, deletion). The
+			// attribution service assembles the slice once so CLI output
+			// and serialized results use the same ordering.
+			if len(res.Diagnostics.Notes) > 0 {
 				_, _ = fmt.Fprintln(out, "Notes:")
-				for _, n := range notes {
+				for _, n := range res.Diagnostics.Notes {
 					_, _ = fmt.Fprintf(out, "  %s\n", n)
 				}
 			}

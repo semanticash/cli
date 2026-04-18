@@ -183,16 +183,26 @@ func filterIgnoredSteps(ctx context.Context, repoPath string, steps []sqldb.List
 				allPaths[p] = true
 			}
 		}
-		// Extract primary file from provenance blob.
+		// Extract primary file from provenance blob. Missing or
+		// unreadable blobs weaken gitignore filtering and step-to-file
+		// association; surface the failure instead of dropping through
+		// silently.
 		if s.ProvenanceHash.Valid && s.ProvenanceHash.String != "" {
-			if blob, err := bs.Get(ctx, s.ProvenanceHash.String); err == nil {
-				raw := extractPrimaryFile(blob)
-				if raw != "" {
-					pf := toRepoRelative(raw, repoPath)
-					if pf != "" {
-						stepPrimary[i] = pf
-						allPaths[pf] = true
-					}
+			blob, err := bs.Get(ctx, s.ProvenanceHash.String)
+			if err != nil {
+				slog.Warn("provenance: primary-file blob load failed",
+					"repo_path", repoPath,
+					"event_id", s.EventID,
+					"provenance_hash", s.ProvenanceHash.String,
+					"err", err)
+				continue
+			}
+			raw := extractPrimaryFile(blob)
+			if raw != "" {
+				pf := toRepoRelative(raw, repoPath)
+				if pf != "" {
+					stepPrimary[i] = pf
+					allPaths[pf] = true
 				}
 			}
 		}

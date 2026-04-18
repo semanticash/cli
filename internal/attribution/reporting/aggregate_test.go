@@ -196,9 +196,12 @@ func TestBuildCommitResult_FullAssembly(t *testing.T) {
 		t.Errorf("AIPercentage = %f, want %f", r.AIPercentage, wantPct)
 	}
 
-	// Per-file attribution rows.
-	if len(r.Files) != 2 {
-		t.Fatalf("Files = %d, want 2", len(r.Files))
+	// Per-file attribution rows. BuildCommitResult guarantees a row in
+	// r.Files for every path in FilesDeleted even when the caller does
+	// not include them in FileScores, so a pure-deletion path shows up
+	// here alongside the two scored files with EvidenceDeletion.
+	if len(r.Files) != 3 {
+		t.Fatalf("Files = %d, want 3 (2 scored + 1 deletion)", len(r.Files))
 	}
 	if r.Files[0].Path != "main.go" {
 		t.Errorf("Files[0].Path = %q, want main.go", r.Files[0].Path)
@@ -213,6 +216,18 @@ func TestBuildCommitResult_FullAssembly(t *testing.T) {
 	handlerPct := float64(4) / float64(4) * 100
 	if r.Files[1].AIPercent != handlerPct {
 		t.Errorf("Files[1].AIPercent = %f, want %f", r.Files[1].AIPercent, handlerPct)
+	}
+	// Deletion row: zero line counts, EvidenceDeletion (old.go is in
+	// TouchedFiles, so it resolves to an AI-origin deletion).
+	if r.Files[2].Path != "old.go" {
+		t.Errorf("Files[2].Path = %q, want old.go", r.Files[2].Path)
+	}
+	if r.Files[2].TotalLines != 0 || r.Files[2].AIExactLines != 0 {
+		t.Errorf("Files[2] should have zero line counts, got %+v", r.Files[2])
+	}
+	if r.Files[2].PrimaryEvidence != EvidenceDeletion {
+		t.Errorf("Files[2].PrimaryEvidence = %q, want %q (AI-touched pure deletion)",
+			r.Files[2].PrimaryEvidence, EvidenceDeletion)
 	}
 
 	// File changes.
@@ -305,6 +320,85 @@ func TestBuildCommitResult_ZeroInput(t *testing.T) {
 	}
 }
 
+// A pure-deletion file that the caller did NOT include in FileScores
+// still gets a row in r.Files. Evidence resolves from TouchedFiles:
+// AI-touched deletion -> EvidenceDeletion, human deletion -> EvidenceNone.
+func TestBuildCommitResult_PureDeletionProducesFilesRow(t *testing.T) {
+	in := CommitResultInput{
+		FilesDeleted: []string{"ai-deleted.go", "human-deleted.go"},
+		TouchedFiles: map[string]bool{"ai-deleted.go": true},
+	}
+	r := BuildCommitResult(in)
+
+	if len(r.Files) != 2 {
+		t.Fatalf("Files = %d, want 2", len(r.Files))
+	}
+	if r.Files[0].Path != "ai-deleted.go" || r.Files[0].PrimaryEvidence != EvidenceDeletion {
+		t.Errorf("Files[0] = %+v, want {Path: ai-deleted.go, PrimaryEvidence: deletion}", r.Files[0])
+	}
+	if r.Files[1].Path != "human-deleted.go" || r.Files[1].PrimaryEvidence != EvidenceNone {
+		t.Errorf("Files[1] = %+v, want {Path: human-deleted.go, PrimaryEvidence: none}", r.Files[1])
+	}
+	// Line counts are zero for pure deletions.
+	for i, f := range r.Files {
+		if f.TotalLines != 0 || f.AIExactLines != 0 || f.AIFormattedLines != 0 || f.AIModifiedLines != 0 {
+			t.Errorf("Files[%d] should have zero line counts, got %+v", i, f)
+		}
+	}
+	// FilesDeleted is also populated (existing contract).
+	if len(r.FilesDeleted) != 2 {
+		t.Fatalf("FilesDeleted = %d, want 2", len(r.FilesDeleted))
+	}
+	if !r.FilesDeleted[0].AI || r.FilesDeleted[1].AI {
+		t.Errorf("FilesDeleted AI flags wrong: %+v", r.FilesDeleted)
+	}
+}
+
+// When a caller DOES include a deleted path in FileScores (production
+// path via ScoreFiles), BuildCommitResult does not double-emit it:
+// one row in r.Files, not two.
+func TestBuildCommitResult_DeletionAlreadyInFileScoresNotDuplicated(t *testing.T) {
+	in := CommitResultInput{
+		FileScores: []FileScoreInput{
+			{Path: "deleted-scored.go"}, // zero-line entry from ScoreFiles
+		},
+		FilesDeleted:     []string{"deleted-scored.go"},
+		TouchedFiles:     map[string]bool{"deleted-scored.go": true},
+		FileTouchOrigins: map[string]TouchOrigin{"deleted-scored.go": TouchOriginDeletion},
+	}
+	r := BuildCommitResult(in)
+
+	if len(r.Files) != 1 {
+		t.Fatalf("Files = %d, want 1 (no duplication)", len(r.Files))
+	}
+	if r.Files[0].PrimaryEvidence != EvidenceDeletion {
+		t.Errorf("Files[0].PrimaryEvidence = %q, want %q", r.Files[0].PrimaryEvidence, EvidenceDeletion)
+	}
+}
+
+// FilesTotal and FilesAITouched should not be inflated by the defensive
+// deletion pass - those counters are about created/edited scored files
+// and AI-line-producing files, respectively. A pure deletion adds to
+// neither.
+func TestBuildCommitResult_DeletionDoesNotInflateCounters(t *testing.T) {
+	in := CommitResultInput{
+		FileScores: []FileScoreInput{
+			{Path: "kept.go", TotalLines: 5, ExactLines: 5, ProviderLines: map[string]int{"claude_code": 5}},
+		},
+		FilesCreated: []string{"kept.go"},
+		FilesDeleted: []string{"gone.go"},
+		TouchedFiles: map[string]bool{"kept.go": true, "gone.go": true},
+	}
+	r := BuildCommitResult(in)
+
+	if r.FilesTotal != 1 {
+		t.Errorf("FilesTotal = %d, want 1 (created only, deletion excluded)", r.FilesTotal)
+	}
+	if r.FilesAITouched != 1 {
+		t.Errorf("FilesAITouched = %d, want 1 (only scored AI files count)", r.FilesAITouched)
+	}
+}
+
 func TestBuildCheckpointResult_WithTouchedFiles(t *testing.T) {
 	cr := BuildCheckpointResult(CheckpointResultInput{
 		CheckpointID: "cp-123",
@@ -337,8 +431,8 @@ func TestBuildCheckpointResult_WithTouchedFiles(t *testing.T) {
 	if cr.Diagnostics.EventsConsidered != 5 {
 		t.Errorf("Diagnostics.EventsConsidered = %d, want 5", cr.Diagnostics.EventsConsidered)
 	}
-	if cr.Diagnostics.Note != "" {
-		t.Errorf("Diagnostics.Note = %q, want empty (events found with tool calls)", cr.Diagnostics.Note)
+	if len(cr.Diagnostics.Notes) != 0 {
+		t.Errorf("Diagnostics.Notes = %v, want empty (events found with tool calls)", cr.Diagnostics.Notes)
 	}
 }
 
@@ -351,8 +445,9 @@ func TestBuildCheckpointResult_NoEvents(t *testing.T) {
 	if cr.FilesAITouched != 0 {
 		t.Errorf("FilesAITouched = %d, want 0", cr.FilesAITouched)
 	}
-	if cr.Diagnostics.Note != "No agent events found in the delta window." {
-		t.Errorf("Diagnostics.Note = %q, want no-events note", cr.Diagnostics.Note)
+	want := "No agent events found in the delta window."
+	if len(cr.Diagnostics.Notes) != 1 || cr.Diagnostics.Notes[0] != want {
+		t.Errorf("Diagnostics.Notes = %v, want [%q]", cr.Diagnostics.Notes, want)
 	}
 }
 
@@ -366,8 +461,9 @@ func TestBuildCheckpointResult_EventsButNoToolCalls(t *testing.T) {
 		},
 	})
 
-	if cr.Diagnostics.Note != "Agent events found but none contained file-modifying tool calls (Edit/Write)." {
-		t.Errorf("Diagnostics.Note = %q, want no-tool-calls note", cr.Diagnostics.Note)
+	want := "Agent events found but none contained file-modifying tool calls (Edit/Write)."
+	if len(cr.Diagnostics.Notes) != 1 || cr.Diagnostics.Notes[0] != want {
+		t.Errorf("Diagnostics.Notes = %v, want [%q]", cr.Diagnostics.Notes, want)
 	}
 }
 

@@ -1,6 +1,9 @@
 package reporting
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestRenderDiagnosticNote_NoEvents(t *testing.T) {
 	got := RenderDiagnosticNote(DiagnosticsInput{
@@ -93,5 +96,79 @@ func TestRenderDiagnosticNote_NormalizedOnly(t *testing.T) {
 	want := "AI matches: 5 exact, 3 normalized."
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// --- AssembleCommitNotes ---
+
+// Nothing to say: no pipeline note, no fallback count, no evidence
+// classes that trigger factual notes. Returns nil so the response-level
+// omitempty drops the field.
+func TestAssembleCommitNotes_NothingToSay(t *testing.T) {
+	got := AssembleCommitNotes("", CommitResult{})
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+// Pipeline-state note only: when the attribution pipeline produces a
+// diagnostic message but no factual notes apply, Notes carries exactly
+// one entry (the pipeline message).
+func TestAssembleCommitNotes_PipelineNoteOnly(t *testing.T) {
+	got := AssembleCommitNotes("No agent events found.", CommitResult{})
+	want := []string{"No agent events found."}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// FallbackCount produces a factual note pinned to the actual count.
+// No pipeline note: the factual note is the only entry.
+func TestAssembleCommitNotes_FallbackCountOnly(t *testing.T) {
+	got := AssembleCommitNotes("", CommitResult{FallbackCount: 3})
+	want := []string{"3 file(s) attributed using weaker fallback signals."}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// Carry-forward and deletion each trigger at most once regardless of
+// how many files exhibit the class. Order is: fallback, carry-forward,
+// deletion - stable so downstream formatting does not see ordering
+// churn between runs on the same data.
+func TestAssembleCommitNotes_MultipleEvidenceClasses(t *testing.T) {
+	cr := CommitResult{
+		FallbackCount: 2,
+		Files: []FileAttributionOutput{
+			{Path: "a.go", PrimaryEvidence: EvidenceCarryForward},
+			{Path: "b.go", PrimaryEvidence: EvidenceCarryForward}, // second instance: still just one note
+			{Path: "c.go", PrimaryEvidence: EvidenceDeletion},
+		},
+	}
+	got := AssembleCommitNotes("pipeline message", cr)
+	want := []string{
+		"pipeline message",
+		"2 file(s) attributed using weaker fallback signals.",
+		"Attribution includes historical carry-forward.",
+		"Some file attribution is inferred from deletion events.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// --- AssembleCheckpointNotes ---
+
+func TestAssembleCheckpointNotes_Empty(t *testing.T) {
+	if got := AssembleCheckpointNotes(""); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestAssembleCheckpointNotes_NonEmpty(t *testing.T) {
+	got := AssembleCheckpointNotes("No agent events found.")
+	want := []string{"No agent events found."}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }

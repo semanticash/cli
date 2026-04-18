@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -45,11 +46,20 @@ type AttributionInput struct {
 //   - AI-Formatted: matches after whitespace normalization (formatter/linter)
 //   - AI-Modified: in a contiguous group overlapping AI output, but changed
 //   - Human: no overlap with any AI output
+//
+// Operation and Classification mirror what the commit's FilesCreated/
+// FilesEdited/FilesDeleted arrays already carry, surfaced on each file
+// so callers do not need to cross-reference the three arrays.
+// Classification is the coarse AI-touched flag from the attribution
+// pipeline, not a majority-authorship verdict.
 type FileAttribution struct {
 	Path             string  `json:"path"`
+	Operation        string  `json:"operation,omitempty"`      // created, edited, deleted
+	Classification   string  `json:"classification,omitempty"` // ai, human (coarse pipeline flag)
 	AIExactLines     int     `json:"ai_exact_lines"`
 	AIFormattedLines int     `json:"ai_formatted_lines"`
 	AIModifiedLines  int     `json:"ai_modified_lines"`
+	AILines          int     `json:"ai_lines,omitempty"` // exact + formatted + modified
 	HumanLines       int     `json:"human_lines"`
 	TotalLines       int     `json:"total_lines"`
 	DeletedNonBlank  int     `json:"deleted_non_blank"`        // deleted non-blank lines (not attributed, display only)
@@ -67,15 +77,21 @@ type FileChange struct {
 // AttributionDiagnostics provides transparency into why a particular
 // AI percentage was computed. Useful when AI% is 0 and the user wants
 // to understand which stage of the pipeline had no data.
+//
+// Notes carries both the pipeline-state message (first entry, when
+// non-empty) and the factual notes produced by the attribution pipeline
+// (fallback signals, carry-forward, deletion inference). The API
+// normalizes any singular "note" field from older CLI versions into
+// this same slice at ingest time.
 type AttributionDiagnostics struct {
-	EventsConsidered  int    `json:"events_considered"`
-	EventsAssistant   int    `json:"events_assistant"`
-	PayloadsLoaded    int    `json:"payloads_loaded"`
-	AIToolEvents      int    `json:"ai_tool_events"`
-	ExactMatches      int    `json:"exact_matches"`
-	NormalizedMatches int    `json:"normalized_matches"`
-	ModifiedMatches   int    `json:"modified_matches"`
-	Note              string `json:"note,omitempty"`
+	EventsConsidered  int      `json:"events_considered"`
+	EventsAssistant   int      `json:"events_assistant"`
+	PayloadsLoaded    int      `json:"payloads_loaded"`
+	AIToolEvents      int      `json:"ai_tool_events"`
+	ExactMatches      int      `json:"exact_matches"`
+	NormalizedMatches int      `json:"normalized_matches"`
+	ModifiedMatches   int      `json:"modified_matches"`
+	Notes             []string `json:"notes,omitempty"`
 }
 
 // AttributionResult is the full attribution breakdown for a single commit.
@@ -97,7 +113,7 @@ type AttributionResult struct {
 	Files            []FileAttribution      `json:"files,omitempty"`
 	ProviderDetails  []ProviderAttribution  `json:"provider_details,omitempty"`
 	Diagnostics      AttributionDiagnostics `json:"diagnostics"`
-	Evidence         string                 `json:"evidence,omitempty"`        // "High", "Medium", "Low"
+	Evidence         string                 `json:"evidence,omitempty"`       // "High", "Medium", "Low"
 	FallbackCount    int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
 }
 
@@ -310,11 +326,13 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	cr := attrreporting.BuildCommitResult(commitInput)
 	result := fromCommitResult(cr, in.CommitHash, link.CheckpointID)
 
-	// Populate diagnostics.
+	// Populate diagnostics. Pipeline-state note leads the bundle; any
+	// factual notes (fallback signals, carry-forward, deletion inference)
+	// come from AssembleCommitNotes so display and push stay in sync.
 	diag.ExactMatches = matchStats.ExactMatches
 	diag.NormalizedMatches = matchStats.NormalizedMatches
 	diag.ModifiedMatches = matchStats.ModifiedMatches
-	diag.Note = attrreporting.RenderDiagnosticNote(attrreporting.DiagnosticsInput{
+	pipelineNote := attrreporting.RenderDiagnosticNote(attrreporting.DiagnosticsInput{
 		EventStats: attrreporting.EventStatsInput{
 			EventsConsidered: diag.EventsConsidered,
 			EventsAssistant:  diag.EventsAssistant,
@@ -328,6 +346,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		},
 		AIPercent: result.AIPercentage,
 	})
+	diag.Notes = attrreporting.AssembleCommitNotes(pipelineNote, cr)
 	result.Diagnostics = diag
 
 	return result, nil
@@ -571,9 +590,17 @@ func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsIn
 			continue
 		}
 		raw, err := bs.Get(ctx, r.PayloadHash.String)
-		if err == nil {
-			out[i].Payload = raw
+		if err != nil {
+			// Surface the failure instead of silently attributing as
+			// human - a missing/corrupt payload blob weakens scoring
+			// for reasons the caller would not otherwise see.
+			slog.Warn("attribution: payload load failed",
+				"event_id", r.EventID,
+				"payload_hash", r.PayloadHash.String,
+				"err", err)
+			continue
 		}
+		out[i].Payload = raw
 	}
 	return out
 }
@@ -799,27 +826,45 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		Evidence:         cr.Evidence,
 		FallbackCount:    cr.FallbackCount,
 	}
+	// Build path-keyed maps for operation + classification lookup. The
+	// three *Files arrays carry the change kind; per-file scoring in
+	// cr.Files does not carry change-origin flags.
+	mapCap := len(cr.FilesCreated) + len(cr.FilesEdited) + len(cr.FilesDeleted)
+	ops := make(map[string]string, mapCap)
+	cls := make(map[string]string, mapCap)
+	for _, f := range cr.FilesCreated {
+		ops[f.Path] = "created"
+		cls[f.Path] = classificationString(f.AI)
+		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesEdited {
+		ops[f.Path] = "edited"
+		cls[f.Path] = classificationString(f.AI)
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+	}
+	for _, f := range cr.FilesDeleted {
+		ops[f.Path] = "deleted"
+		cls[f.Path] = classificationString(f.AI)
+		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI})
+	}
 	for _, f := range cr.Files {
+		// Fields without a matching entry in the three *Files arrays
+		// get empty Operation and Classification if scoring produced
+		// a file row that was not present in the diff metadata.
 		result.Files = append(result.Files, FileAttribution{
 			Path:             f.Path,
+			Operation:        ops[f.Path],
+			Classification:   cls[f.Path],
 			AIExactLines:     f.AIExactLines,
 			AIFormattedLines: f.AIFormattedLines,
 			AIModifiedLines:  f.AIModifiedLines,
+			AILines:          f.AIExactLines + f.AIFormattedLines + f.AIModifiedLines,
 			HumanLines:       f.HumanLines,
 			TotalLines:       f.TotalLines,
 			DeletedNonBlank:  f.DeletedNonBlank,
 			AIPercent:        f.AIPercent,
 			EvidenceClass:    string(f.PrimaryEvidence),
 		})
-	}
-	for _, f := range cr.FilesCreated {
-		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI})
-	}
-	for _, f := range cr.FilesEdited {
-		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
-	}
-	for _, f := range cr.FilesDeleted {
-		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI})
 	}
 	for _, p := range cr.ProviderDetails {
 		result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
@@ -829,6 +874,18 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		})
 	}
 	return result
+}
+
+// classificationString maps the coarse AI-touched flag from the
+// attribution pipeline onto the wire-level "ai"/"human" string. This is
+// not a majority-authorship verdict - a file with a single AI-attributed
+// line inside an otherwise human-authored patch still flags "ai". The
+// wire docs describe the semantics accordingly.
+func classificationString(isAI bool) string {
+	if isAI {
+		return "ai"
+	}
+	return "human"
 }
 
 // fromCheckpointResult maps reporting.CheckpointResult back to the
@@ -847,7 +904,7 @@ func fromCheckpointResult(cr attrreporting.CheckpointResult) *AttributionResult 
 		EventsAssistant:  cr.Diagnostics.EventsAssistant,
 		PayloadsLoaded:   cr.Diagnostics.PayloadsLoaded,
 		AIToolEvents:     cr.Diagnostics.AIToolEvents,
-		Note:             cr.Diagnostics.Note,
+		Notes:            cr.Diagnostics.Notes,
 	}
 	return result
 }
@@ -1119,7 +1176,7 @@ func commitWithNoDelta(ctx context.Context, hash string, repo *git.Repo) (*Attri
 
 	result.FilesTotal = len(dr.files)
 	result.Diagnostics = AttributionDiagnostics{
-		Note: "No linked checkpoint found. This commit was made without a tracked agent session.",
+		Notes: []string{"No linked checkpoint found. This commit was made without a tracked agent session."},
 	}
 	return result, nil
 }
