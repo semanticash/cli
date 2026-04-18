@@ -53,7 +53,7 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	}
 
 	// Create a file and commit.
-	_ = os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n"), 0o644)
+	mustWriteFile(t, filepath.Join(repoDir, "main.go"), []byte("package main\n"))
 	for _, args := range [][]string{
 		{"-C", repoDir, "add", "main.go"},
 		{"-C", repoDir, "commit", "-m", "add main.go"},
@@ -64,23 +64,16 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	}
 
 	// Get the commit hash.
-	out, err := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("git rev-parse HEAD: %v", err)
-	}
-	commitHash := string(out)
-	if len(commitHash) > 0 && commitHash[len(commitHash)-1] == '\n' {
-		commitHash = commitHash[:len(commitHash)-1]
-	}
+	commitHash := mustGitOutput(t, repoDir, "rev-parse", "HEAD")
 
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
 
 	// Enable the local Semantica state needed by the worker.
 	semDir := filepath.Join(repoDir, ".semantica")
-	_ = os.MkdirAll(semDir, 0o755)
-	_ = os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644)
-	_ = os.MkdirAll(filepath.Join(semDir, "objects"), 0o755)
+	mustMkdirAll(t, semDir)
+	mustWriteFile(t, filepath.Join(semDir, "enabled"), nil)
+	mustMkdirAll(t, filepath.Join(semDir, "objects"))
 
 	dbPath := filepath.Join(semDir, "lineage.db")
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
@@ -89,23 +82,31 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	}
 
 	repoID := uuid.NewString()
-	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
 		RepositoryID: repoID, RootPath: repoDir, CreatedAt: now, EnabledAt: now,
-	})
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
 
 	// Create source + session + event so the worker finds sessions in window.
-	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+	src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
 		SourceID: uuid.NewString(), RepositoryID: repoID,
 		Provider: "claude_code", SourceKey: "src-1", LastSeenAt: now, CreatedAt: now,
 	})
-	sess, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+	if err != nil {
+		t.Fatalf("upsert agent source: %v", err)
+	}
+	sess, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
 		SessionID: uuid.NewString(), ProviderSessionID: "prov-sess-worker",
 		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
 		StartedAt: now - 1000, LastSeenAt: now,
 	})
+	if err != nil {
+		t.Fatalf("upsert agent session: %v", err)
+	}
 
 	// Insert an event so the session appears in the window.
-	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID:      uuid.NewString(),
 		SessionID:    sess.SessionID,
 		RepositoryID: repoID,
@@ -113,24 +114,40 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 		Kind:         "assistant",
 		Role:         sqlstore.NullStr("assistant"),
 		EventSource:  "hook",
-	})
+	}); err != nil {
+		t.Fatalf("insert agent event: %v", err)
+	}
 
 	// Create a pending checkpoint and commit link (simulating post-commit hook).
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoID, CreatedAt: now,
 		Kind: "auto", Status: "pending",
-	})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: commitHash, RepositoryID: repoID, CheckpointID: cpID, LinkedAt: now,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = sqlstore.Close(h)
 
 	// Register the repo in the broker.
-	regPath, _ := broker.DefaultRegistryPath()
-	bh, _ := broker.Open(ctx, regPath)
-	_ = broker.Register(ctx, bh, repoDir, repoDir)
-	_ = broker.Close(bh)
+	regPath, err := broker.DefaultRegistryPath()
+	if err != nil {
+		t.Fatalf("broker default registry path: %v", err)
+	}
+	bh, err := broker.Open(ctx, regPath)
+	if err != nil {
+		t.Fatalf("open broker registry: %v", err)
+	}
+	if err := broker.Register(ctx, bh, repoDir, repoDir); err != nil {
+		t.Fatalf("register repo in broker: %v", err)
+	}
+	if err := broker.Close(bh); err != nil {
+		t.Fatalf("close broker registry: %v", err)
+	}
 
 	// Create implementations.db with an observation for this session.
 	implPath := filepath.Join(globalDir, "implementations.db")
@@ -141,7 +158,7 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create impldb: %v", err)
 	}
-	_ = implH.Queries.InsertObservation(ctx, impldbgen.InsertObservationParams{
+	if err := implH.Queries.InsertObservation(ctx, impldbgen.InsertObservationParams{
 		ObservationID:     uuid.NewString(),
 		Provider:          "claude_code",
 		ProviderSessionID: "prov-sess-worker",
@@ -149,8 +166,12 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 		TargetRepoPath:    repoDir,
 		EventTs:           now,
 		CreatedAt:         now,
-	})
-	_ = impldb.Close(implH)
+	}); err != nil {
+		t.Fatalf("insert observation: %v", err)
+	}
+	if err := impldb.Close(implH); err != nil {
+		t.Fatalf("close impldb: %v", err)
+	}
 
 	// Run the worker.
 	svc := NewWorkerService()
@@ -169,7 +190,10 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	}
 	defer func() { _ = impldb.Close(implH) }()
 
-	impls, _ := implH.Queries.ListAllImplementations(ctx, 10)
+	impls, err := implH.Queries.ListAllImplementations(ctx, 10)
+	if err != nil {
+		t.Fatalf("list implementations: %v", err)
+	}
 	if len(impls) == 0 {
 		t.Fatal("expected at least 1 implementation after worker run")
 	}
@@ -192,10 +216,13 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 	}
 
 	// Also verify session_checkpoints were written.
-	h, _ = sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h = mustOpenSQLStore(t, ctx, dbPath)
 	defer func() { _ = sqlstore.Close(h) }()
 
-	sessForCP, _ := h.Queries.ListSessionsForCheckpoint(ctx, cpID)
+	sessForCP, err := h.Queries.ListSessionsForCheckpoint(ctx, cpID)
+	if err != nil {
+		t.Fatalf("list sessions for checkpoint: %v", err)
+	}
 	if len(sessForCP) == 0 {
 		t.Error("expected session_checkpoints to exist after worker run")
 	}

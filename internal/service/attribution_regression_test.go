@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -144,8 +145,9 @@ func assertResultsEqual(t *testing.T, label string, got, want AttributionResult)
 		}
 	}
 
-	// Full diagnostics struct.
-	if g.Diagnostics != w.Diagnostics {
+	// Full diagnostics struct. Notes is a slice so we cannot use ==;
+	// reflect.DeepEqual handles both counter fields and note ordering.
+	if !reflect.DeepEqual(g.Diagnostics, w.Diagnostics) {
 		t.Errorf("%s Diagnostics: got %+v, want %+v", label, g.Diagnostics, w.Diagnostics)
 	}
 }
@@ -161,6 +163,58 @@ func assertFileChangesEqual(t *testing.T, label string, got, want []FileChange) 
 			t.Errorf("%s[%d]: got %+v, want %+v", label, i, got[i], want[i])
 		}
 	}
+}
+
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+}
+
+func mustRunGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func mustGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func mustOpenRepo(t *testing.T, dir string) *git.Repo {
+	t.Helper()
+	repo, err := git.OpenRepo(dir)
+	if err != nil {
+		t.Fatalf("open repo %s: %v", dir, err)
+	}
+	return repo
+}
+
+func mustOpenSQLStore(t *testing.T, ctx context.Context, dbPath string) *sqlstore.Handle {
+	t.Helper()
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open sqlite store %s: %v", dbPath, err)
+	}
+	return h
 }
 
 // setupGoldenRepo creates a git repo with matching Semantica state for a single
@@ -188,7 +242,7 @@ func setupGoldenRepo(t *testing.T) (string, string) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	_ = os.WriteFile(filepath.Join(dir, "README"), []byte("init\n"), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "README"), []byte("init\n"))
 	for _, args := range [][]string{{"add", "README"}, {"commit", "-m", "initial"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -199,9 +253,9 @@ func setupGoldenRepo(t *testing.T) (string, string) {
 
 	// Create the minimal .semantica state required by the attribution service.
 	semDir := filepath.Join(dir, ".semantica")
-	_ = os.MkdirAll(semDir, 0o755)
-	_ = os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644)
-	_ = os.MkdirAll(filepath.Join(semDir, "objects"), 0o755)
+	mustMkdirAll(t, semDir)
+	mustWriteFile(t, filepath.Join(semDir, "enabled"), nil)
+	mustMkdirAll(t, filepath.Join(semDir, "objects"))
 
 	ctx := context.Background()
 	dbPath := filepath.Join(semDir, "lineage.db")
@@ -210,23 +264,30 @@ func setupGoldenRepo(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	repoRoot := repo.Root()
 	repoID := uuid.NewString()
-	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
 		RepositoryID: repoID, RootPath: repoRoot,
 		CreatedAt: 100_000, EnabledAt: 100_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
 
 	// Baseline checkpoint without a commit link.
 	baselineID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: baselineID, RepositoryID: repoID,
 		CreatedAt: 100_000, Kind: "baseline", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 100_000, Valid: true},
-	})
+	}); err != nil {
+		t.Fatalf("insert baseline checkpoint: %v", err)
+	}
 
-	bs, _ := blobs.NewStore(filepath.Join(semDir, "objects"))
+	bs, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
 	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
 	sessID := insertSession(t, h, repoID, srcID, "golden-sess")
 
@@ -235,7 +296,7 @@ func setupGoldenRepo(t *testing.T) (string, string) {
 		200_000, "handler.go", "package api\nfunc Handle() {}\n")
 
 	// Create and commit the file in git.
-	_ = os.WriteFile(filepath.Join(dir, "handler.go"), []byte("package api\nfunc Handle() {}\n"), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "handler.go"), []byte("package api\nfunc Handle() {}\n"))
 	gitCmd := exec.Command("git", "add", "handler.go")
 	gitCmd.Dir = dir
 	if out, err := gitCmd.CombinedOutput(); err != nil {
@@ -256,15 +317,19 @@ func setupGoldenRepo(t *testing.T) (string, string) {
 
 	// Link the commit to a later checkpoint.
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoID,
 		CreatedAt: 300_000, Kind: "auto", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 300_000, Valid: true},
-	})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	}); err != nil {
+		t.Fatalf("insert linked checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: commitHash, RepositoryID: repoID,
 		CheckpointID: cpID, LinkedAt: 300_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 
 	_ = sqlstore.Close(h)
 	return dir, commitHash
@@ -442,9 +507,11 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 
 	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot, 150_000, "utils.go", "package utils\nfunc Helper() {}\n")
 	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
 	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,2 @@\n+package utils\n+func Helper() {}\n"
@@ -477,9 +544,11 @@ func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
 	semDir := t.TempDir()
 	repoID := insertRepo(t, h, 100_000)
 	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,1 @@\n+package utils\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
@@ -523,9 +592,11 @@ func TestRegression_CarryForward_HistoricalEmpty_PreservesCurrent(t *testing.T) 
 	sessID := insertSession(t, h, repoID, srcID, "sess-1")
 
 	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"edit.go"})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot, 250_000, "edit.go", "package edit\nfunc Handle() {}\n")
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"edit.go", "new.go"})
 
@@ -617,13 +688,18 @@ func TestRegression_ComputeAIPercent_DeletionPath(t *testing.T) {
 
 	eventID := uuid.NewString()
 	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/old.go && echo done"}}]}}`, repoRoot)
-	payloadHash, _, _ := bs.Put(ctx, []byte(payload))
-	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+	payloadHash, _, err := bs.Put(ctx, []byte(payload))
+	if err != nil {
+		t.Fatalf("store payload: %v", err)
+	}
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: eventID, SessionID: sessID, RepositoryID: repoID, Ts: 200_000,
 		Kind: "assistant", Role: sqlstore.NullStr("assistant"),
 		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
 		PayloadHash: sqlstore.NullStr(payloadHash), Summary: sqlstore.NullStr("Ran bash"),
-	})
+	}); err != nil {
+		t.Fatalf("insert agent event: %v", err)
+	}
 	insertCommitCheckpoint(t, h, repoID, "commit1abc", 300_000)
 
 	diff := "diff --git a/old.go b/old.go\n--- a/old.go\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-package old\n-func Legacy() {}\n"
@@ -741,9 +817,11 @@ func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
 
 	// CP1 has a manifest with utils.go but NO events with matching content.
 	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	// CP2: current window, also no matching events.
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
@@ -831,10 +909,13 @@ func TestRegression_Blame_CheckpointRef(t *testing.T) {
 		t.Fatalf("AttributeCommit: %v", err)
 	}
 
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	dbPath := filepath.Join(repo.Root(), ".semantica", "lineage.db")
-	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	link, _ := h.Queries.GetCommitLinkByCommitHash(ctx, commitHash)
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	link, err := h.Queries.GetCommitLinkByCommitHash(ctx, commitHash)
+	if err != nil {
+		t.Fatalf("get commit link: %v", err)
+	}
 	cpID := link.CheckpointID
 	_ = sqlstore.Close(h)
 
@@ -866,13 +947,19 @@ func TestRegression_Blame_CheckpointWithoutCommit(t *testing.T) {
 	dir, _ := setupGoldenRepo(t)
 	ctx := context.Background()
 
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	repoRoot := repo.Root()
 	dbPath := filepath.Join(repoRoot, ".semantica", "lineage.db")
 	objectsDir := filepath.Join(repoRoot, ".semantica", "objects")
-	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
-	bs, _ := blobs.NewStore(objectsDir)
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
+	if err != nil {
+		t.Fatalf("get repository row: %v", err)
+	}
+	bs, err := blobs.NewStore(objectsDir)
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
 
 	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session2.jsonl")
 	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "unlinked-sess")
@@ -880,11 +967,13 @@ func TestRegression_Blame_CheckpointWithoutCommit(t *testing.T) {
 		400_000, "utils.go", "package utils\nfunc Help() {}\n")
 
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
 		CreatedAt: 500_000, Kind: "manual", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 500_000, Valid: true},
-	})
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
 	_ = sqlstore.Close(h)
 
 	svc := NewAttributionService()
@@ -914,42 +1003,40 @@ func TestRegression_AttributeCommit_DeletionTouchedFiles(t *testing.T) {
 	ctx := context.Background()
 
 	// Create old.go, commit it.
-	_ = os.WriteFile(filepath.Join(dir, "old.go"), []byte("package old\n\nfunc Legacy() {}\n"), 0o644)
-	gitCmd := exec.Command("git", "add", "old.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "commit", "-m", "add old.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
+	mustWriteFile(t, filepath.Join(dir, "old.go"), []byte("package old\n\nfunc Legacy() {}\n"))
+	mustRunGit(t, dir, "add", "old.go")
+	mustRunGit(t, dir, "commit", "-m", "add old.go")
 
 	// Delete old.go, commit.
-	_ = os.Remove(filepath.Join(dir, "old.go"))
-	gitCmd = exec.Command("git", "add", "old.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "commit", "-m", "remove old.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "rev-parse", "HEAD")
-	gitCmd.Dir = dir
-	out, _ := gitCmd.Output()
-	deleteCommit := strings.TrimSpace(string(out))
+	if err := os.Remove(filepath.Join(dir, "old.go")); err != nil {
+		t.Fatalf("remove old.go: %v", err)
+	}
+	mustRunGit(t, dir, "add", "old.go")
+	mustRunGit(t, dir, "commit", "-m", "remove old.go")
+	deleteCommit := mustGitOutput(t, dir, "rev-parse", "HEAD")
 
 	// Link the delete commit to a checkpoint.
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	dbPath := filepath.Join(repo.Root(), ".semantica", "lineage.db")
-	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repo.Root())
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repo.Root())
+	if err != nil {
+		t.Fatalf("get repository row: %v", err)
+	}
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
 		CreatedAt: 600_000, Kind: "auto", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 600_000, Valid: true},
-	})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: deleteCommit, RepositoryID: repoRow.RepositoryID,
 		CheckpointID: cpID, LinkedAt: 600_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = sqlstore.Close(h)
 
 	svc := NewAttributionService()
@@ -980,38 +1067,38 @@ func TestRegression_FileChangeAI_ProviderTouchNoLineLevelEvidence(t *testing.T) 
 	ctx := context.Background()
 
 	// Add a new file, commit it.
-	_ = os.WriteFile(filepath.Join(dir, "touched.go"), []byte("package touched\nfunc F() {}\n"), 0o644)
-	gitCmd := exec.Command("git", "add", "touched.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "commit", "-m", "add touched.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "rev-parse", "HEAD")
-	gitCmd.Dir = dir
-	out, _ := gitCmd.Output()
-	commitHash := strings.TrimSpace(string(out))
+	mustWriteFile(t, filepath.Join(dir, "touched.go"), []byte("package touched\nfunc F() {}\n"))
+	mustRunGit(t, dir, "add", "touched.go")
+	mustRunGit(t, dir, "commit", "-m", "add touched.go")
+	commitHash := mustGitOutput(t, dir, "rev-parse", "HEAD")
 
 	// Insert a provider file-touch event (no payload, no line-level data).
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	dbPath := filepath.Join(repo.Root(), ".semantica", "lineage.db")
-	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repo.Root())
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repo.Root())
+	if err != nil {
+		t.Fatalf("get repository row: %v", err)
+	}
 
 	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/cursor.jsonl")
 	sessID := insertSessionWithProvider(t, h, repoRow.RepositoryID, srcID, "sess-cursor-touch", "cursor")
 	insertProviderFileTouchEvent(t, h, sessID, repoRow.RepositoryID, "cursor", "cursor_edit", 350_000, "touched.go")
 
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
 		CreatedAt: 400_000, Kind: "auto", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 400_000, Valid: true},
-	})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: commitHash, RepositoryID: repoRow.RepositoryID,
 		CheckpointID: cpID, LinkedAt: 400_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = sqlstore.Close(h)
 
 	svc := NewAttributionService()
@@ -1050,59 +1137,65 @@ func TestRegression_FileChangeAI_BashDeletionZeroScored(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a file, commit, then delete via AI bash command.
-	_ = os.WriteFile(filepath.Join(dir, "doomed.go"), []byte("package doomed\n"), 0o644)
-	gitCmd := exec.Command("git", "add", "doomed.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "commit", "-m", "add doomed.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
+	mustWriteFile(t, filepath.Join(dir, "doomed.go"), []byte("package doomed\n"))
+	mustRunGit(t, dir, "add", "doomed.go")
+	mustRunGit(t, dir, "commit", "-m", "add doomed.go")
 
 	// Delete and commit.
-	_ = os.Remove(filepath.Join(dir, "doomed.go"))
-	gitCmd = exec.Command("git", "add", "doomed.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "commit", "-m", "remove doomed.go")
-	gitCmd.Dir = dir
-	_, _ = gitCmd.CombinedOutput()
-	gitCmd = exec.Command("git", "rev-parse", "HEAD")
-	gitCmd.Dir = dir
-	out, _ := gitCmd.Output()
-	deleteCommit := strings.TrimSpace(string(out))
+	if err := os.Remove(filepath.Join(dir, "doomed.go")); err != nil {
+		t.Fatalf("remove doomed.go: %v", err)
+	}
+	mustRunGit(t, dir, "add", "doomed.go")
+	mustRunGit(t, dir, "commit", "-m", "remove doomed.go")
+	deleteCommit := mustGitOutput(t, dir, "rev-parse", "HEAD")
 
 	// Insert AI bash rm event.
-	repo, _ := git.OpenRepo(dir)
+	repo := mustOpenRepo(t, dir)
 	repoRoot := repo.Root()
 	dbPath := filepath.Join(repoRoot, ".semantica", "lineage.db")
 	objectsDir := filepath.Join(repoRoot, ".semantica", "objects")
-	h, _ := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
-	repoRow, _ := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
-	bs, _ := blobs.NewStore(objectsDir)
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
+	if err != nil {
+		t.Fatalf("get repository row: %v", err)
+	}
+	bs, err := blobs.NewStore(objectsDir)
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
 
 	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session.jsonl")
 	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "sess-rm")
 
 	// Use forward slashes so Windows paths don't produce invalid JSON.
 	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm %s/doomed.go"}}]}}`, filepath.ToSlash(repoRoot))
-	payloadHash, _, _ := bs.Put(ctx, []byte(payload))
-	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+	payloadHash, _, err := bs.Put(ctx, []byte(payload))
+	if err != nil {
+		t.Fatalf("store bash payload: %v", err)
+	}
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: uuid.NewString(), SessionID: sessID, RepositoryID: repoRow.RepositoryID,
 		Ts: 450_000, Kind: "assistant", Role: sqlstore.NullStr("assistant"),
 		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
 		PayloadHash: sqlstore.NullStr(payloadHash),
-	})
+	}); err != nil {
+		t.Fatalf("insert bash event: %v", err)
+	}
 
 	cpID := uuid.NewString()
-	_ = h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
 		CreatedAt: 500_000, Kind: "auto", Status: "complete",
 		CompletedAt: sql.NullInt64{Int64: 500_000, Valid: true},
-	})
-	_ = h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: deleteCommit, RepositoryID: repoRow.RepositoryID,
 		CheckpointID: cpID, LinkedAt: 500_000,
-	})
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
 	_ = sqlstore.Close(h)
 
 	svc := NewAttributionService()

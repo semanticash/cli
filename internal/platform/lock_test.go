@@ -38,7 +38,7 @@ func TestLockFile_CrossProcessContention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: cross-process locking test")
 	}
-	t.Skip("TODO: implement cross-process locking test in Phase 1")
+	t.Skip("integration test not implemented yet")
 }
 
 func createTempLockFile(t *testing.T) *os.File {

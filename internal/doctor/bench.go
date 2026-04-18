@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,21 +131,30 @@ func EmitBenchRecord(repoPath string, record BenchRecord) {
 
 	data, err := json.Marshal(record)
 	if err != nil {
+		slog.Warn("doctor bench: marshal record failed", "repo", repoPath, "err", err)
 		return
 	}
 
 	logPath := BenchLogPath(repoPath)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		slog.Warn("doctor bench: create log directory failed", "path", logPath, "err", err)
 		return
 	}
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
+		slog.Warn("doctor bench: open log failed", "path", logPath, "err", err)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			slog.Warn("doctor bench: close log failed", "path", logPath, "err", cerr)
+		}
+	}()
 
-	_, _ = f.Write(append(data, '\n'))
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		slog.Warn("doctor bench: write log failed", "path", logPath, "err", err)
+	}
 }
 
 // BenchEnabled returns true when doctor bench recording is enabled for a repo.

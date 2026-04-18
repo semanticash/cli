@@ -17,7 +17,7 @@ func TestLooksAbsolutePath(t *testing.T) {
 		{"/", true, false},
 
 		// Windows absolute (filepath.IsAbs recognizes these only on Windows)
-		{"C:\\Users\\dev\\repo\\main.go", true, true},
+		{"C:\\repo\\main.go", true, true},
 		{"D:/projects/cli/main.go", true, true},
 
 		// UNC paths (work on all platforms via prefix check)
@@ -47,8 +47,8 @@ func TestNormalizePathForCompare_NoOpOnUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix-only: verifies no lowercasing on case-sensitive filesystems")
 	}
-	got := NormalizePathForCompare("/Users/Dev/Repo/Main.go")
-	want := "/Users/Dev/Repo/Main.go"
+	got := NormalizePathForCompare("/workspace/Repo/Main.go")
+	want := "/workspace/Repo/Main.go"
 	if got != want {
 		t.Errorf("NormalizePathForCompare = %q, want %q (case preserved on Unix)", got, want)
 	}
@@ -58,8 +58,8 @@ func TestNormalizePathForCompare_LowercasesOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-only: verifies case normalization")
 	}
-	got := NormalizePathForCompare("C:\\Users\\Dev\\Repo\\Main.go")
-	want := "c:/users/dev/repo/main.go"
+	got := NormalizePathForCompare("C:\\Repo\\Main.go")
+	want := "c:/repo/main.go"
 	if got != want {
 		t.Errorf("NormalizePathForCompare = %q, want %q", got, want)
 	}

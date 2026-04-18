@@ -57,5 +57,5 @@ func TestSafeRename_IntegrationRetriesOnTransient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: retry under contention test")
 	}
-	t.Skip("TODO: implement retry-under-contention test in Phase 2")
+	t.Skip("integration test not implemented yet")
 }

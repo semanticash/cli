@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.4] - 2026-04-18
+
+### Added
+
+- Per-file attribution metadata in serialized results: `operation`, `classification`, and aggregate `ai_lines`
+- Diagnostic `notes` arrays for both commit attribution and checkpoint-only attribution results
+
+### Changed
+
+- `semantica blame` prints a single Notes section sourced from the same diagnostics bundle used by serialized attribution output
+- Raw transcript rendering reuses repeated payload blobs within a single request instead of reloading the same payload hash for every event
+- Test fixtures and path examples were cleaned up to avoid user-specific absolute paths in the codebase
+
+### Fixed
+
+- Pure deletion paths appear consistently in per-file attribution results, even when only deletion metadata is available
+- Missing blob payloads in attribution, transcript rendering, and provenance packaging emit warnings instead of failing silently
+- Doctor bench recording surfaces local log-write failures instead of dropping them silently
+
 ## [0.3.3] - 2026-04-16
 
 ### Added

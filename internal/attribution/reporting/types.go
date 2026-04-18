@@ -156,12 +156,15 @@ type CheckpointResult struct {
 	Diagnostics    CheckpointDiagnostics
 }
 
-// CheckpointDiagnostics holds event stats and a diagnostic note for
-// checkpoint-only blame results.
+// CheckpointDiagnostics holds event stats and diagnostic notes for
+// checkpoint-only blame results. Notes carries the pipeline-state
+// message wrapped as a slice so the shape matches the commit-path
+// AttributionDiagnostics - both CLI display and push paths iterate
+// the same slice.
 type CheckpointDiagnostics struct {
 	EventsConsidered int
 	EventsAssistant  int
 	PayloadsLoaded   int
 	AIToolEvents     int
-	Note             string
+	Notes            []string
 }
