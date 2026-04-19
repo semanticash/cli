@@ -2,16 +2,14 @@ package gemini
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
-	agentgemini "github.com/semanticash/cli/internal/agents/gemini"
 	"github.com/semanticash/cli/internal/agents/api"
+	agentgemini "github.com/semanticash/cli/internal/agents/gemini"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
-	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 // BuildHookEvents constructs RawEvents directly from hook payloads.
@@ -19,35 +17,25 @@ import (
 func (p *Provider) BuildHookEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.Type {
 	case hooks.PromptSubmitted:
-		return buildPromptEvent(event, bs)
+		return buildPromptEvent(ctx, event, bs)
 	case hooks.ToolStepCompleted:
-		return buildStepEvent(event, bs)
+		return buildStepEvent(ctx, event, bs)
 	case hooks.SubagentPromptSubmitted:
-		return buildSubagentPromptEvent(event, bs)
+		return buildSubagentPromptEvent(ctx, event, bs)
 	case hooks.SubagentCompleted:
-		return buildSubagentCompletedEvent(event, bs)
+		return buildSubagentCompletedEvent(ctx, event, bs)
 	default:
 		return nil, nil
 	}
 }
 
-func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	if event.Prompt == "" {
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(event.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := event.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, event.Prompt)
+	summary := builder.TruncateWithEllipsis(event.Prompt, 200)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "user"
@@ -61,14 +49,14 @@ func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent,
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildStepEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildStepEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.ToolName {
 	case "Write":
-		return buildWriteEvent(event, bs)
+		return buildWriteEvent(ctx, event, bs)
 	case "Edit":
-		return buildEditEvent(event, bs)
+		return buildEditEvent(ctx, event, bs)
 	case "Bash":
-		return buildBashEvent(event, bs)
+		return buildBashEvent(ctx, event, bs)
 	default:
 		return nil, nil
 	}
@@ -80,7 +68,9 @@ type writeInput struct {
 	Content  string `json:"content"`
 }
 
-// editInput is the tool_input shape for replace/edit_file.
+// editInput is the tool_input shape for replace/edit_file. The
+// instruction field appears on some Gemini hook payloads and is
+// deliberately dropped when rebuilding the canonical scorer input.
 type editInput struct {
 	FilePath    string `json:"file_path"`
 	OldString   string `json:"old_string"`
@@ -94,7 +84,15 @@ type bashInput struct {
 	Description string `json:"description"`
 }
 
-func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildWriteEvent rebuilds the tool_input into the canonical
+// {file_path, content} shape before synthesizing the payload blob.
+// The rebuild is not strictly necessary for the current Gemini hook
+// payload (which already uses those field names), but it normalizes
+// the key ordering that json.Marshal produces. Passing event.ToolInput
+// directly would tie the stored blob hash to whatever key order the
+// incoming payload happened to use, which can vary between Gemini
+// CLI versions. The explicit rebuild keeps the hash stable.
+func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp writeInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse write_file tool_input: %w", err)
@@ -103,13 +101,12 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		return nil, nil
 	}
 
-	// Synthesize standard assistant payload blob for attribution scoring.
 	inputJSON, _ := json.Marshal(map[string]any{
 		"file_path": inp.FilePath,
 		"content":   inp.Content,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Write", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Write", inp.FilePath, "write")
 
 	ev := makeBaseRawEvent(event)
@@ -127,7 +124,10 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildEditEvent drops the optional instruction field when rebuilding
+// the canonical input shape. Only the fields the attribution scorer
+// consumes land in the payload blob.
+func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp editInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse replace tool_input: %w", err)
@@ -141,8 +141,8 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 		"old_string": inp.OldString,
 		"new_string": inp.NewString,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Edit", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Edit", inp.FilePath, "edit")
 
 	ev := makeBaseRawEvent(event)
@@ -160,39 +160,35 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildBashEvent emits a Bash tool-use event.
+//
+// Gemini-specific rules preserved here:
+//
+//   - The description is unredacted in the payload blob. Only the
+//     command is redacted in the payload. The provenance blob stores
+//     an empty description field regardless (see storeRedactedBashProvenance).
+//   - The summary uses the description verbatim when present, and
+//     truncates only in the command-fallback branch when description
+//     is empty.
+func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp bashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse run_shell_command tool_input: %w", err)
 	}
 
-	redactedCmd := inp.Command
-	if redactedCmd != "" {
-		if r, err := redact.String(redactedCmd); err == nil {
-			redactedCmd = r
-		}
-	}
+	redactedCmd := builder.Redact(inp.Command)
 
 	summary := inp.Description
 	if summary == "" && redactedCmd != "" {
-		summary = redactedCmd
-		if len(summary) > 200 {
-			summary = summary[:200] + "..."
-		}
+		summary = builder.TruncateWithEllipsis(redactedCmd, 200)
 	}
 
-	var payloadHash string
-	if bs != nil {
-		blob := synthesizeBashBlob(redactedCmd, inp.Description)
-		if blob != nil {
-			h, _, err := bs.Put(context.Background(), blob)
-			if err == nil {
-				payloadHash = h
-			}
-		}
-	}
-
-	provenanceHash := storeRedactedBashProvenance(bs, event, redactedCmd)
+	inputJSON, _ := json.Marshal(map[string]string{
+		"command":     redactedCmd,
+		"description": inp.Description,
+	})
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
+	provenanceHash := storeRedactedBashProvenance(ctx, bs, event, redactedCmd)
 	toolUsesJSON := serializeStepToolUses("Bash", "", "exec")
 
 	ev := makeBaseRawEvent(event)
@@ -210,7 +206,7 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp struct {
 		Request string `json:"request"`
 	}
@@ -218,20 +214,9 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(inp.Request))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := inp.Request
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
-
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.StorePromptPayload(ctx, bs, inp.Request)
+	summary := builder.TruncateWithEllipsis(inp.Request, 200)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -247,7 +232,11 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildSubagentCompletedEvent parses the completion result from
+// tool_response.llmContent, which Gemini emits either as a string or
+// as an array of {text} objects. Both shapes are handled; if neither
+// parse succeeds, a neutral placeholder summary is used.
+func buildSubagentCompletedEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp struct {
 		Request string `json:"request"`
 	}
@@ -255,14 +244,12 @@ func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broke
 		_ = json.Unmarshal(event.ToolInput, &inp)
 	}
 
-	// Extract result from tool_response.llmContent.
 	summary := "Gemini subagent completed"
 	if len(event.ToolResponse) > 0 {
 		var resp struct {
 			LLMContent json.RawMessage `json:"llmContent"`
 		}
 		if json.Unmarshal(event.ToolResponse, &resp) == nil && len(resp.LLMContent) > 0 {
-			// llmContent can be a string or array of objects with text.
 			var text string
 			if json.Unmarshal(resp.LLMContent, &text) == nil && text != "" {
 				summary = text
@@ -276,13 +263,11 @@ func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broke
 			}
 		}
 	}
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	summary = builder.TruncateWithEllipsis(summary, 200)
 
 	inputJSON, _ := json.Marshal(map[string]any{"request": inp.Request})
-	payloadHash := synthesizeAssistantBlob(bs, "Agent", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Agent", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Agent", "", "exec")
 
 	ev := makeBaseRawEvent(event)
@@ -300,82 +285,12 @@ func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broke
 	return []broker.RawEvent{ev}, nil
 }
 
-// synthesizeAssistantBlob creates a standard assistant payload blob
-// compatible with the attribution scorer.
-func synthesizeAssistantBlob(bs api.BlobPutter, toolName string, toolInput json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  toolName,
-					"input": json.RawMessage(toolInput),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func synthesizeBashBlob(redactedCmd, description string) []byte {
-	redactedInput := map[string]string{
-		"command":     redactedCmd,
-		"description": description,
-	}
-	inputJSON, _ := json.Marshal(redactedInput)
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  "Bash",
-					"input": json.RawMessage(inputJSON),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return nil
-	}
-	return data
-}
-
-func storeRawHookPayload(bs api.BlobPutter, event *hooks.Event) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]json.RawMessage{
-		"tool_input": event.ToolInput,
-	}
-	if len(event.ToolResponse) > 0 {
-		blob["tool_response"] = event.ToolResponse
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
+// storeRedactedBashProvenance captures the Gemini-specific Bash
+// provenance shape. The description is stored as an empty string
+// regardless of the incoming value; the tool response is reduced to
+// a single output field built from returnDisplay (with redaction
+// applied). Both are current behavior and are preserved here.
+func storeRedactedBashProvenance(ctx context.Context, bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
 	if bs == nil {
 		return ""
 	}
@@ -388,12 +303,7 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 		_ = json.Unmarshal(event.ToolResponse, &resp)
 	}
 
-	redactedOutput := resp.ReturnDisplay
-	if redactedOutput != "" {
-		if r, err := redact.String(redactedOutput); err == nil {
-			redactedOutput = r
-		}
-	}
+	redactedOutput := builder.Redact(resp.ReturnDisplay)
 
 	blob := map[string]any{
 		"tool_name":   event.ToolName,
@@ -410,13 +320,13 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 	if err != nil {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, data)
 }
 
+// serializeStepToolUses produces the ToolUsesJSON string via
+// agentgemini's helper. The shape matches Claude, Copilot, and
+// Cursor (name plus file_path plus file_op); only the implementing
+// package differs.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentgemini.ToolUse{
 		Name:     toolName,
@@ -429,34 +339,23 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
+// makeBaseRawEvent derives the Gemini-specific provider session ID
+// from the transcript path and assembles the session metadata before
+// delegating the envelope construction to the shared builder.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	providerSessionID := agentgemini.ExtractSessionID(event.TranscriptRef)
 
 	meta := map[string]any{"source_key": event.TranscriptRef}
 	metaJSON, _ := json.Marshal(meta)
 
-	hh := sha256.New()
-	hh.Write([]byte(event.TranscriptRef))
-	stableKey := event.ToolUseID
-	if stableKey == "" {
-		stableKey = event.TurnID
-	}
-	_, _ = fmt.Fprintf(hh, ":hook:%s:%s:%s", event.Type.HookPhase(), event.ToolName, stableKey)
-	eventID := hex.EncodeToString(hh.Sum(nil))
-
-	sourceProjectPath := event.CWD
-
-	return broker.RawEvent{
-		EventID:           eventID,
+	return builder.BaseRawEvent(builder.BaseInput{
+		Event:             event,
 		SourceKey:         event.TranscriptRef,
 		Provider:          agentgemini.ProviderName,
-		Timestamp:         event.Timestamp,
 		ProviderSessionID: providerSessionID,
-		SessionStartedAt:  event.Timestamp,
 		SessionMetaJSON:   string(metaJSON),
-		SourceProjectPath: sourceProjectPath,
-		Model:             event.Model,
-	}
+		SourceProjectPath: event.CWD,
+	})
 }
 
 // ensure Provider implements DirectHookEmitter.
