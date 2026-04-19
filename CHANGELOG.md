@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Tightened direct-hook regression protection so payload/blob serialization changes are caught across all supported providers.
+- Claude Code and Cursor project-path decoding now returns an empty path for source keys outside the provider project base, keeping emitted metadata consistent across Unix and Windows.
 
 ## [0.3.4] - 2026-04-18
 

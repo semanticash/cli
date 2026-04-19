@@ -22,6 +22,14 @@ func TestExtractSessionIDFromPath(t *testing.T) {
 	}
 }
 
+func TestDecodeProjectPath_OutsideBaseReturnsEmpty(t *testing.T) {
+	// Paths outside Claude's project base must decode to "" on every
+	// platform.
+	if got := DecodeProjectPath("/workspace/.claude/projects/test/sess.jsonl"); got != "" {
+		t.Errorf("DecodeProjectPath(out-of-base) = %q, want \"\"", got)
+	}
+}
+
 func TestExtractParentSessionID(t *testing.T) {
 	tests := []struct {
 		path string

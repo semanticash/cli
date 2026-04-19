@@ -27,8 +27,8 @@
       "ProviderSessionID": "sess-claude-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000040000,
-      "SessionMetaJSON": "{\"project_path\":\"..\",\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
-      "SourceProjectPath": "..",
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "",
       "Model": ""
     }
   ],

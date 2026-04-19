@@ -27,8 +27,8 @@
       "ProviderSessionID": "conv-123",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000000000,
-      "SessionMetaJSON": "{\"project_path\":\"/\",\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
-      "SourceProjectPath": "/",
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "",
       "Model": ""
     }
   ],
