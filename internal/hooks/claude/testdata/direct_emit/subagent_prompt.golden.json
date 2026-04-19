@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt",
+  "description": "PreToolUse[Agent] with a prompt",
+  "expected_events": [
+    {
+      "EventID": "15854eb749175ad008d847b0f1a3865515fdf32a7f84cd682884d9a923a511d7",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Review the auth package",
+      "PayloadHash": "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "toolu_agent_1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "a64eb28aeb8a926d6b9c25b9c52dc8c756382ec107af9c063c4278857a6afafa",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{\"project_path\":\"..\",\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "..",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40": "Review the auth package",
+    "a64eb28aeb8a926d6b9c25b9c52dc8c756382ec107af9c063c4278857a6afafa": "{\"tool_input\":{\"prompt\":\"Review the auth package\",\"description\":\"Code review\"}}"
+  }
+}

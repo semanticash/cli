@@ -13,13 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-## [0.3.5]
+## [0.3.5] - 2026-04-19
 
 ### Added
 
+- Permanent direct-hook contract fixtures for Claude Code, GitHub Copilot, Cursor, Gemini CLI, and Kiro CLI, including content-addressed blob checks to catch wire-shape regressions.
+- Drift detection for direct-hook fixtures so stale or missing contract files fail test runs instead of silently reducing coverage.
+
 ### Changed
 
+- Unified direct hook emission across Claude Code, GitHub Copilot, Cursor, Gemini CLI, and Kiro CLI around shared builder helpers while preserving provider-specific event shapes and payload contracts.
+- Provider documentation now reflects current supported platform paths and detection behavior, including Windows coverage where applicable.
+- Direct-hook contract tests now use `direct_emit_contract_test.go` naming to describe intent more clearly.
+
 ### Fixed
+
+- Tightened direct-hook regression protection so payload/blob serialization changes are caught across all supported providers.
 
 ## [0.3.4] - 2026-04-18
 

@@ -1,0 +1,39 @@
+{
+  "name": "bash",
+  "description": "Cursor postToolUse with Shell payload; TrimSpace+ellipsis summary rule and structured tool_output",
+  "expected_events": [
+    {
+      "EventID": "18a53b6b71ed75cd1281806d51feae0f09fdae87284df5357c6e86705befb81c",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000030000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Bash\",\"file_op\":\"exec\"}]}",
+      "Summary": "cat file.txt",
+      "PayloadHash": "67d4ce05b622fd86e53d5452a3e512445cf2d55fa0d35b7fa4219ab878f12de2",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "shell-123",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "75c67434f8d0eea0dfbc1f69b6a9fcc5dfdf2916c35874809cb2e0f08701f657",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000030000,
+      "SessionMetaJSON": "{\"project_path\":\"/\",\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "/",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "67d4ce05b622fd86e53d5452a3e512445cf2d55fa0d35b7fa4219ab878f12de2": "{\"message\":{\"content\":[{\"input\":{\"command\":\"cat file.txt\",\"cwd\":\"/repo\",\"timeout\":30000},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "75c67434f8d0eea0dfbc1f69b6a9fcc5dfdf2916c35874809cb2e0f08701f657": "{\"conversation_id\":\"conv-123\",\"cwd\":\"\",\"tool_input\":{\"command\":\"cat file.txt\",\"cwd\":\"/repo\",\"timeout\":30000},\"tool_name\":\"Shell\",\"tool_output\":{\"exitCode\":0,\"output\":\"ok\\n\"},\"tool_use_id\":\"shell-123\",\"transcript_path\":\"\"}"
+  }
+}

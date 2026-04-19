@@ -1,0 +1,39 @@
+{
+  "name": "bash",
+  "description": "Copilot Bash with description; description is REDACTED in both payload and provenance (differs from Claude)",
+  "expected_events": [
+    {
+      "EventID": "19022810bf7bf0925ca71a1f87a0294c8ed271faa80a7aaf28f88a83260b0053",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000030000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Bash\",\"file_op\":\"exec\"}]}",
+      "Summary": "Print file",
+      "PayloadHash": "be2b9e8e06d535cf53e82408506fbc4dba3c0e985ef14c7d560fd355c6a52dbf",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "copilot-bash-1",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "4bd346bd7264944a999bf4dfcf6e279f008191902c74c4401dc80cbeaab5f228",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000030000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "4bd346bd7264944a999bf4dfcf6e279f008191902c74c4401dc80cbeaab5f228": "{\"tool_input\":{\"command\":\"cat file.txt\",\"description\":\"Print file\"},\"tool_response\":{\"textResultForLlm\":\"ok\\n\\u003cexited with exit code 0\\u003e\"}}",
+    "be2b9e8e06d535cf53e82408506fbc4dba3c0e985ef14c7d560fd355c6a52dbf": "{\"message\":{\"content\":[{\"input\":{\"command\":\"cat file.txt\",\"description\":\"Print file\"},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

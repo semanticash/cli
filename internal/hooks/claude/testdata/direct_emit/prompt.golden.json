@@ -1,0 +1,38 @@
+{
+  "name": "prompt",
+  "description": "UserPromptSubmit with a short prompt body",
+  "expected_events": [
+    {
+      "EventID": "f407849694f38d12461608db0d72337e3c5f72c989dfdb399c11767735b67ce3",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000000000,
+      "Kind": "user",
+      "Role": "user",
+      "ToolUsesJSON": "",
+      "Summary": "Refactor the retry handler in payments.go",
+      "PayloadHash": "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "",
+      "ToolName": "",
+      "EventSource": "hook",
+      "ProvenanceHash": "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000000000,
+      "SessionMetaJSON": "{\"project_path\":\"..\",\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "..",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000": "Refactor the retry handler in payments.go"
+  }
+}

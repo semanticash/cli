@@ -1,0 +1,39 @@
+{
+  "name": "subagent_completed",
+  "description": "Cursor subagentStop; summary built from subagent_type",
+  "expected_events": [
+    {
+      "EventID": "b0ff9ea96c13905bb6bf8887e20a42e2619f011f553d53e229b359a9b8816b25",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000050000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Agent\",\"file_op\":\"exec\"}]}",
+      "Summary": "general-purpose subagent completed",
+      "PayloadHash": "a1f887cc86a37b98614d3806eb35a6ac05c550683e391febc4655f71625e1ae7",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "agent-123",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "10f5c15402dab12bacc649c6e09b0de2278ac609cee0d1e619c314bb8ca4aff4",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000050000,
+      "SessionMetaJSON": "{\"project_path\":\"/\",\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "/",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "10f5c15402dab12bacc649c6e09b0de2278ac609cee0d1e619c314bb8ca4aff4": "{\n\t\t\t\t\t\"conversation_id\":\"conv-123\",\n\t\t\t\t\t\"subagent_id\":\"agent-123\",\n\t\t\t\t\t\"subagent_type\":\"general-purpose\",\n\t\t\t\t\t\"status\":\"completed\",\n\t\t\t\t\t\"duration_ms\":9000,\n\t\t\t\t\t\"message_count\":3,\n\t\t\t\t\t\"tool_call_count\":1\n\t\t\t\t}",
+    "a1f887cc86a37b98614d3806eb35a6ac05c550683e391febc4655f71625e1ae7": "{\"message\":{\"content\":[{\"input\":{\"agent_transcript_path\":\"\",\"duration_ms\":9000,\"message_count\":3,\"parent_conversation_id\":\"\",\"status\":\"completed\",\"subagent_id\":\"agent-123\",\"subagent_type\":\"general-purpose\",\"tool_call_count\":1},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

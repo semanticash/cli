@@ -84,9 +84,8 @@ func SynthesizeAssistantBlob(ctx context.Context, bs api.BlobPutter, toolName st
 // hook phases that do not carry a response (for example pre-tool-use)
 // produce a smaller, wrapper-only blob.
 //
-// Cursor stores the raw payload without this wrapper and should not
-// call into this helper; it keeps its own one-line helper per the
-// matrix row 10 divergence.
+// Cursor stores the raw payload without this wrapper and therefore
+// keeps a small provider-local helper instead of calling this one.
 //
 // Returns an empty string on marshal or blob-store failure.
 func StoreWrappedHookProvenance(ctx context.Context, bs api.BlobPutter, toolInput, toolResponse json.RawMessage) string {

@@ -1,0 +1,39 @@
+{
+  "name": "subagent_completed",
+  "description": "Copilot SubagentStop; summary comes from textResultForLlm via TruncateClean",
+  "expected_events": [
+    {
+      "EventID": "efa839d5527a835cbb1a07630d570ba962466d9e85abbcb7d2bbce8a9951b92b",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000050000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Agent\",\"file_op\":\"exec\"}]}",
+      "Summary": "Created /repo/out.json.",
+      "PayloadHash": "ad9214aa645e08bf2e3d9a8aee54d286232a93c795655178377875fad13024cd",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "copilot-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "00ec9174ae6f3de88c813c218f48d2d15d30671b3dfa943161c5c5e37ec959cb",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000050000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "00ec9174ae6f3de88c813c218f48d2d15d30671b3dfa943161c5c5e37ec959cb": "{\"tool_input\":{\"description\":\"Create JSON\",\"prompt\":\"Create the json file\",\"agent_type\":\"general-purpose\",\"name\":\"json-creator\"},\"tool_response\":{\"resultType\":\"success\",\"textResultForLlm\":\"Created /repo/out.json.\"}}",
+    "ad9214aa645e08bf2e3d9a8aee54d286232a93c795655178377875fad13024cd": "{\"message\":{\"content\":[{\"input\":{\"agent_type\":\"general-purpose\",\"description\":\"Create JSON\",\"name\":\"json-creator\",\"prompt\":\"Create the json file\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

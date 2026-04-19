@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt",
+  "description": "Copilot Agent prompt; summary uses TruncateClean like the top-level prompt",
+  "expected_events": [
+    {
+      "EventID": "8778f671c4462925eec26d649d9e1cf6f25bce9967ba3449583f239ba1902952",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Create the json file",
+      "PayloadHash": "dea7ac0bc56190524469e3e1da4ecd6819696335010cdc588c9d7e9c59d3e631",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "copilot-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "b85f6c96305ea023c52f6411a87012517c9aeb9ddd9ec52ffb01f5a7058d94a3",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "b85f6c96305ea023c52f6411a87012517c9aeb9ddd9ec52ffb01f5a7058d94a3": "{\"tool_input\":{\"description\":\"Create JSON\",\"prompt\":\"Create the json file\",\"agent_type\":\"general-purpose\",\"name\":\"json-creator\"}}",
+    "dea7ac0bc56190524469e3e1da4ecd6819696335010cdc588c9d7e9c59d3e631": "Create the json file"
+  }
+}

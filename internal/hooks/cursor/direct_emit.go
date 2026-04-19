@@ -301,8 +301,8 @@ func extractCursorToolOutput(toolOutput string) string {
 // shared {tool_input, tool_response} wrapper that Claude, Copilot,
 // Gemini, and Kiro CLI use. Cursor's incoming hook payload is the
 // tool_input for downstream consumers, so wrapping it again would
-// double-encode. Matrix row 10 documents this divergence; the helper
-// stays in Cursor's glue to preserve the current wire shape.
+// double-encode. The helper stays in Cursor's glue to preserve the
+// current wire shape.
 //
 // An empty payload skips the blob put (no zero-byte blobs in the
 // store), which also preserves current behavior.

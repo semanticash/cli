@@ -7,8 +7,8 @@
 // assistant payload shape consumed by the attribution scorer.
 //
 // This package owns those shared operations so each provider's
-// direct_emit.go can focus on its own quirks (tool-input parsing,
-// provider-specific payload fields, summary formatting rules).
+// direct_emit.go can focus on its provider-specific logic
+// (tool-input parsing, payload fields, summary formatting rules).
 //
 // Failure semantics. Hash-returning helpers never return an error.
 // On any failure (nil blob putter, blob-store error, marshal error)

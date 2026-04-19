@@ -1,0 +1,39 @@
+{
+  "name": "bash",
+  "description": "Kiro CLI execute_bash with a result array; ToolUsesJSON ships empty, stdout and stderr redacted",
+  "expected_events": [
+    {
+      "EventID": "629befd3d938f888922eb87ce8760d4f103cd32ba20cb6391109edd9963d1222",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000030000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "ls",
+      "PayloadHash": "155d40d31d2ac898644ce82866ca129829ff4c374ab2d134ecd71b5c311406f2",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-step-3",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "1a85ca267137579c75e48d4650b65fed8132fb62353e94a181dff88daace46a7",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000030000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "155d40d31d2ac898644ce82866ca129829ff4c374ab2d134ecd71b5c311406f2": "{\"message\":{\"content\":[{\"input\":{\"command\":\"ls\"},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "1a85ca267137579c75e48d4650b65fed8132fb62353e94a181dff88daace46a7": "{\"tool_input\":{\"command\":\"ls\"},\"tool_name\":\"Bash\",\"tool_response\":{\"stderr\":\"\",\"stdout\":\"file1\\nfile2\"},\"tool_use_id\":\"kiro-step-3\"}"
+  }
+}

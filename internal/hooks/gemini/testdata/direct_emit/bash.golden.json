@@ -1,0 +1,39 @@
+{
+  "name": "bash",
+  "description": "Gemini run_shell_command; description is unredacted in payload, hardcoded empty in provenance",
+  "expected_events": [
+    {
+      "EventID": "927411968586a507b079f307396b0e6aa3a64bae78d3bb5fbf99cade6c0f7329",
+      "SourceKey": "/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl",
+      "Provider": "gemini_cli",
+      "Timestamp": 1714000030000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Bash\",\"file_op\":\"exec\"}]}",
+      "Summary": "Run all tests",
+      "PayloadHash": "3203e2f74ec840a4da719c64ec8c68e238058c9169a2b773212da1f25467e68e",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "gemini-step-3",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "1816679c8180ea22a89485ae9654ab2ea17a7c1507e8c86cdb29b91aaab76a57",
+      "ProviderSessionID": "transcript",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000030000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "1816679c8180ea22a89485ae9654ab2ea17a7c1507e8c86cdb29b91aaab76a57": "{\"tool_input\":{\"command\":\"go test ./...\",\"description\":\"\"},\"tool_name\":\"Bash\",\"tool_response\":{\"output\":\"tests passed\"},\"tool_use_id\":\"gemini-step-3\"}",
+    "3203e2f74ec840a4da719c64ec8c68e238058c9169a2b773212da1f25467e68e": "{\"message\":{\"content\":[{\"input\":{\"command\":\"go test ./...\",\"description\":\"Run all tests\"},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

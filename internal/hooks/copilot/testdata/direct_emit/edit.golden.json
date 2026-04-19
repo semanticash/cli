@@ -1,0 +1,41 @@
+{
+  "name": "edit",
+  "description": "Copilot Edit with path/old_str/new_str shape, normalized to the canonical scorer shape",
+  "expected_events": [
+    {
+      "EventID": "1a722c22a19687652c9ec5d4b8ac72ef4b3664ac945bcc35a242c120f3288f70",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000020000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "copilot-edit-1",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "2c03c49cad0541c13e6b0aa366bef41146f29948b74a59789016733e889972e1",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000020000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "2c03c49cad0541c13e6b0aa366bef41146f29948b74a59789016733e889972e1": "{\"tool_input\":{\"path\":\"/repo/main.go\",\"old_str\":\"foo\",\"new_str\":\"bar\"}}",
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

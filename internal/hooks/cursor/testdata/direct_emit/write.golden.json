@@ -1,0 +1,41 @@
+{
+  "name": "write",
+  "description": "Cursor afterFileEdit for a Write; single edit normalized from edits[0].new_string",
+  "expected_events": [
+    {
+      "EventID": "d9dc07ad05c476b9104d7ec1fb51c2c2bb20f93756b239873aaba733ebd1e5b0",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000010000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Write\",\"file_path\":\"/repo/new.txt\",\"file_op\":\"write\"}]}",
+      "Summary": "",
+      "PayloadHash": "6c4aae1ae93ffde489577f46dae6c9c2233c64dac18d9ae27f012bcb152af69f",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/new.txt"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "cursor-step-1",
+      "ToolName": "Write",
+      "EventSource": "hook",
+      "ProvenanceHash": "7f13f2f635954ffd1796187df2bbdaed455707526f0eae14ef23b35bf98bfaec",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000010000,
+      "SessionMetaJSON": "{\"project_path\":\"/\",\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "/",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "6c4aae1ae93ffde489577f46dae6c9c2233c64dac18d9ae27f012bcb152af69f": "{\"message\":{\"content\":[{\"input\":{\"content\":\"hello\\n\",\"file_path\":\"/repo/new.txt\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "7f13f2f635954ffd1796187df2bbdaed455707526f0eae14ef23b35bf98bfaec": "{\n\t\t\t\t\t\"conversation_id\":\"conv-123\",\n\t\t\t\t\t\"file_path\":\"/repo/new.txt\",\n\t\t\t\t\t\"edits\":[{\"old_string\":\"\",\"new_string\":\"hello\\n\"}]\n\t\t\t\t}"
+  }
+}

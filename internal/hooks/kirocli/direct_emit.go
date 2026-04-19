@@ -69,9 +69,8 @@ func buildStepEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 //
 // The ToolUsesJSON emitted here uses Kiro's synthetic tool name
 // (`kiro_file_edit`) via agentKiro.BuildToolUsesJSON rather than the
-// real tool name the other providers use. This is a deliberate
-// divergence from the other providers, documented in matrix row 9,
-// and is exercised by the kirocli direct-emit tests.
+// real tool name the other providers use. The direct-emit tests pin
+// that serialized shape.
 func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp fsWriteInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
@@ -150,9 +149,7 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 //     with TruncateWithEllipsis applied on overflow.
 //   - The ToolUsesJSON ships as an empty string because
 //     agentKiro.BuildToolUsesJSON returns an empty NullString when
-//     the file path is empty. This is the flip side of the
-//     synthetic-name contract documented in matrix row 9, and is
-//     asserted by the kirocli direct-emit tests.
+//     the file path is empty. The direct-emit tests pin that shape.
 func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp bashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {

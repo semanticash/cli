@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt_from_task_fallback",
+  "description": "Kiro CLI subagent input missing prompt; task becomes the subagent intent",
+  "expected_events": [
+    {
+      "EventID": "80d32b2da7846c602084f007b07fe373fc45d56409cd246c31ba362b21bd3344",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000050000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Generate the JSON schema",
+      "PayloadHash": "f0e4331d2b424c06c3e0cfbb0ceb5ee49c2b2e373c095f0d538dc110be829da6",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "",
+      "ToolUseID": "",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "3d63cad37cd0f7ec6268504f85906e65f9a3a8b258db78eff402b294a1a4f45c",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000050000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "3d63cad37cd0f7ec6268504f85906e65f9a3a8b258db78eff402b294a1a4f45c": "{\"tool_input\":{\"task\":\"Generate the JSON schema\"}}",
+    "f0e4331d2b424c06c3e0cfbb0ceb5ee49c2b2e373c095f0d538dc110be829da6": "Generate the JSON schema"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "prompt",
+  "description": "Cursor prompt with raw-string TruncateWithEllipsis semantics",
+  "expected_events": [
+    {
+      "EventID": "8a21a596f50c3d108342f8d48f8150f0346866fdc9e30f1165ff84cc7bf5acc9",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000000000,
+      "Kind": "user",
+      "Role": "user",
+      "ToolUsesJSON": "",
+      "Summary": "Refactor the retry handler in payments.go",
+      "PayloadHash": "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "",
+      "ToolName": "",
+      "EventSource": "hook",
+      "ProvenanceHash": "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000000000,
+      "SessionMetaJSON": "{\"project_path\":\"/\",\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "/",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "106527c1b0a80cd3c766890796529b566ef8c098666bf5080ff4c17c4dbb5000": "Refactor the retry handler in payments.go"
+  }
+}

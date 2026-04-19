@@ -156,11 +156,11 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 //
 //   - The description is UNREDACTED in both the payload blob and the
 //     summary. Redaction of the description only happens in the
-//     provenance blob (see storeRedactedBashProvenance). Changing this
-//     would alter the wire shape; matrix row 16 documents the policy.
+//     provenance blob (see storeRedactedBashProvenance). The emitted
+//     event shape depends on that split.
 //   - The summary truncates only in the command-fallback branch. When
 //     a description is present it is used verbatim, even when longer
-//     than 200 characters. This is current behavior and is preserved.
+//     than 200 characters.
 func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp bashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {

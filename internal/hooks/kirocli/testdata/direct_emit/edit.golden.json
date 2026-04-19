@@ -1,0 +1,41 @@
+{
+  "name": "edit",
+  "description": "Kiro CLI fs_write str_replace; old_str/new_str renamed to old_string/new_string in the payload blob",
+  "expected_events": [
+    {
+      "EventID": "59656435aafb76dbeb14be7440d965ee320c7a68058cb461f58eb2e30362cd70",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000020000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"tools\":[{\"name\":\"kiro_file_edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-step-2",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "3f2c859d9d180cd4a939db185a1d2810897bdb8e268a295efa37968f2bd4b5d8",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000020000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "3f2c859d9d180cd4a939db185a1d2810897bdb8e268a295efa37968f2bd4b5d8": "{\"tool_input\":{\"command\":\"str_replace\",\"path\":\"/repo/main.go\",\"old_str\":\"foo\",\"new_str\":\"bar\"}}"
+  }
+}

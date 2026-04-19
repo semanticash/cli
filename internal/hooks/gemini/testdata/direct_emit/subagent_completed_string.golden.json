@@ -1,0 +1,39 @@
+{
+  "name": "subagent_completed_string",
+  "description": "Gemini subagent completed with llmContent as a single string",
+  "expected_events": [
+    {
+      "EventID": "68d556fe8f896a7718c0c213238a41e82f3b0e50ad4712a0b14af4c844dc8cd2",
+      "SourceKey": "/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl",
+      "Provider": "gemini_cli",
+      "Timestamp": 1714000050000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Agent\",\"file_op\":\"exec\"}]}",
+      "Summary": "Reviewed: found two issues in auth/session.go",
+      "PayloadHash": "fe0c4dc7592d5941f6403a6d407789567fd0e0fee295f2022ded2dc2113c0fbd",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "gemini-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "b3d159858ce55fade3fb0a11de777eaa718c06cd7d459a361b65ff4784234f11",
+      "ProviderSessionID": "transcript",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000050000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "b3d159858ce55fade3fb0a11de777eaa718c06cd7d459a361b65ff4784234f11": "{\"tool_input\":{\"request\":\"Review the auth package\"},\"tool_response\":{\"llmContent\":\"Reviewed: found two issues in auth/session.go\"}}",
+    "fe0c4dc7592d5941f6403a6d407789567fd0e0fee295f2022ded2dc2113c0fbd": "{\"message\":{\"content\":[{\"input\":{\"request\":\"Review the auth package\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}
