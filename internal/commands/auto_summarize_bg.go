@@ -28,6 +28,10 @@ func NewAutoPlaybookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "_auto-playbook",
 		Hidden: true,
+		// This command runs in the background. Keep cobra from printing
+		// usage or a duplicate error line on RunE failures.
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 

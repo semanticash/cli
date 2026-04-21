@@ -70,6 +70,28 @@ func stateFilePath(sessionID string) (string, error) {
 	return filepath.Join(dir, fmt.Sprintf("capture-%s.json", safe)), nil
 }
 
+// CaptureDirWritable checks whether the current process can write to
+// the global capture-state directory. Callers use it as a pre-flight
+// probe to collapse repeated write failures into one summary log line.
+//
+// The probe creates and removes a short-lived file in the capture
+// directory. Existing files are untouched.
+func CaptureDirWritable() error {
+	dir, err := captureDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir capture dir: %w", err)
+	}
+	probe := filepath.Join(dir, ".writable-probe")
+	if err := os.WriteFile(probe, []byte{}, 0o600); err != nil {
+		return fmt.Errorf("probe capture dir: %w", err)
+	}
+	_ = os.Remove(probe)
+	return nil
+}
+
 // SaveCaptureState writes a capture state file atomically.
 func SaveCaptureState(state *CaptureState) error {
 	if state.Key() == "" {

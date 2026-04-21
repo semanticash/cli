@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
@@ -13,6 +15,17 @@ import (
 func reconcileActiveSessions(ctx context.Context) {
 	states, err := hooks.LoadActiveCaptureStates()
 	if err != nil || len(states) == 0 {
+		return
+	}
+
+	// Skip the per-session loop if this process cannot write capture
+	// state. The files stay on disk for the next unrestricted worker.
+	if err := hooks.CaptureDirWritable(); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			wlog("worker: reconcile: capture directory not writable from this lineage; deferring %d session(s) to next unrestricted worker run\n", len(states))
+			return
+		}
+		wlog("worker: reconcile: capture directory probe failed: %v; deferring %d session(s)\n", err, len(states))
 		return
 	}
 
