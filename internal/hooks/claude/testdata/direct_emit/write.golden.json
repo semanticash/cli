@@ -1,0 +1,41 @@
+{
+  "name": "write",
+  "description": "PostToolUse[Write] creating a new Go file",
+  "expected_events": [
+    {
+      "EventID": "058805d29d366e78d25eeee5a07d4c868b020dc70597fda4de24e4d823fd59f0",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000010000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Write\",\"file_path\":\"/repo/main.go\",\"file_op\":\"write\"}]}",
+      "Summary": "",
+      "PayloadHash": "4a6bde8de68670fcca72937c3369adfbb9292f1afd2ee000828e4ae13bf29fb7",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "toolu_write_1",
+      "ToolName": "Write",
+      "EventSource": "hook",
+      "ProvenanceHash": "58a2b4c73841a19ba8a1e58606bb645acce236ed4cc72285d4a3d5e05b1820ad",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000010000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "4a6bde8de68670fcca72937c3369adfbb9292f1afd2ee000828e4ae13bf29fb7": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"content\":\"package main\\n\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "58a2b4c73841a19ba8a1e58606bb645acce236ed4cc72285d4a3d5e05b1820ad": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"content\":\"package main\\n\"}}"
+  }
+}

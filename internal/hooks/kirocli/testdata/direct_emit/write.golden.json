@@ -1,0 +1,41 @@
+{
+  "name": "write",
+  "description": "Kiro CLI fs_write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
+  "expected_events": [
+    {
+      "EventID": "412d61a838db5b0eac509f4d04a0b68050dd6c21f77547d3df5c1e26cb5685a4",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000010000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"tools\":[{\"name\":\"kiro_file_edit\",\"file_path\":\"/repo/new.go\",\"file_op\":\"create\"}]}",
+      "Summary": "",
+      "PayloadHash": "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/new.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-step-1",
+      "ToolName": "Write",
+      "EventSource": "hook",
+      "ProvenanceHash": "329310be17828a64d1bc57c8ba6e3898452334f2cb4d33b883f51b3ac934a9ec",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000010000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "329310be17828a64d1bc57c8ba6e3898452334f2cb4d33b883f51b3ac934a9ec": "{\"tool_input\":{\"command\":\"create\",\"path\":\"/repo/new.go\",\"file_text\":\"package main\\n\"}}",
+    "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c": "{\"message\":{\"content\":[{\"input\":{\"content\":\"package main\\n\",\"file_path\":\"/repo/new.go\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

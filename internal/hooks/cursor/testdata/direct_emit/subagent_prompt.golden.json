@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt",
+  "description": "Cursor preToolUse with a nested tool_input.prompt shape",
+  "expected_events": [
+    {
+      "EventID": "4457ae92a7d898d1e650fadbcd71a711ea28c38b0a4e4d53fc3495e1c9b06da3",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Review the auth package",
+      "PayloadHash": "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "agent-123",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "314394fd0df5cb3272b2eaa3375d477f82cc6528bf07fbe9ce4f1e6c5e2154ba",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "314394fd0df5cb3272b2eaa3375d477f82cc6528bf07fbe9ce4f1e6c5e2154ba": "{\"tool_input\":{\"prompt\":\"Review the auth package\"}}",
+    "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40": "Review the auth package"
+  }
+}

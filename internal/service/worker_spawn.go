@@ -28,6 +28,9 @@ func spawnAutoPlaybook(semDir, checkpointID, commitHash, repoRoot string) {
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// Detached children should not inherit short-lived loopback proxies
+	// from the parent process. Keep real forward proxies intact.
+	cmd.Env = platform.WithoutLoopbackProxies(os.Environ())
 	platform.DetachProcess(cmd)
 
 	if err := cmd.Start(); err != nil {

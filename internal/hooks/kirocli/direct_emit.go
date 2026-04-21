@@ -2,8 +2,6 @@ package kirocli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -11,7 +9,7 @@ import (
 	agentKiro "github.com/semanticash/cli/internal/agents/kiro"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
-	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 // BuildHookEvents constructs RawEvents directly from hook payloads.
@@ -19,35 +17,25 @@ import (
 func (p *Provider) BuildHookEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.Type {
 	case hooks.PromptSubmitted:
-		return buildPromptEvent(event, bs)
+		return buildPromptEvent(ctx, event, bs)
 	case hooks.ToolStepCompleted:
-		return buildStepEvent(event, bs)
+		return buildStepEvent(ctx, event, bs)
 	case hooks.SubagentPromptSubmitted:
-		return buildSubagentPromptEvent(event, bs)
+		return buildSubagentPromptEvent(ctx, event, bs)
 	case hooks.SubagentCompleted:
-		return buildSubagentCompletedEvent(event, bs)
+		return buildSubagentCompletedEvent(ctx, event, bs)
 	default:
 		return nil, nil
 	}
 }
 
-func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	if event.Prompt == "" {
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(event.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := event.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, event.Prompt)
+	summary := builder.TruncateWithEllipsis(event.Prompt, 200)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "user"
@@ -61,20 +49,29 @@ func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent,
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildStepEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildStepEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.ToolName {
 	case "Write":
-		return buildWriteEvent(event, bs)
+		return buildWriteEvent(ctx, event, bs)
 	case "Edit":
-		return buildEditEvent(event, bs)
+		return buildEditEvent(ctx, event, bs)
 	case "Bash":
-		return buildBashEvent(event, bs)
+		return buildBashEvent(ctx, event, bs)
 	default:
 		return nil, nil
 	}
 }
 
-func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildWriteEvent emits a Write tool-use event. Kiro CLI's fs_write
+// payload uses `path` and `file_text` instead of the canonical
+// `file_path` and `content`, so the input is rebuilt before landing
+// in the synthesized assistant blob.
+//
+// The ToolUsesJSON emitted here uses Kiro's synthetic tool name
+// (`kiro_file_edit`) via agentKiro.BuildToolUsesJSON rather than the
+// real tool name the other providers use. The direct-emit tests pin
+// that serialized shape.
+func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp fsWriteInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse fs_write tool_input: %w", err)
@@ -83,13 +80,12 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		return nil, nil
 	}
 
-	// Synthesize standard assistant payload blob for attribution scoring.
 	inputJSON, _ := json.Marshal(map[string]any{
 		"file_path": inp.Path,
 		"content":   inp.FileText,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Write", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := agentKiro.BuildToolUsesJSON(inp.Path, "create").String
 
 	ev := makeBaseRawEvent(event)
@@ -107,7 +103,11 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildEditEvent shares the same input type as buildWriteEvent
+// because Kiro CLI sends both operations under fs_write with a
+// `command` discriminator. The Semantica-facing tool name (Edit)
+// comes from the hook dispatch upstream.
+func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp fsWriteInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse fs_write tool_input: %w", err)
@@ -121,8 +121,8 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 		"old_string": inp.OldStr,
 		"new_string": inp.NewStr,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Edit", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := agentKiro.BuildToolUsesJSON(inp.Path, "edit").String
 
 	ev := makeBaseRawEvent(event)
@@ -140,36 +140,29 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildBashEvent emits a Bash tool-use event.
+//
+// Kiro-specific rules preserved here:
+//
+//   - Kiro CLI's execute_bash payload does not carry a description
+//     field. The redacted command is used directly as the summary,
+//     with TruncateWithEllipsis applied on overflow.
+//   - The ToolUsesJSON ships as an empty string because
+//     agentKiro.BuildToolUsesJSON returns an empty NullString when
+//     the file path is empty. The direct-emit tests pin that shape.
+func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp bashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse execute_bash tool_input: %w", err)
 	}
 
-	redactedCmd := inp.Command
-	if redactedCmd != "" {
-		if r, err := redact.String(redactedCmd); err == nil {
-			redactedCmd = r
-		}
-	}
+	redactedCmd := builder.Redact(inp.Command)
+	summary := builder.TruncateWithEllipsis(redactedCmd, 200)
 
-	summary := redactedCmd
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
-
-	var payloadHash string
-	if bs != nil {
-		blob := synthesizeBashBlob(redactedCmd)
-		if blob != nil {
-			h, _, err := bs.Put(context.Background(), blob)
-			if err == nil {
-				payloadHash = h
-			}
-		}
-	}
-
-	provenanceHash := storeRedactedBashProvenance(bs, event, redactedCmd)
+	inputJSON, _ := json.Marshal(map[string]string{"command": redactedCmd})
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
+	provenanceHash := storeRedactedBashProvenance(ctx, bs, event, redactedCmd)
+	toolUsesJSON := agentKiro.BuildToolUsesJSON("", "exec").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -177,7 +170,7 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	ev.Summary = summary
 	ev.PayloadHash = payloadHash
 	ev.ProvenanceHash = provenanceHash
-	ev.ToolUsesJSON = agentKiro.BuildToolUsesJSON("", "exec").String
+	ev.ToolUsesJSON = toolUsesJSON
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Bash"
@@ -186,7 +179,11 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildSubagentPromptEvent parses Kiro CLI's subagent input with a
+// prompt-then-task fallback. Older Kiro CLI versions used `task`
+// while newer versions use `prompt`; supporting both keeps the
+// emitter compatible with the in-flight transition.
+func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp subagentInput
 	if len(event.ToolInput) > 0 {
 		_ = json.Unmarshal(event.ToolInput, &inp)
@@ -199,25 +196,16 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, prompt)
+	summary := builder.TruncateWithEllipsis(prompt, 200)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
 	ev.Role = "assistant"
 	ev.Summary = summary
 	ev.PayloadHash = payloadHash
-	ev.ProvenanceHash = storeRawHookPayload(bs, event)
+	ev.ProvenanceHash = provenanceHash
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Agent"
@@ -226,7 +214,11 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildSubagentCompletedEvent surfaces the first string from the
+// Kiro-specific subagent response shape ({success, result: []string})
+// as the event summary. If the response is absent or yields nothing,
+// a neutral placeholder is used.
+func buildSubagentCompletedEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	summary := "Kiro subagent completed"
 	if len(event.ToolResponse) > 0 {
 		var resp struct {
@@ -237,11 +229,9 @@ func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broke
 			summary = resp.Result[0]
 		}
 	}
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	summary = builder.TruncateWithEllipsis(summary, 200)
 
-	provenanceHash := storeRawHookPayload(bs, event)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -256,78 +246,14 @@ func buildSubagentCompletedEvent(event *hooks.Event, bs api.BlobPutter) ([]broke
 	return []broker.RawEvent{ev}, nil
 }
 
-// synthesizeAssistantBlob creates a standard assistant payload blob
-// compatible with the attribution scorer.
-func synthesizeAssistantBlob(bs api.BlobPutter, toolName string, toolInput json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  toolName,
-					"input": json.RawMessage(toolInput),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func synthesizeBashBlob(redactedCmd string) []byte {
-	inputJSON, _ := json.Marshal(map[string]string{"command": redactedCmd})
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  "Bash",
-					"input": json.RawMessage(inputJSON),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return nil
-	}
-	return data
-}
-
-func storeRawHookPayload(bs api.BlobPutter, event *hooks.Event) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]json.RawMessage{
-		"tool_input": event.ToolInput,
-	}
-	if len(event.ToolResponse) > 0 {
-		blob["tool_response"] = event.ToolResponse
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
+// storeRedactedBashProvenance captures the Kiro-specific Bash
+// provenance shape. Kiro's execute_bash response carries a result
+// array whose first entry holds the exit status, stdout, and stderr;
+// the stored blob redacts stdout and stderr and reduces the response
+// to {stdout, stderr}. The envelope {tool_name, tool_use_id,
+// tool_input, tool_response} is shared with Claude and Gemini in
+// shape, but each provider's tool_response subshape differs.
+func storeRedactedBashProvenance(ctx context.Context, bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
 	if bs == nil {
 		return ""
 	}
@@ -340,18 +266,8 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 	redactedStdout := ""
 	redactedStderr := ""
 	if len(resp.Result) > 0 {
-		redactedStdout = resp.Result[0].Stdout
-		if redactedStdout != "" {
-			if r, err := redact.String(redactedStdout); err == nil {
-				redactedStdout = r
-			}
-		}
-		redactedStderr = resp.Result[0].Stderr
-		if redactedStderr != "" {
-			if r, err := redact.String(redactedStderr); err == nil {
-				redactedStderr = r
-			}
-		}
+		redactedStdout = builder.Redact(resp.Result[0].Stdout)
+		redactedStderr = builder.Redact(resp.Result[0].Stderr)
 	}
 
 	blob := map[string]any{
@@ -367,40 +283,29 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 	if err != nil {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, data)
 }
 
+// makeBaseRawEvent uses Kiro CLI's session ID as both the source key
+// and the provider session ID. Unlike the other providers, Kiro CLI
+// does not carry a transcript reference through the hook pipeline,
+// so the session ID is the only stable identifier available. The
+// session metadata carries only the project path (CWD), when set.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
-	hh := sha256.New()
-	hh.Write([]byte(event.SessionID))
-	stableKey := event.ToolUseID
-	if stableKey == "" {
-		stableKey = event.TurnID
-	}
-	_, _ = fmt.Fprintf(hh, ":hook:%s:%s:%s", event.Type.HookPhase(), event.ToolName, stableKey)
-	eventID := hex.EncodeToString(hh.Sum(nil))
-
 	meta := map[string]any{}
 	if event.CWD != "" {
 		meta["project_path"] = event.CWD
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	return broker.RawEvent{
-		EventID:           eventID,
+	return builder.BaseRawEvent(builder.BaseInput{
+		Event:             event,
 		SourceKey:         event.SessionID,
 		Provider:          agentKiro.ProviderNameCLI,
-		Timestamp:         event.Timestamp,
 		ProviderSessionID: event.SessionID,
-		SessionStartedAt:  event.Timestamp,
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: event.CWD,
-		Model:             event.Model,
-	}
+	})
 }
 
 // ensure Provider implements DirectHookEmitter.

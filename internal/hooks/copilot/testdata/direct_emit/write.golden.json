@@ -1,0 +1,41 @@
+{
+  "name": "write",
+  "description": "Copilot Write with path/file_text shape, normalized to {file_path, content} in the payload blob",
+  "expected_events": [
+    {
+      "EventID": "64178590570bceec440c418a3c1e7567ca0d210ba77c71a86b1fdda4f5da5585",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000010000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Write\",\"file_path\":\"/repo/new.go\",\"file_op\":\"write\"}]}",
+      "Summary": "",
+      "PayloadHash": "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/new.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "copilot-write-1",
+      "ToolName": "Write",
+      "EventSource": "hook",
+      "ProvenanceHash": "72ce991159bb8e69fa768cdb180e7188781b7b895e59f16a70d4d88e10ccbca8",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000010000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "72ce991159bb8e69fa768cdb180e7188781b7b895e59f16a70d4d88e10ccbca8": "{\"tool_input\":{\"path\":\"/repo/new.go\",\"file_text\":\"package main\\n\"}}",
+    "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c": "{\"message\":{\"content\":[{\"input\":{\"content\":\"package main\\n\",\"file_path\":\"/repo/new.go\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

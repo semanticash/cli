@@ -2,8 +2,6 @@ package copilot
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,33 +10,37 @@ import (
 	agentcopilot "github.com/semanticash/cli/internal/agents/copilot"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
-	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 // BuildHookEvents constructs RawEvents directly from Copilot hook payloads.
 func (p *Provider) BuildHookEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.Type {
 	case hooks.PromptSubmitted:
-		return buildPromptEvent(event, bs)
+		return buildPromptEvent(ctx, event, bs)
 	case hooks.ToolStepCompleted:
 		switch event.ToolName {
 		case "Write":
-			return buildWriteEvent(event, bs)
+			return buildWriteEvent(ctx, event, bs)
 		case "Edit":
-			return buildEditEvent(event, bs)
+			return buildEditEvent(ctx, event, bs)
 		case "Bash":
-			return buildBashEvent(event, bs)
+			return buildBashEvent(ctx, event, bs)
 		}
 	case hooks.SubagentPromptSubmitted:
-		return buildSubagentPromptEvent(event, bs)
+		return buildSubagentPromptEvent(ctx, event, bs)
 	case hooks.SubagentCompleted:
 		if event.ToolName == "Agent" {
-			return buildAgentEvent(event, bs)
+			return buildAgentEvent(ctx, event, bs)
 		}
 	}
 	return nil, nil
 }
 
+// Provider-specific tool_input shapes. Copilot uses snake_case keys
+// that do not match the canonical shape the attribution scorer
+// consumes, so each builder normalizes the input before handing it
+// to the shared assistant-blob helper.
 type copilotWriteInput struct {
 	Path     string `json:"path"`
 	FileText string `json:"file_text"`
@@ -67,20 +69,13 @@ type copilotTaskInput struct {
 	Name        string `json:"name,omitempty"`
 }
 
-func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	if event.Prompt == "" {
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(event.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := agentcopilot.Truncate(event.Prompt, 200)
+	payloadHash := builder.StorePromptPayload(ctx, bs, event.Prompt)
+	summary := builder.TruncateClean(event.Prompt, 200)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "user"
@@ -94,7 +89,7 @@ func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent,
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp copilotWriteInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Write tool input: %w", err)
@@ -107,8 +102,8 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		"file_path": inp.Path,
 		"content":   inp.FileText,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Write", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event.ToolInput, event.ToolResponse)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Write", inp.Path, "write")
 
 	ev := makeBaseRawEvent(event)
@@ -126,7 +121,7 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp copilotEditInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Edit tool input: %w", err)
@@ -140,8 +135,8 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 		"old_string": inp.OldStr,
 		"new_string": inp.NewStr,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Edit", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event.ToolInput, event.ToolResponse)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Edit", inp.Path, "edit")
 
 	ev := makeBaseRawEvent(event)
@@ -159,7 +154,7 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp copilotBashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Bash tool input: %w", err)
@@ -170,35 +165,23 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 		_ = json.Unmarshal(event.ToolResponse, &result)
 	}
 
-	redactedCmd := inp.Command
-	if redactedCmd != "" {
-		if r, err := redact.String(redactedCmd); err == nil {
-			redactedCmd = r
-		}
-	}
-
-	redactedDescription := inp.Description
-	if redactedDescription != "" {
-		if r, err := redact.String(redactedDescription); err == nil {
-			redactedDescription = r
-		}
-	}
-
-	redactedOutput := result.TextResultForLlm
-	if redactedOutput != "" {
-		if r, err := redact.String(redactedOutput); err == nil {
-			redactedOutput = r
-		}
-	}
+	redactedCmd := builder.Redact(inp.Command)
+	redactedDescription := builder.Redact(inp.Description)
+	redactedOutput := builder.Redact(result.TextResultForLlm)
 
 	inputJSON, _ := json.Marshal(map[string]any{
 		"command":     redactedCmd,
 		"description": redactedDescription,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Bash", inputJSON)
-	provenanceHash := storeRedactedBashPayload(bs, redactedCmd, redactedDescription, redactedOutput)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
+	provenanceHash := storeRedactedBashPayload(ctx, bs, redactedCmd, redactedDescription, redactedOutput)
 	toolUsesJSON := serializeStepToolUses("Bash", "", "exec")
 
+	// Summary formation for Bash is Copilot-specific: trim the
+	// description (or the command when the description is empty),
+	// then truncate with an ellipsis on overflow. This does not
+	// match either of the shared truncate helpers, so the rule
+	// stays inline.
 	summary := strings.TrimSpace(redactedDescription)
 	if summary == "" {
 		summary = strings.TrimSpace(redactedCmd)
@@ -222,7 +205,7 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp copilotTaskInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Agent tool input: %w", err)
@@ -231,22 +214,15 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(inp.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := agentcopilot.Truncate(inp.Prompt, 200)
+	payloadHash := builder.StorePromptPayload(ctx, bs, inp.Prompt)
+	summary := builder.TruncateClean(inp.Prompt, 200)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
 	ev.Role = "assistant"
 	ev.Summary = summary
 	ev.PayloadHash = payloadHash
-	ev.ProvenanceHash = storeRawHookPayload(bs, event.ToolInput, event.ToolResponse)
+	ev.ProvenanceHash = builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Agent"
@@ -255,7 +231,7 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildAgentEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp copilotTaskInput
 	if len(event.ToolInput) > 0 {
 		_ = json.Unmarshal(event.ToolInput, &inp)
@@ -272,10 +248,14 @@ func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		"agent_type":  inp.AgentType,
 		"name":        inp.Name,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Agent", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event.ToolInput, event.ToolResponse)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Agent", inputJSON)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Agent", "", "exec")
 
+	// Summary resolution order: description, name, then a fallback
+	// placeholder. If the tool response carried an LLM-facing text
+	// result, it overrides the above, using the shared clean-truncate
+	// rule so whitespace is normalized.
 	summary := strings.TrimSpace(inp.Description)
 	if summary == "" {
 		summary = strings.TrimSpace(inp.Name)
@@ -287,7 +267,7 @@ func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		summary = summary[:200] + "..."
 	}
 	if result.TextResultForLlm != "" {
-		summary = agentcopilot.Truncate(result.TextResultForLlm, 200)
+		summary = builder.TruncateClean(result.TextResultForLlm, 200)
 	}
 
 	ev := makeBaseRawEvent(event)
@@ -305,56 +285,12 @@ func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
-func synthesizeAssistantBlob(bs api.BlobPutter, toolName string, toolInput json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  toolName,
-					"input": json.RawMessage(toolInput),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func storeRawHookPayload(bs api.BlobPutter, toolInput, toolResponse json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]json.RawMessage{
-		"tool_input": toolInput,
-	}
-	if len(toolResponse) > 0 {
-		blob["tool_response"] = toolResponse
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-func storeRedactedBashPayload(bs api.BlobPutter, command, description, output string) string {
+// storeRedactedBashPayload captures the Copilot-specific Bash
+// provenance shape. The envelope around tool_input and tool_response
+// matches the shared wrapper, but the tool_response subshape is
+// provider-specific (Copilot surfaces textResultForLlm, not
+// stdout/stderr), so this helper stays in the provider glue.
+func storeRedactedBashPayload(ctx context.Context, bs api.BlobPutter, command, description, output string) string {
 	if bs == nil {
 		return ""
 	}
@@ -371,13 +307,15 @@ func storeRedactedBashPayload(bs api.BlobPutter, command, description, output st
 	if err != nil {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, data)
 }
 
+// serializeStepToolUses produces the provider-specific ToolUsesJSON
+// shape. Copilot uses agentcopilot.SerializeToolUses, which matches
+// Claude, Cursor, and Gemini in field layout but not in package,
+// since each provider carries its own ToolUse type. A future cleanup
+// could consolidate the four packages, but that change is out of
+// scope here.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentcopilot.ToolUse{
 		Name:     toolName,
@@ -390,6 +328,11 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
+// makeBaseRawEvent assembles the provider-specific source key and
+// session metadata, then delegates the envelope construction to the
+// shared builder. Copilot uses the transcript reference when
+// available and falls back to a "copilot:" prefix plus the session
+// ID when no transcript is attached.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	sourceKey := event.TranscriptRef
 	if sourceKey == "" {
@@ -402,26 +345,14 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	hh := sha256.New()
-	hh.Write([]byte(sourceKey))
-	stableKey := event.ToolUseID
-	if stableKey == "" {
-		stableKey = event.TurnID
-	}
-	_, _ = fmt.Fprintf(hh, ":hook:%s:%s:%s", event.Type.HookPhase(), event.ToolName, stableKey)
-	eventID := hex.EncodeToString(hh.Sum(nil))
-
-	return broker.RawEvent{
-		EventID:           eventID,
+	return builder.BaseRawEvent(builder.BaseInput{
+		Event:             event,
 		SourceKey:         sourceKey,
 		Provider:          agentcopilot.ProviderName,
-		Timestamp:         event.Timestamp,
 		ProviderSessionID: event.SessionID,
-		SessionStartedAt:  event.Timestamp,
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: event.CWD,
-		Model:             event.Model,
-	}
+	})
 }
 
 var _ hooks.DirectHookEmitter = (*Provider)(nil)

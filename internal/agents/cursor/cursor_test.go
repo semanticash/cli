@@ -84,10 +84,11 @@ func TestParseCursorJSONLLine_FilePathTool(t *testing.T) {
 }
 
 func TestDecodeProjectPath(t *testing.T) {
-	path := DecodeProjectPath("/not/.cursor/projects/foo/bar")
-	// This path is outside Cursor's project base, so DecodeProjectPath should
-	// return an empty path and avoid panicking.
-	_ = path
+	// Paths outside Cursor's project base must decode to "" on every
+	// platform.
+	if got := DecodeProjectPath("/not/.cursor/projects/foo/bar"); got != "" {
+		t.Errorf("DecodeProjectPath(out-of-base) = %q, want \"\"", got)
+	}
 }
 
 func TestSerializeToolUses_DropsTextOnlyContentTypes(t *testing.T) {

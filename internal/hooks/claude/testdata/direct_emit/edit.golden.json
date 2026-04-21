@@ -1,0 +1,41 @@
+{
+  "name": "edit",
+  "description": "PostToolUse[Edit] with a single old_string/new_string swap",
+  "expected_events": [
+    {
+      "EventID": "68503eada1fa3ee41bfa1e14eb78951013644180625a9d9d293b398f43a9b358",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000020000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "35a72f69095d1dadb88d8b8b55dd92ba310f41792695b443f195aec2cdd247f7",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "toolu_edit_1",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "c1b0c7c828d6ce82fc2bdfc7378cc16ccab156f3f301d3e7e6cdc53bf19a354c",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000020000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "35a72f69095d1dadb88d8b8b55dd92ba310f41792695b443f195aec2cdd247f7": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"old_string\":\"foo\",\"new_string\":\"bar\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "c1b0c7c828d6ce82fc2bdfc7378cc16ccab156f3f301d3e7e6cdc53bf19a354c": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"old_string\":\"foo\",\"new_string\":\"bar\"}}"
+  }
+}

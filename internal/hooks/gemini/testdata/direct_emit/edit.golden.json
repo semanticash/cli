@@ -1,0 +1,41 @@
+{
+  "name": "edit",
+  "description": "Gemini replace with an instruction field that is deliberately dropped during input rebuild",
+  "expected_events": [
+    {
+      "EventID": "87c601addba7d1fb8792deb6e485bad5bf60a266d9447dca68fe341ca669c682",
+      "SourceKey": "/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl",
+      "Provider": "gemini_cli",
+      "Timestamp": 1714000020000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "gemini-step-2",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "c47cc2062a85ed5e0863da76f55e94d5730101587b4093e1ddc9e7fcebdd9390",
+      "ProviderSessionID": "transcript",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000020000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "c47cc2062a85ed5e0863da76f55e94d5730101587b4093e1ddc9e7fcebdd9390": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"old_string\":\"foo\",\"new_string\":\"bar\",\"instruction\":\"Replace foo with bar\"}}"
+  }
+}

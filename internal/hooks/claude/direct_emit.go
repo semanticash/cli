@@ -2,8 +2,6 @@ package claude
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -11,7 +9,7 @@ import (
 	agentclaude "github.com/semanticash/cli/internal/agents/claude"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
-	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 // BuildHookEvents constructs RawEvents directly from hook payloads.
@@ -19,58 +17,11 @@ import (
 func (p *Provider) BuildHookEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.Type {
 	case hooks.PromptSubmitted:
-		return buildPromptEvent(event, bs)
+		return buildPromptEvent(ctx, event, bs)
 	case hooks.ToolStepCompleted:
-		return buildStepEvent(event, bs)
+		return buildStepEvent(ctx, event, bs)
 	case hooks.SubagentPromptSubmitted:
-		return buildSubagentPromptEvent(event, bs)
-	default:
-		return nil, nil
-	}
-}
-
-// buildPromptEvent creates a user prompt event from UserPromptSubmit.
-func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
-	if event.Prompt == "" {
-		return nil, nil
-	}
-
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(event.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	// Truncate prompt for summary.
-	summary := event.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
-
-	ev := makeBaseRawEvent(event)
-	ev.Kind = "user"
-	ev.Role = "user"
-	ev.Summary = summary
-	ev.PayloadHash = payloadHash
-	ev.ProvenanceHash = payloadHash // Prompt text is stored in both blob references.
-	ev.TurnID = event.TurnID
-	ev.EventSource = "hook"
-
-	return []broker.RawEvent{ev}, nil
-}
-
-// buildStepEvent creates an assistant tool-use event from PostToolUse[Write/Edit/Bash].
-// The synthesized payload blob is compatible with the attribution scorer.
-func buildStepEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
-	switch event.ToolName {
-	case "Write":
-		return buildWriteEvent(event, bs)
-	case "Edit":
-		return buildEditEvent(event, bs)
-	case "Bash":
-		return buildBashEvent(event, bs)
+		return buildSubagentPromptEvent(ctx, event, bs)
 	default:
 		return nil, nil
 	}
@@ -96,7 +47,50 @@ type bashInput struct {
 	Description string `json:"description"`
 }
 
-func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildPromptEvent creates a user prompt event from UserPromptSubmit.
+// The stored blob and the provenance hash both reference the raw
+// prompt text; the scorer and the dashboard can key off the same
+// content hash on either field.
+func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+	if event.Prompt == "" {
+		return nil, nil
+	}
+
+	payloadHash := builder.StorePromptPayload(ctx, bs, event.Prompt)
+	summary := builder.TruncateWithEllipsis(event.Prompt, 200)
+
+	ev := makeBaseRawEvent(event)
+	ev.Kind = "user"
+	ev.Role = "user"
+	ev.Summary = summary
+	ev.PayloadHash = payloadHash
+	ev.ProvenanceHash = payloadHash
+	ev.TurnID = event.TurnID
+	ev.EventSource = "hook"
+
+	return []broker.RawEvent{ev}, nil
+}
+
+// buildStepEvent creates an assistant tool-use event from
+// PostToolUse[Write/Edit/Bash].
+func buildStepEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+	switch event.ToolName {
+	case "Write":
+		return buildWriteEvent(ctx, event, bs)
+	case "Edit":
+		return buildEditEvent(ctx, event, bs)
+	case "Bash":
+		return buildBashEvent(ctx, event, bs)
+	default:
+		return nil, nil
+	}
+}
+
+// buildWriteEvent emits a Write tool-use event. Claude's hook payload
+// already uses the canonical tool_input shape consumed by the
+// attribution scorer, so the raw ToolInput flows straight into the
+// synthesized assistant blob without renormalization.
+func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp writeInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Write tool_input: %w", err)
@@ -105,12 +99,8 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		return nil, nil
 	}
 
-	// payload_hash stores the normalized blob used by the attribution scorer.
-	payloadHash := synthesizeAssistantBlob(bs, event.ToolName, inp.FilePath, event.ToolInput)
-
-	// provenance_hash stores the original hook payload for this step.
-	provenanceHash := storeRawHookPayload(bs, event)
-
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, event.ToolName, event.ToolInput)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses(event.ToolName, inp.FilePath, "write")
 
 	ev := makeBaseRawEvent(event)
@@ -128,7 +118,11 @@ func buildWriteEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildEditEvent emits an Edit tool-use event. As with Write, the
+// Claude tool_input is already in the canonical shape and is passed
+// through to the synthesized blob unchanged. The replace_all flag,
+// when present, lands in the blob alongside the string fields.
+func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp editInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Edit tool_input: %w", err)
@@ -137,8 +131,8 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 		return nil, nil
 	}
 
-	payloadHash := synthesizeAssistantBlob(bs, event.ToolName, inp.FilePath, event.ToolInput)
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, event.ToolName, event.ToolInput)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses(event.ToolName, inp.FilePath, "edit")
 
 	ev := makeBaseRawEvent(event)
@@ -156,44 +150,39 @@ func buildEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildBashEvent emits a Bash tool-use event.
+//
+// Claude-specific rules preserved here:
+//
+//   - The description is UNREDACTED in both the payload blob and the
+//     summary. Redaction of the description only happens in the
+//     provenance blob (see storeRedactedBashProvenance). The emitted
+//     event shape depends on that split.
+//   - The summary truncates only in the command-fallback branch. When
+//     a description is present it is used verbatim, even when longer
+//     than 200 characters.
+func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp bashInput
 	if err := json.Unmarshal(event.ToolInput, &inp); err != nil {
 		return nil, fmt.Errorf("parse Bash tool_input: %w", err)
 	}
 
-	// Redact secrets from the command text before persistence.
-	redactedCmd := inp.Command
-	if redactedCmd != "" {
-		if r, err := redact.String(redactedCmd); err == nil {
-			redactedCmd = r
-		}
-	}
+	redactedCmd := builder.Redact(inp.Command)
 
 	summary := inp.Description
 	if summary == "" && redactedCmd != "" {
-		summary = redactedCmd
-		if len(summary) > 200 {
-			summary = summary[:200] + "..."
-		}
+		summary = builder.TruncateWithEllipsis(redactedCmd, 200)
 	}
 
-	// payload_hash stores the redacted blob used by the attribution scorer.
-	var payloadHash string
-	if bs != nil {
-		blob := synthesizeBashBlob(redactedCmd, inp.Description)
-		if blob != nil {
-			h, _, err := bs.Put(context.Background(), blob)
-			if err == nil {
-				payloadHash = h
-			}
-		}
-	}
-
-	// provenance_hash keeps the original Bash payload shape with sensitive
-	// fields redacted.
-	provenanceHash := storeRedactedBashProvenance(bs, event, redactedCmd)
-
+	// The payload blob carries the redacted command alongside the
+	// unredacted description so the attribution scorer sees the
+	// exact bytes Claude would have written.
+	inputJSON, _ := json.Marshal(map[string]string{
+		"command":     redactedCmd,
+		"description": inp.Description,
+	})
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
+	provenanceHash := storeRedactedBashProvenance(ctx, bs, event, redactedCmd)
 	toolUsesJSON := serializeStepToolUses("Bash", "", "exec")
 
 	ev := makeBaseRawEvent(event)
@@ -211,8 +200,10 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-// buildSubagentPromptEvent creates a subagent prompt event from PreToolUse[Agent].
-func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildSubagentPromptEvent creates a subagent prompt event from
+// PreToolUse[Agent]. A missing or empty prompt is a no-op, matching
+// the rule for top-level prompts.
+func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp struct {
 		Prompt string `json:"prompt"`
 	}
@@ -220,21 +211,9 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(inp.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := inp.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
-
-	// provenance_hash stores the original hook payload for this step.
-	provenanceHash := storeRawHookPayload(bs, event)
+	payloadHash := builder.StorePromptPayload(ctx, bs, inp.Prompt)
+	summary := builder.TruncateWithEllipsis(inp.Prompt, 200)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -250,90 +229,13 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 	return []broker.RawEvent{ev}, nil
 }
 
-// synthesizeAssistantBlob creates the standard assistant payload blob used
-// by the attribution scorer.
-//
-// Shape: {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{...}}]}}
-func synthesizeAssistantBlob(bs api.BlobPutter, toolName, filePath string, toolInput json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  toolName,
-					"input": json.RawMessage(toolInput),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-// synthesizeBashBlob creates a minimal assistant payload blob for Bash events
-// using the redacted command text. It never stores the raw command string.
-func synthesizeBashBlob(redactedCmd, description string) []byte {
-	redactedInput := map[string]string{
-		"command":     redactedCmd,
-		"description": description,
-	}
-	inputJSON, _ := json.Marshal(redactedInput)
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  "Bash",
-					"input": json.RawMessage(inputJSON),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return nil
-	}
-	return data
-}
-
-// storeRawHookPayload stores the hook payload in its original shape.
-func storeRawHookPayload(bs api.BlobPutter, event *hooks.Event) string {
-	if bs == nil {
-		return ""
-	}
-	blob := map[string]json.RawMessage{
-		"tool_input": event.ToolInput,
-	}
-	if len(event.ToolResponse) > 0 {
-		blob["tool_response"] = event.ToolResponse
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
-// storeRedactedBashProvenance stores a redacted Bash payload while preserving
-// the original field structure.
-func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
+// storeRedactedBashProvenance captures the Claude-specific Bash
+// provenance shape. The envelope wraps a tool_input with the redacted
+// command and description, plus a tool_response with redacted stdout,
+// stderr, and an interrupted flag. Each provider's Bash tool emits a
+// different response shape, so this helper stays in the provider
+// glue rather than moving to the shared builder.
+func storeRedactedBashProvenance(ctx context.Context, bs api.BlobPutter, event *hooks.Event, redactedCmd string) string {
 	if bs == nil {
 		return ""
 	}
@@ -342,14 +244,8 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 	if len(event.ToolInput) > 0 {
 		_ = json.Unmarshal(event.ToolInput, &inp)
 	}
-	redactedDescription := inp.Description
-	if redactedDescription != "" {
-		if r, err := redact.String(redactedDescription); err == nil {
-			redactedDescription = r
-		}
-	}
+	redactedDescription := builder.Redact(inp.Description)
 
-	// Parse tool_response so stdout and stderr can be redacted.
 	var resp struct {
 		Stdout      string `json:"stdout"`
 		Stderr      string `json:"stderr"`
@@ -359,18 +255,8 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 		_ = json.Unmarshal(event.ToolResponse, &resp)
 	}
 
-	redactedStdout := resp.Stdout
-	if redactedStdout != "" {
-		if r, err := redact.String(redactedStdout); err == nil {
-			redactedStdout = r
-		}
-	}
-	redactedStderr := resp.Stderr
-	if redactedStderr != "" {
-		if r, err := redact.String(redactedStderr); err == nil {
-			redactedStderr = r
-		}
-	}
+	redactedStdout := builder.Redact(resp.Stdout)
+	redactedStderr := builder.Redact(resp.Stderr)
 
 	blob := map[string]any{
 		"tool_name":   event.ToolName,
@@ -389,16 +275,12 @@ func storeRedactedBashProvenance(bs api.BlobPutter, event *hooks.Event, redacted
 	if err != nil {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, data)
 }
 
-// serializeStepToolUses produces the ToolUsesJSON string in the same shape
-// in the same shape as transcript events, so the attribution scorer and
-// file path extraction work without changes.
+// serializeStepToolUses produces the ToolUsesJSON string in the same
+// shape as transcript events, so the attribution scorer and file path
+// extraction work without changes.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentclaude.ToolUse{
 		Name:     toolName,
@@ -411,7 +293,11 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
-// makeBaseRawEvent creates a RawEvent with session context from a hook Event.
+// makeBaseRawEvent assembles the provider-specific source key and
+// session metadata, then delegates envelope construction to the
+// shared builder. Claude derives the provider session ID, parent
+// session ID, and project path from the transcript path, with a CWD
+// fallback for project path when the transcript does not encode it.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	providerSessionID := agentclaude.ExtractSessionIDFromPath(event.TranscriptRef)
 	if providerSessionID == "" {
@@ -426,37 +312,20 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	// Content-addressed event ID from stable hook context.
-	// Uses ToolUseID (provider-assigned, stable across retries) or TurnID
-	// (for prompt events) instead of timestamp, so duplicate hook deliveries
-	// produce the same event_id and INSERT OR IGNORE suppresses them.
-	hh := sha256.New()
-	hh.Write([]byte(event.TranscriptRef))
-	stableKey := event.ToolUseID
-	if stableKey == "" {
-		stableKey = event.TurnID
-	}
-	_, _ = fmt.Fprintf(hh, ":hook:%s:%s:%s", event.Type.HookPhase(), event.ToolName, stableKey)
-	eventID := hex.EncodeToString(hh.Sum(nil))
-
-	// Derive SourceProjectPath from CWD for routing.
 	sourceProjectPath := projectPath
 	if sourceProjectPath == "" && event.CWD != "" {
 		sourceProjectPath = event.CWD
 	}
 
-	return broker.RawEvent{
-		EventID:           eventID,
+	return builder.BaseRawEvent(builder.BaseInput{
+		Event:             event,
 		SourceKey:         event.TranscriptRef,
 		Provider:          agentclaude.ProviderName,
-		Timestamp:         event.Timestamp,
 		ProviderSessionID: providerSessionID,
 		ParentSessionID:   parentSessionID,
-		SessionStartedAt:  event.Timestamp,
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: sourceProjectPath,
-		Model:             event.Model,
-	}
+	})
 }
 
 // ensure Provider implements DirectHookEmitter.

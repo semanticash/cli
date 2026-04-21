@@ -1,0 +1,39 @@
+{
+  "name": "bash",
+  "description": "PostToolUse[Bash] with a description; verifies description flows unredacted to the payload blob",
+  "expected_events": [
+    {
+      "EventID": "ef89283e6504d867ffe09a06f8e4eacd12575cc3efa5c4a19e64ed2841fd642c",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000030000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Bash\",\"file_op\":\"exec\"}]}",
+      "Summary": "Run all tests",
+      "PayloadHash": "3203e2f74ec840a4da719c64ec8c68e238058c9169a2b773212da1f25467e68e",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "toolu_bash_1",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "c678f9ce07490dacf50322914807c0d4ff31f1c7f7e30c241d377ce031f29e78",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000030000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "3203e2f74ec840a4da719c64ec8c68e238058c9169a2b773212da1f25467e68e": "{\"message\":{\"content\":[{\"input\":{\"command\":\"go test ./...\",\"description\":\"Run all tests\"},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "c678f9ce07490dacf50322914807c0d4ff31f1c7f7e30c241d377ce031f29e78": "{\"tool_input\":{\"command\":\"go test ./...\",\"description\":\"Run all tests\"},\"tool_name\":\"Bash\",\"tool_response\":{\"interrupted\":false,\"stderr\":\"\",\"stdout\":\"\"},\"tool_use_id\":\"toolu_bash_1\"}"
+  }
+}

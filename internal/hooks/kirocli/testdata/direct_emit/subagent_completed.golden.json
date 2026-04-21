@@ -1,0 +1,38 @@
+{
+  "name": "subagent_completed",
+  "description": "Kiro CLI subagent response {success, result: []string}; summary is result[0]",
+  "expected_events": [
+    {
+      "EventID": "f6e95fbed01ce09c6cf3228bd0d965f79ad6aeeb0e38803e2e3a80b4b689126b",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000060000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Reviewed: found two issues in auth/session.go",
+      "PayloadHash": "",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "5086d0a8bafd8a0f09688c0f789fa6c890a3a2d230741eb59a05300fb6902f4a",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000060000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "5086d0a8bafd8a0f09688c0f789fa6c890a3a2d230741eb59a05300fb6902f4a": "{\"tool_input\":{\"prompt\":\"Review the auth package\"},\"tool_response\":{\"success\":true,\"result\":[\"Reviewed: found two issues in auth/session.go\"]}}"
+  }
+}

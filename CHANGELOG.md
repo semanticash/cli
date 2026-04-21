@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+## [0.3.5] - 2026-04-21
+
+### Added
+
+- Permanent direct-hook contract fixtures for Claude Code, GitHub Copilot, Cursor, Gemini CLI, and Kiro CLI, including content-addressed blob checks to catch wire-shape regressions.
+- Drift detection for direct-hook fixtures so stale or missing contract files fail test runs instead of silently reducing coverage.
+
+### Changed
+
+- Unified direct hook emission across Claude Code, GitHub Copilot, Cursor, Gemini CLI, and Kiro CLI around shared builder helpers while preserving provider-specific event shapes and payload contracts.
+- Provider documentation now reflects current supported platform paths and detection behavior, including Windows coverage where applicable.
+- Direct-hook contract tests now use `direct_emit_contract_test.go` naming to describe intent more clearly.
+
+### Fixed
+
+- Tightened direct-hook regression protection so payload/blob serialization changes are caught across all supported providers.
+- Claude Code and Cursor project-path decoding now returns an empty path for source keys outside the provider project base, keeping emitted metadata consistent across Unix and Windows.
+- Detached background workers now drop inherited loopback proxy settings before contacting Semantica or LLM endpoints, preventing agent-local proxies from breaking post-commit pushes while keeping real forward proxies intact.
+
 ## [0.3.4] - 2026-04-18
 
 ### Added

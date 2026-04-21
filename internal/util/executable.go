@@ -9,7 +9,7 @@ import (
 
 // ResolveExecutable returns the first matching executable path for any of the
 // provided binary names. It checks PATH first, then common user and package
-// manager install locations used on macOS and Linux.
+// manager install locations used across the supported platforms.
 func ResolveExecutable(names []string, extraCandidates ...string) string {
 	return resolveExecutable(names, extraCandidates, exec.LookPath, os.UserHomeDir, os.Getenv)
 }

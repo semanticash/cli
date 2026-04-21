@@ -1,0 +1,41 @@
+{
+  "name": "edit",
+  "description": "Cursor afterFileEdit for an Edit; single edit normalized to {file_path, old_string, new_string}",
+  "expected_events": [
+    {
+      "EventID": "e1cd7604eded6ed65f9fd001f8cf1add7f200e5803bd5d742a3d44d9160a94c0",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000020000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/main.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "cursor-step-2",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "10d6d6ad6fb5d51911fc03a2166c669af369f5dacac30c7167e388b7970c1ca0",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000020000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "10d6d6ad6fb5d51911fc03a2166c669af369f5dacac30c7167e388b7970c1ca0": "{\n\t\t\t\t\t\"conversation_id\":\"conv-123\",\n\t\t\t\t\t\"file_path\":\"/repo/main.go\",\n\t\t\t\t\t\"edits\":[{\"old_string\":\"foo\",\"new_string\":\"bar\"}]\n\t\t\t\t}",
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}

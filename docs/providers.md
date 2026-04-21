@@ -58,10 +58,8 @@ Semantica uses hook payloads, transcript replay, and Cursor's local tracking sto
 
 ### Detection
 
-The Cursor provider is detected by searching for Cursor's application data directory:
-
-- macOS: `~/Library/Application Support/Cursor/User/`
-- Linux: `~/.config/Cursor/User/`
+The Cursor provider is detected by checking for Cursor's home-directory state
+under `~/.cursor/`, which is shared across the supported desktop platforms.
 
 ### Hooks
 
@@ -101,9 +99,10 @@ Kiro IDE stores per-workspace session indexes and per-session history files unde
 
 ### Detection
 
-Detected by checking for Kiro's globalStorage directory:
+Detected by checking for Kiro's `globalStorage` directory:
 
 - macOS: `~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/`
+- Windows: `%APPDATA%/Kiro/User/globalStorage/kiro.kiroagent/`
 - Linux: `~/.config/Kiro/User/globalStorage/kiro.kiroagent/`
 
 ### Hooks

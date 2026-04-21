@@ -1,0 +1,38 @@
+{
+  "name": "prompt",
+  "description": "User prompt; Copilot summary trims whitespace and collapses newlines without appending an ellipsis",
+  "expected_events": [
+    {
+      "EventID": "1a909d91523a534ea3c6b98569a80873cc9160d4006097fa26f8c6ffc2172254",
+      "SourceKey": "copilot:sess-copilot-1",
+      "Provider": "copilot",
+      "Timestamp": 1714000000000,
+      "Kind": "user",
+      "Role": "user",
+      "ToolUsesJSON": "",
+      "Summary": "Refactor the retry handler",
+      "PayloadHash": "a8df5c4ef15075cce3b066c8ece4627a08242217c1b7985eb0d589b278b0f440",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "",
+      "ToolName": "",
+      "EventSource": "hook",
+      "ProvenanceHash": "a8df5c4ef15075cce3b066c8ece4627a08242217c1b7985eb0d589b278b0f440",
+      "ProviderSessionID": "sess-copilot-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000000000,
+      "SessionMetaJSON": "{\"project_path\":\"/repo\",\"source_key\":\"copilot:sess-copilot-1\"}",
+      "SourceProjectPath": "/repo",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "a8df5c4ef15075cce3b066c8ece4627a08242217c1b7985eb0d589b278b0f440": "  Refactor the\nretry handler  "
+  }
+}

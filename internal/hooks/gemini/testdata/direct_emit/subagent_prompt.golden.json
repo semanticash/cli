@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt",
+  "description": "Gemini subagent prompt using the `request` field",
+  "expected_events": [
+    {
+      "EventID": "fecf6e5f4e96797de9f7e6f15d90b8c772eb0386aa129025e097723d8b9559e1",
+      "SourceKey": "/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl",
+      "Provider": "gemini_cli",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Review the auth package",
+      "PayloadHash": "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "gemini-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "22dfa61f57a5f726d192c34b0ce8eb8b9eefaef4cd720fd646422bb7efd65820",
+      "ProviderSessionID": "transcript",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.gemini/sessions/sess-gemini-1/transcript.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "22dfa61f57a5f726d192c34b0ce8eb8b9eefaef4cd720fd646422bb7efd65820": "{\"tool_input\":{\"request\":\"Review the auth package\"}}",
+    "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40": "Review the auth package"
+  }
+}

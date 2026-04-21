@@ -2,8 +2,6 @@ package cursor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,31 +10,36 @@ import (
 	agentcursor "github.com/semanticash/cli/internal/agents/cursor"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
-	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 // BuildHookEvents constructs RawEvents directly from Cursor IDE hook payloads.
 func (p *Provider) BuildHookEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	switch event.Type {
 	case hooks.PromptSubmitted:
-		return buildPromptEvent(event, bs)
+		return buildPromptEvent(ctx, event, bs)
 	case hooks.ToolStepCompleted:
 		switch event.ToolName {
 		case "Write", "Edit":
-			return buildFileEditEvent(event, bs)
+			return buildFileEditEvent(ctx, event, bs)
 		case "Bash":
-			return buildBashEvent(event, bs)
+			return buildBashEvent(ctx, event, bs)
 		}
 	case hooks.SubagentCompleted:
 		if event.ToolName == "Agent" {
-			return buildAgentEvent(event, bs)
+			return buildAgentEvent(ctx, event, bs)
 		}
 	case hooks.SubagentPromptSubmitted:
-		return buildSubagentPromptEvent(event, bs)
+		return buildSubagentPromptEvent(ctx, event, bs)
 	}
 	return nil, nil
 }
 
+// Cursor hook payloads are structured differently from the other
+// providers. File edits arrive as an afterFileEdit payload with a
+// nested edits array; shell runs arrive as postToolUse payloads with
+// the tool_input one level deeper; subagent events carry a distinct
+// subagentStop envelope. The types below capture those shapes.
 type cursorFileEditPayload struct {
 	ConversationID string       `json:"conversation_id"`
 	GenerationID   string       `json:"generation_id,omitempty"`
@@ -78,23 +81,13 @@ type cursorSubagentStopPayload struct {
 	ParentConversationID string `json:"parent_conversation_id,omitempty"`
 }
 
-func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	if event.Prompt == "" {
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(event.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := event.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, event.Prompt)
+	summary := builder.TruncateWithEllipsis(event.Prompt, 200)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "user"
@@ -108,7 +101,11 @@ func buildPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent,
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildFileEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+// buildFileEditEvent handles both Write and Edit tool events. Cursor
+// uses a single internal afterFileEdit hook for both; the Write or
+// Edit semantics are derived from the payload shape in
+// normalizeCursorEditInput rather than from the event type.
+func buildFileEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var payload cursorFileEditPayload
 	if err := json.Unmarshal(event.ToolInput, &payload); err != nil {
 		return nil, fmt.Errorf("parse afterFileEdit payload: %w", err)
@@ -118,8 +115,8 @@ func buildFileEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEven
 	}
 
 	inputJSON, fileOp := normalizeCursorEditInput(event.ToolName, payload)
-	payloadHash := synthesizeAssistantBlob(bs, event.ToolName, inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event.ToolInput)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, event.ToolName, inputJSON)
+	provenanceHash := storeRawHookPayload(ctx, bs, event.ToolInput)
 	toolUsesJSON := serializeStepToolUses(event.ToolName, payload.FilePath, fileOp)
 
 	ev := makeBaseRawEvent(event)
@@ -137,35 +134,28 @@ func buildFileEditEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEven
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var payload cursorPostToolUsePayload
 	if err := json.Unmarshal(event.ToolInput, &payload); err != nil {
 		return nil, fmt.Errorf("parse postToolUse payload: %w", err)
 	}
 
-	redactedCommand := payload.ToolInput.Command
-	if redactedCommand != "" {
-		if redacted, err := redact.String(redactedCommand); err == nil {
-			redactedCommand = redacted
-		}
-	}
-
-	redactedOutput := extractCursorToolOutput(payload.ToolOutput)
-	if redactedOutput != "" {
-		if redacted, err := redact.String(redactedOutput); err == nil {
-			redactedOutput = redacted
-		}
-	}
+	redactedCommand := builder.Redact(payload.ToolInput.Command)
+	redactedOutput := builder.Redact(extractCursorToolOutput(payload.ToolOutput))
 
 	inputJSON, _ := json.Marshal(map[string]any{
 		"command": redactedCommand,
 		"cwd":     payload.ToolInput.CWD,
 		"timeout": payload.ToolInput.Timeout,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Bash", inputJSON)
-	provenanceHash := storeRedactedBashPayload(bs, payload, redactedCommand, redactedOutput)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
+	provenanceHash := storeRedactedBashPayload(ctx, bs, payload, redactedCommand, redactedOutput)
 	toolUsesJSON := serializeStepToolUses("Bash", "", "exec")
 
+	// Cursor's Bash summary is TrimSpace plus truncate-with-ellipsis,
+	// which matches neither TruncateWithEllipsis (no trim) nor
+	// TruncateClean (different whitespace handling, no ellipsis), so
+	// the rule stays inline.
 	summary := strings.TrimSpace(redactedCommand)
 	if len(summary) > 200 {
 		summary = summary[:200] + "..."
@@ -186,7 +176,7 @@ func buildBashEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, e
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var payload cursorPreToolUsePayload
 	if err := json.Unmarshal(event.ToolInput, &payload); err != nil {
 		return nil, fmt.Errorf("parse preToolUse payload: %w", err)
@@ -195,25 +185,16 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 		return nil, nil
 	}
 
-	var payloadHash string
-	if bs != nil {
-		h, _, err := bs.Put(context.Background(), []byte(payload.ToolInput.Prompt))
-		if err == nil {
-			payloadHash = h
-		}
-	}
-
-	summary := payload.ToolInput.Prompt
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, payload.ToolInput.Prompt)
+	summary := builder.TruncateWithEllipsis(payload.ToolInput.Prompt, 200)
+	provenanceHash := storeRawHookPayload(ctx, bs, event.ToolInput)
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
 	ev.Role = "assistant"
 	ev.Summary = summary
 	ev.PayloadHash = payloadHash
-	ev.ProvenanceHash = storeRawHookPayload(bs, event.ToolInput)
+	ev.ProvenanceHash = provenanceHash
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Agent"
@@ -222,7 +203,7 @@ func buildSubagentPromptEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.R
 	return []broker.RawEvent{ev}, nil
 }
 
-func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
+func buildAgentEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var payload cursorSubagentStopPayload
 	if err := json.Unmarshal(event.ToolInput, &payload); err != nil {
 		return nil, fmt.Errorf("parse subagentStop payload: %w", err)
@@ -238,10 +219,12 @@ func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 		"agent_transcript_path":  payload.AgentTranscriptPath,
 		"parent_conversation_id": payload.ParentConversationID,
 	})
-	payloadHash := synthesizeAssistantBlob(bs, "Agent", inputJSON)
-	provenanceHash := storeRawHookPayload(bs, event.ToolInput)
+	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Agent", inputJSON)
+	provenanceHash := storeRawHookPayload(ctx, bs, event.ToolInput)
 	toolUsesJSON := serializeStepToolUses("Agent", "", "exec")
 
+	// Summary prefers the subagent type when present, falling back
+	// to a neutral placeholder. Cursor-specific shape; stays inline.
 	summary := "Cursor subagent completed"
 	if payload.SubagentType != "" {
 		summary = payload.SubagentType + " subagent completed"
@@ -262,6 +245,12 @@ func buildAgentEvent(event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, 
 	return []broker.RawEvent{ev}, nil
 }
 
+// normalizeCursorEditInput converts the nested Cursor afterFileEdit
+// payload into the canonical tool_input shape the attribution scorer
+// consumes. A Write maps to {file_path, content}. A single edit maps
+// to {file_path, old_string, new_string}. Multi-edit payloads (only
+// emitted by Cursor today) preserve the edits array under the same
+// file_path.
 func normalizeCursorEditInput(toolName string, payload cursorFileEditPayload) (json.RawMessage, string) {
 	if toolName == "Write" {
 		content := ""
@@ -291,34 +280,10 @@ func normalizeCursorEditInput(toolName string, payload cursorFileEditPayload) (j
 	return input, "edit"
 }
 
-func synthesizeAssistantBlob(bs api.BlobPutter, toolName string, toolInput json.RawMessage) string {
-	if bs == nil {
-		return ""
-	}
-
-	blob := map[string]any{
-		"type": "assistant",
-		"message": map[string]any{
-			"content": []map[string]any{
-				{
-					"type":  "tool_use",
-					"name":  toolName,
-					"input": json.RawMessage(toolInput),
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return ""
-	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
-}
-
+// extractCursorToolOutput unwraps Cursor's tool_output string. The
+// field is a JSON-encoded string (not structured), usually shaped as
+// {"output":"...","exitCode":N}. Pull the inner text when available;
+// otherwise return the original string.
 func extractCursorToolOutput(toolOutput string) string {
 	if toolOutput == "" {
 		return ""
@@ -332,18 +297,28 @@ func extractCursorToolOutput(toolOutput string) string {
 	return toolOutput
 }
 
-func storeRawHookPayload(bs api.BlobPutter, payload json.RawMessage) string {
+// storeRawHookPayload stores the hook payload bytes without the
+// shared {tool_input, tool_response} wrapper that Claude, Copilot,
+// Gemini, and Kiro CLI use. Cursor's incoming hook payload is the
+// tool_input for downstream consumers, so wrapping it again would
+// double-encode. The helper stays in Cursor's glue to preserve the
+// current wire shape.
+//
+// An empty payload skips the blob put (no zero-byte blobs in the
+// store), which also preserves current behavior.
+func storeRawHookPayload(ctx context.Context, bs api.BlobPutter, payload json.RawMessage) string {
 	if bs == nil || len(payload) == 0 {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), payload)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, payload)
 }
 
-func storeRedactedBashPayload(bs api.BlobPutter, payload cursorPostToolUsePayload, redactedCommand, redactedOutput string) string {
+// storeRedactedBashPayload captures the Cursor-specific Bash
+// provenance shape. Cursor includes conversation_id, transcript_path,
+// and cwd at the top level, and stores tool_output as a structured
+// object after redacting the inner output string. The shape diverges
+// enough from the other providers that it stays in Cursor's glue.
+func storeRedactedBashPayload(ctx context.Context, bs api.BlobPutter, payload cursorPostToolUsePayload, redactedCommand, redactedOutput string) string {
 	if bs == nil {
 		return ""
 	}
@@ -371,13 +346,15 @@ func storeRedactedBashPayload(bs api.BlobPutter, payload cursorPostToolUsePayloa
 	if err != nil {
 		return ""
 	}
-	h, _, err := bs.Put(context.Background(), data)
-	if err != nil {
-		return ""
-	}
-	return h
+	return builder.PutAndHash(ctx, bs, data)
 }
 
+// serializeStepToolUses produces the ToolUsesJSON string via
+// agentcursor's helper. The shape matches Claude, Copilot, and
+// Gemini (name plus file_path plus file_op); only the implementing
+// package differs. A future cleanup could consolidate the four
+// agent-side helpers into one shared package, but that is out of
+// scope here.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentcursor.ToolUse{
 		Name:     toolName,
@@ -390,6 +367,12 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
+// makeBaseRawEvent assembles the Cursor-specific source key, project
+// path, and session metadata, then delegates to the shared builder.
+// Cursor uses the transcript reference when available and falls back
+// to a "cursor:" prefix plus the session ID when no transcript is
+// attached. The session metadata omits source_key entirely when the
+// transcript reference is empty, which the other providers do not.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	sourceKey := event.TranscriptRef
 	if sourceKey == "" {
@@ -406,31 +389,19 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	hh := sha256.New()
-	hh.Write([]byte(sourceKey))
-	stableKey := event.ToolUseID
-	if stableKey == "" {
-		stableKey = event.TurnID
-	}
-	_, _ = fmt.Fprintf(hh, ":hook:%s:%s:%s", event.Type.HookPhase(), event.ToolName, stableKey)
-	eventID := hex.EncodeToString(hh.Sum(nil))
-
 	sourceProjectPath := projectPath
 	if sourceProjectPath == "" && event.CWD != "" {
 		sourceProjectPath = event.CWD
 	}
 
-	return broker.RawEvent{
-		EventID:           eventID,
+	return builder.BaseRawEvent(builder.BaseInput{
+		Event:             event,
 		SourceKey:         sourceKey,
 		Provider:          agentcursor.ProviderName,
-		Timestamp:         event.Timestamp,
 		ProviderSessionID: event.SessionID,
-		SessionStartedAt:  event.Timestamp,
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: sourceProjectPath,
-		Model:             event.Model,
-	}
+	})
 }
 
 var _ hooks.DirectHookEmitter = (*Provider)(nil)

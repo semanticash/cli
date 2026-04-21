@@ -1,11 +1,78 @@
 package llm
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
+
+// Timeout errors should report elapsed wall time, not the configured cap.
+func TestFormatShellError_TimeoutReportsActualElapsed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+
+	stderr := &bytes.Buffer{}
+	start := time.Now().Add(-1200 * time.Millisecond)
+
+	err := formatShellError(ctx, errors.New("signal: killed"), stderr, start)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "timed out after ") {
+		t.Errorf("expected 'timed out after ...' prefix, got %q", msg)
+	}
+	if !strings.Contains(msg, "1s") {
+		t.Errorf("expected elapsed 1s in message, got %q", msg)
+	}
+	if strings.Contains(msg, llmShellTimeout.String()) {
+		t.Errorf("message must not hardcode llmShellTimeout, got %q", msg)
+	}
+}
+
+// Non-timeout failures should keep the existing exec error formatting.
+func TestFormatShellError_NonTimeoutDelegatesToFmtExecErr(t *testing.T) {
+	ctx := context.Background()
+	stderr := &bytes.Buffer{}
+	stderr.WriteString("boom")
+	start := time.Now()
+
+	err := formatShellError(ctx, errors.New("generic failure"), stderr, start)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "timed out") {
+		t.Errorf("non-deadline error should not report timeout, got %q", msg)
+	}
+	if !strings.Contains(msg, "generic failure") {
+		t.Errorf("expected wrapped original error, got %q", msg)
+	}
+}
+
+// Explicit cancellation is not a timeout.
+func TestFormatShellError_CancelledContextIsNotTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stderr := &bytes.Buffer{}
+	start := time.Now()
+
+	err := formatShellError(ctx, errors.New("signal: killed"), stderr, start)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("cancellation must not be reported as timeout, got %q", err.Error())
+	}
+}
 
 func TestExtractJSONFromMarkdown_PlainJSON(t *testing.T) {
 	input := `{"intent":"fix bug","outcome":"fixed","learnings":[],"friction":[],"open_items":[]}`

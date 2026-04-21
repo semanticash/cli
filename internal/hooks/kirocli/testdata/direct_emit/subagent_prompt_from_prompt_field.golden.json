@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt_from_prompt_field",
+  "description": "Kiro CLI subagent input with prompt field set; prompt takes precedence over task",
+  "expected_events": [
+    {
+      "EventID": "b6fd17a6aaca42b7da72a6b0e0506edd7afc9bd57e1189d1d4a8d9bcded1741e",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Review this PR",
+      "PayloadHash": "63a339a08460bbbf9508f60f8b8800288ba57668bb16187503d937393e65afc2",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-agent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "55ede9d27e05292cf11da4b605e9a1848268f55eb8136345863d14fe703cd8d3",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "55ede9d27e05292cf11da4b605e9a1848268f55eb8136345863d14fe703cd8d3": "{\"tool_input\":{\"prompt\":\"Review this PR\",\"task\":\"fallback task\"}}",
+    "63a339a08460bbbf9508f60f8b8800288ba57668bb16187503d937393e65afc2": "Review this PR"
+  }
+}
