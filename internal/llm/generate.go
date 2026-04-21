@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/redact"
@@ -19,6 +20,11 @@ import (
 )
 
 const defaultModel = "sonnet"
+
+// llmShellTimeout bounds provider shell-outs for detached background work.
+// It leaves room for CLI startup and network latency without letting a stuck
+// child process run indefinitely.
+const llmShellTimeout = 120 * time.Second
 
 // redactPrompt removes detected secrets from prompt content before it is sent
 // to a provider.
@@ -180,6 +186,9 @@ func Generate(ctx context.Context, prompt string) (*GenerateResult, error) {
 
 // runClaude shells out to the Claude Code CLI.
 func runClaude(ctx context.Context, claudePath, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, llmShellTimeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, claudePath,
 		"--print",
 		"--output-format", "json",
@@ -195,8 +204,9 @@ func runClaude(ctx context.Context, claudePath, prompt string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return "", fmtExecErr(err, &stderr)
+		return "", formatShellError(ctx, err, &stderr, start)
 	}
 
 	var cliResp claudeCLIResponse
@@ -209,6 +219,9 @@ func runClaude(ctx context.Context, claudePath, prompt string) (string, error) {
 
 // runCursor shells out to the Cursor CLI (agent binary).
 func runCursor(ctx context.Context, agentPath, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, llmShellTimeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, agentPath,
 		"-p",
 		"--output-format", "text",
@@ -222,8 +235,9 @@ func runCursor(ctx context.Context, agentPath, prompt string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return "", fmtExecErr(err, &stderr)
+		return "", formatShellError(ctx, err, &stderr, start)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -231,6 +245,9 @@ func runCursor(ctx context.Context, agentPath, prompt string) (string, error) {
 
 // runGemini shells out to the Gemini CLI.
 func runGemini(ctx context.Context, geminiPath, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, llmShellTimeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, geminiPath,
 		"-p",
 		prompt,
@@ -243,8 +260,9 @@ func runGemini(ctx context.Context, geminiPath, prompt string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return "", fmtExecErr(err, &stderr)
+		return "", formatShellError(ctx, err, &stderr, start)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -252,6 +270,9 @@ func runGemini(ctx context.Context, geminiPath, prompt string) (string, error) {
 
 // runCopilot shells out to the GitHub Copilot CLI.
 func runCopilot(ctx context.Context, copilotPath, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, llmShellTimeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, copilotPath,
 		"-p",
 		prompt,
@@ -264,8 +285,9 @@ func runCopilot(ctx context.Context, copilotPath, prompt string) (string, error)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return "", fmtExecErr(err, &stderr)
+		return "", formatShellError(ctx, err, &stderr, start)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -325,6 +347,15 @@ func fmtExecErr(err error, stderr *bytes.Buffer) error {
 		return fmt.Errorf("exit %d: %s", exitErr.ExitCode(), stderr.String())
 	}
 	return fmt.Errorf("run: %w", err)
+}
+
+// formatShellError reports elapsed wall time for deadline errors and leaves
+// other failures to fmtExecErr.
+func formatShellError(ctx context.Context, err error, stderr *bytes.Buffer, start time.Time) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("timed out after %s", time.Since(start).Round(time.Second))
+	}
+	return fmtExecErr(err, stderr)
 }
 
 // cleanEnv removes environment variables that would cause the AI CLI
