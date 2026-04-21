@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-## [0.3.5] - 2026-04-19
+## [0.3.5] - 2026-04-21
 
 ### Added
 
@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Tightened direct-hook regression protection so payload/blob serialization changes are caught across all supported providers.
 - Claude Code and Cursor project-path decoding now returns an empty path for source keys outside the provider project base, keeping emitted metadata consistent across Unix and Windows.
+- Detached background workers now drop inherited loopback proxy settings before contacting Semantica or LLM endpoints, preventing agent-local proxies from breaking post-commit pushes while keeping real forward proxies intact.
 
 ## [0.3.4] - 2026-04-18
 
