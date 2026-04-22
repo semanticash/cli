@@ -60,6 +60,94 @@ func readArgv(t *testing.T, path string) string {
 	return strings.TrimRight(string(b), "\n")
 }
 
+// writeStatefulFakeLaunchctl installs a fake launchctl that
+// models the subset of launchd state transitions Enable /
+// Disable depend on:
+//
+//   - bootstrap sets a "service loaded" flag and exits 0.
+//   - bootout clears the flag and exits 0 when the flag was
+//     set; otherwise exits 113 with "Could not find service"
+//     stderr, matching what real launchctl does when asked to
+//     bootout a service that was never loaded.
+//   - kickstart and print exit 0 when the flag is set and
+//     "Could not find service" otherwise.
+//   - Every invocation appends its argv to argv.log so a test
+//     that expects multiple calls can inspect the full sequence.
+//
+// Returns (fakeDir, argvLogPath). The fake's "loaded" flag
+// lives inside fakeDir so parallel tests can each get an
+// independent state machine.
+//
+// Use this in tests that exercise idempotency or composed
+// flows where the no-op-on-not-loaded contract matters. Use
+// the simple writeFakeLaunchctl when a specific exit code or
+// stderr message is the thing under test.
+func writeStatefulFakeLaunchctl(t *testing.T) (dir, argvLogPath string) {
+	t.Helper()
+	dir = t.TempDir()
+	argvLogPath = filepath.Join(dir, "argv.log")
+	stateFile := filepath.Join(dir, "loaded")
+
+	script := fmt.Sprintf(`#!/bin/bash
+# Stateful fake launchctl used by internal/launcher tests.
+printf '%%s\n' "$*" >> %q
+STATE=%q
+sub=$1
+case "$sub" in
+  bootstrap)
+    touch "$STATE"
+    exit 0
+    ;;
+  bootout)
+    if [[ -f "$STATE" ]]; then
+      rm "$STATE"
+      exit 0
+    fi
+    echo "Could not find service" >&2
+    exit 113
+    ;;
+  kickstart|print)
+    if [[ -f "$STATE" ]]; then
+      exit 0
+    fi
+    echo "Could not find service" >&2
+    exit 113
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, argvLogPath, stateFile)
+
+	path := filepath.Join(dir, "launchctl")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stateful fake launchctl: %v", err)
+	}
+
+	orig := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+orig)
+	return dir, argvLogPath
+}
+
+// readArgvLines returns every argv line the fake launchctl has
+// recorded so far. Used by tests that need to verify a sequence
+// of invocations, not just the last one.
+func readArgvLines(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read argv log: %v", err)
+	}
+	raw := strings.TrimRight(string(b), "\n")
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, "\n")
+}
+
 func skipIfNotDarwin(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
