@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Fixed
+
+### Changed
+
+## [0.3.6] - 2026-04-22
+
+### Added
+
 - Experimental macOS launcher-backed worker for agent-driven or IDE-assisted commit workflows, managed with `semantica launcher enable`, `semantica launcher status`, and `semantica launcher disable`.
 - Launcher status reporting that shows user settings, plist presence, and launchd state side by side so drift is visible.
 
