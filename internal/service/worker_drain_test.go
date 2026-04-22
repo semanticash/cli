@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -59,11 +60,110 @@ func writeMarker(t *testing.T, repo, checkpointID string) string {
 	return launcher.MarkerPath(repo, checkpointID)
 }
 
+// These tests lock the per-repo wlog routing contract.
+
+func TestWlog_WritesToCurrentWlogWriter(t *testing.T) {
+	var buf bytes.Buffer
+	prev := wlogWriter
+	wlogWriter = &buf
+	defer func() { wlogWriter = prev }()
+
+	wlog("hello %s\n", "world")
+
+	if !bytes.Contains(buf.Bytes(), []byte("hello world")) {
+		t.Errorf("expected 'hello world' in writer, got %q", buf.String())
+	}
+}
+
+func TestDrainOne_RedirectsPerJobWlogToRepoLog(t *testing.T) {
+	repo := t.TempDir()
+	setupDrainEnv(t, repo)
+	writeMarker(t, repo, "ckpt-routing")
+
+	// Stand-in for the launcher log. Per-job output must not land here.
+	var launcherBuf bytes.Buffer
+	prev := wlogWriter
+	wlogWriter = &launcherBuf
+	defer func() { wlogWriter = prev }()
+
+	runner := recordingRunner{
+		OnCall: func(in WorkerInput) error {
+			// Runner output should be redirected to the repo log.
+			wlog("job-wlog: processing %s\n", in.CheckpointID)
+			return nil
+		},
+	}
+	if _, err := DrainOnce(context.Background(), runner.Run); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+
+	// The runner's line must not reach the launcher writer.
+	if bytes.Contains(launcherBuf.Bytes(), []byte("job-wlog:")) {
+		t.Errorf("per-job wlog leaked to the launcher writer:\n%s", launcherBuf.String())
+	}
+
+	// The repo log should contain the line instead.
+	repoLogPath := filepath.Join(repo, ".semantica", "worker.log")
+	data, err := os.ReadFile(repoLogPath)
+	if err != nil {
+		t.Fatalf("read repo worker.log: %v", err)
+	}
+	if !bytes.Contains(data, []byte("job-wlog: processing ckpt-routing")) {
+		t.Errorf("expected per-job wlog line in repo worker.log, got:\n%s", data)
+	}
+
+	// The original writer should be restored after the pass.
+	if !writerIs(&launcherBuf) {
+		t.Errorf("wlogWriter not restored after DrainOnce")
+	}
+}
+
+func TestDrainOne_RepoLogOpenFailureFallsBackToLauncherWriter(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses POSIX mode-bit enforcement; cannot simulate open failure")
+	}
+	repo := t.TempDir()
+	setupDrainEnv(t, repo)
+	writeMarker(t, repo, "ckpt-fallback")
+
+	// Make the repo log unavailable after the marker is written.
+	semPath := filepath.Join(repo, ".semantica")
+	if err := os.Chmod(semPath, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(semPath, 0o755) })
+
+	var launcherBuf bytes.Buffer
+	prev := wlogWriter
+	wlogWriter = &launcherBuf
+	defer func() { wlogWriter = prev }()
+
+	runner := recordingRunner{
+		OnCall: func(in WorkerInput) error {
+			wlog("job-wlog-fallback: %s\n", in.CheckpointID)
+			return nil
+		},
+	}
+	if _, err := DrainOnce(context.Background(), runner.Run); err != nil {
+		t.Fatalf("DrainOnce: %v", err)
+	}
+
+	// Per-job output should fall back to the launcher writer.
+	if !bytes.Contains(launcherBuf.Bytes(), []byte("job-wlog-fallback: ckpt-fallback")) {
+		t.Errorf("expected per-job wlog in launcher writer as fallback, got:\n%s", launcherBuf.String())
+	}
+
+	// The open failure itself should also be visible there.
+	if !bytes.Contains(launcherBuf.Bytes(), []byte("open repo log for")) {
+		t.Errorf("expected open-failure line in launcher writer, got:\n%s", launcherBuf.String())
+	}
+}
+
 // recordingRunner records calls and can inject custom behavior.
 type recordingRunner struct {
-	mu      sync.Mutex
-	Inputs  []WorkerInput
-	OnCall  func(WorkerInput) error // optional behavior override
+	mu     sync.Mutex
+	Inputs []WorkerInput
+	OnCall func(WorkerInput) error // optional behavior override
 }
 
 func (r *recordingRunner) Run(_ context.Context, in WorkerInput) error {

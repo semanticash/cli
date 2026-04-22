@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/launcher"
+	"github.com/semanticash/cli/internal/util"
 )
 
 // DefaultDrainLinger is the idle wait before the drain loop exits.
@@ -137,8 +140,7 @@ func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOut
 		if errors.Is(err, os.ErrNotExist) {
 			return outcomeNone
 		}
-		// Drop unreadable or mismatched markers so they do not loop
-		// forever.
+		// Drop unreadable or mismatched markers so they do not loop.
 		wlog("worker: drain: reject corrupt marker %s: %v\n", path, err)
 		if delErr := launcher.Delete(path); delErr != nil {
 			wlog("worker: drain: delete corrupt marker %s: %v\n", path, delErr)
@@ -146,6 +148,11 @@ func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOut
 		}
 		return outcomeRejected
 	}
+
+	// Route this job's output to the repo-local worker log. Drain-loop
+	// output outside this scope stays on the current default writer.
+	restore := redirectWlogToRepoLog(m.RepoRoot)
+	defer restore()
 
 	if err := run(ctx, WorkerInput{
 		CheckpointID: m.CheckpointID,
@@ -162,6 +169,29 @@ func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOut
 	}
 	return outcomeProcessed
 }
+
+// redirectWlogToRepoLog points wlog at <repoRoot>/.semantica/worker.log
+// for one job and returns a restore function. If the repo log cannot be
+// opened, logging stays on the current writer and the job still runs.
+// Callers must treat wlogWriter as single-goroutine state.
+func redirectWlogToRepoLog(repoRoot string) func() {
+	semDir := filepath.Join(repoRoot, ".semantica")
+	logFile, err := util.OpenWorkerLog(semDir)
+	if err != nil {
+		wlog("worker: drain: open repo log for %s: %v; routing this job to the default log\n", repoRoot, err)
+		return func() {}
+	}
+	prev := wlogWriter
+	wlogWriter = logFile
+	return func() {
+		wlogWriter = prev
+		_ = logFile.Close()
+	}
+}
+
+// writerIs lets package tests compare the current wlog destination
+// without exporting wlogWriter.
+func writerIs(w io.Writer) bool { return wlogWriter == w }
 
 // DrainUntilStable keeps draining until two passes in a row remove no
 // markers, with an optional idle linger between them. Markers that

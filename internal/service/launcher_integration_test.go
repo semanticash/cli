@@ -13,11 +13,9 @@ import (
 	"github.com/semanticash/cli/internal/launcher"
 )
 
-// These integration tests exercise launcher dispatch and drain
-// together.
+// These integration tests exercise launcher dispatch and drain together.
 
-// setupLauncherIntegrationEnv creates the repo and global state used
-// by the launcher integration tests.
+// setupLauncherIntegrationEnv creates the repo and global state for these tests.
 func setupLauncherIntegrationEnv(t *testing.T, repoRoots ...string) {
 	t.Helper()
 
@@ -26,8 +24,7 @@ func setupLauncherIntegrationEnv(t *testing.T, repoRoots ...string) {
 	t.Setenv("HOME", home)
 	t.Setenv("SEMANTICA_HOME", base)
 
-	// Register each repo with the broker so the drain loop's
-	// ListActiveRepos iteration finds it.
+	// Register each repo so the drain loop can discover it.
 	registryPath, err := broker.DefaultRegistryPath()
 	if err != nil {
 		t.Fatalf("registry path: %v", err)
@@ -60,8 +57,7 @@ func setupLauncherIntegrationEnv(t *testing.T, repoRoots ...string) {
 	}
 }
 
-// A dispatched marker should be discovered and processed by the
-// drain loop.
+// A dispatched marker should be discovered and processed by the drain loop.
 func TestIntegration_Launcher_DispatchAndDrainProcessSingleCommit(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("dispatchViaLauncher's kickstart is macOS-only")
@@ -70,8 +66,7 @@ func TestIntegration_Launcher_DispatchAndDrainProcessSingleCommit(t *testing.T) 
 	setupLauncherIntegrationEnv(t, repo)
 	writeFakeLaunchctlForService(t, 0, "")
 
-	// Step 1: hook-side dispatch writes the marker and
-	// (via the fake launchctl) kicks the launchd agent.
+	// Dispatch writes the marker and kicks the fake launchd agent.
 	err := dispatchViaLauncher(context.Background(), "cp-integration", "commit-integ", repo)
 	if err != nil {
 		t.Fatalf("dispatchViaLauncher: %v", err)
@@ -80,9 +75,7 @@ func TestIntegration_Launcher_DispatchAndDrainProcessSingleCommit(t *testing.T) 
 		t.Fatalf("marker missing after dispatch: %v", err)
 	}
 
-	// Step 2: drain-worker-side pass with a recording runner
-	// so we can verify exactly what the marker turned into
-	// at the WorkerService.Run boundary.
+	// Drain with a recording runner so the handoff can be inspected.
 	var runner recordingRunner
 	if err := DrainUntilStable(context.Background(), 0, runner.Run); err != nil {
 		t.Fatalf("DrainUntilStable: %v", err)
@@ -100,7 +93,7 @@ func TestIntegration_Launcher_DispatchAndDrainProcessSingleCommit(t *testing.T) 
 			got, repo)
 	}
 
-	// Marker is deleted after a successful run.
+	// The marker should be deleted after a successful run.
 	if _, err := os.Stat(launcher.MarkerPath(repo, "cp-integration")); !os.IsNotExist(err) {
 		t.Errorf("marker should be deleted after successful drain, stat=%v", err)
 	}
@@ -142,7 +135,7 @@ func TestIntegration_Launcher_BurstOfDispatchesAcrossReposProcessesEachExactlyOn
 		t.Fatalf("runner called %d times, want %d: %+v", len(calls), len(dispatches), calls)
 	}
 
-	// Every dispatched (checkpoint, repo) pair must appear once.
+	// Every dispatched (checkpoint, repo) pair should appear once.
 	seen := map[string]int{}
 	for _, c := range calls {
 		key := c.CheckpointID + "@" + c.RepoRoot
@@ -155,7 +148,7 @@ func TestIntegration_Launcher_BurstOfDispatchesAcrossReposProcessesEachExactlyOn
 		}
 	}
 
-	// No markers left on disk in either repo.
+	// Neither repo should keep markers after the drain.
 	for _, repo := range []string{repoA, repoB} {
 		remaining, _ := launcher.List(repo)
 		if len(remaining) != 0 {
@@ -171,7 +164,7 @@ func TestIntegration_Launcher_KickstartFailureLeavesMarkerForLaterDrain(t *testi
 	}
 	repo := t.TempDir()
 	setupLauncherIntegrationEnv(t, repo)
-	// Fake launchctl that exits non-zero for every call.
+	// Fake launchctl that fails every call.
 	writeFakeLaunchctlForService(t, 5, "Kickstart failed")
 
 	// Dispatch fails but leaves the marker on disk.
@@ -183,7 +176,7 @@ func TestIntegration_Launcher_KickstartFailureLeavesMarkerForLaterDrain(t *testi
 		t.Fatalf("marker must remain on disk after kickstart failure, stat=%v", err)
 	}
 
-	// A later drain must find and process the marker.
+	// A later drain should find and process the marker.
 	var runner recordingRunner
 	if err := DrainUntilStable(context.Background(), 0, runner.Run); err != nil {
 		t.Fatalf("DrainUntilStable: %v", err)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,9 +35,8 @@ type WorkerInput struct {
 	RepoRoot     string
 }
 
-// workerContext carries the shared infrastructure handles opened during
-// checkpoint preparation. It keeps the helper calls from threading
-// many parameters through every call.
+// workerContext bundles the shared handles opened during checkpoint
+// preparation.
 type workerContext struct {
 	h         *sqlstore.Handle
 	blobStore *blobs.Store
@@ -47,16 +47,23 @@ type workerContext struct {
 
 func (wc *workerContext) close() { _ = sqlstore.Close(wc.h) }
 
-// prepareResult is the outcome of prepareCheckpoint.
+// prepareResult is the result of prepareCheckpoint.
 type prepareResult struct {
 	wctx *workerContext
 	skip bool // true when checkpoint is already complete/failed, not found, or semantica disabled
 }
 
+// wlogWriter is the destination for worker log lines. It defaults to
+// os.Stderr, which the detached worker and launchd plist route to
+// different files. The drain loop swaps it per job so job-level output
+// lands in <repo>/.semantica/worker.log while launcher-level output
+// stays on the launcher log. Callers must treat it as single-goroutine.
+var wlogWriter io.Writer = os.Stderr
+
 func wlog(format string, args ...any) {
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stderr, "%s  %s", ts, msg)
+	fmt.Fprintf(wlogWriter, "%s  %s", ts, msg)
 }
 
 // prepareCheckpoint opens the DB, validates the checkpoint is pending,

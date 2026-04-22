@@ -24,13 +24,11 @@ func TestDrainUntilStable_DeleteFailuresDoNotInfiniteLoop(t *testing.T) {
 
 	pendingDir := launcher.PendingDir(repo)
 	// Remove write permission so os.Remove fails with EACCES.
-	// Keep execute so we can still stat / read files inside.
 	if err := os.Chmod(pendingDir, 0o500); err != nil {
 		t.Fatalf("chmod pending dir: %v", err)
 	}
 	t.Cleanup(func() {
-		// Restore write permission so the test's own cleanup
-		// of the temp directory succeeds.
+		// Restore write permission so temp-dir cleanup succeeds.
 		_ = os.Chmod(pendingDir, 0o755)
 	})
 
@@ -48,8 +46,7 @@ func TestDrainUntilStable_DeleteFailuresDoNotInfiniteLoop(t *testing.T) {
 		t.Fatal("DrainUntilStable did not exit; delete failure is driving an infinite loop")
 	}
 
-	// The markers are still on disk because Delete failed.
-	// Restore permissions locally for the List call.
+	// The markers should still be on disk because delete failed.
 	if err := os.Chmod(pendingDir, 0o755); err != nil {
 		t.Fatalf("restore chmod: %v", err)
 	}
@@ -58,9 +55,7 @@ func TestDrainUntilStable_DeleteFailuresDoNotInfiniteLoop(t *testing.T) {
 		t.Errorf("both markers should still be on disk after delete failures, got %v", remaining)
 	}
 
-	// Per-invocation skip set: a delete failure adds the
-	// marker to the skip set, so each is tried exactly once.
-	// More than two calls means the skip set regressed.
+	// Each marker should be tried once per invocation.
 	if got := len(runner.calls()); got != 2 {
 		t.Errorf("runner invoked %d times; expected exactly 2 (one per marker)", got)
 	}

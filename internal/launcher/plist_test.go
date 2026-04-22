@@ -15,8 +15,7 @@ func TestRenderWorkerPlist_ValidInputProducesParseableXML(t *testing.T) {
 		t.Fatalf("RenderWorkerPlist: %v", err)
 	}
 
-	// Must be well-formed XML. This catches template corruption,
-	// stray unescaped characters, and missing DOCTYPE.
+	// The rendered plist should stay well-formed XML.
 	if err := xml.Unmarshal([]byte(got), new(struct{ XMLName xml.Name })); err != nil {
 		t.Errorf("rendered plist is not valid XML: %v\n---\n%s", err, got)
 	}
@@ -75,8 +74,7 @@ func TestRenderWorkerPlist_SubstitutesPathsVerbatimForTypicalInputs(t *testing.T
 	if !strings.Contains(got, bin) {
 		t.Errorf("expected verbatim binary path %q in rendered plist:\n%s", bin, got)
 	}
-	// Log path appears twice (stdout and stderr); both instances
-	// should be the verbatim input.
+	// The log path should appear twice, once for each stream.
 	if strings.Count(got, log) != 2 {
 		t.Errorf("expected log path %q to appear exactly twice, got %d\n---\n%s",
 			log, strings.Count(got, log), got)
@@ -84,10 +82,7 @@ func TestRenderWorkerPlist_SubstitutesPathsVerbatimForTypicalInputs(t *testing.T
 }
 
 func TestRenderWorkerPlist_EscapesXMLReservedCharacters(t *testing.T) {
-	// A home directory name that contains an XML-reserved
-	// character is unusual on macOS but not forbidden. The
-	// renderer must escape such inputs so the resulting plist
-	// still parses.
+	// XML-reserved characters in paths must be escaped.
 	bin := "/Users/alice/tools & scripts/semantica"
 	log := "/Users/alice/logs/<worker>.log"
 

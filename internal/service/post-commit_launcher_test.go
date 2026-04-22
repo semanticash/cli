@@ -72,15 +72,14 @@ func setupLauncherDispatchEnv(t *testing.T) (repo, semHome string) {
 
 func TestDispatchViaLauncher_NotEnabledReturnsSentinel(t *testing.T) {
 	repo, _ := setupLauncherDispatchEnv(t)
-	// No enableLauncherInSettings call; settings file is
-	// absent so launcher.IsEnabled() returns false.
+	// No settings file means launcher.IsEnabled() returns false.
 
 	err := dispatchViaLauncher(context.Background(), "cp-1", "commit-1", repo)
 	if !errors.Is(err, ErrLauncherNotEnabled) {
 		t.Fatalf("expected ErrLauncherNotEnabled, got %v", err)
 	}
 
-	// Disabled dispatch must be side-effect free.
+	// Disabled dispatch should be side-effect free.
 	entries, _ := os.ReadDir(launcher.PendingDir(repo))
 	if len(entries) != 0 {
 		t.Errorf("disabled launcher must not write markers, got %v", entries)
@@ -100,7 +99,7 @@ func TestDispatchViaLauncher_EnabledWritesMarkerAndKickstarts(t *testing.T) {
 		t.Fatalf("dispatchViaLauncher: %v", err)
 	}
 
-	// Marker present on disk at the canonical location.
+	// The marker should be written at the canonical path.
 	markerPath := launcher.MarkerPath(repo, "cp-1")
 	data, readErr := os.ReadFile(markerPath)
 	if readErr != nil {
@@ -112,8 +111,7 @@ func TestDispatchViaLauncher_EnabledWritesMarkerAndKickstarts(t *testing.T) {
 		}
 	}
 
-	// launchctl kickstart was invoked against the canonical
-	// domain target, without the -k flag.
+	// kickstart should target the canonical domain without -k.
 	argv, _ := os.ReadFile(argvLog)
 	line := strings.TrimRight(string(argv), "\n")
 	wantPrefix := "kickstart " + launcher.DomainTarget()
@@ -138,7 +136,7 @@ func TestDispatchViaLauncher_KickstartFailureBubblesAndLeavesMarker(t *testing.T
 		t.Errorf("expected 'kickstart' in error, got %v", err)
 	}
 
-	// The marker stays on disk for a later successful drain.
+	// The marker should stay on disk for a later drain.
 	if _, err := os.Stat(launcher.MarkerPath(repo, "cp-1")); err != nil {
 		t.Errorf("marker should remain on disk after kickstart failure, stat=%v", err)
 	}
@@ -155,9 +153,7 @@ func TestDispatchViaLauncher_MarkerWriteFailureSkipsKickstart(t *testing.T) {
 	enableLauncherInSettings(t)
 	argvLog := writeFakeLaunchctlForService(t, 0, "")
 
-	// Make the repo's .semantica directory read-only so
-	// MkdirAll on the pending subdirectory, and the subsequent
-	// marker write, fail with EACCES.
+	// Make the repo's .semantica directory read-only so marker creation fails.
 	semPath := filepath.Join(repo, ".semantica")
 	if err := os.Chmod(semPath, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -172,7 +168,7 @@ func TestDispatchViaLauncher_MarkerWriteFailureSkipsKickstart(t *testing.T) {
 		t.Errorf("expected 'marker' in error, got %v", err)
 	}
 
-	// If the marker write fails, launchd must not be kicked.
+	// If marker creation fails, launchd must not be kicked.
 	if _, err := os.Stat(argvLog); err == nil {
 		body, _ := os.ReadFile(argvLog)
 		if len(bytes.TrimSpace(body)) > 0 {

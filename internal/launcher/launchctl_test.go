@@ -50,8 +50,7 @@ func readArgv(t *testing.T, path string) string {
 	return strings.TrimRight(string(b), "\n")
 }
 
-// writeStatefulFakeLaunchctl models the subset of launchd state
-// transitions used by Enable and Disable.
+// writeStatefulFakeLaunchctl models the launchd states used by Enable and Disable.
 func writeStatefulFakeLaunchctl(t *testing.T) (dir, argvLogPath string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -192,8 +191,7 @@ func TestKickstart_SuccessInvokesCorrectArgvWithoutDashK(t *testing.T) {
 	}
 
 	got := readArgv(t, argvLog)
-	// The -k flag is deliberately absent: an already-running
-	// worker should not be killed and restarted on every commit.
+	// The -k flag is deliberately absent.
 	want := "kickstart gui/501/sh.semantica.worker"
 	if got != want {
 		t.Errorf("argv = %q, want %q (note: -k must NOT be present)", got, want)
@@ -222,9 +220,7 @@ func TestIsLoaded_ZeroExitMeansLoaded(t *testing.T) {
 	}
 }
 
-// launchctl print for an unregistered label returns non-zero with
-// a stable "Could not find service" message. IsLoaded should
-// translate that specific verdict into a clean (false, nil).
+// The canonical not-loaded wording should map to (false, nil).
 func TestIsLoaded_ServiceNotFoundMeansNotLoaded(t *testing.T) {
 	skipIfNotDarwin(t)
 	writeFakeLaunchctl(t, 113, "Could not find service \"sh.semantica.worker\" in domain for port")
@@ -238,7 +234,7 @@ func TestIsLoaded_ServiceNotFoundMeansNotLoaded(t *testing.T) {
 	}
 }
 
-// Apple has shipped multiple not-found wordings.
+// Alternate not-found wording should behave the same way.
 func TestIsLoaded_AlternateNotFoundWordingMeansNotLoaded(t *testing.T) {
 	skipIfNotDarwin(t)
 	writeFakeLaunchctl(t, 3, "Service not found.")
@@ -249,6 +245,20 @@ func TestIsLoaded_AlternateNotFoundWordingMeansNotLoaded(t *testing.T) {
 	}
 	if loaded {
 		t.Error("expected loaded=false on alternate not-found wording")
+	}
+}
+
+// Bootout may report "No such process" for an unloaded target.
+func TestIsLoaded_NoSuchProcessMeansNotLoaded(t *testing.T) {
+	skipIfNotDarwin(t)
+	writeFakeLaunchctl(t, 3, "Boot-out failed: 3: No such process")
+
+	loaded, err := IsLoaded(context.Background(), "gui/501/sh.semantica.worker")
+	if err != nil {
+		t.Fatalf("IsLoaded returned non-nil error on No such process: %v", err)
+	}
+	if loaded {
+		t.Error("expected loaded=false on 'No such process' wording")
 	}
 }
 

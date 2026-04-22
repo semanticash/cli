@@ -11,8 +11,8 @@ import (
 	"testing"
 )
 
-// These tests exercise the enable and disable flow with an isolated
-// HOME, SEMANTICA_HOME, and fake launchctl.
+// These tests exercise enable and disable with isolated HOME,
+// SEMANTICA_HOME, and fake launchctl.
 
 func setupInstallEnv(t *testing.T) (home, semHome string) {
 	t.Helper()
@@ -23,8 +23,7 @@ func setupInstallEnv(t *testing.T) (home, semHome string) {
 	return home, semHome
 }
 
-// fakeBinary creates an executable file that passes Enable's binary
-// checks.
+// fakeBinary creates an executable file that passes Enable's binary checks.
 func fakeBinary(t *testing.T, home string) string {
 	t.Helper()
 	dir := filepath.Join(home, "bin")
@@ -51,7 +50,7 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 		t.Fatalf("Enable: %v", err)
 	}
 
-	// Result fields point at the installed state.
+	// Result fields should point at the installed state.
 	wantPlist := filepath.Join(home, "Library", "LaunchAgents", "sh.semantica.worker.plist")
 	if result.PlistPath != wantPlist {
 		t.Errorf("result.PlistPath = %q, want %q", result.PlistPath, wantPlist)
@@ -60,8 +59,7 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 		t.Errorf("first Enable must not report Reinstalled=true")
 	}
 
-	// Plist file on disk contains the binary path, the label,
-	// and the log path.
+	// The installed plist should contain the expected paths and label.
 	body, err := os.ReadFile(wantPlist)
 	if err != nil {
 		t.Fatalf("read installed plist: %v", err)
@@ -73,9 +71,7 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 		}
 	}
 
-	// launchctl should have been invoked with (1) a pre-install
-	// bootout (no-op because nothing was loaded) and (2) the
-	// actual bootstrap that installs the new service.
+	// Enable should call bootout first, then bootstrap.
 	lines := readArgvLines(t, argvLog)
 	if len(lines) != 2 {
 		t.Fatalf("launchctl invocations = %d, want 2 (bootout + bootstrap): %v", len(lines), lines)
@@ -87,8 +83,7 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 		t.Errorf("second launchctl call = %q, want bootstrap of %s", lines[1], wantPlist)
 	}
 
-	// Settings reflect the enabled state with the absolute
-	// plist path recorded.
+	// Settings should record the enabled state and plist path.
 	settings, err := ReadSettings()
 	if err != nil {
 		t.Fatalf("ReadSettings: %v", err)
@@ -117,8 +112,7 @@ func TestEnable_IdempotentOnAlreadyEnabledReRendersAndReBootstraps(t *testing.T)
 		t.Fatalf("first Enable: %v", err)
 	}
 
-	// Truncate the argv log so the second call's invocations
-	// are isolated for inspection.
+	// Truncate the argv log so the second call is isolated.
 	if err := os.WriteFile(argvLog, nil, 0o644); err != nil {
 		t.Fatalf("truncate argv log: %v", err)
 	}
@@ -131,8 +125,7 @@ func TestEnable_IdempotentOnAlreadyEnabledReRendersAndReBootstraps(t *testing.T)
 		t.Errorf("second Enable must report Reinstalled=true (launchd reported a loaded service)")
 	}
 
-	// The second Enable must bootout the existing service
-	// first, then bootstrap the replacement.
+	// The second Enable should bootout first, then bootstrap.
 	lines := readArgvLines(t, argvLog)
 	if len(lines) != 2 {
 		t.Fatalf("second Enable launchctl invocations = %d, want 2: %v", len(lines), lines)
@@ -145,7 +138,7 @@ func TestEnable_IdempotentOnAlreadyEnabledReRendersAndReBootstraps(t *testing.T)
 	}
 }
 
-// Enable must recover when launchd state and settings drift apart.
+// Enable should recover when launchd state and settings disagree.
 func TestEnable_IdempotentWhenSettingsDesyncedFromLaunchd(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Enable is macOS-specific")
@@ -154,7 +147,7 @@ func TestEnable_IdempotentWhenSettingsDesyncedFromLaunchd(t *testing.T) {
 	_, argvLog := writeStatefulFakeLaunchctl(t)
 	bin := fakeBinary(t, home)
 
-	// Seed a loaded launchd state but a missing settings file.
+	// Seed a loaded launchd state but remove the settings file.
 	if _, err := Enable(context.Background(), bin); err != nil {
 		t.Fatalf("seed Enable: %v", err)
 	}
@@ -165,15 +158,12 @@ func TestEnable_IdempotentWhenSettingsDesyncedFromLaunchd(t *testing.T) {
 		t.Fatalf("precondition failed: settings say enabled after deletion")
 	}
 
-	// Reset the argv log so the retry's calls are isolated.
+	// Reset the argv log so the retry is isolated.
 	if err := os.WriteFile(argvLog, nil, 0o644); err != nil {
 		t.Fatalf("truncate argv log: %v", err)
 	}
 
-	// Retry Enable. Without the launchd-state-first fix, this
-	// would skip bootout (because settings say not enabled),
-	// then fail bootstrap with "already loaded." With the fix,
-	// it always calls bootout first and therefore succeeds.
+	// Retry Enable and expect a clean reload.
 	result, err := Enable(context.Background(), bin)
 	if err != nil {
 		t.Fatalf("Enable retry after settings desync: %v", err)
@@ -190,6 +180,54 @@ func TestEnable_IdempotentWhenSettingsDesyncedFromLaunchd(t *testing.T) {
 	}
 	if !strings.HasPrefix(lines[1], "bootstrap ") {
 		t.Errorf("retry call[1] = %q, want bootstrap", lines[1])
+	}
+}
+
+// "No such process" should be treated as a fresh-install bootout result.
+func TestEnable_TreatsBootoutNoSuchProcessAsFreshInstall(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Enable is macOS-specific")
+	}
+	home, _ := setupInstallEnv(t)
+	// Fake launchctl that returns the not-loaded bootout wording.
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	script := `#!/bin/bash
+printf '%s\n' "$*" >> ` + argvLog + `
+if [[ "$1" == "bootout" ]]; then
+  echo "Boot-out failed: 3: No such process" >&2
+  exit 3
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "launchctl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake launchctl: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	bin := fakeBinary(t, home)
+	result, err := Enable(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("Enable should treat bootout no-such-process as soft success; got: %v", err)
+	}
+	if result.Reinstalled {
+		t.Errorf("Reinstalled must be false when bootout reported not loaded")
+	}
+
+	// Expect bootout, then bootstrap.
+	lines, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(lines), "\n"), "\n")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 launchctl calls, got %d: %v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "bootout ") {
+		t.Errorf("first call = %q, want bootout", got[0])
+	}
+	if !strings.HasPrefix(got[1], "bootstrap ") {
+		t.Errorf("second call = %q, want bootstrap", got[1])
 	}
 }
 

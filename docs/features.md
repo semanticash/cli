@@ -180,18 +180,21 @@ semantica explain HEAD --generate
 ### Generation modes
 
 - **Manual**: `semantica explain <commit> --generate` (use `--force` to regenerate)
-- **Auto**: Enable with `semantica set auto-playbook enabled` - generates a playbook for every commit via a detached background process after the worker completes
+- **Auto**: Enable with `semantica set auto-playbook enabled` - generates a playbook for every commit in the background after the worker completes
 
 ### Prerequisites
 
 - At least one LLM CLI must be installed and accessible: Claude Code (`claude`), Cursor CLI (`agent`), Gemini CLI (`gemini`), or Copilot CLI (`copilot`). The first available provider in this order is used.
 - For auto-playbook, the provider must be authenticated and available non-interactively.
+- On macOS, `semantica launcher enable` can move commit-driven background work under launchd. This is optional; the default worker path still works without it.
+- The launcher is mainly useful when commits are often created through agent-driven workflows and the follow-up background work needs a more reliable macOS execution path.
 
 ### Caveats
 
 - Generation is asynchronous. After `--generate`, run `semantica explain` again after a few seconds to see the result.
 - Playbook generation uses bounded diff input to stay within LLM context limits. Commit message and PR suggestions use structured change summaries plus selected per-file excerpts instead of a blind raw-diff prefix. Large diffs may still produce less precise summaries.
 - Playbooks are stored locally in `.semantica/lineage.db`.
+- Per-repo worker output is written to `.semantica/worker.log`. When the macOS launcher is enabled, launcher-level events also appear in `$SEMANTICA_HOME/worker-launcher.log`.
 
 ---
 

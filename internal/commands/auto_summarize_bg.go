@@ -16,8 +16,6 @@ import (
 )
 
 // NewAutoPlaybookCmd creates the hidden _auto-playbook command.
-// It is spawned as a detached background process by the worker when
-// automations.playbook is enabled in settings.json.
 func NewAutoPlaybookCmd() *cobra.Command {
 	var (
 		commitHash   string
@@ -28,20 +26,17 @@ func NewAutoPlaybookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "_auto-playbook",
 		Hidden: true,
-		// This command runs in the background. Keep cobra from printing
-		// usage or a duplicate error line on RunE failures.
+		// Keep background failures to one error line.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			// 1. Check if summary already exists (skip if so).
 			if hasSummary(repoRoot, checkpointID) {
 				fmt.Fprintf(os.Stderr, "auto-playbook: summary already exists for %s, skipping\n", checkpointID)
 				return nil
 			}
 
-			// 2. Gather full explain context.
 			svc := service.NewExplainService()
 			res, err := svc.Explain(ctx, service.ExplainInput{
 				RepoPath: repoRoot,
@@ -51,7 +46,6 @@ func NewAutoPlaybookCmd() *cobra.Command {
 				return fmt.Errorf("auto-playbook: explain: %w", err)
 			}
 
-			// 3. Get diff for prompt.
 			repo, err := git.OpenRepo(repoRoot)
 			if err != nil {
 				return fmt.Errorf("auto-playbook: open repo: %w", err)
@@ -61,7 +55,6 @@ func NewAutoPlaybookCmd() *cobra.Command {
 				return fmt.Errorf("auto-playbook: diff: %w", err)
 			}
 
-			// 4. Build LLM prompt.
 			ectx := buildExplainContext(res)
 			entries := buildTranscriptEntries(res)
 			prompt := llm.BuildUserPrompt(
@@ -69,13 +62,11 @@ func NewAutoPlaybookCmd() *cobra.Command {
 				ectx, entries, string(diffBytes),
 			)
 
-			// 5. Call LLM.
 			gen, err := llm.Generate(ctx, prompt)
 			if err != nil {
 				return fmt.Errorf("auto-playbook: llm: %w", err)
 			}
 
-			// 6. Save summary.
 			if err := svc.SaveSummary(ctx, service.SaveSummaryInput{
 				RepoPath:     repoRoot,
 				CheckpointID: res.CheckpointID,
@@ -99,8 +90,7 @@ func NewAutoPlaybookCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "auto-playbook: summary saved for checkpoint %s\n", checkpointID)
 
-			// 7. Re-push attribution with playbook_summary now populated.
-			// This triggers backend rematerialization of any PR comments.
+			// Re-push after saving so downstream views see the summary.
 			if util.IsConnected(semDir) {
 				service.RePushAttribution(ctx, repoRoot, commitHash, checkpointID)
 			}

@@ -46,8 +46,7 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 		return nil, err
 	}
 
-	// Create the log directory up front so install fails early if it
-	// is not writable.
+	// Create the log directory first so install fails early if it is not writable.
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return nil, fmt.Errorf("launcher: create log dir: %w", err)
 	}
@@ -60,7 +59,7 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 		return nil, err
 	}
 
-	// Treat launchd, not settings, as the source of truth.
+	// Treat launchd as the source of truth.
 	previouslyLoaded, err := bootoutIgnoringNotLoaded(ctx, DomainTarget())
 	if err != nil {
 		return nil, fmt.Errorf("launcher: bootout previous service: %w", err)
@@ -71,8 +70,7 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 	}
 
 	if err := Bootstrap(ctx, UserDomain(), plistPath); err != nil {
-		// Leave the plist behind for inspection, but do not record an
-		// enabled state.
+		// Leave the plist behind for inspection, but do not record an enabled state.
 		return nil, fmt.Errorf("launcher: bootstrap: %w", err)
 	}
 
@@ -113,8 +111,7 @@ func Disable(ctx context.Context) (*DisableResult, error) {
 
 	settings, err := ReadSettings()
 	if err != nil {
-		// Fall back to empty settings so disable can still clean up the
-		// launchd state and plist.
+		// Fall back to empty settings so disable can still clean up launchd state.
 		settings = UserSettings{}
 	}
 
@@ -151,7 +148,7 @@ func Disable(ctx context.Context) (*DisableResult, error) {
 	return res, nil
 }
 
-// bootoutIgnoringNotLoaded treats "service not found" as success
+// bootoutIgnoringNotLoaded treats the known "not loaded" result as success
 // and reports whether anything was unloaded.
 func bootoutIgnoringNotLoaded(ctx context.Context, target string) (bool, error) {
 	err := Bootout(ctx, target)

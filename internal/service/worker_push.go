@@ -275,9 +275,7 @@ func drainBackfillFromWorker(ctx context.Context, repoRoot, semDir string) {
 	}
 }
 
-// RePushAttribution re-pushes attribution for a commit to the remote endpoint.
-// Called after auto-playbook saves a summary so the backend gets the enriched
-// playbook_summary and can rematerialize PR comments.
+// RePushAttribution re-sends attribution after summary generation.
 func RePushAttribution(ctx context.Context, repoRoot, commitHash, checkpointID string) {
 	repo, err := git.OpenRepo(repoRoot)
 	if err != nil {
@@ -294,8 +292,17 @@ func RePushAttribution(ctx context.Context, repoRoot, commitHash, checkpointID s
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 
-	pushAttribution(ctx, repo, h, commitHash, checkpointID)
-	wlog("worker: re-push: sent enriched attribution for %s\n", util.ShortID(commitHash))
+	// Keep re-push logging distinct from the initial push.
+	r := tryPushAttribution(ctx, repo, h, commitHash, checkpointID)
+	switch r.Action {
+	case PushUploaded:
+		wlog("worker: re-push: sent enriched attribution for %s (%.0f%% AI)\n",
+			util.ShortID(commitHash), r.AIPercentage)
+	case PushSkip:
+		wlog("worker: re-push: skip: %v\n", r.Err)
+	case PushRetry:
+		wlog("worker: re-push: retry: %v\n", r.Err)
+	}
 }
 
 // redactPushPayload redacts free-text fields in the outbound push payload.

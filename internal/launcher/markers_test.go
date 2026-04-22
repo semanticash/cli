@@ -68,10 +68,7 @@ func TestValidate_RejectsNonAbsoluteRepoRoot(t *testing.T) {
 }
 
 func TestValidate_RejectsCheckpointIDWithPathSeparator(t *testing.T) {
-	// A checkpoint ID containing a slash would escape the
-	// pending directory via filepath.Join. Validate must reject
-	// it so a crafted or corrupt CheckpointID cannot be used as
-	// a path-traversal vector.
+	// A slash would let the checkpoint ID escape the pending directory.
 	for _, bad := range []string{"../escape", "nested/ckpt", `back\slash`} {
 		m := fixtureMarker("/workspace/pulse")
 		m.CheckpointID = bad
@@ -311,11 +308,7 @@ func TestMarker_OnDiskJSONLayoutIsCanonical(t *testing.T) {
 	}
 }
 
-// ReadInQueue locks the invariant that a marker cannot be used
-// unless it agrees with its on-disk location. These tests are the
-// regression guard against a marker at repoA's queue addressing
-// repoB or advertising a CheckpointID that disagrees with its
-// filename stem.
+// ReadInQueue requires the marker content to match its queue location.
 func TestReadInQueue_AcceptsMarkerMatchingLocation(t *testing.T) {
 	repo := t.TempDir()
 	m := fixtureMarker(repo)
@@ -337,8 +330,7 @@ func TestReadInQueue_RejectsMismatchedRepoRoot(t *testing.T) {
 	repoA := t.TempDir()
 	repoB := t.TempDir()
 
-	// Write a marker whose RepoRoot says repoA, but place the
-	// file under repoB's pending directory.
+	// Write a marker for repoA under repoB's queue.
 	m := fixtureMarker(repoA)
 	if err := Write(m); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -372,8 +364,7 @@ func TestReadInQueue_RejectsMismatchedFilename(t *testing.T) {
 	if err := Write(m); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	// Rename the marker so the filename no longer encodes the
-	// CheckpointID. The file content is unchanged.
+	// Rename the marker so the filename no longer matches CheckpointID.
 	src := MarkerPath(repo, m.CheckpointID)
 	dst := filepath.Join(PendingDir(repo), "renamed-by-hand.job")
 	if err := os.Rename(src, dst); err != nil {
@@ -389,10 +380,7 @@ func TestReadInQueue_RejectsMismatchedFilename(t *testing.T) {
 	}
 }
 
-// When the queue root has a trailing separator, ReadInQueue must
-// still recognize it as equivalent. filepath.Clean normalizes both
-// sides; this test pins that behavior so a caller that passes an
-// unconventional but valid path is not falsely rejected.
+// ReadInQueue should treat trailing separators as equivalent.
 func TestReadInQueue_TrailingSlashInQueueRootTolerated(t *testing.T) {
 	repo := t.TempDir()
 	m := fixtureMarker(repo)
@@ -401,8 +389,7 @@ func TestReadInQueue_TrailingSlashInQueueRootTolerated(t *testing.T) {
 	}
 	path := MarkerPath(repo, m.CheckpointID)
 
-	// Add a trailing slash to the queue root and verify it still
-	// matches the marker's clean RepoRoot.
+	// Add a trailing slash and verify the cleaned paths still match.
 	if _, err := ReadInQueue(repo+string(os.PathSeparator), path); err != nil {
 		t.Errorf("ReadInQueue rejected trailing-separator queue root: %v", err)
 	}

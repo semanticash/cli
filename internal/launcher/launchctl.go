@@ -60,9 +60,8 @@ func Kickstart(ctx context.Context, domainTarget string) error {
 	return run(ctx, "kickstart", domainTarget)
 }
 
-// IsLoaded reports whether a service is present in the given
-// domain. Only the known "not loaded" result is flattened to
-// (false, nil).
+// IsLoaded reports whether a service is present in the given domain.
+// Only the known "not loaded" result is flattened to (false, nil).
 func IsLoaded(ctx context.Context, domainTarget string) (bool, error) {
 	if runtime.GOOS != "darwin" {
 		return false, ErrUnsupportedOS
@@ -78,12 +77,14 @@ func IsLoaded(ctx context.Context, domainTarget string) (bool, error) {
 	return false, err
 }
 
-// isServiceNotLoadedError matches launchctl's stable "service not
-// found" wording. Exit codes vary across macOS releases.
+// isServiceNotLoadedError matches launchctl's stable "not loaded"
+// wording. Exit codes vary across macOS releases, so detection uses
+// stderr instead.
 func isServiceNotLoadedError(err *Error) bool {
 	msg := strings.ToLower(err.Stderr)
 	return strings.Contains(msg, "could not find service") ||
-		strings.Contains(msg, "service not found")
+		strings.Contains(msg, "service not found") ||
+		strings.Contains(msg, "no such process")
 }
 
 // run invokes launchctl and wraps non-zero exits as *Error.
