@@ -17,24 +17,28 @@ func fixtureMarker(repoRoot string) Marker {
 	}
 }
 
+// Build expected paths with filepath.Join so the test stays portable.
 func TestPendingDir_ShapedUnderRepoSemanticaDir(t *testing.T) {
-	got := PendingDir("/workspace/pulse")
-	want := "/workspace/pulse/.semantica/pending"
+	root := filepath.Join(string(filepath.Separator), "workspace", "pulse")
+	got := PendingDir(root)
+	want := filepath.Join(root, ".semantica", "pending")
 	if got != want {
 		t.Errorf("PendingDir = %q, want %q", got, want)
 	}
 }
 
 func TestMarkerPath_UsesCheckpointAsStemAndJobExtension(t *testing.T) {
-	got := MarkerPath("/workspace/pulse", "abc-123")
-	want := "/workspace/pulse/.semantica/pending/abc-123.job"
+	root := filepath.Join(string(filepath.Separator), "workspace", "pulse")
+	got := MarkerPath(root, "abc-123")
+	want := filepath.Join(root, ".semantica", "pending", "abc-123.job")
 	if got != want {
 		t.Errorf("MarkerPath = %q, want %q", got, want)
 	}
 }
 
 func TestValidate_RequiresAllFields(t *testing.T) {
-	base := fixtureMarker("/workspace/pulse")
+	// Use a host-native absolute path.
+	base := fixtureMarker(t.TempDir())
 
 	cases := []struct {
 		name string
@@ -69,8 +73,9 @@ func TestValidate_RejectsNonAbsoluteRepoRoot(t *testing.T) {
 
 func TestValidate_RejectsCheckpointIDWithPathSeparator(t *testing.T) {
 	// A slash would let the checkpoint ID escape the pending directory.
+	repoRoot := t.TempDir()
 	for _, bad := range []string{"../escape", "nested/ckpt", `back\slash`} {
-		m := fixtureMarker("/workspace/pulse")
+		m := fixtureMarker(repoRoot)
 		m.CheckpointID = bad
 		if err := m.Validate(); err == nil {
 			t.Errorf("expected error for CheckpointID %q", bad)

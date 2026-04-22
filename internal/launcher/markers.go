@@ -35,6 +35,8 @@ type Marker struct {
 }
 
 // Validate checks the on-disk marker contract.
+// RepoRoot uses the host OS's absolute-path rules. Plist paths stay
+// POSIX-only because launchd consumes them directly.
 func (m Marker) Validate() error {
 	if m.CheckpointID == "" {
 		return errors.New("marker: CheckpointID is empty")
@@ -51,9 +53,9 @@ func (m Marker) Validate() error {
 	if m.RepoRoot == "" {
 		return errors.New("marker: RepoRoot is empty")
 	}
-	if !isPOSIXAbsolute(m.RepoRoot) {
+	if !filepath.IsAbs(m.RepoRoot) {
 		return fmt.Errorf(
-			"marker: RepoRoot must be absolute, got %q",
+			"marker: RepoRoot must be an absolute path, got %q",
 			m.RepoRoot,
 		)
 	}
