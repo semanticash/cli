@@ -117,79 +117,80 @@ func printEnableResult(w io.Writer, r *launcher.InstallResult) {
 	if r.Reinstalled {
 		verb = "Re-installed"
 	}
-	fmt.Fprintf(w, "%s launch agent: %s\n", verb, r.PlistPath)
-	fmt.Fprintf(w, "Bootstrapped:        %s\n", r.DomainTarget)
-	fmt.Fprintln(w, "Run 'semantica launcher disable' to undo.")
+	_, _ = fmt.Fprintf(w, "%s launch agent: %s\n", verb, r.PlistPath)
+	_, _ = fmt.Fprintf(w, "Bootstrapped:        %s\n", r.DomainTarget)
+	_, _ = fmt.Fprintln(w, "Run 'semantica launcher disable' to undo.")
 }
 
 func printDisableResult(w io.Writer, r *launcher.DisableResult) {
 	if !r.WasEnabled && r.RemovedPlistPath == "" {
-		fmt.Fprintln(w, "Launcher was not installed; nothing to do.")
+		_, _ = fmt.Fprintln(w, "Launcher was not installed; nothing to do.")
 		return
 	}
 	if r.RemovedPlistPath != "" {
-		fmt.Fprintf(w, "Removed launch agent: %s\n", r.RemovedPlistPath)
+		_, _ = fmt.Fprintf(w, "Removed launch agent: %s\n", r.RemovedPlistPath)
 	}
-	fmt.Fprintln(w, "Launchd agent unloaded. Commits now use the legacy spawn path.")
+	_, _ = fmt.Fprintln(w, "Launchd agent unloaded. Commits now use the legacy spawn path.")
 }
 
-// printLauncherStatus renders launcher status as a human-readable block.
+// printLauncherStatus renders launcher status as a human-readable
+// block.
 func printLauncherStatus(w io.Writer, s launcher.StatusResult) {
 	enabledText := "not enabled"
 	if s.SettingsEnabled {
 		enabledText = "enabled"
 	}
-	fmt.Fprintf(w, "Launcher:          %s\n", enabledText)
+	_, _ = fmt.Fprintf(w, "Launcher:          %s\n", enabledText)
 
 	// Keep settings errors near the top.
 	if s.SettingsError != "" {
-		fmt.Fprintf(w, "Settings error:    %s\n", s.SettingsError)
+		_, _ = fmt.Fprintf(w, "Settings error:    %s\n", s.SettingsError)
 	}
 
 	if s.InstalledAt > 0 {
 		t := time.UnixMilli(s.InstalledAt).Local().Format(time.RFC3339)
-		fmt.Fprintf(w, "Installed at:      %s\n", t)
+		_, _ = fmt.Fprintf(w, "Installed at:      %s\n", t)
 	}
 
 	plistPath := s.InstalledPlistPath
 	if plistPath == "" {
 		plistPath = s.ExpectedPlistPath
 	}
-	fmt.Fprintf(w, "Plist path:        %s\n", plistPath)
+	_, _ = fmt.Fprintf(w, "Plist path:        %s\n", plistPath)
 
 	plistState := "missing"
 	if s.PlistOnDisk {
 		plistState = "present"
 	}
-	fmt.Fprintf(w, "Plist on disk:     %s\n", plistState)
+	_, _ = fmt.Fprintf(w, "Plist on disk:     %s\n", plistState)
 
-	fmt.Fprintf(w, "Domain target:     %s\n", s.DomainTarget)
-	fmt.Fprintf(w, "Launchd state:     %s\n", s.LaunchdState)
-	fmt.Fprintf(w, "Log path:          %s\n", s.LogPath)
+	_, _ = fmt.Fprintf(w, "Domain target:     %s\n", s.DomainTarget)
+	_, _ = fmt.Fprintf(w, "Launchd state:     %s\n", s.LaunchdState)
+	_, _ = fmt.Fprintf(w, "Log path:          %s\n", s.LogPath)
 
 	// Show a single actionable hint when one applies. Unsupported hosts
 	// take precedence because launcher commands are macOS-only.
 	switch {
 	case s.LaunchdState == "unsupported":
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "The launcher is only available on macOS.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "The launcher is only available on macOS.")
 	case s.SettingsError != "":
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Fix or remove the settings file and rerun 'semantica launcher enable'.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Fix or remove the settings file and rerun 'semantica launcher enable'.")
 	case !s.SettingsEnabled && s.LoadedInLaunchd:
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Drift: launchd has the service loaded, but settings say not enabled.")
-		fmt.Fprintln(w, "Run 'semantica launcher disable' to clean up.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Drift: launchd has the service loaded, but settings say not enabled.")
+		_, _ = fmt.Fprintln(w, "Run 'semantica launcher disable' to clean up.")
 	case s.SettingsEnabled && !s.LoadedInLaunchd && s.LaunchdState == "not loaded":
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Drift: settings say enabled, but launchd has no loaded service.")
-		fmt.Fprintln(w, "Run 'semantica launcher enable' to reinstall cleanly.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Drift: settings say enabled, but launchd has no loaded service.")
+		_, _ = fmt.Fprintln(w, "Run 'semantica launcher enable' to reinstall cleanly.")
 	case s.SettingsEnabled && !s.PlistOnDisk:
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Drift: settings say enabled, but the plist file is missing.")
-		fmt.Fprintln(w, "Run 'semantica launcher enable' to reinstall cleanly.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Drift: settings say enabled, but the plist file is missing.")
+		_, _ = fmt.Fprintln(w, "Run 'semantica launcher enable' to reinstall cleanly.")
 	case !s.SettingsEnabled:
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "Run 'semantica launcher enable' to opt in.")
+		_, _ = fmt.Fprintln(w, "")
+		_, _ = fmt.Fprintln(w, "Run 'semantica launcher enable' to opt in.")
 	}
 }

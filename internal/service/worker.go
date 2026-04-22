@@ -63,7 +63,7 @@ var wlogWriter io.Writer = os.Stderr
 func wlog(format string, args ...any) {
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(wlogWriter, "%s  %s", ts, msg)
+	_, _ = fmt.Fprintf(wlogWriter, "%s  %s", ts, msg)
 }
 
 // prepareCheckpoint opens the DB, validates the checkpoint is pending,
