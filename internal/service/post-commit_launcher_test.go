@@ -16,17 +16,9 @@ import (
 	"github.com/semanticash/cli/internal/launcher"
 )
 
-// These tests cover the post-commit hook's choice between the
-// launcher dispatch path and the legacy detached-spawn path.
-// dispatchViaLauncher is the function under test; spawnWorker's
-// decision logic is a straight switch on its return value and
-// is covered by inspection rather than by running a real
-// detached child in tests (which would re-exec the test binary).
+// These tests cover launcher dispatch from the post-commit hook.
 
-// writeFakeLaunchctlForService installs a Bourne-shell fake
-// launchctl that records its argv and exits with the given
-// code, analogous to internal/launcher's test helper but local
-// so this package does not depend on launcher's test-only code.
+// writeFakeLaunchctlForService installs a local fake launchctl.
 func writeFakeLaunchctlForService(t *testing.T, exitCode int, stderrMsg string) (argvLogPath string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,10 +41,7 @@ exit %d
 	return argvLogPath
 }
 
-// enableLauncherInSettings seeds ~/.semantica/settings.json so
-// launcher.IsEnabled() returns true for the duration of the
-// test. Does not touch launchd; tests that need to control
-// launchctl behavior use writeFakeLaunchctlForService.
+// enableLauncherInSettings makes launcher.IsEnabled return true.
 func enableLauncherInSettings(t *testing.T) {
 	t.Helper()
 	s := launcher.UserSettings{
@@ -67,8 +56,7 @@ func enableLauncherInSettings(t *testing.T) {
 	}
 }
 
-// setupLauncherDispatchEnv isolates HOME, SEMANTICA_HOME, and a
-// repo root the test can write a marker under.
+// setupLauncherDispatchEnv creates an isolated repo and global home.
 func setupLauncherDispatchEnv(t *testing.T) (repo, semHome string) {
 	t.Helper()
 	home := t.TempDir()
@@ -92,9 +80,7 @@ func TestDispatchViaLauncher_NotEnabledReturnsSentinel(t *testing.T) {
 		t.Fatalf("expected ErrLauncherNotEnabled, got %v", err)
 	}
 
-	// No marker should have been written when the launcher
-	// is disabled: the function must exit before any side
-	// effect.
+	// Disabled dispatch must be side-effect free.
 	entries, _ := os.ReadDir(launcher.PendingDir(repo))
 	if len(entries) != 0 {
 		t.Errorf("disabled launcher must not write markers, got %v", entries)
@@ -152,9 +138,7 @@ func TestDispatchViaLauncher_KickstartFailureBubblesAndLeavesMarker(t *testing.T
 		t.Errorf("expected 'kickstart' in error, got %v", err)
 	}
 
-	// The marker must still be on disk so a future successful
-	// kickstart can process it; WorkerService.Run's checkpoint
-	// idempotency makes the redundant retry cheap.
+	// The marker stays on disk for a later successful drain.
 	if _, err := os.Stat(launcher.MarkerPath(repo, "cp-1")); err != nil {
 		t.Errorf("marker should remain on disk after kickstart failure, stat=%v", err)
 	}
@@ -188,11 +172,7 @@ func TestDispatchViaLauncher_MarkerWriteFailureSkipsKickstart(t *testing.T) {
 		t.Errorf("expected 'marker' in error, got %v", err)
 	}
 
-	// Critical invariant: if the marker cannot be written, we
-	// must NOT kickstart. The launchd agent would find no
-	// marker and exit, but the commit's work would have been
-	// lost because the hook never fell back to the detached
-	// spawn.
+	// If the marker write fails, launchd must not be kicked.
 	if _, err := os.Stat(argvLog); err == nil {
 		body, _ := os.ReadFile(argvLog)
 		if len(bytes.TrimSpace(body)) > 0 {

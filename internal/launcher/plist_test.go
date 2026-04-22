@@ -129,11 +129,7 @@ func TestRenderWorkerPlist_ValidatesRequiredFields(t *testing.T) {
 	}
 }
 
-// Launchd refuses relative ProgramArguments and log file paths;
-// accepting them here would produce a plist that looks valid in
-// tests but fails opaquely at bootstrap time. These cases lock
-// the absolute-path contract documented on PlistInput so a future
-// refactor of Validate cannot quietly weaken it.
+// Relative paths must be rejected before the plist reaches launchd.
 func TestRenderWorkerPlist_RejectsRelativePaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -182,10 +178,7 @@ func TestRenderWorkerPlist_RejectsRelativePaths(t *testing.T) {
 }
 
 func TestLabelWorker_StableAcrossVersions(t *testing.T) {
-	// This test exists to make the label constant a deliberate
-	// promise. Changing it would orphan any bootstrapped agents
-	// on user machines; an upgrade that renames the label would
-	// need an explicit migration plan.
+	// The launchd label is part of the install contract.
 	if LabelWorker != "sh.semantica.worker" {
 		t.Errorf("LabelWorker changed to %q; this is an on-disk compatibility break",
 			LabelWorker)

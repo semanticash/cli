@@ -54,16 +54,8 @@ func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-// NewWorkerDrainCmd returns the hidden `semantica worker drain`
-// subcommand that is the entry point invoked by the launchd agent
-// (see internal/launcher). It discovers every active repository
-// via the broker registry, processes every pending marker in each
-// repository's .semantica/pending/ directory by running the
-// standard worker pipeline per marker, and loops until the queue
-// stays empty across a bounded idle linger.
-//
-// The command accepts a --linger flag mostly so tests can force
-// zero-linger runs. Production invocations rely on the default.
+// NewWorkerDrainCmd returns the hidden launchd entry point that
+// drains pending markers across active repositories.
 func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 	var lingerSeconds int
 
@@ -71,11 +63,7 @@ func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 		Use:    "drain",
 		Short:  "Drain pending post-commit markers across all active repositories",
 		Hidden: true,
-		// Silence cobra's own error / usage output so errors from
-		// DrainUntilStable surface as the one clean line produced
-		// by the top-level wrapper rather than mixed with a cobra
-		// usage block. Matches the pattern used by the other
-		// hidden background commands.
+		// Keep output to the top-level wrapper's single error line.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

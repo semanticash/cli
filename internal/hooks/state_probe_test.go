@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// These tests lock the CaptureDirWritable success and failure contract.
+// These tests cover CaptureDirWritable.
 
 func TestCaptureDirWritable_SucceedsOnNormalHome(t *testing.T) {
 	dir := t.TempDir()
@@ -19,8 +19,7 @@ func TestCaptureDirWritable_SucceedsOnNormalHome(t *testing.T) {
 		t.Fatalf("probe failed on writable dir: %v", err)
 	}
 
-	// The probe file must be cleaned up; leftover probe files
-	// would pile up across reconcile invocations.
+	// The probe file must be removed after the check.
 	captureBase := filepath.Join(dir, "capture")
 	probe := filepath.Join(captureBase, ".writable-probe")
 	if _, err := os.Stat(probe); !os.IsNotExist(err) {

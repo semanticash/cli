@@ -10,16 +10,7 @@ import (
 	"github.com/semanticash/cli/internal/launcher"
 )
 
-// NewLauncherCmd returns the `semantica launcher` parent command.
-// Its subcommands opt a user in or out of running the post-commit
-// worker under a macOS launchd user agent. Enabling the launcher
-// is a separate, explicit user action from the per-repository
-// `semantica enable`; it installs a LaunchAgent plist in the
-// user's Library and records the choice in the user-level
-// settings file.
-//
-// The launcher is experimental. Users who do not opt in get the
-// legacy post-commit spawn unchanged.
+// NewLauncherCmd returns the macOS launcher management command.
 func NewLauncherCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "launcher",

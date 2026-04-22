@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// These hidden background commands should not let cobra print a usage
-// block or its own "Error:" line on RunE failures.
+// Hidden background commands should not print Cobra usage or
+// `Error:` blocks on RunE failures.
 
 func TestAutoPlaybook_NoUsageOrErrorBlockOnRunError(t *testing.T) {
 	cmd := NewAutoPlaybookCmd()
@@ -40,8 +40,8 @@ func TestAutoPlaybook_NoUsageOrErrorBlockOnRunError(t *testing.T) {
 }
 
 func TestAutoImplementationSummary_NoUsageOrErrorBlockOnRunError(t *testing.T) {
-	// Use an isolated home so the command cannot reuse a real
-	// implementations DB from the developer machine.
+	// Use an isolated home so the test does not depend on a real
+	// implementations DB.
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 
 	cmd := NewAutoImplementationSummaryCmd()
@@ -49,7 +49,7 @@ func TestAutoImplementationSummary_NoUsageOrErrorBlockOnRunError(t *testing.T) {
 	cmd.SetErr(&buf)
 	cmd.SetOut(&buf)
 
-	// With no DB file in the isolated home, RunE fails deterministically.
+	// With no DB file, RunE fails deterministically.
 	cmd.SetArgs([]string{"--impl", "00000000-0000-0000-0000-000000000000"})
 
 	err := cmd.Execute()

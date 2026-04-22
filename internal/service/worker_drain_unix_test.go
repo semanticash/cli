@@ -11,18 +11,7 @@ import (
 	"github.com/semanticash/cli/internal/launcher"
 )
 
-// Regression guard for the "delete failure becomes infinite loop"
-// case. If launcher.Delete fails after a successful run,
-// DrainUntilStable must still exit in bounded time rather than
-// spinning. The scenario is simulated by chmod'ing the pending
-// directory to read+execute only (0o500) after the marker has
-// been written, which makes os.Remove on files inside the
-// directory fail with EACCES. The runner itself succeeds.
-//
-// Gated to non-Windows because Windows does not honor POSIX mode
-// bits the way this test needs; the underlying delete-failure
-// behavior the guard is protecting is still correct on all
-// platforms, just not reproducible via chmod on Windows.
+// Delete failures should not keep DrainUntilStable alive forever.
 func TestDrainUntilStable_DeleteFailuresDoNotInfiniteLoop(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses POSIX mode-bit enforcement, cannot simulate delete failure")

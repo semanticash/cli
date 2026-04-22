@@ -11,15 +11,16 @@ import (
 	"github.com/semanticash/cli/internal/store/blobs"
 )
 
-// reconcileActiveSessions flushes only sessions that still have capture state.
+// reconcileActiveSessions flushes sessions that still have capture
+// state.
 func reconcileActiveSessions(ctx context.Context) {
 	states, err := hooks.LoadActiveCaptureStates()
 	if err != nil || len(states) == 0 {
 		return
 	}
 
-	// Skip the per-session loop if this process cannot write capture
-	// state. The files stay on disk for the next unrestricted worker.
+	// If capture state is not writable, leave the files for a later
+	// unrestricted worker.
 	if err := hooks.CaptureDirWritable(); err != nil {
 		if errors.Is(err, fs.ErrPermission) {
 			wlog("worker: reconcile: capture directory not writable from this lineage; deferring %d session(s) to next unrestricted worker run\n", len(states))

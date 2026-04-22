@@ -288,17 +288,7 @@ func TestDelete_MissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
-// The marker file is human-readable and may be inspected by the
-// user or grepped by tooling, so its on-disk JSON shape is a
-// durable contract. The literal compared below pins both the field
-// order and the indentation style. A future refactor that reorders
-// struct fields or changes the marshal options will fail this test
-// rather than silently shipping a different on-disk format.
-//
-// The comparison is against an explicit string literal (not a
-// re-marshal through the same Marker struct), so if the struct is
-// reshaped both Write and a round-trip helper would produce the
-// new shape together; only an explicit literal catches that.
+// The marker JSON layout is part of the on-disk contract.
 func TestMarker_OnDiskJSONLayoutIsCanonical(t *testing.T) {
 	m := Marker{
 		CheckpointID: "CK",

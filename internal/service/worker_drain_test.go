@@ -14,16 +14,9 @@ import (
 	"github.com/semanticash/cli/internal/launcher"
 )
 
-// These tests exercise DrainOnce / DrainUntilStable through the
-// MarkerRunner seam rather than through the real WorkerService,
-// which avoids having to stand up a full lineage DB / git
-// repository / checkpoint row per marker. The runner's job is
-// small enough that a fake can faithfully represent it.
+// These tests exercise drain behavior through the MarkerRunner seam.
 
-// setupDrainEnv prepares a temporary SEMANTICA_HOME, registers
-// the given repo roots as active repositories in the broker
-// registry, and returns the list of repo paths for the caller to
-// populate with markers.
+// setupDrainEnv registers the given repos in an isolated broker home.
 func setupDrainEnv(t *testing.T, repoRoots ...string) {
 	t.Helper()
 	base := t.TempDir()
@@ -51,8 +44,7 @@ func setupDrainEnv(t *testing.T, repoRoots ...string) {
 	}
 }
 
-// writeMarker persists a minimal valid marker in the repo's
-// pending directory and returns the on-disk path.
+// writeMarker writes a minimal valid marker and returns its path.
 func writeMarker(t *testing.T, repo, checkpointID string) string {
 	t.Helper()
 	m := launcher.Marker{
@@ -67,10 +59,7 @@ func writeMarker(t *testing.T, repo, checkpointID string) string {
 	return launcher.MarkerPath(repo, checkpointID)
 }
 
-// recordingRunner captures every WorkerInput it receives in call
-// order. Callers can optionally provide a hook that returns an
-// error, writes additional markers, or otherwise exercises
-// edge behavior.
+// recordingRunner records calls and can inject custom behavior.
 type recordingRunner struct {
 	mu      sync.Mutex
 	Inputs  []WorkerInput
@@ -216,8 +205,8 @@ func TestDrainOnce_UnregisteredRepoIsIgnored(t *testing.T) {
 	if got := len(runner.calls()); got != 0 {
 		t.Errorf("runner should not have been called; got %d calls", got)
 	}
-	// Orphan marker still present on disk; the drain loop has no
-	// opinion on it because the repo is not registered.
+	// The orphan marker stays on disk because the repo is not
+	// registered.
 	if _, err := os.Stat(launcher.MarkerPath(repoOrphan, "orphan")); err != nil {
 		t.Errorf("orphan marker removed unexpectedly, stat=%v", err)
 	}
@@ -306,8 +295,8 @@ func TestDrainUntilStable_EmptyQueueExitsImmediately(t *testing.T) {
 	}
 }
 
-// Repeat-until-stable: if the runner writes a new marker mid-drain,
-// the second pass must pick it up in the same DrainUntilStable call.
+// A marker written mid-drain should be picked up by the same
+// invocation.
 func TestDrainUntilStable_AbsorbsMarkerWrittenDuringDrain(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -338,9 +327,7 @@ func TestDrainUntilStable_AbsorbsMarkerWrittenDuringDrain(t *testing.T) {
 	}
 }
 
-// Linger test: a marker dropped during the idle interval between
-// the empty first pass and the final scan must be processed
-// before DrainUntilStable returns.
+// A marker written during linger should still be processed.
 func TestDrainUntilStable_LingerCatchesLateMarker(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -363,15 +350,8 @@ func TestDrainUntilStable_LingerCatchesLateMarker(t *testing.T) {
 	}
 }
 
-// A pass in which every marker fails to run must not be treated
-// as an empty queue. DrainUntilStable previously used "runner
-// successes" as its exit signal, which caused it to exit with
-// markers still queued and then miss the retry that should only
-// happen on a subsequent kickstart invocation. The new Progress
-// signal counts "markers that left the queue," which zero runner
-// failures correctly report as zero. DrainUntilStable must still
-// exit quickly (not spin) so the retry is deferred rather than
-// attempted in a tight inner loop.
+// All-run-error passes should exit quickly and leave markers for a
+// later invocation.
 func TestDrainUntilStable_AllRunErrorsExitsQuicklyWithMarkersStillQueued(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -399,23 +379,14 @@ func TestDrainUntilStable_AllRunErrorsExitsQuicklyWithMarkersStillQueued(t *test
 	if len(remaining) != 2 {
 		t.Errorf("markers should remain for a later retry, got %v", remaining)
 	}
-	// Per-invocation skip set: each failing marker is tried
-	// exactly once. More than two calls means the skip set
-	// regressed and failures are being retried within the
-	// same invocation.
+	// Each failing marker should run once per invocation.
 	if got := len(runner.calls()); got != 2 {
 		t.Errorf("runner invoked %d times; expected exactly 2 (one per marker)", got)
 	}
 }
 
-// A pass that mixes one successful marker with one persistently
-// failing marker must not retry the failure inside the same
-// invocation. Without the per-invocation skip set, the success
-// keeps Progress > 0 which drives another pass, the failing
-// marker is still on disk, and it runs again (and again). The
-// skip set ensures a failing marker is attempted at most once
-// per DrainUntilStable call even when unrelated success markers
-// keep the outer loop going.
+// Mixed success and failure should not retry the failed marker in the
+// same invocation.
 func TestDrainUntilStable_MixedSuccessAndFailureDoesNotRetryFailureInInvocation(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -452,14 +423,7 @@ func TestDrainUntilStable_MixedSuccessAndFailureDoesNotRetryFailureInInvocation(
 	}
 }
 
-// Fresh DrainUntilStable invocations must start with an empty
-// skip set so a previously-failing marker gets another attempt.
-// Using DrainOnce directly across two separate calls exercises
-// the non-retry path (DrainOnce does not maintain skip), but
-// what users actually observe is two separate DrainUntilStable
-// invocations (two kickstarts). This test asserts that contract
-// by running DrainUntilStable twice against the same repo and
-// confirming the second invocation re-attempts the bad marker.
+// Each DrainUntilStable call should start with a fresh skip set.
 func TestDrainUntilStable_SkipSetIsPerInvocationNotPersistent(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -487,9 +451,7 @@ func TestDrainUntilStable_SkipSetIsPerInvocationNotPersistent(t *testing.T) {
 	}
 }
 
-// Inverse of the linger test: when nothing arrives during the
-// linger, DrainUntilStable must not spin forever. The total time
-// should be bounded just above the linger interval.
+// With no new markers, linger should delay exit once and then stop.
 func TestDrainUntilStable_NoArrivalExitsAfterLinger(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)

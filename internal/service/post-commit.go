@@ -166,12 +166,8 @@ func printAttributionSummary(semDir string) {
 	fmt.Fprint(os.Stderr, summary.render())
 }
 
-// spawnWorker hands the post-commit work off to either the
-// opt-in launchd agent (when the user has run semantica launcher
-// enable) or the legacy detached-spawn path. The launcher path
-// is tried first when enabled; any failure during that attempt
-// silently falls through to the legacy path so a broken
-// launcher install never prevents a commit's work from running.
+// spawnWorker dispatches post-commit work through the launcher when
+// enabled and otherwise falls back to the legacy detached spawn.
 func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot string) {
 	if ctx.Err() != nil {
 		return
@@ -179,20 +175,9 @@ func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot
 
 	switch err := dispatchViaLauncher(ctx, checkpointID, commitHash, repoRoot); {
 	case err == nil:
-		// The launchd agent owns this commit's work. The
-		// drain worker will pick up the marker we just wrote.
 		return
 	case errors.Is(err, ErrLauncherNotEnabled):
-		// User has not opted in. Silent fall-through to the
-		// legacy path; no log line because this is the default
-		// behavior for every install that has not run
-		// semantica launcher enable.
 	default:
-		// User opted in but dispatch failed (broken plist,
-		// launchctl unavailable, kickstart returned non-zero,
-		// marker write failed). Log the failure so it is
-		// discoverable, then fall through to the legacy path
-		// to keep the commit's work from being lost.
 		util.AppendActivityLog(
 			semDir,
 			"post-commit: launcher dispatch failed (%v); falling back to detached spawn",
@@ -203,26 +188,12 @@ func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot
 	spawnDetached(ctx, semDir, checkpointID, commitHash, repoRoot)
 }
 
-// ErrLauncherNotEnabled is returned by dispatchViaLauncher when
-// the user has not opted into the launcher path. Distinct from a
-// dispatch failure so the caller can decide whether to log.
+// ErrLauncherNotEnabled reports that launcher dispatch is disabled.
 var ErrLauncherNotEnabled = errors.New("launcher not enabled")
 
-// dispatchViaLauncher hands a single post-commit job to the
-// launchd-managed worker agent. It writes a marker to the repo's
-// pending directory and kickstarts the agent. If the agent is
-// already running, kickstart is a no-op and the running drain
-// loop absorbs the new marker on its next rescan; if the agent
-// is not running, launchd starts it.
-//
-// Returns ErrLauncherNotEnabled when the user has not opted in.
-// Returns a wrapped error when the marker write or the kickstart
-// itself failed; on that error the caller should fall back to
-// the legacy detached-spawn path so the commit's work is not
-// lost. A kickstart failure leaves the marker on disk; a later
-// successful dispatch will find it and (because
-// WorkerService.Run is idempotent at the checkpoint level)
-// no-op through it.
+// dispatchViaLauncher writes a pending marker and kickstarts the
+// launchd worker. If kickstart fails, the marker stays on disk for a
+// later drain.
 func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot string) error {
 	if !launcher.IsEnabled() {
 		return ErrLauncherNotEnabled
@@ -244,10 +215,7 @@ func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot
 }
 
 // spawnDetached launches `semantica worker run` as a detached
-// background process. This is the legacy path that every
-// install used before the optional launcher, and the path every
-// install continues to use when the launcher is not opted in or
-// when dispatchViaLauncher fails for any reason.
+// background process.
 func spawnDetached(ctx context.Context, semDir, checkpointID, commitHash, repoRoot string) {
 	exe, err := os.Executable()
 	if err != nil {

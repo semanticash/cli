@@ -13,18 +13,8 @@ import (
 	"testing"
 )
 
-// These tests use a Bourne-shell fake launchctl dropped in a temp
-// directory that is prepended to PATH for the duration of the
-// subtest. The fake writes its argv to a file for the test to
-// inspect and exits with a code controlled by the test. This
-// exercises the wrapper's shell-out and argv composition without
-// touching the real launchd.
-//
-// The build tag excludes Windows because the fake is a bash script.
-// macOS and Linux both honor the same exec + PATH semantics, so the
-// argv-shape tests run identically on both; the platform-specific
-// runtime guard inside the wrappers is covered by a dedicated test
-// when the host is not macOS.
+// These tests use a fake launchctl on PATH so the wrapper can be
+// exercised without touching the real launchd service.
 
 func writeFakeLaunchctl(t *testing.T, exitCode int, stderrMsg string) (dir, argvLogPath string) {
 	t.Helper()
@@ -60,28 +50,8 @@ func readArgv(t *testing.T, path string) string {
 	return strings.TrimRight(string(b), "\n")
 }
 
-// writeStatefulFakeLaunchctl installs a fake launchctl that
-// models the subset of launchd state transitions Enable /
-// Disable depend on:
-//
-//   - bootstrap sets a "service loaded" flag and exits 0.
-//   - bootout clears the flag and exits 0 when the flag was
-//     set; otherwise exits 113 with "Could not find service"
-//     stderr, matching what real launchctl does when asked to
-//     bootout a service that was never loaded.
-//   - kickstart and print exit 0 when the flag is set and
-//     "Could not find service" otherwise.
-//   - Every invocation appends its argv to argv.log so a test
-//     that expects multiple calls can inspect the full sequence.
-//
-// Returns (fakeDir, argvLogPath). The fake's "loaded" flag
-// lives inside fakeDir so parallel tests can each get an
-// independent state machine.
-//
-// Use this in tests that exercise idempotency or composed
-// flows where the no-op-on-not-loaded contract matters. Use
-// the simple writeFakeLaunchctl when a specific exit code or
-// stderr message is the thing under test.
+// writeStatefulFakeLaunchctl models the subset of launchd state
+// transitions used by Enable and Disable.
 func writeStatefulFakeLaunchctl(t *testing.T) (dir, argvLogPath string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -129,9 +99,7 @@ esac
 	return dir, argvLogPath
 }
 
-// readArgvLines returns every argv line the fake launchctl has
-// recorded so far. Used by tests that need to verify a sequence
-// of invocations, not just the last one.
+// readArgvLines returns every recorded argv line.
 func readArgvLines(t *testing.T, path string) []string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -270,8 +238,7 @@ func TestIsLoaded_ServiceNotFoundMeansNotLoaded(t *testing.T) {
 	}
 }
 
-// An alternate wording ("service not found") must also be
-// recognized. Apple has shipped both forms across macOS releases.
+// Apple has shipped multiple not-found wordings.
 func TestIsLoaded_AlternateNotFoundWordingMeansNotLoaded(t *testing.T) {
 	skipIfNotDarwin(t)
 	writeFakeLaunchctl(t, 3, "Service not found.")
@@ -285,10 +252,7 @@ func TestIsLoaded_AlternateNotFoundWordingMeansNotLoaded(t *testing.T) {
 	}
 }
 
-// Any other non-zero exit (malformed target, permission denied,
-// generic launchctl error) must surface as an error rather than
-// silently flattening to "not loaded". Masking these would hide
-// bugs in callers that compose the wrapper into enable/disable.
+// Unexpected launchctl failures must surface as errors.
 func TestIsLoaded_UnexpectedLaunchctlErrorSurfaces(t *testing.T) {
 	skipIfNotDarwin(t)
 	writeFakeLaunchctl(t, 9, "Unrecognized target specifier: gui")
@@ -312,10 +276,7 @@ func TestIsLoaded_UnexpectedLaunchctlErrorSurfaces(t *testing.T) {
 	}
 }
 
-// When launchctl itself is missing from PATH, the error should
-// not masquerade as a typed *Error with ExitCode=0. Callers need
-// to distinguish "launchctl said no" from "launchctl could not be
-// invoked at all".
+// Missing launchctl should not masquerade as a typed exit error.
 func TestBootstrap_LaunchctlMissingSurfacesExecError(t *testing.T) {
 	skipIfNotDarwin(t)
 	// Point PATH at an empty dir so exec.LookPath fails.
@@ -332,9 +293,7 @@ func TestBootstrap_LaunchctlMissingSurfacesExecError(t *testing.T) {
 	}
 }
 
-// Exercised on all non-darwin hosts: every wrapper must fail fast
-// with ErrUnsupportedOS so a caller on Linux or Windows never ends
-// up exec'ing a nonexistent launchctl or otherwise corrupting state.
+// All wrappers should fail fast on non-darwin hosts.
 func TestAllWrappers_ReturnUnsupportedOSOnNonDarwin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("this test documents behavior on non-darwin hosts")

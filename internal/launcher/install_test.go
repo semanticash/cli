@@ -11,11 +11,8 @@ import (
 	"testing"
 )
 
-// Enable/Disable compose the plist render, atomic write,
-// launchctl wrapper, and settings persistence into a single
-// user-facing flow. These tests exercise the flow end-to-end
-// against an isolated HOME + SEMANTICA_HOME, with a fake
-// launchctl injected via PATH.
+// These tests exercise the enable and disable flow with an isolated
+// HOME, SEMANTICA_HOME, and fake launchctl.
 
 func setupInstallEnv(t *testing.T) (home, semHome string) {
 	t.Helper()
@@ -26,10 +23,8 @@ func setupInstallEnv(t *testing.T) (home, semHome string) {
 	return home, semHome
 }
 
-// fakeBinary creates an executable placeholder binary at
-// <home>/bin/semantica so Enable's stat check passes. Tests
-// that pass this path to Enable model the production call site
-// (which passes os.Executable()).
+// fakeBinary creates an executable file that passes Enable's binary
+// checks.
 func fakeBinary(t *testing.T, home string) string {
 	t.Helper()
 	dir := filepath.Join(home, "bin")
@@ -150,12 +145,7 @@ func TestEnable_IdempotentOnAlreadyEnabledReRendersAndReBootstraps(t *testing.T)
 	}
 }
 
-// The motivating case for keying off launchd state instead of
-// settings: a previous install got bootstrap through but then
-// hit a settings-write failure, or the settings file was later
-// deleted by hand. Settings say "not enabled" while launchd
-// still has the service. A retry of Enable must clean-slate via
-// bootout rather than hit "already loaded" on bootstrap.
+// Enable must recover when launchd state and settings drift apart.
 func TestEnable_IdempotentWhenSettingsDesyncedFromLaunchd(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Enable is macOS-specific")
@@ -318,10 +308,7 @@ func TestDisable_OnCleanStateIsNoopAndReportsWasEnabledFalse(t *testing.T) {
 	}
 }
 
-// If launchctl bootout returns a real error (not "not loaded"),
-// Disable must surface it rather than silently continuing.
-// Otherwise a broken launchctl state stays broken without any
-// signal to the user.
+// Disable must surface unexpected bootout failures.
 func TestDisable_SurfacesUnexpectedBootoutError(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip()
