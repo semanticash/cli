@@ -9,9 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Fixed
+
 ### Changed
 
+## [0.3.6] - 2026-04-22
+
+### Added
+
+- Experimental macOS launcher-backed worker for agent-driven or IDE-assisted commit workflows, managed with `semantica launcher enable`, `semantica launcher status`, and `semantica launcher disable`.
+- Launcher status reporting that shows user settings, plist presence, and launchd state side by side so drift is visible.
+
+### Changed
+
+- The post-commit worker can now run through an optional macOS launchd-backed path while keeping the default detached worker path for users who do not opt in.
+- Per-repo worker output continues to land in `.semantica/worker.log` when the launcher is enabled, while launcher-level events are written to `~/.semantica/worker-launcher.log`.
+
 ### Fixed
+
+- Re-push logging now uses a dedicated `re-push` prefix so enriched attribution logs are distinguishable from the initial remote push.
 
 ## [0.3.5] - 2026-04-21
 

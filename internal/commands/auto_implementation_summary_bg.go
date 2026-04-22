@@ -20,6 +20,10 @@ func NewAutoImplementationSummaryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "_auto-implementation-summary",
 		Hidden: true,
+		// This command runs in the background. Keep cobra from printing
+		// usage or a duplicate error line on RunE failures.
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -29,8 +33,7 @@ func NewAutoImplementationSummaryCmd() *cobra.Command {
 			}
 			implPath := filepath.Join(base, "implementations.db")
 
-			// The worker already created and migrated the DB before spawning
-			// this process. Use OpenNoMigrate to skip redundant migration.
+			// The worker creates and migrates this DB before spawning us.
 			h, err := impldb.OpenNoMigrate(ctx, implPath, impldb.DefaultOpenOptions())
 			if err != nil {
 				return fmt.Errorf("auto-impl-summary: open db: %w", err)
@@ -40,8 +43,7 @@ func NewAutoImplementationSummaryCmd() *cobra.Command {
 			// Clear in-progress marker on any exit path.
 			defer implementations.ClearGenerationInProgress(ctx, h, implID)
 
-			// Re-check skip conditions (safe against races with another worker).
-			// Skip the in-progress check - this is the job that owns the marker.
+			// Re-check skip conditions. This job already owns the in-progress marker.
 			if ok, reason := implementations.ShouldAutoSummarize(ctx, h, implID, implementations.ShouldAutoSummarizeOpts{
 				SkipInProgressCheck: true,
 			}); !ok {

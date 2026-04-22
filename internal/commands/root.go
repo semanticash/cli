@@ -55,6 +55,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewAutoImplementationSummaryCmd())
 	cmd.AddCommand(NewCaptureCmd())
 	cmd.AddCommand(NewImplementationsCmd(opts))
+	cmd.AddCommand(NewLauncherCmd(opts))
 	cmd.AddCommand(newVersionCmd())
 
 	return cmd

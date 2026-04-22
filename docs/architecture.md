@@ -20,9 +20,10 @@ Semantica is a single Go binary that operates as a CLI tool, a set of Git hook h
   +------+-------+                                           |
          |                                             +-----v------+
          |                                             |   Worker   |
-  +------v-------+                                     | (detached) |
-  |    broker    |                                     +-----+------+
-  |   (routing)  |                                           |
+  +------v-------+                                     | detached / |
+  |    broker    |                                     |  launchd   |
+  |   (routing)  |                                     +-----+------+
+         |                                                   |
   +---+------+---+                                  +---------+---------+
       |      |                                      |         |         |
       |      |                                  reconcile   build     compute
@@ -91,13 +92,28 @@ Trailers are only appended if the handoff file exists and is fresh (written with
 
 ### post-commit
 
-Reads the handoff file again. Links the commit hash to the pending checkpoint in the database. Deletes the handoff file. Spawns a fully detached background worker process (`semantica worker run --repo <dir> --checkpoint <id> --commit <hash>`).
+Reads the handoff file again. Links the commit hash to the pending checkpoint in the database. Deletes the handoff file.
 
-The worker is detached from the terminal - it runs independently of the user's shell session.
+By default, Semantica then spawns a detached background worker process:
+
+```text
+semantica worker run --repo <dir> --checkpoint <id> --commit <hash>
+```
+
+On macOS, users can optionally enable a launchd-backed path with
+`semantica launcher enable`. In that mode, post-commit writes a repo-local job
+marker and asks launchd to run `semantica worker drain`, which discovers and
+processes pending markers across active repositories.
 
 ## Worker
 
-The worker runs as a detached background process after each commit (spawned by the post-commit hook), or can be invoked manually for debugging. It completes the checkpoint that the pre-commit hook created.
+The worker completes the checkpoint created by pre-commit. It can run in two
+ways:
+
+1. The default detached worker spawned directly by post-commit
+2. The optional macOS launchd worker that drains pending markers
+
+Both paths end up in the same `WorkerService.Run` pipeline for each checkpoint.
 
 ### Processing pipeline
 
@@ -123,7 +139,9 @@ The worker runs as a detached background process after each commit (spawned by t
 
 7. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
-8. **Auto-playbook** (optional) - If enabled, spawns a separate detached process (`semantica _auto-playbook`) that calls an LLM to generate a structured summary (title, intent, outcome, learnings, friction, keywords) and stores it on the checkpoint.
+8. **Auto-playbook** (optional) - If enabled, runs `semantica _auto-playbook`
+   in the background to generate a structured summary (title, intent, outcome,
+   learnings, friction, keywords) and stores it on the checkpoint.
 
 Steps 7 and 8 are best-effort - failures never cause the worker to fail.
 
@@ -186,6 +204,8 @@ The `providers` field is a string array of installed hook provider names (not pa
 | --- | --- | --- |
 | Runtime state (broker registry, global objects, capture state) | `~/.semantica` | `SEMANTICA_HOME` |
 | Global implementations index | `~/.semantica/implementations.db` | `SEMANTICA_HOME` |
+| Launcher log (macOS launcher mode) | `~/.semantica/worker-launcher.log` | `SEMANTICA_HOME` |
+| LaunchAgent plist (macOS launcher mode) | `~/Library/LaunchAgents/sh.semantica.worker.plist` | none |
 | User config (auth fallback, release check cache) | `~/.config/semantica` | `XDG_CONFIG_HOME` |
 
 Repo-local state still lives in `.semantica/` inside each enabled repository.
@@ -210,6 +230,7 @@ This allows Semantica to capture AI activity even when the provider's hook syste
 cmd/semantica/              CLI entrypoint (main.go)
 internal/
   commands/                 Cobra command definitions
+  launcher/                 Optional macOS launcher plumbing
   service/                  Core business logic
     worker.go               Background worker pipeline
     pre-commit.go           Pre-commit hook handler

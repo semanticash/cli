@@ -17,13 +17,7 @@ import (
 // ErrNoCaptureState is returned when no capture state file exists for a session.
 var ErrNoCaptureState = errors.New("no capture state")
 
-// CaptureState tracks the read position for an active transcript.
-// Created when a turn starts, advanced on each capture, and removed after the
-// turn finishes. Stored globally at ~/.semantica/capture/.
-//
-// State file naming uses Key(): parent states are keyed by SessionID,
-// subagent states by a derived identifier (e.g., the subagent transcript
-// basename), so each transcript gets its own independent offset.
+// CaptureState tracks the current offset for an active transcript.
 type CaptureState struct {
 	SessionID        string `json:"session_id"`
 	StateKey         string `json:"state_key,omitempty"` // Override key; defaults to SessionID.
@@ -37,8 +31,7 @@ type CaptureState struct {
 	CWD               string `json:"cwd,omitempty"` // working directory from hook payload
 }
 
-// Key returns the identifier used for the state file name.
-// Subagent states set StateKey explicitly; parent states fall back to SessionID.
+// Key returns the state file key.
 func (s *CaptureState) Key() string {
 	if s.StateKey != "" {
 		return s.StateKey
@@ -70,6 +63,24 @@ func stateFilePath(sessionID string) (string, error) {
 	return filepath.Join(dir, fmt.Sprintf("capture-%s.json", safe)), nil
 }
 
+// CaptureDirWritable probes whether the global capture directory is
+// writable.
+func CaptureDirWritable() error {
+	dir, err := captureDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir capture dir: %w", err)
+	}
+	probe := filepath.Join(dir, ".writable-probe")
+	if err := os.WriteFile(probe, []byte{}, 0o600); err != nil {
+		return fmt.Errorf("probe capture dir: %w", err)
+	}
+	_ = os.Remove(probe)
+	return nil
+}
+
 // SaveCaptureState writes a capture state file atomically.
 func SaveCaptureState(state *CaptureState) error {
 	if state.Key() == "" {
@@ -90,7 +101,7 @@ func SaveCaptureState(state *CaptureState) error {
 		return fmt.Errorf("marshal capture state: %w", err)
 	}
 
-	// Atomic write: write to temp file, then rename.
+	// Atomic write.
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write capture state: %w", err)
@@ -125,8 +136,7 @@ func LoadCaptureState(sessionID string) (*CaptureState, error) {
 	return &state, nil
 }
 
-// LoadActiveCaptureStates scans all capture state files. Used by commit-time
-// catch-up to flush all active sessions across all repos.
+// LoadActiveCaptureStates scans all capture state files.
 func LoadActiveCaptureStates() ([]*CaptureState, error) {
 	dir, err := captureDir()
 	if err != nil {

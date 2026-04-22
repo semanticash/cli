@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/launcher"
 	"github.com/semanticash/cli/internal/platform"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -165,11 +166,57 @@ func printAttributionSummary(semDir string) {
 	fmt.Fprint(os.Stderr, summary.render())
 }
 
-// spawnWorker launches `semantica worker run` as a detached background process.
+// spawnWorker dispatches post-commit work through the launcher when
+// enabled and otherwise falls back to the legacy detached spawn.
 func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot string) {
 	if ctx.Err() != nil {
 		return
 	}
+
+	switch err := dispatchViaLauncher(ctx, checkpointID, commitHash, repoRoot); {
+	case err == nil:
+		return
+	case errors.Is(err, ErrLauncherNotEnabled):
+	default:
+		util.AppendActivityLog(
+			semDir,
+			"post-commit: launcher dispatch failed (%v); falling back to detached spawn",
+			err,
+		)
+	}
+
+	spawnDetached(ctx, semDir, checkpointID, commitHash, repoRoot)
+}
+
+// ErrLauncherNotEnabled reports that launcher dispatch is disabled.
+var ErrLauncherNotEnabled = errors.New("launcher not enabled")
+
+// dispatchViaLauncher writes a pending marker and kickstarts the
+// launchd worker. If kickstart fails, the marker stays on disk for a
+// later drain.
+func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot string) error {
+	if !launcher.IsEnabled() {
+		return ErrLauncherNotEnabled
+	}
+
+	marker := launcher.Marker{
+		CheckpointID: checkpointID,
+		CommitHash:   commitHash,
+		RepoRoot:     repoRoot,
+		WrittenAt:    time.Now().UnixMilli(),
+	}
+	if err := launcher.Write(marker); err != nil {
+		return fmt.Errorf("write pending marker: %w", err)
+	}
+	if err := launcher.Kickstart(ctx, launcher.DomainTarget()); err != nil {
+		return fmt.Errorf("kickstart: %w", err)
+	}
+	return nil
+}
+
+// spawnDetached launches `semantica worker run` as a detached
+// background process.
+func spawnDetached(ctx context.Context, semDir, checkpointID, commitHash, repoRoot string) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "semantica"
@@ -188,8 +235,9 @@ func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	// Detached workers should not inherit short-lived loopback proxies
-	// from the parent process. Keep real forward proxies intact.
+	// Detached workers should not inherit short-lived loopback
+	// proxies from the parent process. Keep real forward
+	// proxies intact.
 	cmd.Env = platform.WithoutLoopbackProxies(os.Environ())
 	platform.DetachProcess(cmd)
 
