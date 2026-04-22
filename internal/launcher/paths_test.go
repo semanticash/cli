@@ -10,7 +10,11 @@ import (
 
 func TestPlistPath_HonorsHome(t *testing.T) {
 	home := t.TempDir()
+	// os.UserHomeDir consults HOME on Unix and USERPROFILE on
+	// Windows. Set both so the test exercises the same code path
+	// on every platform the CI runs on.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	got, err := PlistPath()
 	if err != nil {
