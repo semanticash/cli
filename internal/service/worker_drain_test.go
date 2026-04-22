@@ -80,7 +80,7 @@ func TestDrainOne_RedirectsPerJobWlogToRepoLog(t *testing.T) {
 	setupDrainEnv(t, repo)
 	writeMarker(t, repo, "ckpt-routing")
 
-	// Stand-in for the launcher log. Per-job output must not land here.
+	// Per-job output must not land in the launcher log.
 	var launcherBuf bytes.Buffer
 	prev := wlogWriter
 	wlogWriter = &launcherBuf
@@ -88,7 +88,6 @@ func TestDrainOne_RedirectsPerJobWlogToRepoLog(t *testing.T) {
 
 	runner := recordingRunner{
 		OnCall: func(in WorkerInput) error {
-			// Runner output should be redirected to the repo log.
 			wlog("job-wlog: processing %s\n", in.CheckpointID)
 			return nil
 		},
@@ -118,52 +117,14 @@ func TestDrainOne_RedirectsPerJobWlogToRepoLog(t *testing.T) {
 	}
 }
 
-func TestDrainOne_RepoLogOpenFailureFallsBackToLauncherWriter(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses POSIX mode-bit enforcement; cannot simulate open failure")
-	}
-	repo := t.TempDir()
-	setupDrainEnv(t, repo)
-	writeMarker(t, repo, "ckpt-fallback")
-
-	// Make the repo log unavailable after the marker is written.
-	semPath := filepath.Join(repo, ".semantica")
-	if err := os.Chmod(semPath, 0o500); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(semPath, 0o755) })
-
-	var launcherBuf bytes.Buffer
-	prev := wlogWriter
-	wlogWriter = &launcherBuf
-	defer func() { wlogWriter = prev }()
-
-	runner := recordingRunner{
-		OnCall: func(in WorkerInput) error {
-			wlog("job-wlog-fallback: %s\n", in.CheckpointID)
-			return nil
-		},
-	}
-	if _, err := DrainOnce(context.Background(), runner.Run); err != nil {
-		t.Fatalf("DrainOnce: %v", err)
-	}
-
-	// Per-job output should fall back to the launcher writer.
-	if !bytes.Contains(launcherBuf.Bytes(), []byte("job-wlog-fallback: ckpt-fallback")) {
-		t.Errorf("expected per-job wlog in launcher writer as fallback, got:\n%s", launcherBuf.String())
-	}
-
-	// The open failure itself should also be visible there.
-	if !bytes.Contains(launcherBuf.Bytes(), []byte("open repo log for")) {
-		t.Errorf("expected open-failure line in launcher writer, got:\n%s", launcherBuf.String())
-	}
-}
+// Unix-only repo-log open-failure coverage lives in
+// worker_drain_unix_test.go.
 
 // recordingRunner records calls and can inject custom behavior.
 type recordingRunner struct {
 	mu     sync.Mutex
 	Inputs []WorkerInput
-	OnCall func(WorkerInput) error // optional behavior override
+	OnCall func(WorkerInput) error // optional override
 }
 
 func (r *recordingRunner) Run(_ context.Context, in WorkerInput) error {
@@ -291,7 +252,7 @@ func TestDrainOnce_UnregisteredRepoIsIgnored(t *testing.T) {
 	repoRegistered := t.TempDir()
 	repoOrphan := t.TempDir()
 	setupDrainEnv(t, repoRegistered)
-	// Intentionally do NOT register repoOrphan.
+	// Leave repoOrphan unregistered.
 	writeMarker(t, repoOrphan, "orphan")
 
 	var runner recordingRunner
@@ -305,8 +266,7 @@ func TestDrainOnce_UnregisteredRepoIsIgnored(t *testing.T) {
 	if got := len(runner.calls()); got != 0 {
 		t.Errorf("runner should not have been called; got %d calls", got)
 	}
-	// The orphan marker stays on disk because the repo is not
-	// registered.
+	// The orphan marker stays on disk because the repo is not registered.
 	if _, err := os.Stat(launcher.MarkerPath(repoOrphan, "orphan")); err != nil {
 		t.Errorf("orphan marker removed unexpectedly, stat=%v", err)
 	}
@@ -316,7 +276,7 @@ func TestDrainOnce_CorruptMarkerIsDeletedAndSkipped(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
 
-	// Seed a corrupt marker file directly rather than through Write.
+	// Seed a corrupt marker file directly.
 	dir := launcher.PendingDir(repo)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir pending: %v", err)
@@ -359,8 +319,7 @@ func TestDrainOnce_ContextCancellationStopsEarly(t *testing.T) {
 	var called int32
 	runner := recordingRunner{
 		OnCall: func(WorkerInput) error {
-			// Cancel after the first call so subsequent
-			// iterations observe ctx.Err().
+			// Cancel after the first call so later iterations see ctx.Err().
 			if atomic.AddInt32(&called, 1) == 1 {
 				cancel()
 			}
@@ -395,8 +354,7 @@ func TestDrainUntilStable_EmptyQueueExitsImmediately(t *testing.T) {
 	}
 }
 
-// A marker written mid-drain should be picked up by the same
-// invocation.
+// A marker written mid-drain should be picked up by the same invocation.
 func TestDrainUntilStable_AbsorbsMarkerWrittenDuringDrain(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -405,9 +363,7 @@ func TestDrainUntilStable_AbsorbsMarkerWrittenDuringDrain(t *testing.T) {
 	var wrote bool
 	runner := recordingRunner{
 		OnCall: func(in WorkerInput) error {
-			// While processing "first", drop a new marker
-			// that the outer loop should discover on the
-			// next pass.
+			// Drop a new marker that the next pass should discover.
 			if in.CheckpointID == "first" && !wrote {
 				wrote = true
 				writeMarker(t, repo, "second")
@@ -433,9 +389,7 @@ func TestDrainUntilStable_LingerCatchesLateMarker(t *testing.T) {
 	setupDrainEnv(t, repo)
 
 	var runner recordingRunner
-	// Schedule a marker to appear ~30ms after DrainUntilStable
-	// starts. With a 100ms linger that is well within the
-	// window the final rescan will cover.
+	// Write a marker during the linger window.
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		writeMarker(t, repo, "late-arrival")
@@ -450,8 +404,7 @@ func TestDrainUntilStable_LingerCatchesLateMarker(t *testing.T) {
 	}
 }
 
-// All-run-error passes should exit quickly and leave markers for a
-// later invocation.
+// All-run-error passes should exit quickly and leave markers for a later invocation.
 func TestDrainUntilStable_AllRunErrorsExitsQuicklyWithMarkersStillQueued(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -485,8 +438,7 @@ func TestDrainUntilStable_AllRunErrorsExitsQuicklyWithMarkersStillQueued(t *test
 	}
 }
 
-// Mixed success and failure should not retry the failed marker in the
-// same invocation.
+// Mixed success and failure should not retry the failed marker in the same invocation.
 func TestDrainUntilStable_MixedSuccessAndFailureDoesNotRetryFailureInInvocation(t *testing.T) {
 	repo := t.TempDir()
 	setupDrainEnv(t, repo)
@@ -541,8 +493,7 @@ func TestDrainUntilStable_SkipSetIsPerInvocationNotPersistent(t *testing.T) {
 		t.Fatalf("first invocation made %d calls, want exactly 1", afterFirst)
 	}
 
-	// Second invocation. Same marker, same failing runner. A
-	// fresh skip set means this invocation retries the marker.
+	// A fresh invocation should retry the marker once.
 	if err := DrainUntilStable(context.Background(), 0, runner.Run); err != nil {
 		t.Fatalf("second DrainUntilStable: %v", err)
 	}
