@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -64,6 +66,71 @@ func wlog(format string, args ...any) {
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	_, _ = fmt.Fprintf(wlogWriter, "%s  %s", ts, msg)
+}
+
+// RedirectWorkerLog opens path in append mode and routes worker logs
+// there. Linux and Windows launchers use it; macOS launchd already
+// redirects output at the OS level.
+//
+// The redirect updates wlogWriter, os.Stdout, os.Stderr, and the
+// default slog logger so plain writes and structured logs land in the
+// same file. It does not retarget loggers that captured os.Stderr at
+// package init in other code, and it does not affect runtime panic
+// output.
+//
+// Call this before per-job redirects in `worker drain`. The returned
+// cleanup restores the previous logging state and closes the file. It
+// is safe to call cleanup multiple times.
+func RedirectWorkerLog(path string) (cleanup func() error, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("redirect worker log: create dir: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("redirect worker log: open %q: %w", path, err)
+	}
+
+	prevWlog := wlogWriter
+	prevStdout := os.Stdout
+	prevStderr := os.Stderr
+
+	wlogWriter = f
+	os.Stdout = f
+	os.Stderr = f
+	restoreSlog := setSlogDefaultTo(f)
+
+	closed := false
+	return func() error {
+		restoreSlog()
+		wlogWriter = prevWlog
+		os.Stdout = prevStdout
+		os.Stderr = prevStderr
+		if closed {
+			return nil
+		}
+		closed = true
+		return f.Close()
+	}, nil
+}
+
+// setSlogDefaultTo installs a default slog logger that writes to w and
+// returns a restore function.
+//
+// Go's slog.SetDefault rewires the standard log package when the new
+// handler is not the runtime default: it changes both log output and
+// log flags. Restoring the previous slog logger does not undo those
+// changes, so we snapshot and restore the standard logger state here
+// as well.
+func setSlogDefaultTo(w io.Writer) func() {
+	prevSlog := slog.Default()
+	prevLogWriter := stdlog.Writer()
+	prevLogFlags := stdlog.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
+	return func() {
+		slog.SetDefault(prevSlog)
+		stdlog.SetOutput(prevLogWriter)
+		stdlog.SetFlags(prevLogFlags)
+	}
 }
 
 // prepareCheckpoint opens the DB, validates the checkpoint is pending,
