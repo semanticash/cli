@@ -97,7 +97,7 @@ func Status(ctx context.Context) (StatusResult, error) {
 		result.UnitOnDisk = true
 	}
 
-	loaded, err := m.IsActive(ctx)
+	loaded, err := m.IsRegistered(ctx)
 	switch {
 	case err == nil && loaded:
 		result.LoadedInDaemon = true

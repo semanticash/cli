@@ -371,7 +371,7 @@ semantica agents --json       # JSON output: detection and installation status
 
 ### `semantica launcher`
 
-Manage the optional macOS launchd-backed worker path.
+Manage the optional OS-backed worker launcher.
 
 ```bash
 semantica launcher enable
@@ -379,15 +379,16 @@ semantica launcher status
 semantica launcher disable
 ```
 
-The launcher is experimental and macOS-only. It is separate from
-`semantica enable`: the normal Git hook flow works without it.
-Use it when agents or IDE-integrated tools may create commits on your behalf
-and you want the post-commit work to run more reliably on macOS.
+The launcher is experimental and currently supports macOS (launchd), Linux
+(systemd user instance), and Windows (Task Scheduler). It is separate from
+`semantica enable`: the normal Git hook flow works without it. Use it when
+agents or IDE-integrated tools may create commits on your behalf and you want
+the post-commit work to run more reliably through an OS-managed path.
 
 #### `semantica launcher enable`
 
-Installs a LaunchAgent plist for Semantica and bootstraps it into the current
-user's launchd domain.
+Installs the launcher definition for the current platform and registers it
+with the local OS daemon manager.
 
 ```bash
 semantica launcher enable
@@ -398,8 +399,8 @@ semantica launcher enable
 Shows launcher state from three sources at once:
 
 - `~/.semantica/settings.json`
-- the plist on disk under `~/Library/LaunchAgents`
-- launchd itself via `launchctl`
+- the launcher definition file on disk
+- the OS daemon manager itself (`launchctl`, `systemctl --user`, or `schtasks`)
 
 ```bash
 semantica launcher status
@@ -407,7 +408,8 @@ semantica launcher status
 
 #### `semantica launcher disable`
 
-Unloads the LaunchAgent, removes the plist, and clears the launcher setting.
+Unregisters the launcher, removes its definition file, and clears the launcher
+setting.
 
 ```bash
 semantica launcher disable
@@ -524,6 +526,6 @@ Everything stays local by default. `.semantica/` is added to `.gitignore` automa
 
 Some cross-repo state also lives under Semantica's global home directory
 (`$SEMANTICA_HOME`), including the broker registry and `implementations.db`.
-When the macOS launcher is enabled, `$SEMANTICA_HOME/worker-launcher.log`
+When the launcher is enabled, `$SEMANTICA_HOME/worker-launcher.log`
 records launcher-level events while per-repo job output continues to go to
 `.semantica/worker.log`.

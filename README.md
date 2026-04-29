@@ -99,17 +99,18 @@ That's it. Every commit now automatically:
 3. Computes AI attribution (how much of the commit is AI-attributed)
 4. Links everything to the commit hash
 
-On macOS, you can also opt into a launchd-backed background worker:
+You can also opt into an OS-managed background worker:
 
 ```bash
-semantica launcher enable   # experimental, macOS-only
-semantica launcher status   # inspect settings / plist / launchd state
+semantica launcher enable   # experimental
+semantica launcher status   # inspect settings / definition file / daemon-manager state
 ```
 
 This is optional. Repos that do not enable the launcher keep using the
 default post-commit worker path. The launcher exists for workflows where
 agents or IDE-integrated tools may create commits on your behalf and you
-want the follow-up background work to run more reliably on macOS.
+want the follow-up background work to run more reliably through launchd
+on macOS, systemd user units on Linux, or Task Scheduler on Windows.
 
 > **Note:** If an AI agent session is already active when you enable Semantica, restart
 > or reload the agent session so it picks up the new hooks. See
@@ -255,14 +256,16 @@ semantica explain HEAD
 ```
 
 Auto-playbook generation still runs in the background after each commit when
-enabled with `semantica set auto-playbook enabled`. On macOS, `semantica
-launcher enable` can move that background work under launchd.
+enabled with `semantica set auto-playbook enabled`. `semantica launcher
+enable` can move that background work under the OS launcher backend on
+supported platforms.
 
 ### Background worker
 
 Semantica finishes commit-time work in a background worker after the Git hooks
-return. By default, the post-commit hook spawns the worker directly. On macOS,
-you can optionally route that work through a short-lived launchd agent:
+return. By default, the post-commit hook spawns the worker directly. On
+supported platforms, you can optionally route that work through a short-lived
+OS-managed launcher:
 
 ```bash
 semantica launcher enable
@@ -270,10 +273,12 @@ semantica launcher status
 semantica launcher disable
 ```
 
-The launcher is experimental and macOS-only. `launcher status` reports three
-separate views of state: user settings, the plist on disk, and launchd itself.
-Use it when commits are often created through agent-driven workflows and you
-want the post-commit work to run more reliably on macOS.
+The launcher is experimental and currently supports macOS (launchd), Linux
+(systemd user instance), and Windows (Task Scheduler). `launcher status`
+reports three separate views of state: user settings, the definition file on
+disk, and the OS daemon manager itself. Use it when commits are often created
+through agent-driven workflows and you want the post-commit work to run more
+reliably than the default detached worker path.
 
 ---
 
@@ -311,7 +316,7 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `checkpoint` | Manually create a checkpoint |
 | `rewind <id>` | Restore working tree to a checkpoint |
 | `sessions` | List or view agent sessions |
-| `launcher` | Manage the optional macOS launchd worker |
+| `launcher` | Manage the optional OS-backed worker launcher |
 | `connect` / `disconnect` | Connect or disconnect this repo for hosted features |
 | `workspace requests` | List, approve, or reject shared-workspace access requests |
 
@@ -336,7 +341,7 @@ It does not write to Git history or create side branches. Hosted sync only start
 Cross-repo implementations are indexed in Semantica's global state under
 `$SEMANTICA_HOME/implementations.db`.
 
-When the macOS launcher is enabled, Semantica also writes
+When the launcher is enabled, Semantica also writes
 `$SEMANTICA_HOME/worker-launcher.log` for launcher-level events. Per-repo worker
 output still goes to `.semantica/worker.log`.
 

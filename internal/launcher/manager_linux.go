@@ -63,10 +63,16 @@ func (m *linuxManager) Install(ctx context.Context, binaryPath string) (*Install
 		return nil, err
 	}
 
-	// Detect a previously-active unit before the rewrite so the
-	// Reinstalled flag is meaningful. is-active errors are treated
-	// as "not previously loaded" rather than blocking the rewrite.
-	previouslyLoaded, _ := isUnitActive(ctx, UnitTarget())
+	// Detect a previously-registered unit before the rewrite so
+	// the Reinstalled flag is meaningful. Uses isUnitRegistered
+	// (LoadState=loaded), NOT isUnitActive: Type=oneshot units
+	// return to inactive between kicks, so an is-active probe
+	// would read false for a fully-registered idle unit and every
+	// subsequent `semantica launcher enable` would falsely report
+	// a fresh install. Probe errors are treated as "not previously
+	// registered" rather than blocking the rewrite - a transient
+	// systemctl issue should not stop the install path.
+	previouslyRegistered, _ := isUnitRegistered(ctx, UnitTarget())
 
 	if err := writeUnitAtomic(unitPath, []byte(body)); err != nil {
 		return nil, err
@@ -79,7 +85,7 @@ func (m *linuxManager) Install(ctx context.Context, binaryPath string) (*Install
 	return &InstallResult{
 		UnitPath:    unitPath,
 		UnitTarget:  UnitTarget(),
-		Reinstalled: previouslyLoaded,
+		Reinstalled: previouslyRegistered,
 	}, nil
 }
 
@@ -130,10 +136,14 @@ func (m *linuxManager) Kick(ctx context.Context) error {
 	return startUnit(ctx, UnitTarget())
 }
 
-// IsActive reports whether the systemd user unit is currently
-// active.
-func (m *linuxManager) IsActive(ctx context.Context) (bool, error) {
-	return isUnitActive(ctx, UnitTarget())
+// IsRegistered reports whether the systemd user instance has the
+// worker unit loaded. Uses isUnitRegistered (LoadState=loaded)
+// rather than isUnitActive: Type=oneshot units return to
+// "inactive" between kicks, so is-active would report false for
+// a perfectly registered idle unit and Status would render drift
+// hints on every status check between worker runs.
+func (m *linuxManager) IsRegistered(ctx context.Context) (bool, error) {
+	return isUnitRegistered(ctx, UnitTarget())
 }
 
 // writeUnitAtomic atomically writes the systemd unit file.

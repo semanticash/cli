@@ -20,20 +20,21 @@ func NewLauncherCmd(rootOpts *RootOptions) *cobra.Command {
 		Long: `Opt in or out of the OS-managed post-commit worker.
 
 Enabling the launcher installs a service definition with the OS
-daemon manager (launchd on macOS, systemd user units on Linux)
-and records the choice in ~/.semantica/settings.json. The
-service runs a short-lived worker drain on demand whenever the
-post-commit hook kicks it.
+daemon manager (launchd on macOS, systemd user units on Linux,
+Task Scheduler on Windows) and records the choice in
+~/.semantica/settings.json. The service runs a short-lived worker
+drain on demand whenever the post-commit hook kicks it.
 
 Disabling unregisters the service, removes its definition file,
 and clears the settings flag. Commits fall back to the legacy
 detached-spawn path, which is the same path users who never
 opted in have always used.
 
-The launcher is currently experimental and supported on macOS
-and Linux (systemd user instance required). Other platforms
-fall back to the legacy spawn path. Consider 'launcher enable'
-a follow-up to 'semantica enable' rather than a replacement.`,
+The launcher is currently experimental and supported on macOS,
+Linux (systemd user instance required), and Windows (Task
+Scheduler). Other platforms fall back to the legacy spawn path.
+Consider 'launcher enable' a follow-up to 'semantica enable'
+rather than a replacement.`,
 	}
 	cmd.AddCommand(newLauncherEnableCmd(rootOpts))
 	cmd.AddCommand(newLauncherDisableCmd(rootOpts))
@@ -46,10 +47,11 @@ func newLauncherEnableCmd(rootOpts *RootOptions) *cobra.Command {
 		Use:   "enable",
 		Short: "Install and register the worker service",
 		Long: `Install the worker service definition (LaunchAgent plist on
-macOS, systemd user unit on Linux) and register it with the OS
-daemon manager. Safe to run on an already-enabled system: the
-definition is re-rendered against the current binary path and
-re-registered so the system lands in a known-good state.
+macOS, systemd user unit on Linux, Task Scheduler task on
+Windows) and register it with the OS daemon manager. Safe to
+run on an already-enabled system: the definition is re-rendered
+against the current binary path and re-registered so the system
+lands in a known-good state.
 
 Produces a background item notification on macOS Ventura and
 later. Run 'semantica launcher disable' to undo.`,
@@ -81,8 +83,8 @@ detached-spawn path.
 
 Disable is best-effort: missing files, missing registrations,
 and unreachable daemon managers (degraded systemd user instance,
-broken dbus, etc.) are tolerated so cleanup still completes in
-recovery scenarios.`,
+broken dbus, stopped Task Scheduler service, etc.) are tolerated
+so cleanup still completes in recovery scenarios.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := launcher.Disable(cmd.Context())
@@ -105,11 +107,11 @@ sources at once:
 - the user-level settings file at ~/.semantica/settings.json,
 - the unit/plist/task definition file on disk,
 - the OS daemon manager itself (launchctl on macOS, systemctl
-  --user on Linux).
+  --user on Linux, schtasks on Windows).
 
 Presenting all three together makes drift visible: a settings
 file that claims enabled while the daemon manager does not, a
-unit file that exists but was never registered, and so on.
+definition file that exists but was never registered, and so on.
 Useful as the first place to look when troubleshooting.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -217,7 +219,7 @@ func printLauncherStatus(w io.Writer, s launcher.StatusResult) {
 // (darwin, linux) but the daemon manager is unreachable at
 // runtime, the hint describes the runtime issue rather than
 // claiming the OS lacks support entirely. On other hosts
-// (windows pending Phase 3, BSDs), the hint reflects that no
+// (for example BSDs), the hint reflects that no
 // backend exists for that OS.
 func unsupportedHint(goos string) string {
 	switch goos {
@@ -225,7 +227,9 @@ func unsupportedHint(goos string) string {
 		return "The systemd user instance is not reachable. Ensure XDG_RUNTIME_DIR is set and `systemctl --user` works on this host."
 	case "darwin":
 		return "launchd is not reachable on this host."
+	case "windows":
+		return "Task Scheduler is not reachable. Ensure the Task Scheduler service is running and `schtasks /Query /TN \\Semantica\\sh.semantica.worker` works on this host."
 	default:
-		return "The launcher has no backend on this OS. Supported: macOS (launchd) and Linux (systemd user instance)."
+		return "The launcher has no backend on this OS. Supported: macOS (launchd), Linux (systemd user instance), and Windows (Task Scheduler)."
 	}
 }

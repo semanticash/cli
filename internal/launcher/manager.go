@@ -57,9 +57,15 @@ type manager interface {
 	// daemon manager.
 	Kick(ctx context.Context) error
 
-	// IsActive reports whether the service is currently registered
-	// with the OS daemon manager.
-	IsActive(ctx context.Context) (bool, error)
+	// IsRegistered reports whether the OS daemon manager has the
+	// service registered. This drives the StatusResult.LoadedInDaemon
+	// and ServiceState rendering, which is fundamentally about
+	// registration ("does the daemon manager know about this
+	// service"), not execution. A registered-but-idle service
+	// returns true: Type=oneshot units on Linux return to inactive
+	// between kicks, and Task Scheduler tasks sit in Ready between
+	// runs, but both are still registered.
+	IsRegistered(ctx context.Context) (bool, error)
 }
 
 // isPOSIXAbsolute reports whether p starts with "/". Used by the

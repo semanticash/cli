@@ -1,4 +1,4 @@
-// Package launcher manages the optional macOS launchd worker.
+// Package launcher manages the optional OS-backed worker launcher.
 package launcher
 
 import (

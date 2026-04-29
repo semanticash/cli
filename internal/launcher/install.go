@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -23,7 +24,12 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 		return nil, err
 	}
 
-	if !isPOSIXAbsolute(binaryPath) {
+	// filepath.IsAbs is GOOS-aware: it accepts /... on Unix and
+	// drive-letter or UNC paths (`C:\...`, `\\server\share\...`)
+	// on Windows. The previous isPOSIXAbsolute check would have
+	// rejected every os.Executable() return value on Windows
+	// because those start with a drive letter, not /.
+	if !filepath.IsAbs(binaryPath) {
 		return nil, fmt.Errorf("launcher: binary path must be absolute, got %q", binaryPath)
 	}
 	if _, err := os.Stat(binaryPath); err != nil {

@@ -105,8 +105,12 @@ func (m *darwinManager) Kick(ctx context.Context) error {
 	return run(ctx, "kickstart", UnitTarget())
 }
 
-// IsActive reports whether the launchd service is loaded.
-func (m *darwinManager) IsActive(ctx context.Context) (bool, error) {
+// IsRegistered reports whether the launchd service is loaded.
+// launchctl print exits 0 when the service is registered in the
+// domain, regardless of whether it is currently running, which
+// matches the registration-state semantic the manager interface
+// requires.
+func (m *darwinManager) IsRegistered(ctx context.Context) (bool, error) {
 	return IsLoaded(ctx, UnitTarget())
 }
 

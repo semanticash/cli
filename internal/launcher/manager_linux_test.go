@@ -5,8 +5,10 @@ package launcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +77,129 @@ func TestDisable_BestEffortWhenSystemctlAlwaysFails(t *testing.T) {
 	}
 	if s.Launcher.InstalledUnitPath != "" {
 		t.Errorf("InstalledUnitPath = %q after Disable; settings not cleared", s.Launcher.InstalledUnitPath)
+	}
+}
+
+// IsRegistered must report registration state, not running state.
+// Type=oneshot units return to "inactive" between kicks, which is
+// the steady state - not a problem. The previous IsActive
+// implementation used systemctl is-active and would report false
+// for any idle unit, making Status render the drift hint
+// "settings say enabled, but the OS daemon manager has no loaded
+// service" on every status check between worker runs.
+//
+// The test wires a fake systemctl that returns LoadState=loaded
+// from `systemctl --user show`, mimicking the steady state of an
+// installed unit between kicks. IsRegistered must return true.
+func TestIsRegistered_IdleUnitCountsAsLoaded(t *testing.T) {
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	// Fake systemctl: prints "loaded" to stdout for show
+	// LoadState queries, exits 0. Logs argv for assertion below.
+	script := fmt.Sprintf(`#!/bin/bash
+printf '%%s\n' "$*" >> %q
+case "$2" in
+  show)
+    echo "loaded"
+    ;;
+esac
+exit 0
+`, argvLog)
+	scriptPath := filepath.Join(dir, "systemctl")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("seed fake systemctl: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m, err := newManager()
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	registered, err := m.IsRegistered(context.Background())
+	if err != nil {
+		t.Fatalf("IsRegistered: %v", err)
+	}
+	if !registered {
+		t.Errorf("LoadState=loaded must report registered=true")
+	}
+
+	// Pin the systemctl probe used: must be `show LoadState`,
+	// not `is-active`. Using is-active would re-introduce the
+	// false-on-idle bug for Type=oneshot units.
+	logBytes, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	if !strings.Contains(string(logBytes), "--user show") {
+		t.Errorf("IsRegistered must probe via `show`, got argv:\n%s", string(logBytes))
+	}
+	if strings.Contains(string(logBytes), "is-active") {
+		t.Errorf("IsRegistered must NOT use `is-active` (returns false for idle Type=oneshot units), got argv:\n%s", string(logBytes))
+	}
+}
+
+// TestInstall_ReinstalledFlagUsesRegistrationProbe pins that the
+// Reinstalled detection on Linux uses isUnitRegistered, NOT
+// isUnitActive. Type=oneshot units return to inactive between
+// kicks, so probing with is-active would falsely report
+// Reinstalled=false on every reinstall of an idle but registered
+// unit. Sibling regression to the Status fix that switched to
+// registration semantics.
+func TestInstall_ReinstalledFlagUsesRegistrationProbe(t *testing.T) {
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	// Fake systemctl: succeeds for every operation. `show
+	// LoadState` returns "loaded" so Install sees a previously-
+	// registered unit. is-active is configured to LIE - return
+	// "inactive" exit 3 - so a regression that probes with
+	// is-active instead of show would read false here and the
+	// Reinstalled assertion would fail.
+	script := fmt.Sprintf(`#!/bin/bash
+printf '%%s\n' "$*" >> %q
+case "$2" in
+  show)
+    echo "loaded"
+    exit 0
+    ;;
+  is-active)
+    exit 3
+    ;;
+esac
+exit 0
+`, argvLog)
+	scriptPath := filepath.Join(dir, "systemctl")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("seed fake systemctl: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	binaryPath := filepath.Join(t.TempDir(), "semantica")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+
+	result, err := Enable(context.Background(), binaryPath)
+	if err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if !result.Reinstalled {
+		t.Errorf("Reinstalled=false even though `show LoadState=loaded` reported a prior registration; probe is using the wrong systemctl subcommand")
+	}
+
+	// Pin the systemctl probe used: registration check must go
+	// through `show`, not `is-active`.
+	logBytes, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	if !strings.Contains(string(logBytes), "--user show") {
+		t.Errorf("Reinstalled probe must use `show`, got argv:\n%s", string(logBytes))
+	}
+	if strings.Contains(string(logBytes), "is-active") {
+		t.Errorf("Reinstalled probe must NOT use `is-active` (false on idle Type=oneshot units), got argv:\n%s", string(logBytes))
 	}
 }
 

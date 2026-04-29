@@ -70,6 +70,37 @@ func TestPrintLauncherStatus_LinuxDaemonErrorRoutesToSystemdHint(t *testing.T) {
 	}
 }
 
+// Symmetric coverage on windows: schtasks errors must route to
+// the Task Scheduler hint rather than fall through to the
+// "no backend on this OS" message that lists only macOS and Linux.
+// Regression test for the bug where the Phase 3 Windows backend
+// shipped but the user-facing launcher copy still implied Windows
+// was unsupported.
+func TestPrintLauncherStatus_WindowsDaemonErrorRoutesToTaskSchedulerHint(t *testing.T) {
+	var buf bytes.Buffer
+	printLauncherStatus(&buf, launcher.StatusResult{
+		OS:               "windows",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: `C:\Users\Test\.semantica\sh.semantica.worker.xml`,
+		UnitTarget:       `\Semantica\sh.semantica.worker`,
+		ServiceState:     "error: schtasks Query: exit 1: ERROR: Access is denied.",
+		LogPath:          `C:\Users\Test\.semantica\worker-launcher.log`,
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "Task Scheduler is not reachable") {
+		t.Errorf("windows daemon-manager error must route to the Task Scheduler hint, got:\n%s", out)
+	}
+	// Must NOT see the cross-OS fallback that names only macOS and
+	// Linux as supported - Windows ships a backend now.
+	if strings.Contains(out, "no backend on this OS") {
+		t.Errorf("windows host must not see the no-backend hint, got:\n%s", out)
+	}
+	if strings.Contains(out, "to opt in") {
+		t.Errorf("windows daemon-manager error must not nudge to 'launcher enable', got:\n%s", out)
+	}
+}
+
 // Symmetric coverage on darwin: launchctl errors should also route
 // to the OS-aware hint rather than the opt-in fallback.
 func TestPrintLauncherStatus_DarwinDaemonErrorRoutesToLaunchdHint(t *testing.T) {
@@ -112,8 +143,10 @@ func TestPrintLauncherStatus_OtherOSDescribesSupportedBackends(t *testing.T) {
 	if !strings.Contains(out, "no backend on this OS") {
 		t.Errorf("expected explicit 'no backend' hint for unsupported OS, got:\n%s", out)
 	}
-	if !strings.Contains(out, "macOS") || !strings.Contains(out, "Linux") {
-		t.Errorf("hint should name the supported backends, got:\n%s", out)
+	for _, want := range []string{"macOS", "Linux", "Windows"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hint should name supported backend %q, got:\n%s", want, out)
+		}
 	}
 }
 
