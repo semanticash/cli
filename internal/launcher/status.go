@@ -3,13 +3,12 @@ package launcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"runtime"
 )
 
 // StatusResult describes launcher state as reported by settings, the
-// plist on disk, and launchd.
+// unit/plist/task file on disk, and the OS daemon manager.
 type StatusResult struct {
 	// OS is the runtime.GOOS value at the time of the call.
 	OS string
@@ -17,51 +16,51 @@ type StatusResult struct {
 	// SettingsEnabled is the launcher.enabled flag from settings.json.
 	SettingsEnabled bool
 
-	// InstalledPlistPath is the plist path recorded in settings.
+	// InstalledPlistPath is the unit/plist/task path recorded in
+	// settings.
 	InstalledPlistPath string
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64
 
-	// SettingsError is set when the settings file exists but could not
-	// be read cleanly.
+	// SettingsError is set when the settings file exists but could
+	// not be read cleanly.
 	SettingsError string
 
-	// ExpectedPlistPath is the canonical plist path for the current user.
+	// ExpectedPlistPath is the canonical unit/plist/task path for
+	// the current user.
 	ExpectedPlistPath string
 
-	// PlistOnDisk reports whether the plist file exists at the recorded
-	// or expected path.
+	// PlistOnDisk reports whether the unit/plist/task file exists
+	// at the recorded or expected path.
 	PlistOnDisk bool
 
-	// DomainTarget is the launchctl target for the service.
+	// DomainTarget is the OS-specific service identifier.
 	DomainTarget string
 
-	// LoadedInLaunchd reports whether launchctl print found the service.
+	// LoadedInLaunchd reports whether the OS daemon manager has the
+	// service registered.
 	LoadedInLaunchd bool
 
-	// LaunchdState is a short summary of what launchctl reported:
-	//   - "loaded"       : service is registered in launchd
+	// LaunchdState is a short summary of what the OS daemon manager
+	// reported:
+	//   - "loaded"       : service is registered
 	//   - "not loaded"   : service is not registered
-	//   - "unsupported"  : host is not macOS
-	//   - "error: <msg>" : launchctl call failed for some
-	//                      other reason
+	//   - "unsupported"  : no launcher backend on this OS
+	//   - "error: <msg>" : daemon-manager call failed
 	LaunchdState string
 
-	// LogPath is the launcher log path.
+	// LogPath is the launcher worker log path.
 	LogPath string
 }
 
 // Status gathers launcher state from settings, the filesystem, and
-// launchd. Non-fatal problems are encoded into StatusResult.
+// the OS daemon manager. Non-fatal problems are encoded into
+// StatusResult so the caller can render a coherent view even when
+// one source disagrees with another.
 func Status(ctx context.Context) (StatusResult, error) {
-	result := StatusResult{
-		OS:           runtime.GOOS,
-		DomainTarget: DomainTarget(),
-	}
+	result := StatusResult{OS: runtime.GOOS}
 
-	// Surface settings read failures instead of flattening them to
-	// "not enabled." Missing files still read as the zero value.
 	if s, err := ReadSettings(); err == nil {
 		result.SettingsEnabled = s.Launcher.Enabled
 		result.InstalledPlistPath = s.Launcher.InstalledPlistPath
@@ -70,14 +69,26 @@ func Status(ctx context.Context) (StatusResult, error) {
 		result.SettingsError = err.Error()
 	}
 
-	// Expected plist path.
-	expected, err := PlistPath()
+	if log, err := WorkerLogPath(); err == nil {
+		result.LogPath = log
+	}
+
+	m, mErr := newManager()
+	if mErr != nil {
+		// Unsupported platform. Settings and log path are still
+		// reported so the dashboard can show what the user has
+		// configured even on a host that cannot run the launcher.
+		result.LaunchdState = "unsupported"
+		return result, nil
+	}
+
+	expected, err := m.UnitPath()
 	if err != nil {
-		return result, fmt.Errorf("status: resolve plist path: %w", err)
+		return result, err
 	}
 	result.ExpectedPlistPath = expected
+	result.DomainTarget = m.UnitTarget()
 
-	// Check the recorded path first, then the expected path.
 	probe := result.InstalledPlistPath
 	if probe == "" {
 		probe = result.ExpectedPlistPath
@@ -86,28 +97,17 @@ func Status(ctx context.Context) (StatusResult, error) {
 		result.PlistOnDisk = true
 	}
 
-	// Log path.
-	if log, err := WorkerLogPath(); err == nil {
-		result.LogPath = log
-	}
-
-	// Launchd state.
+	loaded, err := m.IsActive(ctx)
 	switch {
-	case runtime.GOOS != "darwin":
+	case err == nil && loaded:
+		result.LoadedInLaunchd = true
+		result.LaunchdState = "loaded"
+	case err == nil:
+		result.LaunchdState = "not loaded"
+	case errors.Is(err, ErrUnsupportedOS):
 		result.LaunchdState = "unsupported"
 	default:
-		loaded, err := IsLoaded(ctx, result.DomainTarget)
-		switch {
-		case err == nil && loaded:
-			result.LoadedInLaunchd = true
-			result.LaunchdState = "loaded"
-		case err == nil:
-			result.LaunchdState = "not loaded"
-		case errors.Is(err, ErrUnsupportedOS):
-			result.LaunchdState = "unsupported"
-		default:
-			result.LaunchdState = "error: " + err.Error()
-		}
+		result.LaunchdState = "error: " + err.Error()
 	}
 
 	return result, nil

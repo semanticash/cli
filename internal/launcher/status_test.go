@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin
 
 package launcher
 
@@ -235,20 +235,3 @@ func TestStatus_MissingSettingsDoesNotPopulateError(t *testing.T) {
 	}
 }
 
-func TestStatus_NonDarwinReportsUnsupported(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("this test documents non-darwin behavior")
-	}
-	setupInstallEnv(t)
-
-	s, err := Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.LaunchdState != "unsupported" {
-		t.Errorf("LaunchdState = %q, want 'unsupported'", s.LaunchdState)
-	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true on non-darwin")
-	}
-}

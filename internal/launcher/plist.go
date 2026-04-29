@@ -1,3 +1,5 @@
+//go:build darwin
+
 package launcher
 
 import (
@@ -5,7 +7,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // LabelWorker is the launchd service label for the worker.
@@ -42,11 +43,6 @@ func (in PlistInput) Validate() error {
 		)
 	}
 	return nil
-}
-
-// isPOSIXAbsolute reports whether p starts with "/".
-func isPOSIXAbsolute(p string) bool {
-	return strings.HasPrefix(p, "/")
 }
 
 // workerPlistTemplate is the launchd plist template. The service
