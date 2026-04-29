@@ -9,11 +9,10 @@ import (
 	"fmt"
 )
 
-// LabelWorker is the launchd service label for the worker.
-const LabelWorker = "sh.semantica.worker"
-
-// PlistInput holds the values embedded in the worker plist.
-type PlistInput struct {
+// plistInput holds the values embedded in the worker plist.
+// Internal to the darwin backend; the public Install API does not
+// expose plist semantics.
+type plistInput struct {
 	// BinaryPath is the absolute path launchd should execute.
 	BinaryPath string
 
@@ -21,24 +20,24 @@ type PlistInput struct {
 	LogPath string
 }
 
-// Validate rejects empty or non-absolute paths. Paths use POSIX
+// validate rejects empty or non-absolute paths. Paths use POSIX
 // rules because the plist is macOS-only.
-func (in PlistInput) Validate() error {
+func (in plistInput) validate() error {
 	if in.BinaryPath == "" {
-		return errors.New("launcher: PlistInput.BinaryPath is empty")
+		return errors.New("launcher: plistInput.BinaryPath is empty")
 	}
 	if !isPOSIXAbsolute(in.BinaryPath) {
 		return fmt.Errorf(
-			"launcher: PlistInput.BinaryPath must be absolute, got %q",
+			"launcher: plistInput.BinaryPath must be absolute, got %q",
 			in.BinaryPath,
 		)
 	}
 	if in.LogPath == "" {
-		return errors.New("launcher: PlistInput.LogPath is empty")
+		return errors.New("launcher: plistInput.LogPath is empty")
 	}
 	if !isPOSIXAbsolute(in.LogPath) {
 		return fmt.Errorf(
-			"launcher: PlistInput.LogPath must be absolute, got %q",
+			"launcher: plistInput.LogPath must be absolute, got %q",
 			in.LogPath,
 		)
 	}
@@ -69,9 +68,10 @@ const workerPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// RenderWorkerPlist renders the worker plist.
-func RenderWorkerPlist(in PlistInput) (string, error) {
-	if err := in.Validate(); err != nil {
+// renderWorkerPlist renders the worker plist body. Internal to the
+// darwin backend.
+func renderWorkerPlist(in plistInput) (string, error) {
+	if err := in.validate(); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf(

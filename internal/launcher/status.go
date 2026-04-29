@@ -16,9 +16,9 @@ type StatusResult struct {
 	// SettingsEnabled is the launcher.enabled flag from settings.json.
 	SettingsEnabled bool
 
-	// InstalledPlistPath is the unit/plist/task path recorded in
+	// InstalledUnitPath is the unit/plist/task path recorded in
 	// settings.
-	InstalledPlistPath string
+	InstalledUnitPath string
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64
@@ -27,28 +27,28 @@ type StatusResult struct {
 	// not be read cleanly.
 	SettingsError string
 
-	// ExpectedPlistPath is the canonical unit/plist/task path for
+	// ExpectedUnitPath is the canonical unit/plist/task path for
 	// the current user.
-	ExpectedPlistPath string
+	ExpectedUnitPath string
 
-	// PlistOnDisk reports whether the unit/plist/task file exists
+	// UnitOnDisk reports whether the unit/plist/task file exists
 	// at the recorded or expected path.
-	PlistOnDisk bool
+	UnitOnDisk bool
 
-	// DomainTarget is the OS-specific service identifier.
-	DomainTarget string
+	// UnitTarget is the OS-specific service identifier.
+	UnitTarget string
 
-	// LoadedInLaunchd reports whether the OS daemon manager has the
+	// LoadedInDaemon reports whether the OS daemon manager has the
 	// service registered.
-	LoadedInLaunchd bool
+	LoadedInDaemon bool
 
-	// LaunchdState is a short summary of what the OS daemon manager
+	// ServiceState is a short summary of what the OS daemon manager
 	// reported:
 	//   - "loaded"       : service is registered
 	//   - "not loaded"   : service is not registered
 	//   - "unsupported"  : no launcher backend on this OS
 	//   - "error: <msg>" : daemon-manager call failed
-	LaunchdState string
+	ServiceState string
 
 	// LogPath is the launcher worker log path.
 	LogPath string
@@ -63,7 +63,7 @@ func Status(ctx context.Context) (StatusResult, error) {
 
 	if s, err := ReadSettings(); err == nil {
 		result.SettingsEnabled = s.Launcher.Enabled
-		result.InstalledPlistPath = s.Launcher.InstalledPlistPath
+		result.InstalledUnitPath = s.Launcher.InstalledUnitPath
 		result.InstalledAt = s.Launcher.InstalledAt
 	} else {
 		result.SettingsError = err.Error()
@@ -78,36 +78,36 @@ func Status(ctx context.Context) (StatusResult, error) {
 		// Unsupported platform. Settings and log path are still
 		// reported so the dashboard can show what the user has
 		// configured even on a host that cannot run the launcher.
-		result.LaunchdState = "unsupported"
+		result.ServiceState = "unsupported"
 		return result, nil
 	}
 
-	expected, err := m.UnitPath()
+	expected, err := UnitPath()
 	if err != nil {
 		return result, err
 	}
-	result.ExpectedPlistPath = expected
-	result.DomainTarget = m.UnitTarget()
+	result.ExpectedUnitPath = expected
+	result.UnitTarget = UnitTarget()
 
-	probe := result.InstalledPlistPath
+	probe := result.InstalledUnitPath
 	if probe == "" {
-		probe = result.ExpectedPlistPath
+		probe = result.ExpectedUnitPath
 	}
 	if _, err := os.Stat(probe); err == nil {
-		result.PlistOnDisk = true
+		result.UnitOnDisk = true
 	}
 
 	loaded, err := m.IsActive(ctx)
 	switch {
 	case err == nil && loaded:
-		result.LoadedInLaunchd = true
-		result.LaunchdState = "loaded"
+		result.LoadedInDaemon = true
+		result.ServiceState = "loaded"
 	case err == nil:
-		result.LaunchdState = "not loaded"
+		result.ServiceState = "not loaded"
 	case errors.Is(err, ErrUnsupportedOS):
-		result.LaunchdState = "unsupported"
+		result.ServiceState = "unsupported"
 	default:
-		result.LaunchdState = "error: " + err.Error()
+		result.ServiceState = "error: " + err.Error()
 	}
 
 	return result, nil

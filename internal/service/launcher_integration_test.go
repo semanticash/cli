@@ -48,7 +48,7 @@ func setupLauncherIntegrationEnv(t *testing.T, repoRoots ...string) {
 	s := launcher.UserSettings{
 		Launcher: launcher.LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: "/dummy/path.plist",
+			InstalledUnitPath: "/dummy/path.plist",
 			InstalledAt:        1,
 		},
 	}

@@ -56,7 +56,7 @@ func TestWriteSettings_RoundTripsLauncherSection(t *testing.T) {
 	want := UserSettings{
 		Launcher: LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+			InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
 			InstalledAt:        1714000000000,
 		},
 	}
@@ -159,7 +159,7 @@ func TestSettings_ReadsLegacyPlistKey(t *testing.T) {
 	}
 	want := LauncherSettings{
 		Enabled:            true,
-		InstalledPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
 		InstalledAt:        1714000000000,
 	}
 	if got.Launcher != want {
@@ -191,7 +191,7 @@ func TestSettings_ReadsBothKeysSameValue(t *testing.T) {
 	}
 	want := LauncherSettings{
 		Enabled:            true,
-		InstalledPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
 		InstalledAt:        1714000000000,
 	}
 	if got.Launcher != want {
@@ -209,7 +209,7 @@ func TestSettings_DualWritesEmitBothKeys(t *testing.T) {
 	if err := WriteSettings(UserSettings{
 		Launcher: LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: path,
+			InstalledUnitPath: path,
 			InstalledAt:        1714000000000,
 		},
 	}); err != nil {
@@ -252,7 +252,7 @@ func TestSettings_RoundTripsLosslessly(t *testing.T) {
 	want := UserSettings{
 		Launcher: LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+			InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
 			InstalledAt:        1714000000000,
 		},
 	}
@@ -290,7 +290,7 @@ func TestSettings_NewKeyWinsOnConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSettings: %v", err)
 	}
-	if got := s.Launcher.InstalledPlistPath; got != "/new/path.plist" {
+	if got := s.Launcher.InstalledUnitPath; got != "/new/path.plist" {
 		t.Errorf("conflict tiebreak: got %q, want %q (new key must win)", got, "/new/path.plist")
 	}
 
@@ -329,7 +329,7 @@ func TestSettings_NewKeyPresentEmptyClearsLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSettings: %v", err)
 	}
-	if got := s.Launcher.InstalledPlistPath; got != "" {
+	if got := s.Launcher.InstalledUnitPath; got != "" {
 		t.Errorf("explicit empty new key must win: got %q, want empty (legacy must NOT resurrect)", got)
 	}
 
@@ -374,7 +374,7 @@ func TestSettings_NewKeyAbsentFallsThroughToLegacy(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadSettings: %v", err)
 			}
-			if got := s.Launcher.InstalledPlistPath; got != "/legacy.plist" {
+			if got := s.Launcher.InstalledUnitPath; got != "/legacy.plist" {
 				t.Errorf("legacy fallback failed: got %q, want %q", got, "/legacy.plist")
 			}
 		})

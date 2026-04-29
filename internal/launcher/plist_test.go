@@ -9,12 +9,12 @@ import (
 )
 
 func TestRenderWorkerPlist_ValidInputProducesParseableXML(t *testing.T) {
-	got, err := RenderWorkerPlist(PlistInput{
+	got, err := renderWorkerPlist(plistInput{
 		BinaryPath: "/usr/local/bin/semantica",
 		LogPath:    "/Users/test/.semantica/worker-launcher.log",
 	})
 	if err != nil {
-		t.Fatalf("RenderWorkerPlist: %v", err)
+		t.Fatalf("renderWorkerPlist: %v", err)
 	}
 
 	// The rendered plist should stay well-formed XML.
@@ -24,12 +24,12 @@ func TestRenderWorkerPlist_ValidInputProducesParseableXML(t *testing.T) {
 }
 
 func TestRenderWorkerPlist_ContainsRequiredKeysAndInvocation(t *testing.T) {
-	got, err := RenderWorkerPlist(PlistInput{
+	got, err := renderWorkerPlist(plistInput{
 		BinaryPath: "/usr/local/bin/semantica",
 		LogPath:    "/tmp/semantica-test.log",
 	})
 	if err != nil {
-		t.Fatalf("RenderWorkerPlist: %v", err)
+		t.Fatalf("renderWorkerPlist: %v", err)
 	}
 
 	required := []string{
@@ -53,12 +53,12 @@ func TestRenderWorkerPlist_ContainsRequiredKeysAndInvocation(t *testing.T) {
 }
 
 func TestRenderWorkerPlist_DoesNotSetKeepAlive(t *testing.T) {
-	got, err := RenderWorkerPlist(PlistInput{
+	got, err := renderWorkerPlist(plistInput{
 		BinaryPath: "/usr/local/bin/semantica",
 		LogPath:    "/tmp/log",
 	})
 	if err != nil {
-		t.Fatalf("RenderWorkerPlist: %v", err)
+		t.Fatalf("renderWorkerPlist: %v", err)
 	}
 	if strings.Contains(got, "KeepAlive") {
 		t.Errorf("plist must not set KeepAlive; short-lived on-demand agent\n---\n%s", got)
@@ -69,9 +69,9 @@ func TestRenderWorkerPlist_SubstitutesPathsVerbatimForTypicalInputs(t *testing.T
 	bin := "/Users/alice/go/bin/semantica"
 	log := "/Users/alice/.semantica/worker-launcher.log"
 
-	got, err := RenderWorkerPlist(PlistInput{BinaryPath: bin, LogPath: log})
+	got, err := renderWorkerPlist(plistInput{BinaryPath: bin, LogPath: log})
 	if err != nil {
-		t.Fatalf("RenderWorkerPlist: %v", err)
+		t.Fatalf("renderWorkerPlist: %v", err)
 	}
 	if !strings.Contains(got, bin) {
 		t.Errorf("expected verbatim binary path %q in rendered plist:\n%s", bin, got)
@@ -88,9 +88,9 @@ func TestRenderWorkerPlist_EscapesXMLReservedCharacters(t *testing.T) {
 	bin := "/Users/alice/tools & scripts/semantica"
 	log := "/Users/alice/logs/<worker>.log"
 
-	got, err := RenderWorkerPlist(PlistInput{BinaryPath: bin, LogPath: log})
+	got, err := renderWorkerPlist(plistInput{BinaryPath: bin, LogPath: log})
 	if err != nil {
-		t.Fatalf("RenderWorkerPlist: %v", err)
+		t.Fatalf("renderWorkerPlist: %v", err)
 	}
 
 	if strings.Contains(got, "tools & scripts") {
@@ -110,15 +110,15 @@ func TestRenderWorkerPlist_EscapesXMLReservedCharacters(t *testing.T) {
 func TestRenderWorkerPlist_ValidatesRequiredFields(t *testing.T) {
 	cases := []struct {
 		name string
-		in   PlistInput
+		in   plistInput
 	}{
-		{"empty binary path", PlistInput{BinaryPath: "", LogPath: "/tmp/log"}},
-		{"empty log path", PlistInput{BinaryPath: "/bin/semantica", LogPath: ""}},
-		{"both empty", PlistInput{}},
+		{"empty binary path", plistInput{BinaryPath: "", LogPath: "/tmp/log"}},
+		{"empty log path", plistInput{BinaryPath: "/bin/semantica", LogPath: ""}},
+		{"both empty", plistInput{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := RenderWorkerPlist(tc.in)
+			_, err := renderWorkerPlist(tc.in)
 			if err == nil {
 				t.Errorf("expected validation error for %+v", tc.in)
 			}
@@ -130,40 +130,40 @@ func TestRenderWorkerPlist_ValidatesRequiredFields(t *testing.T) {
 func TestRenderWorkerPlist_RejectsRelativePaths(t *testing.T) {
 	cases := []struct {
 		name string
-		in   PlistInput
+		in   plistInput
 	}{
 		{
 			name: "dot-relative binary path",
-			in:   PlistInput{BinaryPath: "./semantica", LogPath: "/tmp/log"},
+			in:   plistInput{BinaryPath: "./semantica", LogPath: "/tmp/log"},
 		},
 		{
 			name: "bare-name binary path",
-			in:   PlistInput{BinaryPath: "semantica", LogPath: "/tmp/log"},
+			in:   plistInput{BinaryPath: "semantica", LogPath: "/tmp/log"},
 		},
 		{
 			name: "subdir-relative binary path",
-			in:   PlistInput{BinaryPath: "bin/semantica", LogPath: "/tmp/log"},
+			in:   plistInput{BinaryPath: "bin/semantica", LogPath: "/tmp/log"},
 		},
 		{
 			name: "tilde-prefixed binary path (shell meta, not expanded by launchd)",
-			in:   PlistInput{BinaryPath: "~/bin/semantica", LogPath: "/tmp/log"},
+			in:   plistInput{BinaryPath: "~/bin/semantica", LogPath: "/tmp/log"},
 		},
 		{
 			name: "dot-relative log path",
-			in:   PlistInput{BinaryPath: "/bin/semantica", LogPath: "./log"},
+			in:   plistInput{BinaryPath: "/bin/semantica", LogPath: "./log"},
 		},
 		{
 			name: "subdir-relative log path",
-			in:   PlistInput{BinaryPath: "/bin/semantica", LogPath: "logs/worker.log"},
+			in:   plistInput{BinaryPath: "/bin/semantica", LogPath: "logs/worker.log"},
 		},
 		{
 			name: "tilde-prefixed log path",
-			in:   PlistInput{BinaryPath: "/bin/semantica", LogPath: "~/logs/worker.log"},
+			in:   plistInput{BinaryPath: "/bin/semantica", LogPath: "~/logs/worker.log"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := RenderWorkerPlist(tc.in)
+			_, err := renderWorkerPlist(tc.in)
 			if err == nil {
 				t.Fatalf("expected validation error for %+v", tc.in)
 			}

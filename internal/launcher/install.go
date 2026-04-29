@@ -37,9 +37,9 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 
 	settings := UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:            true,
-			InstalledPlistPath: result.PlistPath,
-			InstalledAt:        time.Now().UnixMilli(),
+			Enabled:           true,
+			InstalledUnitPath: result.UnitPath,
+			InstalledAt:       time.Now().UnixMilli(),
 		},
 	}
 	if err := WriteSettings(settings); err != nil {

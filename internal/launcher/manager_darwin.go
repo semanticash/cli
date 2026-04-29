@@ -25,7 +25,7 @@ func newManager() (manager, error) {
 // domain. Existing services are bootouted first so install is safe
 // to re-run.
 func (m *darwinManager) Install(ctx context.Context, binaryPath string) (*InstallResult, error) {
-	plistPath, err := PlistPath()
+	plistPath, err := UnitPath()
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (m *darwinManager) Install(ctx context.Context, binaryPath string) (*Instal
 		return nil, fmt.Errorf("launcher: create log dir: %w", err)
 	}
 
-	plistBody, err := RenderWorkerPlist(PlistInput{
+	plistBody, err := renderWorkerPlist(plistInput{
 		BinaryPath: binaryPath,
 		LogPath:    logPath,
 	})
@@ -45,7 +45,7 @@ func (m *darwinManager) Install(ctx context.Context, binaryPath string) (*Instal
 		return nil, err
 	}
 
-	previouslyLoaded, err := bootoutIgnoringNotLoaded(ctx, DomainTarget())
+	previouslyLoaded, err := bootoutIgnoringNotLoaded(ctx, UnitTarget())
 	if err != nil {
 		return nil, fmt.Errorf("launcher: bootout previous service: %w", err)
 	}
@@ -59,9 +59,9 @@ func (m *darwinManager) Install(ctx context.Context, binaryPath string) (*Instal
 	}
 
 	return &InstallResult{
-		PlistPath:    plistPath,
-		DomainTarget: DomainTarget(),
-		Reinstalled:  previouslyLoaded,
+		UnitPath:    plistPath,
+		UnitTarget:  UnitTarget(),
+		Reinstalled: previouslyLoaded,
 	}, nil
 }
 
@@ -77,13 +77,13 @@ func (m *darwinManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 
 	res := &DisableResult{WasEnabled: settings.Launcher.Enabled}
 
-	if _, err := bootoutIgnoringNotLoaded(ctx, DomainTarget()); err != nil {
+	if _, err := bootoutIgnoringNotLoaded(ctx, UnitTarget()); err != nil {
 		return nil, fmt.Errorf("launcher: bootout: %w", err)
 	}
 
-	plistPath := settings.Launcher.InstalledPlistPath
+	plistPath := settings.Launcher.InstalledUnitPath
 	if plistPath == "" {
-		p, err := PlistPath()
+		p, err := UnitPath()
 		if err != nil {
 			return nil, fmt.Errorf("launcher: resolve plist path: %w", err)
 		}
@@ -94,7 +94,7 @@ func (m *darwinManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 			return nil, fmt.Errorf("launcher: remove plist: %w", err)
 		}
 	} else {
-		res.RemovedPlistPath = plistPath
+		res.RemovedUnitPath = plistPath
 	}
 
 	return res, nil
@@ -102,22 +102,12 @@ func (m *darwinManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 
 // Kick triggers a launchctl kickstart against the worker target.
 func (m *darwinManager) Kick(ctx context.Context) error {
-	return run(ctx, "kickstart", DomainTarget())
+	return run(ctx, "kickstart", UnitTarget())
 }
 
 // IsActive reports whether the launchd service is loaded.
 func (m *darwinManager) IsActive(ctx context.Context) (bool, error) {
-	return IsLoaded(ctx, DomainTarget())
-}
-
-// UnitPath returns the installed plist path.
-func (m *darwinManager) UnitPath() (string, error) {
-	return PlistPath()
-}
-
-// UnitTarget returns the launchctl gui/<uid>/<label> tuple.
-func (m *darwinManager) UnitTarget() string {
-	return DomainTarget()
+	return IsLoaded(ctx, UnitTarget())
 }
 
 // bootoutIgnoringNotLoaded treats the known "not loaded" result as

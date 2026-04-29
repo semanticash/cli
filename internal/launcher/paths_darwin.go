@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 )
 
-// PlistPath returns the installed plist path for the current user.
-func PlistPath() (string, error) {
+// UnitPath returns the installed plist path for the current user.
+// The OS-neutral name is preserved on platforms with non-plist
+// daemon definitions (systemd unit files, Task Scheduler tasks).
+func UnitPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user home: %w", err)
@@ -23,7 +25,7 @@ func UserDomain() string {
 	return fmt.Sprintf("gui/%d", os.Getuid())
 }
 
-// DomainTarget returns the launchctl gui/<uid>/<label> target.
-func DomainTarget() string {
+// UnitTarget returns the launchctl gui/<uid>/<label> target.
+func UnitTarget() string {
 	return UserDomain() + "/" + LabelWorker
 }

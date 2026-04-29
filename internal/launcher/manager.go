@@ -10,13 +10,19 @@ import (
 // current OS.
 var ErrUnsupportedOS = errors.New("launcher: unsupported OS")
 
+// LabelWorker is the worker service label, used as the launchd
+// plist label, the systemd unit base name, and the Task Scheduler
+// task name. Same identifier across all backends so diagnostics
+// stay consistent.
+const LabelWorker = "sh.semantica.worker"
+
 // InstallResult describes a successful Enable or reinstall.
 type InstallResult struct {
-	// PlistPath is the installed unit/plist/task path.
-	PlistPath string
+	// UnitPath is the installed unit/plist/task path.
+	UnitPath string
 
-	// DomainTarget is the OS-specific service identifier.
-	DomainTarget string
+	// UnitTarget is the OS-specific service identifier.
+	UnitTarget string
 
 	// Reinstalled reports whether a previous service was already
 	// loaded at the time of install.
@@ -28,9 +34,9 @@ type DisableResult struct {
 	// WasEnabled reflects the settings flag prior to disable.
 	WasEnabled bool
 
-	// RemovedPlistPath is the unit/plist/task path that was
+	// RemovedUnitPath is the unit/plist/task path that was
 	// removed, if any. Empty when no file was on disk.
-	RemovedPlistPath string
+	RemovedUnitPath string
 }
 
 // manager is the OS-specific backend the public API delegates to.
@@ -54,15 +60,6 @@ type manager interface {
 	// IsActive reports whether the service is currently registered
 	// with the OS daemon manager.
 	IsActive(ctx context.Context) (bool, error)
-
-	// UnitPath returns the absolute path to the installed
-	// unit/plist/task definition file.
-	UnitPath() (string, error)
-
-	// UnitTarget returns the OS-specific service identifier used to
-	// address the unit (launchctl domain target, systemd unit name,
-	// Task Scheduler task name).
-	UnitTarget() string
 }
 
 // isPOSIXAbsolute reports whether p starts with "/". Used by the

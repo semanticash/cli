@@ -14,12 +14,12 @@ import (
 func TestPrintLauncherStatus_NonDarwinDoesNotNudgeToLauncherEnable(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "linux",
-		SettingsEnabled:   false,
-		ExpectedPlistPath: "/n/a",
-		DomainTarget:      "gui/0/sh.semantica.worker",
-		LaunchdState:      "unsupported",
-		LogPath:           "/tmp/worker-launcher.log",
+		OS:               "linux",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/n/a",
+		UnitTarget:       "gui/0/sh.semantica.worker",
+		ServiceState:     "unsupported",
+		LogPath:          "/tmp/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -35,12 +35,12 @@ func TestPrintLauncherStatus_NonDarwinDoesNotNudgeToLauncherEnable(t *testing.T)
 func TestPrintLauncherStatus_DisabledOnDarwinSuggestsLauncherEnable(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "darwin",
-		SettingsEnabled:   false,
-		ExpectedPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		DomainTarget:      "gui/501/sh.semantica.worker",
-		LaunchdState:      "not loaded",
-		LogPath:           "/Users/test/.semantica/worker-launcher.log",
+		OS:               "darwin",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		UnitTarget:       "gui/501/sh.semantica.worker",
+		ServiceState:     "not loaded",
+		LogPath:          "/Users/test/.semantica/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -54,12 +54,12 @@ func TestPrintLauncherStatus_DisabledOnDarwinSuggestsLauncherEnable(t *testing.T
 func TestPrintLauncherStatus_SettingsErrorSurfacesProminently(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "darwin",
-		SettingsError:     "parse /Users/test/.semantica/settings.json: invalid character 'n'",
-		ExpectedPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		DomainTarget:      "gui/501/sh.semantica.worker",
-		LaunchdState:      "not loaded",
-		LogPath:           "/Users/test/.semantica/worker-launcher.log",
+		OS:               "darwin",
+		SettingsError:    "parse /Users/test/.semantica/settings.json: invalid character 'n'",
+		ExpectedUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		UnitTarget:       "gui/501/sh.semantica.worker",
+		ServiceState:     "not loaded",
+		LogPath:          "/Users/test/.semantica/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -83,12 +83,12 @@ func TestPrintLauncherStatus_SettingsErrorSurfacesProminently(t *testing.T) {
 func TestPrintLauncherStatus_UnsupportedHostBeatsSettingsErrorHint(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "linux",
-		SettingsError:     "parse settings.json: invalid character",
-		ExpectedPlistPath: "/n/a",
-		DomainTarget:      "gui/0/sh.semantica.worker",
-		LaunchdState:      "unsupported",
-		LogPath:           "/tmp/worker-launcher.log",
+		OS:               "linux",
+		SettingsError:    "parse settings.json: invalid character",
+		ExpectedUnitPath: "/n/a",
+		UnitTarget:       "gui/0/sh.semantica.worker",
+		ServiceState:     "unsupported",
+		LogPath:          "/tmp/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -109,41 +109,41 @@ func TestPrintLauncherStatus_UnsupportedHostBeatsSettingsErrorHint(t *testing.T)
 
 // Drift cases should still produce their specific hints.
 func TestPrintLauncherStatus_DriftHintsStillFire(t *testing.T) {
-	// settings enabled + launchd not loaded
+	// settings enabled + daemon manager not loaded
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: true,
-		LoadedInLaunchd: false,
-		LaunchdState:    "not loaded",
-		PlistOnDisk:     true,
+		LoadedInDaemon:  false,
+		ServiceState:    "not loaded",
+		UnitOnDisk:      true,
 	})
-	if !strings.Contains(buf.String(), "settings say enabled, but launchd") {
+	if !strings.Contains(buf.String(), "settings say enabled, but the OS daemon manager") {
 		t.Errorf("expected drift hint, got:\n%s", buf.String())
 	}
 
 	buf.Reset()
-	// settings disabled + launchd loaded
+	// settings disabled + daemon manager loaded
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: false,
-		LoadedInLaunchd: true,
-		LaunchdState:    "loaded",
+		LoadedInDaemon:  true,
+		ServiceState:    "loaded",
 	})
-	if !strings.Contains(buf.String(), "launchd has the service loaded") {
+	if !strings.Contains(buf.String(), "the OS daemon manager has the service loaded") {
 		t.Errorf("expected reverse drift hint, got:\n%s", buf.String())
 	}
 
 	buf.Reset()
-	// settings enabled + plist missing
+	// settings enabled + unit file missing
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: true,
-		LoadedInLaunchd: true,
-		LaunchdState:    "loaded",
-		PlistOnDisk:     false,
+		LoadedInDaemon:  true,
+		ServiceState:    "loaded",
+		UnitOnDisk:      false,
 	})
-	if !strings.Contains(buf.String(), "plist file is missing") {
-		t.Errorf("expected plist-missing drift hint, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "unit file is missing") {
+		t.Errorf("expected unit-missing drift hint, got:\n%s", buf.String())
 	}
 }

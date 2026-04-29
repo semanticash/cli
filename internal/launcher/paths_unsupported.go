@@ -4,14 +4,14 @@ package launcher
 
 // Stubs for the darwin-only path helpers so the package compiles on
 // non-darwin targets without those callers needing build tags.
-// External callers (commands/launcher.go, service/post-commit.go)
-// reference DomainTarget by name; on unsupported platforms it
-// returns an empty string and Kickstart returns ErrUnsupportedOS
-// before the empty target can reach launchctl.
+// External callers reference UnitTarget by name; on unsupported
+// platforms it returns an empty string and Kickstart returns
+// ErrUnsupportedOS before the empty target can reach a real daemon
+// manager.
 
-// PlistPath returns ErrUnsupportedOS on platforms without a
-// launcher backend.
-func PlistPath() (string, error) {
+// UnitPath returns ErrUnsupportedOS on platforms without a launcher
+// backend.
+func UnitPath() (string, error) {
 	return "", ErrUnsupportedOS
 }
 
@@ -20,7 +20,7 @@ func UserDomain() string {
 	return ""
 }
 
-// DomainTarget returns "" on platforms without a launcher backend.
-func DomainTarget() string {
+// UnitTarget returns "" on platforms without a launcher backend.
+func UnitTarget() string {
 	return ""
 }

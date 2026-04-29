@@ -52,8 +52,8 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 
 	// Result fields should point at the installed state.
 	wantPlist := filepath.Join(home, "Library", "LaunchAgents", "sh.semantica.worker.plist")
-	if result.PlistPath != wantPlist {
-		t.Errorf("result.PlistPath = %q, want %q", result.PlistPath, wantPlist)
+	if result.UnitPath != wantPlist {
+		t.Errorf("result.UnitPath = %q, want %q", result.UnitPath, wantPlist)
 	}
 	if result.Reinstalled {
 		t.Errorf("first Enable must not report Reinstalled=true")
@@ -91,9 +91,9 @@ func TestEnable_InstallsPlistAndSettingsAndBootstraps(t *testing.T) {
 	if !settings.Launcher.Enabled {
 		t.Errorf("settings.Launcher.Enabled = false after Enable")
 	}
-	if settings.Launcher.InstalledPlistPath != wantPlist {
+	if settings.Launcher.InstalledUnitPath != wantPlist {
 		t.Errorf("settings plist path = %q, want %q",
-			settings.Launcher.InstalledPlistPath, wantPlist)
+			settings.Launcher.InstalledUnitPath, wantPlist)
 	}
 	if settings.Launcher.InstalledAt == 0 {
 		t.Errorf("settings.Launcher.InstalledAt must be set")
@@ -278,9 +278,9 @@ func TestDisable_RemovesPlistAndClearsSettings(t *testing.T) {
 	if _, err := Enable(context.Background(), bin); err != nil {
 		t.Fatalf("seed enable: %v", err)
 	}
-	plistPath, err := PlistPath()
+	plistPath, err := UnitPath()
 	if err != nil {
-		t.Fatalf("PlistPath: %v", err)
+		t.Fatalf("UnitPath: %v", err)
 	}
 	if _, err := os.Stat(plistPath); err != nil {
 		t.Fatalf("seed plist missing: %v", err)
@@ -299,8 +299,8 @@ func TestDisable_RemovesPlistAndClearsSettings(t *testing.T) {
 	if !result.WasEnabled {
 		t.Errorf("WasEnabled = false despite seeded enable")
 	}
-	if result.RemovedPlistPath != plistPath {
-		t.Errorf("RemovedPlistPath = %q, want %q", result.RemovedPlistPath, plistPath)
+	if result.RemovedUnitPath != plistPath {
+		t.Errorf("RemovedUnitPath = %q, want %q", result.RemovedUnitPath, plistPath)
 	}
 
 	if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
@@ -340,9 +340,9 @@ func TestDisable_OnCleanStateIsNoopAndReportsWasEnabledFalse(t *testing.T) {
 	if result.WasEnabled {
 		t.Error("WasEnabled should be false on a clean state")
 	}
-	if result.RemovedPlistPath != "" {
-		t.Errorf("RemovedPlistPath should be empty when no file existed, got %q",
-			result.RemovedPlistPath)
+	if result.RemovedUnitPath != "" {
+		t.Errorf("RemovedUnitPath should be empty when no file existed, got %q",
+			result.RemovedUnitPath)
 	}
 }
 

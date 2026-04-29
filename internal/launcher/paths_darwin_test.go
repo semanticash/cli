@@ -10,17 +10,17 @@ import (
 	"testing"
 )
 
-func TestPlistPath_HonorsHome(t *testing.T) {
+func TestUnitPath_HonorsHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got, err := PlistPath()
+	got, err := UnitPath()
 	if err != nil {
-		t.Fatalf("PlistPath: %v", err)
+		t.Fatalf("UnitPath: %v", err)
 	}
 	want := filepath.Join(home, "Library", "LaunchAgents", "sh.semantica.worker.plist")
 	if got != want {
-		t.Errorf("PlistPath = %q, want %q", got, want)
+		t.Errorf("UnitPath = %q, want %q", got, want)
 	}
 }
 
@@ -35,10 +35,10 @@ func TestUserDomain_IncludesCurrentUID(t *testing.T) {
 	}
 }
 
-func TestDomainTarget_IsUserDomainPlusLabel(t *testing.T) {
-	got := DomainTarget()
+func TestUnitTarget_IsUserDomainPlusLabel(t *testing.T) {
+	got := UnitTarget()
 	want := fmt.Sprintf("gui/%d/%s", os.Getuid(), LabelWorker)
 	if got != want {
-		t.Errorf("DomainTarget = %q, want %q", got, want)
+		t.Errorf("UnitTarget = %q, want %q", got, want)
 	}
 }

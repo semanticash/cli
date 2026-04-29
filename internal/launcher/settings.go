@@ -20,54 +20,65 @@ type UserSettings struct {
 
 // LauncherSettings records the launcher's installed state.
 //
-// The on-disk install-path key is moving from
-// "installed_plist_path" to "installed_unit_path". For one release
-// we write both keys and read either one, preferring the new key.
-// The Go field keeps its current name until the follow-up rename.
+// The canonical on-disk install-path key is "installed_unit_path".
+// During the transition, the legacy "installed_plist_path" key is
+// also written with the same value, and the read path accepts either
+// key.
 type LauncherSettings struct {
 	// Enabled reports whether the launcher is enabled.
 	Enabled bool `json:"enabled"`
 
-	// InstalledPlistPath is the launcher install path written by enable.
-	InstalledPlistPath string `json:"installed_plist_path,omitempty"`
+	// InstalledUnitPath is the launcher install path written by
+	// Enable. The JSON tag is "installed_unit_path"; the legacy
+	// "installed_plist_path" key is handled by the dual-key
+	// MarshalJSON / UnmarshalJSON below.
+	InstalledUnitPath string `json:"installed_unit_path,omitempty"`
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64 `json:"installed_at,omitempty"`
 }
 
-// launcherSettingsAlias breaks JSON-method recursion.
-type launcherSettingsAlias LauncherSettings
-
-// MarshalJSON writes both install-path keys during the migration.
+// MarshalJSON writes both install-path keys with the same value while
+// the legacy key is still supported.
 func (s LauncherSettings) MarshalJSON() ([]byte, error) {
-	aux := struct {
-		launcherSettingsAlias
-		// InstalledUnitPath mirrors InstalledPlistPath while both keys
-		// are supported. Empty values are omitted by omitempty.
-		InstalledUnitPath string `json:"installed_unit_path,omitempty"`
+	return json.Marshal(struct {
+		Enabled            bool   `json:"enabled"`
+		InstalledUnitPath  string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath string `json:"installed_plist_path,omitempty"`
+		InstalledAt        int64  `json:"installed_at,omitempty"`
 	}{
-		launcherSettingsAlias: launcherSettingsAlias(s),
-		InstalledUnitPath:     s.InstalledPlistPath,
-	}
-	return json.Marshal(aux)
+		Enabled:            s.Enabled,
+		InstalledUnitPath:  s.InstalledUnitPath,
+		InstalledPlistPath: s.InstalledUnitPath,
+		InstalledAt:        s.InstalledAt,
+	})
 }
 
 // UnmarshalJSON reads both install-path keys and prefers
 // installed_unit_path when it is present, even if it is the empty
 // string. A nil pointer means the key was absent or null, so the
-// legacy key remains in effect.
+// legacy installed_plist_path fallback applies.
+//
+// Conflicting non-empty values resolve to the canonical key. The
+// next WriteSettings overwrites both keys with the canonical value,
+// so the conflict cannot persist past one read/write cycle.
 func (s *LauncherSettings) UnmarshalJSON(data []byte) error {
-	aux := struct {
-		*launcherSettingsAlias
-		InstalledUnitPath *string `json:"installed_unit_path,omitempty"`
-	}{
-		launcherSettingsAlias: (*launcherSettingsAlias)(s),
+	var aux struct {
+		Enabled            bool    `json:"enabled"`
+		InstalledUnitPath  *string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath *string `json:"installed_plist_path,omitempty"`
+		InstalledAt        int64   `json:"installed_at,omitempty"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if aux.InstalledUnitPath != nil {
-		s.InstalledPlistPath = *aux.InstalledUnitPath
+	s.Enabled = aux.Enabled
+	s.InstalledAt = aux.InstalledAt
+	switch {
+	case aux.InstalledUnitPath != nil:
+		s.InstalledUnitPath = *aux.InstalledUnitPath
+	case aux.InstalledPlistPath != nil:
+		s.InstalledUnitPath = *aux.InstalledPlistPath
 	}
 	return nil
 }

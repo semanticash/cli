@@ -22,11 +22,11 @@ func TestStatus_UnsupportedOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if s.LaunchdState != "unsupported" {
-		t.Errorf("LaunchdState = %q, want %q", s.LaunchdState, "unsupported")
+	if s.ServiceState != "unsupported" {
+		t.Errorf("ServiceState = %q, want %q", s.ServiceState, "unsupported")
 	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true on platform without launcher backend")
+	if s.LoadedInDaemon {
+		t.Errorf("LoadedInDaemon = true on platform without launcher backend")
 	}
 	if s.LogPath != filepath.Join(base, "worker-launcher.log") {
 		t.Errorf("LogPath = %q, want %q", s.LogPath, filepath.Join(base, "worker-launcher.log"))

@@ -122,9 +122,9 @@ func skipIfNotDarwin(t *testing.T) {
 	}
 }
 
-// TestKickstart_HonorsCallerSuppliedTarget pins the source-compat
-// contract on darwin: Kickstart passes its `target` argument through
-// to launchctl rather than overriding it with a derived target.
+// TestKickstart_HonorsCallerSuppliedTarget checks that Kickstart
+// passes its target argument through to launchctl rather than
+// overriding it with a derived target.
 // Picks a target that does NOT match os.Getuid() so a regression
 // where the wrapper substitutes its own target would surface in the
 // argv log.

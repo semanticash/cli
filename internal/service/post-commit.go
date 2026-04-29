@@ -208,7 +208,7 @@ func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot
 	if err := launcher.Write(marker); err != nil {
 		return fmt.Errorf("write pending marker: %w", err)
 	}
-	if err := launcher.Kickstart(ctx, launcher.DomainTarget()); err != nil {
+	if err := launcher.Kickstart(ctx, launcher.UnitTarget()); err != nil {
 		return fmt.Errorf("kickstart: %w", err)
 	}
 	return nil
