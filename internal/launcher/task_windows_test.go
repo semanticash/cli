@@ -158,16 +158,23 @@ func TestRenderWorkerTask_EscapesXMLSpecialCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderWorkerTask: %v", err)
 	}
-	// Ampersand must be escaped to keep the XML well-formed.
+	// Command goes through xmlEscape directly. The ampersand must
+	// come out as &amp; to keep the XML well-formed.
 	if !strings.Contains(got, `C:\foo &amp; bar\semantica.exe`) {
 		t.Errorf("ampersand not XML-escaped in Command; got:\n%s", got)
 	}
-	// Angle brackets and quotes must be escaped in arguments.
+	// Arguments runs through windowsCmdQuote first, then xml.EscapeText.
+	// Angle brackets are not command-line special, so windowsCmdQuote
+	// leaves them alone and only xml.EscapeText acts on them.
 	if !strings.Contains(got, `&lt;weird&gt;`) {
 		t.Errorf("angle brackets not XML-escaped in Arguments; got:\n%s", got)
 	}
-	if !strings.Contains(got, `&#34;quoted&#34;`) {
-		t.Errorf("quotes not XML-escaped in Arguments; got:\n%s", got)
+	// Quotes are command-line special. The input "quoted" becomes
+	// \"quoted\" after windowsCmdQuote, then \&#34;quoted\&#34; after
+	// xml.EscapeText. Both layers are required for the round-trip
+	// back to "quoted" in the worker's argv.
+	if !strings.Contains(got, `\&#34;quoted\&#34;`) {
+		t.Errorf("quotes not double-escaped (cmdline + XML) in Arguments; got:\n%s", got)
 	}
 }
 
