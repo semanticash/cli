@@ -19,15 +19,57 @@ type UserSettings struct {
 }
 
 // LauncherSettings records the launcher's installed state.
+//
+// The on-disk install-path key is moving from
+// "installed_plist_path" to "installed_unit_path". For one release
+// we write both keys and read either one, preferring the new key.
+// The Go field keeps its current name until the follow-up rename.
 type LauncherSettings struct {
 	// Enabled reports whether the launcher is enabled.
 	Enabled bool `json:"enabled"`
 
-	// InstalledPlistPath is the plist written by enable.
+	// InstalledPlistPath is the launcher install path written by enable.
 	InstalledPlistPath string `json:"installed_plist_path,omitempty"`
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64 `json:"installed_at,omitempty"`
+}
+
+// launcherSettingsAlias breaks JSON-method recursion.
+type launcherSettingsAlias LauncherSettings
+
+// MarshalJSON writes both install-path keys during the migration.
+func (s LauncherSettings) MarshalJSON() ([]byte, error) {
+	aux := struct {
+		launcherSettingsAlias
+		// InstalledUnitPath mirrors InstalledPlistPath while both keys
+		// are supported. Empty values are omitted by omitempty.
+		InstalledUnitPath string `json:"installed_unit_path,omitempty"`
+	}{
+		launcherSettingsAlias: launcherSettingsAlias(s),
+		InstalledUnitPath:     s.InstalledPlistPath,
+	}
+	return json.Marshal(aux)
+}
+
+// UnmarshalJSON reads both install-path keys and prefers
+// installed_unit_path when it is present, even if it is the empty
+// string. A nil pointer means the key was absent or null, so the
+// legacy key remains in effect.
+func (s *LauncherSettings) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		*launcherSettingsAlias
+		InstalledUnitPath *string `json:"installed_unit_path,omitempty"`
+	}{
+		launcherSettingsAlias: (*launcherSettingsAlias)(s),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.InstalledUnitPath != nil {
+		s.InstalledPlistPath = *aux.InstalledUnitPath
+	}
+	return nil
 }
 
 // SettingsPath returns the launcher settings path. It honors
