@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.3.7] - 2026-04-30
+
+### Added
+
+- Experimental Linux launcher backend using systemd user units, managed with the existing `semantica launcher enable`, `semantica launcher status`, and `semantica launcher disable` commands.
+- Experimental Windows launcher backend using Task Scheduler, managed through the same launcher commands as macOS and Linux.
+- Cross-platform launcher status reporting that shows settings, definition file presence, daemon-manager registration state, and log path with platform-appropriate hints for macOS, Linux, and Windows.
+
+### Fixed
+
+- Launcher-managed worker runs now capture standard output, standard error, and structured logger output consistently in the configured launcher log path, while per-repo drain output continues to land in `.semantica/worker.log`.
+- Linux launcher units now handle spaced binary and log paths correctly, and repeated `launcher enable` runs now recognize already-registered idle units instead of reporting a fresh install every time.
+- Windows launcher installs now accept native absolute executable paths, quote Task Scheduler arguments correctly for spaced paths, and classify scheduler errors more accurately during status and cleanup flows.
+- Launcher help, status hints, and service-state reporting now reflect the actual backend on the current OS instead of falling back to macOS-only or cross-OS generic wording.
+
+### Changed
+
+- The launcher surface is now described in cross-platform terms such as `unit`, `service`, and `service target`, while keeping macOS, Linux, and Windows backends behind the same CLI workflow.
+- Launcher registration state is now reported consistently across launchd, systemd, and Task Scheduler, so idle on-demand services no longer appear as drift just because they are between runs.
+- Launcher settings now use `installed_unit_path` as the canonical key while continuing to read and temporarily write the legacy `installed_plist_path` key for compatibility with earlier installs.
+
 ## [0.3.6] - 2026-04-22
 
 ### Added

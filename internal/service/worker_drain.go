@@ -170,10 +170,11 @@ func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOut
 	return outcomeProcessed
 }
 
-// redirectWlogToRepoLog points wlog at <repoRoot>/.semantica/worker.log
-// for one job and returns a restore function. If the repo log cannot be
-// opened, logging stays on the current writer and the job still runs.
-// Callers must treat wlogWriter as single-goroutine state.
+// redirectWlogToRepoLog points wlog and the default slog logger at
+// <repoRoot>/.semantica/worker.log for one job and returns a restore
+// function. If the repo log cannot be opened, logging stays on the
+// current writers and the job still runs. Callers must treat
+// wlogWriter as single-goroutine state.
 func redirectWlogToRepoLog(repoRoot string) func() {
 	semDir := filepath.Join(repoRoot, ".semantica")
 	logFile, err := util.OpenWorkerLog(semDir)
@@ -183,7 +184,9 @@ func redirectWlogToRepoLog(repoRoot string) func() {
 	}
 	prev := wlogWriter
 	wlogWriter = logFile
+	restoreSlog := setSlogDefaultTo(logFile)
 	return func() {
+		restoreSlog()
 		wlogWriter = prev
 		_ = logFile.Close()
 	}

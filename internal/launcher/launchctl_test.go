@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin
 
 package launcher
 
@@ -119,6 +119,28 @@ func skipIfNotDarwin(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchctl wrappers are only active on darwin; this test exercises the live path via a fake launchctl")
+	}
+}
+
+// TestKickstart_HonorsCallerSuppliedTarget checks that Kickstart
+// passes its target argument through to launchctl rather than
+// overriding it with a derived target.
+// Picks a target that does NOT match os.Getuid() so a regression
+// where the wrapper substitutes its own target would surface in the
+// argv log.
+func TestKickstart_HonorsCallerSuppliedTarget(t *testing.T) {
+	skipIfNotDarwin(t)
+	_, argvLog := writeFakeLaunchctl(t, 0, "")
+
+	const callerTarget = "gui/424242/some.other.label"
+	if err := Kickstart(context.Background(), callerTarget); err != nil {
+		t.Fatalf("Kickstart: %v", err)
+	}
+
+	got := readArgv(t, argvLog)
+	want := "kickstart " + callerTarget
+	if got != want {
+		t.Errorf("launchctl argv = %q, want %q", got, want)
 	}
 }
 

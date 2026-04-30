@@ -10,24 +10,143 @@ import (
 
 // These tests cover the hint branches in printLauncherStatus.
 
-// Unsupported hosts should not be nudged toward launcher enable.
-func TestPrintLauncherStatus_NonDarwinDoesNotNudgeToLauncherEnable(t *testing.T) {
+// Hosts whose backend is unreachable (whatever the reason) must
+// not be nudged toward 'launcher enable'. The hint should describe
+// the actual problem on the actual host rather than denying support
+// for the OS.
+func TestPrintLauncherStatus_LinuxUnreachableHintsAtSystemdNotMacOS(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "linux",
-		SettingsEnabled:   false,
-		ExpectedPlistPath: "/n/a",
-		DomainTarget:      "gui/0/sh.semantica.worker",
-		LaunchdState:      "unsupported",
-		LogPath:           "/tmp/worker-launcher.log",
+		OS:               "linux",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/home/test/.config/systemd/user/sh.semantica.worker.service",
+		UnitTarget:       "sh.semantica.worker.service",
+		ServiceState:     "unsupported",
+		LogPath:          "/tmp/worker-launcher.log",
+	})
+	out := buf.String()
+
+	if strings.Contains(out, "semantica launcher enable") {
+		t.Errorf("unsupported-state output must not suggest 'launcher enable', got:\n%s", out)
+	}
+	// Linux hosts must NOT see a macOS-only message - the backend
+	// exists for this OS, the runtime environment is the issue.
+	if strings.Contains(out, "only available on macOS") {
+		t.Errorf("linux host must not see the macOS-only hint, got:\n%s", out)
+	}
+	if !strings.Contains(out, "systemd user instance") {
+		t.Errorf("expected hint pointing at the systemd user instance, got:\n%s", out)
+	}
+}
+
+// On Linux, daemon-manager failures land in ServiceState as
+// "error: <msg>" (Status maps systemctl errors that way). The
+// hint logic must route those into the OS-aware unsupportedHint
+// branch so users see "systemd user instance is not reachable"
+// rather than a misleading "Run 'semantica launcher enable'"
+// fallback. Regression test for the bug where the linux-specific
+// hint was unreachable in the real Status flow.
+func TestPrintLauncherStatus_LinuxDaemonErrorRoutesToSystemdHint(t *testing.T) {
+	var buf bytes.Buffer
+	printLauncherStatus(&buf, launcher.StatusResult{
+		OS:               "linux",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/home/test/.config/systemd/user/sh.semantica.worker.service",
+		UnitTarget:       "sh.semantica.worker.service",
+		ServiceState:     "error: systemctl --user is-active: exit 1: Failed to connect to bus",
+		LogPath:          "/tmp/worker-launcher.log",
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "systemd user instance") {
+		t.Errorf("linux daemon-manager error must route to the systemd hint, got:\n%s", out)
+	}
+	// Must NOT fall through to the disabled-state opt-in nudge -
+	// 'launcher enable' would fail for the same reason 'is-active'
+	// did, which is exactly the wrong-direction case the hint logic
+	// is meant to prevent.
+	if strings.Contains(out, "to opt in") {
+		t.Errorf("linux daemon-manager error must not nudge to 'launcher enable', got:\n%s", out)
+	}
+}
+
+// Symmetric coverage on windows: schtasks errors must route to
+// the Task Scheduler hint rather than fall through to the
+// "no backend on this OS" message that lists only macOS and Linux.
+// Regression test for the bug where the Phase 3 Windows backend
+// shipped but the user-facing launcher copy still implied Windows
+// was unsupported.
+func TestPrintLauncherStatus_WindowsDaemonErrorRoutesToTaskSchedulerHint(t *testing.T) {
+	var buf bytes.Buffer
+	printLauncherStatus(&buf, launcher.StatusResult{
+		OS:               "windows",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: `C:\Users\Test\.semantica\sh.semantica.worker.xml`,
+		UnitTarget:       `\Semantica\sh.semantica.worker`,
+		ServiceState:     "error: schtasks Query: exit 1: ERROR: Access is denied.",
+		LogPath:          `C:\Users\Test\.semantica\worker-launcher.log`,
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "Task Scheduler is not reachable") {
+		t.Errorf("windows daemon-manager error must route to the Task Scheduler hint, got:\n%s", out)
+	}
+	// Must NOT see the cross-OS fallback that names only macOS and
+	// Linux as supported - Windows ships a backend now.
+	if strings.Contains(out, "no backend on this OS") {
+		t.Errorf("windows host must not see the no-backend hint, got:\n%s", out)
+	}
+	if strings.Contains(out, "to opt in") {
+		t.Errorf("windows daemon-manager error must not nudge to 'launcher enable', got:\n%s", out)
+	}
+}
+
+// Symmetric coverage on darwin: launchctl errors should also route
+// to the OS-aware hint rather than the opt-in fallback.
+func TestPrintLauncherStatus_DarwinDaemonErrorRoutesToLaunchdHint(t *testing.T) {
+	var buf bytes.Buffer
+	printLauncherStatus(&buf, launcher.StatusResult{
+		OS:               "darwin",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		UnitTarget:       "gui/501/sh.semantica.worker",
+		ServiceState:     "error: launchctl print: exit 9: Unrecognized target specifier",
+		LogPath:          "/Users/test/.semantica/worker-launcher.log",
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "launchd is not reachable") {
+		t.Errorf("darwin daemon-manager error must route to the launchd hint, got:\n%s", out)
+	}
+	if strings.Contains(out, "to opt in") {
+		t.Errorf("darwin daemon-manager error must not nudge to 'launcher enable', got:\n%s", out)
+	}
+}
+
+// Truly unsupported OSes (no backend at compile time) get the
+// neutral message that names the supported set.
+func TestPrintLauncherStatus_OtherOSDescribesSupportedBackends(t *testing.T) {
+	var buf bytes.Buffer
+	printLauncherStatus(&buf, launcher.StatusResult{
+		OS:               "freebsd",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/n/a",
+		UnitTarget:       "",
+		ServiceState:     "unsupported",
+		LogPath:          "/tmp/worker-launcher.log",
 	})
 	out := buf.String()
 
 	if strings.Contains(out, "semantica launcher enable") {
 		t.Errorf("unsupported-OS output must not suggest 'launcher enable', got:\n%s", out)
 	}
-	if !strings.Contains(out, "only available on macOS") {
-		t.Errorf("expected explicit macOS-only hint, got:\n%s", out)
+	if !strings.Contains(out, "no backend on this OS") {
+		t.Errorf("expected explicit 'no backend' hint for unsupported OS, got:\n%s", out)
+	}
+	for _, want := range []string{"macOS", "Linux", "Windows"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hint should name supported backend %q, got:\n%s", want, out)
+		}
 	}
 }
 
@@ -35,12 +154,12 @@ func TestPrintLauncherStatus_NonDarwinDoesNotNudgeToLauncherEnable(t *testing.T)
 func TestPrintLauncherStatus_DisabledOnDarwinSuggestsLauncherEnable(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "darwin",
-		SettingsEnabled:   false,
-		ExpectedPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		DomainTarget:      "gui/501/sh.semantica.worker",
-		LaunchdState:      "not loaded",
-		LogPath:           "/Users/test/.semantica/worker-launcher.log",
+		OS:               "darwin",
+		SettingsEnabled:  false,
+		ExpectedUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		UnitTarget:       "gui/501/sh.semantica.worker",
+		ServiceState:     "not loaded",
+		LogPath:          "/Users/test/.semantica/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -54,12 +173,12 @@ func TestPrintLauncherStatus_DisabledOnDarwinSuggestsLauncherEnable(t *testing.T
 func TestPrintLauncherStatus_SettingsErrorSurfacesProminently(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "darwin",
-		SettingsError:     "parse /Users/test/.semantica/settings.json: invalid character 'n'",
-		ExpectedPlistPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		DomainTarget:      "gui/501/sh.semantica.worker",
-		LaunchdState:      "not loaded",
-		LogPath:           "/Users/test/.semantica/worker-launcher.log",
+		OS:               "darwin",
+		SettingsError:    "parse /Users/test/.semantica/settings.json: invalid character 'n'",
+		ExpectedUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
+		UnitTarget:       "gui/501/sh.semantica.worker",
+		ServiceState:     "not loaded",
+		LogPath:          "/Users/test/.semantica/worker-launcher.log",
 	})
 	out := buf.String()
 
@@ -78,25 +197,26 @@ func TestPrintLauncherStatus_SettingsErrorSurfacesProminently(t *testing.T) {
 	}
 }
 
-// Unsupported hosts should prefer the macOS-only hint over the
-// settings-error recovery hint.
+// Unsupported state takes precedence over a settings-error
+// recovery hint: the launcher cannot be re-enabled here regardless,
+// so the OS-appropriate unsupported message wins.
 func TestPrintLauncherStatus_UnsupportedHostBeatsSettingsErrorHint(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
-		OS:                "linux",
-		SettingsError:     "parse settings.json: invalid character",
-		ExpectedPlistPath: "/n/a",
-		DomainTarget:      "gui/0/sh.semantica.worker",
-		LaunchdState:      "unsupported",
-		LogPath:           "/tmp/worker-launcher.log",
+		OS:               "linux",
+		SettingsError:    "parse settings.json: invalid character",
+		ExpectedUnitPath: "/n/a",
+		UnitTarget:       "sh.semantica.worker.service",
+		ServiceState:     "unsupported",
+		LogPath:          "/tmp/worker-launcher.log",
 	})
 	out := buf.String()
 
-	if !strings.Contains(out, "only available on macOS") {
-		t.Errorf("expected macOS-only hint on unsupported host, got:\n%s", out)
+	if !strings.Contains(out, "systemd user instance") {
+		t.Errorf("expected linux-appropriate unsupported hint on linux host, got:\n%s", out)
 	}
 	if strings.Contains(out, "semantica launcher enable") {
-		t.Errorf("unsupported host must not recommend 'launcher enable' even with a settings error, got:\n%s", out)
+		t.Errorf("unsupported state must not recommend 'launcher enable' even with a settings error, got:\n%s", out)
 	}
 	if strings.Contains(out, "Fix or remove the settings file") {
 		t.Errorf("settings-error recovery hint must be suppressed on unsupported host, got:\n%s", out)
@@ -109,41 +229,41 @@ func TestPrintLauncherStatus_UnsupportedHostBeatsSettingsErrorHint(t *testing.T)
 
 // Drift cases should still produce their specific hints.
 func TestPrintLauncherStatus_DriftHintsStillFire(t *testing.T) {
-	// settings enabled + launchd not loaded
+	// settings enabled + daemon manager not loaded
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: true,
-		LoadedInLaunchd: false,
-		LaunchdState:    "not loaded",
-		PlistOnDisk:     true,
+		LoadedInDaemon:  false,
+		ServiceState:    "not loaded",
+		UnitOnDisk:      true,
 	})
-	if !strings.Contains(buf.String(), "settings say enabled, but launchd") {
+	if !strings.Contains(buf.String(), "settings say enabled, but the OS daemon manager") {
 		t.Errorf("expected drift hint, got:\n%s", buf.String())
 	}
 
 	buf.Reset()
-	// settings disabled + launchd loaded
+	// settings disabled + daemon manager loaded
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: false,
-		LoadedInLaunchd: true,
-		LaunchdState:    "loaded",
+		LoadedInDaemon:  true,
+		ServiceState:    "loaded",
 	})
-	if !strings.Contains(buf.String(), "launchd has the service loaded") {
+	if !strings.Contains(buf.String(), "the OS daemon manager has the service loaded") {
 		t.Errorf("expected reverse drift hint, got:\n%s", buf.String())
 	}
 
 	buf.Reset()
-	// settings enabled + plist missing
+	// settings enabled + unit file missing
 	printLauncherStatus(&buf, launcher.StatusResult{
 		OS:              "darwin",
 		SettingsEnabled: true,
-		LoadedInLaunchd: true,
-		LaunchdState:    "loaded",
-		PlistOnDisk:     false,
+		LoadedInDaemon:  true,
+		ServiceState:    "loaded",
+		UnitOnDisk:      false,
 	})
-	if !strings.Contains(buf.String(), "plist file is missing") {
-		t.Errorf("expected plist-missing drift hint, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "unit file is missing") {
+		t.Errorf("expected unit-missing drift hint, got:\n%s", buf.String())
 	}
 }

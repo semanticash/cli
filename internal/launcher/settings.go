@@ -1,4 +1,4 @@
-// Package launcher manages the optional macOS launchd worker.
+// Package launcher manages the optional OS-backed worker launcher.
 package launcher
 
 import (
@@ -19,15 +19,68 @@ type UserSettings struct {
 }
 
 // LauncherSettings records the launcher's installed state.
+//
+// The canonical on-disk install-path key is "installed_unit_path".
+// During the transition, the legacy "installed_plist_path" key is
+// also written with the same value, and the read path accepts either
+// key.
 type LauncherSettings struct {
 	// Enabled reports whether the launcher is enabled.
 	Enabled bool `json:"enabled"`
 
-	// InstalledPlistPath is the plist written by enable.
-	InstalledPlistPath string `json:"installed_plist_path,omitempty"`
+	// InstalledUnitPath is the launcher install path written by
+	// Enable. The JSON tag is "installed_unit_path"; the legacy
+	// "installed_plist_path" key is handled by the dual-key
+	// MarshalJSON / UnmarshalJSON below.
+	InstalledUnitPath string `json:"installed_unit_path,omitempty"`
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64 `json:"installed_at,omitempty"`
+}
+
+// MarshalJSON writes both install-path keys with the same value while
+// the legacy key is still supported.
+func (s LauncherSettings) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Enabled            bool   `json:"enabled"`
+		InstalledUnitPath  string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath string `json:"installed_plist_path,omitempty"`
+		InstalledAt        int64  `json:"installed_at,omitempty"`
+	}{
+		Enabled:            s.Enabled,
+		InstalledUnitPath:  s.InstalledUnitPath,
+		InstalledPlistPath: s.InstalledUnitPath,
+		InstalledAt:        s.InstalledAt,
+	})
+}
+
+// UnmarshalJSON reads both install-path keys and prefers
+// installed_unit_path when it is present, even if it is the empty
+// string. A nil pointer means the key was absent or null, so the
+// legacy installed_plist_path fallback applies.
+//
+// Conflicting non-empty values resolve to the canonical key. The
+// next WriteSettings overwrites both keys with the canonical value,
+// so the conflict cannot persist past one read/write cycle.
+func (s *LauncherSettings) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Enabled            bool    `json:"enabled"`
+		InstalledUnitPath  *string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath *string `json:"installed_plist_path,omitempty"`
+		InstalledAt        int64   `json:"installed_at,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	s.Enabled = aux.Enabled
+	s.InstalledAt = aux.InstalledAt
+	switch {
+	case aux.InstalledUnitPath != nil:
+		s.InstalledUnitPath = *aux.InstalledUnitPath
+	case aux.InstalledPlistPath != nil:
+		s.InstalledUnitPath = *aux.InstalledPlistPath
+	}
+	return nil
 }
 
 // SettingsPath returns the launcher settings path. It honors

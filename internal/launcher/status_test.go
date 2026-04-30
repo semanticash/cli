@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin
 
 package launcher
 
@@ -22,20 +22,20 @@ func TestStatus_EmptySettingsReportsNotEnabled(t *testing.T) {
 	if s.SettingsEnabled {
 		t.Errorf("SettingsEnabled = true on empty state")
 	}
-	if s.InstalledPlistPath != "" {
-		t.Errorf("InstalledPlistPath = %q on empty state", s.InstalledPlistPath)
+	if s.InstalledUnitPath != "" {
+		t.Errorf("InstalledUnitPath = %q on empty state", s.InstalledUnitPath)
 	}
 	if s.InstalledAt != 0 {
 		t.Errorf("InstalledAt = %d on empty state", s.InstalledAt)
 	}
-	if s.ExpectedPlistPath == "" {
-		t.Errorf("ExpectedPlistPath must always be populated")
+	if s.ExpectedUnitPath == "" {
+		t.Errorf("ExpectedUnitPath must always be populated")
 	}
-	if s.PlistOnDisk {
-		t.Errorf("PlistOnDisk = true when no file exists")
+	if s.UnitOnDisk {
+		t.Errorf("UnitOnDisk = true when no file exists")
 	}
-	if s.DomainTarget == "" {
-		t.Errorf("DomainTarget must always be populated")
+	if s.UnitTarget == "" {
+		t.Errorf("UnitTarget must always be populated")
 	}
 	if s.LogPath == "" {
 		t.Errorf("LogPath must always be populated")
@@ -50,7 +50,7 @@ func TestStatus_ReflectsEnabledSettings(t *testing.T) {
 	want := UserSettings{
 		Launcher: LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: recorded,
+			InstalledUnitPath: recorded,
 			InstalledAt:        1714000000000,
 		},
 	}
@@ -65,25 +65,25 @@ func TestStatus_ReflectsEnabledSettings(t *testing.T) {
 	if !s.SettingsEnabled {
 		t.Errorf("SettingsEnabled = false after seeding enabled settings")
 	}
-	if s.InstalledPlistPath != recorded {
-		t.Errorf("InstalledPlistPath = %q, want %q", s.InstalledPlistPath, recorded)
+	if s.InstalledUnitPath != recorded {
+		t.Errorf("InstalledUnitPath = %q, want %q", s.InstalledUnitPath, recorded)
 	}
 	if s.InstalledAt != 1714000000000 {
 		t.Errorf("InstalledAt = %d, want 1714000000000", s.InstalledAt)
 	}
 }
 
-// PlistOnDisk should track whether the plist file exists.
-func TestStatus_PlistOnDiskReflectsFilesystem(t *testing.T) {
+// UnitOnDisk should track whether the plist file exists.
+func TestStatus_UnitOnDiskReflectsFilesystem(t *testing.T) {
 	home, _ := setupInstallEnv(t)
 
-	// No recorded path means Status falls back to ExpectedPlistPath.
+	// No recorded path means Status falls back to ExpectedUnitPath.
 	s, err := Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if s.PlistOnDisk {
-		t.Errorf("PlistOnDisk = true before creating file")
+	if s.UnitOnDisk {
+		t.Errorf("UnitOnDisk = true before creating file")
 	}
 
 	// Create the expected plist file.
@@ -91,7 +91,7 @@ func TestStatus_PlistOnDiskReflectsFilesystem(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(s.ExpectedPlistPath, []byte("<plist/>"), 0o644); err != nil {
+	if err := os.WriteFile(s.ExpectedUnitPath, []byte("<plist/>"), 0o644); err != nil {
 		t.Fatalf("seed plist: %v", err)
 	}
 
@@ -99,13 +99,13 @@ func TestStatus_PlistOnDiskReflectsFilesystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status after seeding: %v", err)
 	}
-	if !s2.PlistOnDisk {
-		t.Errorf("PlistOnDisk = false even though file exists at %s", s2.ExpectedPlistPath)
+	if !s2.UnitOnDisk {
+		t.Errorf("UnitOnDisk = false even though file exists at %s", s2.ExpectedUnitPath)
 	}
 }
 
 // A zero-exit launchctl print should report "loaded".
-func TestStatus_LoadedInLaunchdWhenLaunchctlReportsSuccess(t *testing.T) {
+func TestStatus_LoadedInDaemonWhenLaunchctlReportsSuccess(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("launchctl paths are macOS-only")
 	}
@@ -116,11 +116,11 @@ func TestStatus_LoadedInLaunchdWhenLaunchctlReportsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = false when launchctl exits 0")
+	if !s.LoadedInDaemon {
+		t.Errorf("LoadedInDaemon = false when launchctl exits 0")
 	}
-	if s.LaunchdState != "loaded" {
-		t.Errorf("LaunchdState = %q, want 'loaded'", s.LaunchdState)
+	if s.ServiceState != "loaded" {
+		t.Errorf("ServiceState = %q, want 'loaded'", s.ServiceState)
 	}
 }
 
@@ -135,11 +135,11 @@ func TestStatus_NotLoadedWhenLaunchctlReportsServiceNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true when launchctl reports not-found")
+	if s.LoadedInDaemon {
+		t.Errorf("LoadedInDaemon = true when launchctl reports not-found")
 	}
-	if s.LaunchdState != "not loaded" {
-		t.Errorf("LaunchdState = %q, want 'not loaded'", s.LaunchdState)
+	if s.ServiceState != "not loaded" {
+		t.Errorf("ServiceState = %q, want 'not loaded'", s.ServiceState)
 	}
 }
 
@@ -167,11 +167,11 @@ func TestStatus_SurfacesDriftBetweenSettingsAndLaunchd(t *testing.T) {
 	if !s.SettingsEnabled {
 		t.Errorf("SettingsEnabled = false after seeding enabled")
 	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true when launchctl says not-found")
+	if s.LoadedInDaemon {
+		t.Errorf("LoadedInDaemon = true when launchctl says not-found")
 	}
-	if s.LaunchdState != "not loaded" {
-		t.Errorf("LaunchdState = %q, want 'not loaded'", s.LaunchdState)
+	if s.ServiceState != "not loaded" {
+		t.Errorf("ServiceState = %q, want 'not loaded'", s.ServiceState)
 	}
 }
 
@@ -187,11 +187,11 @@ func TestStatus_UnexpectedLaunchctlErrorBecomesErrorState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true on unexpected launchctl error")
+	if s.LoadedInDaemon {
+		t.Errorf("LoadedInDaemon = true on unexpected launchctl error")
 	}
-	if !strings.HasPrefix(s.LaunchdState, "error:") {
-		t.Errorf("LaunchdState = %q, want 'error:' prefix", s.LaunchdState)
+	if !strings.HasPrefix(s.ServiceState, "error:") {
+		t.Errorf("ServiceState = %q, want 'error:' prefix", s.ServiceState)
 	}
 }
 
@@ -235,20 +235,3 @@ func TestStatus_MissingSettingsDoesNotPopulateError(t *testing.T) {
 	}
 }
 
-func TestStatus_NonDarwinReportsUnsupported(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("this test documents non-darwin behavior")
-	}
-	setupInstallEnv(t)
-
-	s, err := Status(context.Background())
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if s.LaunchdState != "unsupported" {
-		t.Errorf("LaunchdState = %q, want 'unsupported'", s.LaunchdState)
-	}
-	if s.LoadedInLaunchd {
-		t.Errorf("LoadedInLaunchd = true on non-darwin")
-	}
-}

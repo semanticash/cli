@@ -1,3 +1,5 @@
+//go:build darwin
+
 package launcher
 
 import (
@@ -6,12 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 )
-
-// ErrUnsupportedOS reports that launchctl is unavailable on this OS.
-var ErrUnsupportedOS = errors.New("launchctl wrapper: unsupported OS (launchd is macOS-only)")
 
 // Error is a non-zero launchctl exit.
 type Error struct {
@@ -38,34 +36,25 @@ func (e *Error) Error() string {
 
 // Bootstrap loads a plist into the user's launchd domain.
 func Bootstrap(ctx context.Context, domain, plistPath string) error {
-	if runtime.GOOS != "darwin" {
-		return ErrUnsupportedOS
-	}
 	return run(ctx, "bootstrap", domain, plistPath)
 }
 
 // Bootout unloads a service from a launchd domain.
 func Bootout(ctx context.Context, domainTarget string) error {
-	if runtime.GOOS != "darwin" {
-		return ErrUnsupportedOS
-	}
 	return run(ctx, "bootout", domainTarget)
 }
 
-// Kickstart asks launchd to run the service. It never passes -k.
+// Kickstart asks launchd to run the service at the given domain
+// target. It never passes -k. Honors the caller-provided target
+// rather than deriving its own so callers retain control over
+// which service is kicked.
 func Kickstart(ctx context.Context, domainTarget string) error {
-	if runtime.GOOS != "darwin" {
-		return ErrUnsupportedOS
-	}
 	return run(ctx, "kickstart", domainTarget)
 }
 
 // IsLoaded reports whether a service is present in the given domain.
 // Only the known "not loaded" result is flattened to (false, nil).
 func IsLoaded(ctx context.Context, domainTarget string) (bool, error) {
-	if runtime.GOOS != "darwin" {
-		return false, ErrUnsupportedOS
-	}
 	err := run(ctx, "print", domainTarget)
 	if err == nil {
 		return true, nil

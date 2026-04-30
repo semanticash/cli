@@ -47,7 +47,7 @@ func enableLauncherInSettings(t *testing.T) {
 	s := launcher.UserSettings{
 		Launcher: launcher.LauncherSettings{
 			Enabled:            true,
-			InstalledPlistPath: "/dummy/path.plist",
+			InstalledUnitPath: "/dummy/path.plist",
 			InstalledAt:        1,
 		},
 	}
@@ -114,7 +114,7 @@ func TestDispatchViaLauncher_EnabledWritesMarkerAndKickstarts(t *testing.T) {
 	// kickstart should target the canonical domain without -k.
 	argv, _ := os.ReadFile(argvLog)
 	line := strings.TrimRight(string(argv), "\n")
-	wantPrefix := "kickstart " + launcher.DomainTarget()
+	wantPrefix := "kickstart " + launcher.UnitTarget()
 	if line != wantPrefix {
 		t.Errorf("launchctl argv = %q, want %q (no -k flag)", line, wantPrefix)
 	}
