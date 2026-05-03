@@ -750,10 +750,15 @@ func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
 		t.Fatalf("events: got %d, want 1", len(events))
 	}
 
-	wantPath := filepath.Join(cwd, "src", "a.go")
+	// FilePaths flows through broker.ExtractFilePaths which converts
+	// to forward slashes via filepath.ToSlash, so the routing field is
+	// POSIX-separated on every platform. The inner tool_uses path is
+	// the resolver's raw output, which uses OS-native separators.
+	wantRoutingPath := "/repo/src/a.go"
+	wantNativePath := filepath.Join(cwd, "src", "a.go")
 	ev := events[0]
-	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantPath {
-		t.Errorf("file_paths: got %v, want [%s]", ev.FilePaths, wantPath)
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantRoutingPath {
+		t.Errorf("file_paths: got %v, want [%s]", ev.FilePaths, wantRoutingPath)
 	}
 	var tu struct {
 		Tools []struct {
@@ -763,8 +768,8 @@ func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
 	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
 		t.Fatalf("unmarshal tool_uses: %v", err)
 	}
-	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
-		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantNativePath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantNativePath)
 	}
 }
 
