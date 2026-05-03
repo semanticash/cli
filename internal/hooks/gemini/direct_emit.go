@@ -229,16 +229,20 @@ func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	return []broker.RawEvent{ev}, nil
 }
 
+// subagentInput captures Gemini 0.40+ invoke_agent input.
+type subagentInput struct {
+	Prompt    string `json:"prompt"`
+	AgentName string `json:"agent_name"`
+}
+
 func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
-	var inp struct {
-		Request string `json:"request"`
-	}
-	if err := json.Unmarshal(event.ToolInput, &inp); err != nil || inp.Request == "" {
+	var inp subagentInput
+	if err := json.Unmarshal(event.ToolInput, &inp); err != nil || inp.Prompt == "" {
 		return nil, nil
 	}
 
-	payloadHash := builder.StorePromptPayload(ctx, bs, inp.Request)
-	summary := builder.TruncateWithEllipsis(inp.Request, 200)
+	payloadHash := builder.StorePromptPayload(ctx, bs, inp.Prompt)
+	summary := builder.TruncateWithEllipsis(inp.Prompt, 200)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
@@ -255,40 +259,40 @@ func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.Bl
 	return []broker.RawEvent{ev}, nil
 }
 
-// buildSubagentCompletedEvent parses the completion result from
-// tool_response.llmContent, which Gemini emits either as a string or
-// as an array of {text} objects. Both shapes are handled; if neither
-// parse succeeds, a neutral placeholder summary is used.
+// buildSubagentCompletedEvent captures Gemini 0.40+ invoke_agent
+// completion. returnDisplay carries structured state; llmContent is
+// retained as a fallback summary source.
 func buildSubagentCompletedEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
-	var inp struct {
-		Request string `json:"request"`
-	}
+	var inp subagentInput
 	if len(event.ToolInput) > 0 {
 		_ = json.Unmarshal(event.ToolInput, &inp)
 	}
 
-	summary := "Gemini subagent completed"
-	if len(event.ToolResponse) > 0 {
-		var resp struct {
-			LLMContent json.RawMessage `json:"llmContent"`
-		}
-		if json.Unmarshal(event.ToolResponse, &resp) == nil && len(resp.LLMContent) > 0 {
-			var text string
-			if json.Unmarshal(resp.LLMContent, &text) == nil && text != "" {
-				summary = text
-			} else {
-				var parts []struct {
-					Text string `json:"text"`
-				}
-				if json.Unmarshal(resp.LLMContent, &parts) == nil && len(parts) > 0 {
-					summary = parts[0].Text
-				}
-			}
-		}
+	var resp struct {
+		LLMContent    json.RawMessage `json:"llmContent"`
+		ReturnDisplay struct {
+			State     string `json:"state"`
+			AgentName string `json:"agentName"`
+		} `json:"returnDisplay"`
 	}
-	summary = builder.TruncateWithEllipsis(summary, 200)
+	if len(event.ToolResponse) > 0 {
+		_ = json.Unmarshal(event.ToolResponse, &resp)
+	}
 
-	inputJSON, _ := json.Marshal(map[string]any{"request": inp.Request})
+	// Prefer the dispatched agent name, but fall back to response
+	// metadata if the input was not available.
+	agentName := inp.AgentName
+	if agentName == "" {
+		agentName = resp.ReturnDisplay.AgentName
+	}
+
+	summary := buildSubagentSummary(agentName, resp.ReturnDisplay.State, resp.LLMContent)
+
+	inputJSON, _ := json.Marshal(map[string]any{
+		"prompt":     inp.Prompt,
+		"agent_name": agentName,
+		"state":      resp.ReturnDisplay.State,
+	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Agent", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Agent", "", "exec")
@@ -306,6 +310,26 @@ func buildSubagentCompletedEvent(ctx context.Context, event *hooks.Event, bs api
 	ev.EventSource = "hook"
 
 	return []broker.RawEvent{ev}, nil
+}
+
+// buildSubagentSummary returns a stable summary for UI and logs.
+func buildSubagentSummary(agentName, state string, llmContent json.RawMessage) string {
+	if agentName != "" && state != "" {
+		return builder.TruncateWithEllipsis(fmt.Sprintf("%s subagent %s", agentName, state), 200)
+	}
+	if len(llmContent) > 0 {
+		var text string
+		if json.Unmarshal(llmContent, &text) == nil && text != "" {
+			return builder.TruncateWithEllipsis(text, 200)
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(llmContent, &parts) == nil && len(parts) > 0 && parts[0].Text != "" {
+			return builder.TruncateWithEllipsis(parts[0].Text, 200)
+		}
+	}
+	return "Gemini subagent completed"
 }
 
 // storeRedactedBashProvenance captures the Gemini-specific Bash
