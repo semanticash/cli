@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -219,6 +220,164 @@ func TestBuildHookEvents_WriteMissingPath(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("expected 0 events when file_path is missing, got %d", len(events))
+	}
+}
+
+// TestBuildHookEvents_Write_RelativePathResolved covers relative
+// file_path values from Gemini hook payloads. Expected paths are
+// computed via filepath.Join so the assertions match OS-native
+// separators on Windows as well as POSIX hosts.
+func TestBuildHookEvents_Write_RelativePathResolved(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	cwd := filepath.FromSlash("/repo")
+	event := &hooks.Event{
+		Type:          hooks.ToolStepCompleted,
+		SessionID:     "sess-gemini-1",
+		ToolName:      "Write",
+		CWD:           cwd,
+		ToolInput:     json.RawMessage(`{"file_path":"src/a.go","content":"package main\n"}`),
+		TranscriptRef: geminiTranscriptRef,
+		Timestamp:     1000,
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	wantPath := filepath.Join(cwd, "src", "a.go")
+	ev := events[0]
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantPath {
+		t.Errorf("file_paths = %v, want [%s]", ev.FilePaths, wantPath)
+	}
+
+	// Parse tool_uses structurally so the assertion is independent of
+	// JSON-escaped path separator differences across platforms.
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
+	}
+
+	// The scorer payload should use the same resolved path as routing.
+	var payload struct {
+		Message struct {
+			Content []struct {
+				Input struct {
+					FilePath string `json:"file_path"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bs.stored[ev.PayloadHash], &payload); err != nil {
+		t.Fatalf("unmarshal payload blob: %v", err)
+	}
+	if len(payload.Message.Content) != 1 || payload.Message.Content[0].Input.FilePath != wantPath {
+		t.Errorf("synthesized payload file_path = %+v, want %s", payload.Message.Content, wantPath)
+	}
+}
+
+// TestBuildHookEvents_Write_AbsolutePathPreserved verifies absolute
+// inputs flow through unchanged.
+func TestBuildHookEvents_Write_AbsolutePathPreserved(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	event := &hooks.Event{
+		Type:      hooks.ToolStepCompleted,
+		SessionID: "sess-gemini-1",
+		ToolName:  "Write",
+		CWD:       "/repo",
+		ToolInput: json.RawMessage(`{"file_path":"/other/abs.go","content":"x"}`),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].FilePaths[0] != "/other/abs.go" {
+		t.Errorf("file_paths = %v, want [/other/abs.go]", events[0].FilePaths)
+	}
+}
+
+// TestBuildHookEvents_Write_NoCWDPreservesRelative ensures we never
+// invent a path: when CWD is missing, the relative input is kept as-is
+// rather than guessed against process state.
+func TestBuildHookEvents_Write_NoCWDPreservesRelative(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	event := &hooks.Event{
+		Type:      hooks.ToolStepCompleted,
+		SessionID: "sess-gemini-1",
+		ToolName:  "Write",
+		ToolInput: json.RawMessage(`{"file_path":"src/a.go","content":"x"}`),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].FilePaths[0] != "src/a.go" {
+		t.Errorf("file_paths = %v, want [src/a.go]", events[0].FilePaths)
+	}
+}
+
+// TestBuildHookEvents_Edit_RelativePathResolved covers the same
+// resolution behavior for replace/edit_file payloads.
+func TestBuildHookEvents_Edit_RelativePathResolved(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	cwd := filepath.FromSlash("/repo")
+	event := &hooks.Event{
+		Type:      hooks.ToolStepCompleted,
+		SessionID: "sess-gemini-1",
+		ToolName:  "Edit",
+		CWD:       cwd,
+		ToolInput: json.RawMessage(`{"file_path":"pkg/x/y.go","old_string":"foo","new_string":"bar"}`),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	wantPath := filepath.Join(cwd, "pkg", "x", "y.go")
+	ev := events[0]
+	if ev.FilePaths[0] != wantPath {
+		t.Errorf("file_paths = %v, want [%s]", ev.FilePaths, wantPath)
+	}
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
 	}
 }
 

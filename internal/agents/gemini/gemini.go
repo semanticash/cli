@@ -8,9 +8,8 @@ import (
 
 const ProviderName = "gemini_cli"
 
-// extractSessionID returns a stable session identifier from a Gemini transcript
-// filename. The format is session-<date>-<shortid>.json - we use the full
-// basename (without extension) as the provider session ID.
+// extractSessionID returns the filename stem used by legacy Gemini
+// transcripts as their provider session ID.
 func extractSessionID(sourceKey string) string {
 	base := filepath.Base(sourceKey)
 	ext := filepath.Ext(base)
@@ -18,6 +17,15 @@ func extractSessionID(sourceKey string) string {
 		base = base[:len(base)-len(ext)]
 	}
 	return base
+}
+
+// sessionIDFromTranscript prefers the JSONL header sessionId and
+// falls back to the filename-derived ID.
+func sessionIDFromTranscript(t *geminiTranscript, sourceKey string) string {
+	if t != nil && t.SessionID != "" {
+		return t.SessionID
+	}
+	return extractSessionID(sourceKey)
 }
 
 // toolUsesPayload matches the JSON structure used by other providers.

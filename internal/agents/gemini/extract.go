@@ -1,8 +1,11 @@
 package gemini
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -13,9 +16,11 @@ type toolUse struct {
 	FileOp   string `json:"file_op,omitempty"`
 }
 
-// geminiTranscript represents the top-level structure of a Gemini session file.
+// geminiTranscript is the normalized Gemini transcript shape used by
+// the hook layer.
 type geminiTranscript struct {
-	Messages []geminiMessage `json:"messages"`
+	SessionID string          `json:"-"`
+	Messages  []geminiMessage `json:"messages"`
 }
 
 // geminiMessage represents a single message in the transcript.
@@ -92,13 +97,96 @@ type geminiTokens struct {
 	Total    int64 `json:"total"`
 }
 
-// parseTranscript parses a Gemini session JSON file.
+// parseTranscript parses both legacy JSON transcripts and JSONL
+// transcripts with a header record followed by message records.
 func parseTranscript(data []byte) (*geminiTranscript, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return &geminiTranscript{}, nil
+	}
+
+	// Try legacy JSON first. The legacy shape has a "messages" key,
+	// so a successful parse with messages means we are done.
+	var legacy geminiTranscript
+	if err := json.Unmarshal(data, &legacy); err == nil && len(legacy.Messages) > 0 {
+		return &legacy, nil
+	}
+
+	// Fall through to JSONL.
+	return parseTranscriptJSONL(trimmed)
+}
+
+// parseTranscriptJSONL reads Gemini JSONL transcripts. Header records
+// populate SessionID, and message records populate Messages.
+func parseTranscriptJSONL(data []byte) (*geminiTranscript, error) {
 	var t geminiTranscript
-	if err := json.Unmarshal(data, &t); err != nil {
-		return nil, fmt.Errorf("failed to parse transcript: %w", err)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	// Allow message lines up to 16 MiB so long assistant responses
+	// or tool-response payloads do not truncate silently.
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var hdr struct {
+			SessionID string `json:"sessionId"`
+			Kind      string `json:"kind"`
+			Type      string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &hdr); err != nil {
+			// Skip lines that fail to parse rather than aborting the
+			// whole file. Replay should be best-effort.
+			continue
+		}
+		if hdr.SessionID != "" && hdr.Type == "" && hdr.Kind != "" {
+			if t.SessionID == "" {
+				t.SessionID = hdr.SessionID
+			}
+			continue
+		}
+		// Only message records carry a type field. Skip anything else
+		// (future metadata records, trailing markers) so t.Messages
+		// stays a strict message slice and matches the doc comment.
+		if hdr.Type == "" {
+			continue
+		}
+		var msg geminiMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		t.Messages = append(t.Messages, msg)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan transcript: %w", err)
 	}
 	return &t, nil
+}
+
+// readSessionIDFromHeader returns the JSONL header sessionId from the
+// first non-empty line, or "" for non-JSONL/invalid inputs.
+func readSessionIDFromHeader(r io.Reader) string {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var hdr struct {
+			SessionID string `json:"sessionId"`
+			Kind      string `json:"kind"`
+			Type      string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &hdr); err != nil {
+			return ""
+		}
+		if hdr.SessionID != "" && hdr.Type == "" && hdr.Kind != "" {
+			return hdr.SessionID
+		}
+		return ""
+	}
+	return ""
 }
 
 // extractToolUses returns tool call metadata from a gemini message.

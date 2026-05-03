@@ -106,7 +106,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 			}
 		}
 
-		data, err := json.MarshalIndent(def, "", "  ")
+		data, err := hooks.MarshalSettingsJSON(def)
 		if err != nil {
 			return 0, fmt.Errorf("marshal hook %s: %w", def.ID, err)
 		}

@@ -126,10 +126,10 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		count++
 	}
 
-	hooksJSON, _ := json.Marshal(existingHooks)
+	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
 	raw["hooks"] = hooksJSON
 
-	data, err := json.MarshalIndent(raw, "", "  ")
+	data, err := hooks.MarshalSettingsJSON(raw)
 	if err != nil {
 		return 0, fmt.Errorf("marshal agent config: %w", err)
 	}
@@ -174,10 +174,10 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		}
 	}
 
-	hooksJSON, _ := json.Marshal(hooksMap)
+	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
 	raw["hooks"] = hooksJSON
 
-	out, err := json.MarshalIndent(raw, "", "  ")
+	out, err := hooks.MarshalSettingsJSON(raw)
 	if err != nil {
 		return fmt.Errorf("marshal agent config: %w", err)
 	}

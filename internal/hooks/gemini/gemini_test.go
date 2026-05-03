@@ -176,6 +176,88 @@ func TestInstallHooks_PreservesExistingSettings(t *testing.T) {
 	}
 }
 
+// TestInstallHooks_RespectsHandEditedCommand documents the deliberate
+// choice to leave manually-edited hook entries alone. If the user (or
+// a debugging workflow) put a custom command under our name, enable
+// must not silently rewrite it. Resetting is a `disable` + `enable`
+// round-trip because `disable` strips entries by marker.
+func TestInstallHooks_RespectsHandEditedCommand(t *testing.T) {
+	dir := t.TempDir()
+
+	geminiDir := filepath.Join(dir, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	existing := `{
+  "hooks": {
+    "AfterTool": [{"matcher": "*", "hooks": [{"name": "semantica-after-tool", "type": "command", "command": "/tmp/my-tracer.sh after-tool"}]}]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), dir, "semantica"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(geminiDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var hooksMap map[string][]geminiHookMatcher
+	if err := json.Unmarshal(raw["hooks"], &hooksMap); err != nil {
+		t.Fatalf("unmarshal hooks: %v", err)
+	}
+
+	// Exactly one AfterTool entry, the user's custom one, untouched.
+	matchers := hooksMap["AfterTool"]
+	totalAfterTool := 0
+	preservedTracer := false
+	for _, m := range matchers {
+		for _, h := range m.Hooks {
+			if h.Name == "semantica-after-tool" {
+				totalAfterTool++
+				if strings.Contains(h.Command, "my-tracer") {
+					preservedTracer = true
+				}
+			}
+		}
+	}
+	if totalAfterTool != 1 {
+		t.Errorf("expected exactly 1 AfterTool semantica entry, got %d", totalAfterTool)
+	}
+	if !preservedTracer {
+		t.Error("hand-edited tracer command must be preserved by enable")
+	}
+}
+
+// TestInstallHooks_DoesNotEscapeShellMetacharacters protects against
+// regressing the unescaped-output behavior across the file. Hook
+// commands carry `>` and `&`; the persisted settings should keep
+// them literal so humans can read the file.
+func TestInstallHooks_DoesNotEscapeShellMetacharacters(t *testing.T) {
+	dir := t.TempDir()
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), dir, "semantica"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".gemini", "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if strings.Contains(string(data), `\u003e`) || strings.Contains(string(data), `\u0026`) {
+		t.Errorf("expected unescaped shell metacharacters, got escaped form:\n%s", data)
+	}
+}
+
 func TestUninstallHooks_RemovesSemanticaEntries(t *testing.T) {
 	dir := t.TempDir()
 	p := &Provider{}
@@ -378,6 +460,172 @@ func TestParseHookEvent_PreCompress(t *testing.T) {
 	}
 }
 
+// TestParseHookEvent_AfterTool_WriteFile_040Shape covers file-edit
+// payloads that omit tool_name.
+func TestParseHookEvent_AfterTool_WriteFile_040Shape(t *testing.T) {
+	p := &Provider{}
+	input := `{
+		"session_id": "sess-040",
+		"tool_input": {
+			"content": "# hello\n",
+			"file_path": "AUDIT.md"
+		},
+		"tool_response": {
+			"llmContent": "Successfully created and wrote to new file: AUDIT.md."
+		}
+	}`
+
+	event, err := p.ParseHookEvent(context.Background(), "after-tool", strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.Type != hooks.ToolStepCompleted {
+		t.Errorf("type: got %v, want ToolStepCompleted", event.Type)
+	}
+	if event.ToolName != "Write" {
+		t.Errorf("tool_name: got %q, want Write", event.ToolName)
+	}
+	if event.ToolUseID == "" {
+		t.Error("tool_use_id should be synthesized when tool_name is absent")
+	}
+}
+
+// TestParseHookEvent_AfterTool_Replace_040Shape covers replace
+// payloads that omit tool_name.
+func TestParseHookEvent_AfterTool_Replace_040Shape(t *testing.T) {
+	p := &Provider{}
+	input := `{
+		"session_id": "sess-040",
+		"tool_input": {
+			"old_string": "- alpha",
+			"new_string": "- alpha-line",
+			"file_path": "AUDIT.md",
+			"instruction": "Change '- alpha' to '- alpha-line'."
+		},
+		"tool_response": {
+			"llmContent": "Successfully modified file: AUDIT.md."
+		}
+	}`
+
+	event, err := p.ParseHookEvent(context.Background(), "after-tool", strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.ToolName != "Edit" {
+		t.Errorf("tool_name: got %q, want Edit", event.ToolName)
+	}
+}
+
+// TestParseHookEvent_AfterTool_Bash_BothShapes covers Bash payloads
+// with and without explicit tool_name.
+func TestParseHookEvent_AfterTool_Bash_BothShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "explicit tool_name",
+			input: `{"session_id":"s","tool_name":"run_shell_command","tool_input":{"command":"ls","description":""},"tool_response":{"output":""}}`,
+		},
+		{
+			name:  "inferred from command",
+			input: `{"session_id":"s","tool_input":{"command":"ls","description":""},"tool_response":{"output":""}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Provider{}
+			event, err := p.ParseHookEvent(context.Background(), "after-tool", strings.NewReader(tc.input))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if event == nil {
+				t.Fatal("expected event, got nil")
+			}
+			if event.ToolName != "Bash" {
+				t.Errorf("tool_name: got %q, want Bash", event.ToolName)
+			}
+		})
+	}
+}
+
+// TestParseHookEvent_AfterTool_UnknownShape confirms read-only or
+// unknown shapes do not produce attribution events.
+func TestParseHookEvent_AfterTool_UnknownShape(t *testing.T) {
+	p := &Provider{}
+	input := `{"session_id":"s","tool_input":{"path":"some/file","limit":10},"tool_response":{"content":"..."}}`
+
+	event, err := p.ParseHookEvent(context.Background(), "after-tool", strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event != nil {
+		t.Errorf("unknown payload shape should not produce an event, got %+v", event)
+	}
+}
+
+// TestInferGeminiToolName covers the shape-inference table directly.
+func TestInferGeminiToolName(t *testing.T) {
+	cases := []struct {
+		name      string
+		toolName  string
+		toolInput string
+		want      string
+	}{
+		{
+			name:      "explicit name wins over shape",
+			toolName:  "run_shell_command",
+			toolInput: `{"command":"ls"}`,
+			want:      "run_shell_command",
+		},
+		{
+			name:      "write_file inferred from content + file_path",
+			toolName:  "",
+			toolInput: `{"content":"hi","file_path":"f.md"}`,
+			want:      "write_file",
+		},
+		{
+			name:      "replace inferred from old_string + new_string + file_path",
+			toolName:  "",
+			toolInput: `{"old_string":"a","new_string":"b","file_path":"f.md"}`,
+			want:      "replace",
+		},
+		{
+			name:      "run_shell_command inferred from command alone",
+			toolName:  "",
+			toolInput: `{"command":"ls"}`,
+			want:      "run_shell_command",
+		},
+		{
+			name:      "unknown shape returns empty",
+			toolName:  "",
+			toolInput: `{"path":"f.md"}`,
+			want:      "",
+		},
+		{
+			name:      "empty input returns empty",
+			toolName:  "",
+			toolInput: ``,
+			want:      "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inferGeminiToolName(tc.toolName, []byte(tc.toolInput))
+			if got != tc.want {
+				t.Errorf("inferGeminiToolName(%q, %q) = %q, want %q",
+					tc.toolName, tc.toolInput, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseHookEvent_Unknown(t *testing.T) {
 	p := &Provider{}
 	input := `{"session_id":"sess-123"}`
@@ -473,6 +721,83 @@ func TestReadFromOffset(t *testing.T) {
 	}
 	if events[1].Summary != "I will create it" {
 		t.Errorf("event[1] summary: got %q", events[1].Summary)
+	}
+}
+
+// TestReadFromOffset_ResolvesRelativeToolPaths ensures transcript
+// replay resolves relative tool-call file paths before routing.
+// Uses filepath.Join for the expected value so the assertion holds
+// on Windows (where filepath.Join produces backslash-separated paths).
+func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
+	dir := t.TempDir()
+
+	transcript := `{"messages":[
+		{"type":"gemini","content":"editing","toolCalls":[{"id":"tc1","name":"write_file","args":{"file_path":"src/a.go","content":"x"}}]}
+	]}`
+	path := filepath.Join(dir, "session.json")
+	if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cwd := filepath.FromSlash("/repo")
+	ctx := context.WithValue(context.Background(), hooks.CWDKey, cwd)
+	p := &Provider{}
+	events, _, err := p.ReadFromOffset(ctx, path, 0, nil)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events: got %d, want 1", len(events))
+	}
+
+	// FilePaths flows through broker.ExtractFilePaths which converts
+	// to forward slashes via filepath.ToSlash, so the routing field is
+	// POSIX-separated on every platform. The inner tool_uses path is
+	// the resolver's raw output, which uses OS-native separators.
+	wantRoutingPath := "/repo/src/a.go"
+	wantNativePath := filepath.Join(cwd, "src", "a.go")
+	ev := events[0]
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantRoutingPath {
+		t.Errorf("file_paths: got %v, want [%s]", ev.FilePaths, wantRoutingPath)
+	}
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantNativePath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantNativePath)
+	}
+}
+
+// TestReadFromOffset_NoCWDPreservesRelative documents that without a
+// CWD on the context the existing relative path is kept verbatim. This
+// avoids inventing a path the replay cannot justify when transcript
+// scans are run outside the hook lifecycle.
+func TestReadFromOffset_NoCWDPreservesRelative(t *testing.T) {
+	dir := t.TempDir()
+
+	transcript := `{"messages":[
+		{"type":"gemini","content":"editing","toolCalls":[{"id":"tc1","name":"write_file","args":{"file_path":"src/a.go","content":"x"}}]}
+	]}`
+	path := filepath.Join(dir, "session.json")
+	if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	p := &Provider{}
+	events, _, err := p.ReadFromOffset(context.Background(), path, 0, nil)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events: got %d, want 1", len(events))
+	}
+	if !strings.Contains(events[0].ToolUsesJSON, `src/a.go`) || strings.Contains(events[0].ToolUsesJSON, `/repo/`) {
+		t.Errorf("expected relative path preserved, got %q", events[0].ToolUsesJSON)
 	}
 }
 

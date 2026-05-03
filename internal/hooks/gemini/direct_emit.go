@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/semanticash/cli/internal/agents/api"
 	agentgemini "github.com/semanticash/cli/internal/agents/gemini"
@@ -11,6 +14,22 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/hooks/builder"
 )
+
+// resolveGeminiFilePath joins a relative Gemini file_path against CWD.
+// Empty paths, paths without a CWD, OS-native absolute paths, and
+// POSIX-style "/foo" paths are returned unchanged. The POSIX check is
+// important on Windows: Gemini's JSON payloads can serialize forward-
+// slash absolute paths regardless of host OS, and filepath.IsAbs would
+// otherwise treat them as relative and stitch on the CWD.
+func resolveGeminiFilePath(cwd, filePath string) string {
+	if filePath == "" || cwd == "" {
+		return filePath
+	}
+	if filepath.IsAbs(filePath) || strings.HasPrefix(filePath, "/") {
+		return filePath
+	}
+	return filepath.Clean(filepath.Join(cwd, filePath))
+}
 
 // BuildHookEvents constructs RawEvents directly from hook payloads.
 // Implements hooks.DirectHookEmitter.
@@ -101,13 +120,15 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 		return nil, nil
 	}
 
+	resolvedPath := resolveGeminiFilePath(event.CWD, inp.FilePath)
+
 	inputJSON, _ := json.Marshal(map[string]any{
-		"file_path": inp.FilePath,
+		"file_path": resolvedPath,
 		"content":   inp.Content,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := serializeStepToolUses("Write", inp.FilePath, "write")
+	toolUsesJSON := serializeStepToolUses("Write", resolvedPath, "write")
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -119,7 +140,7 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Write"
 	ev.EventSource = "hook"
-	ev.FilePaths = []string{inp.FilePath}
+	ev.FilePaths = []string{resolvedPath}
 
 	return []broker.RawEvent{ev}, nil
 }
@@ -136,14 +157,16 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 		return nil, nil
 	}
 
+	resolvedPath := resolveGeminiFilePath(event.CWD, inp.FilePath)
+
 	inputJSON, _ := json.Marshal(map[string]any{
-		"file_path":  inp.FilePath,
+		"file_path":  resolvedPath,
 		"old_string": inp.OldString,
 		"new_string": inp.NewString,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := serializeStepToolUses("Edit", inp.FilePath, "edit")
+	toolUsesJSON := serializeStepToolUses("Edit", resolvedPath, "edit")
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -155,7 +178,7 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = "Edit"
 	ev.EventSource = "hook"
-	ev.FilePaths = []string{inp.FilePath}
+	ev.FilePaths = []string{resolvedPath}
 
 	return []broker.RawEvent{ev}, nil
 }
@@ -339,11 +362,10 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
-// makeBaseRawEvent derives the Gemini-specific provider session ID
-// from the transcript path and assembles the session metadata before
-// delegating the envelope construction to the shared builder.
+// makeBaseRawEvent derives Gemini session metadata before delegating
+// the common envelope fields to the shared builder.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
-	providerSessionID := agentgemini.ExtractSessionID(event.TranscriptRef)
+	providerSessionID := deriveProviderSessionIDForEmit(event.TranscriptRef)
 
 	meta := map[string]any{"source_key": event.TranscriptRef}
 	metaJSON, _ := json.Marshal(meta)
@@ -356,6 +378,20 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: event.CWD,
 	})
+}
+
+// deriveProviderSessionIDForEmit reads the JSONL header sessionId when
+// available, otherwise it falls back to the filename-derived ID.
+func deriveProviderSessionIDForEmit(transcriptRef string) string {
+	f, err := os.Open(transcriptRef)
+	if err != nil {
+		return agentgemini.ExtractSessionID(transcriptRef)
+	}
+	defer func() { _ = f.Close() }()
+	if id := agentgemini.ReadSessionIDFromHeader(f); id != "" {
+		return id
+	}
+	return agentgemini.ExtractSessionID(transcriptRef)
 }
 
 // ensure Provider implements DirectHookEmitter.

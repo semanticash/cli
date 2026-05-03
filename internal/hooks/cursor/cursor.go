@@ -109,7 +109,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		count++
 	}
 
-	out, err := json.MarshalIndent(cfg, "", "  ")
+	out, err := hooks.MarshalSettingsJSON(cfg)
 	if err != nil {
 		return 0, fmt.Errorf("marshal hooks config: %w", err)
 	}
@@ -151,7 +151,7 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		}
 	}
 
-	out, _ := json.MarshalIndent(cfg, "", "  ")
+	out, _ := hooks.MarshalSettingsJSON(cfg)
 	return os.WriteFile(hooksPath, out, 0o644)
 }
 
