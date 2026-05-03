@@ -32,12 +32,6 @@ func TestInstallHooks_NewConfig(t *testing.T) {
 		t.Fatalf("config not found: %v", err)
 	}
 
-	if !strings.Contains(string(data), `"userPromptSubmit"`) {
-		t.Error("missing userPromptSubmit hook")
-	}
-	if !strings.Contains(string(data), `"stop"`) {
-		t.Error("missing stop hook")
-	}
 	if !strings.Contains(string(data), semanticaMarker) {
 		t.Error("missing semantica marker in command")
 	}
@@ -46,40 +40,207 @@ func TestInstallHooks_NewConfig(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
+
+	// Top-level fields the agent needs to be usable when selected.
+	var name, description string
+	_ = json.Unmarshal(raw["name"], &name)
+	_ = json.Unmarshal(raw["description"], &description)
+	if name != agentName {
+		t.Errorf("name = %q, want %q", name, agentName)
+	}
+	if description == "" {
+		t.Error("description is empty")
+	}
+
 	var tools []string
 	if err := json.Unmarshal(raw["tools"], &tools); err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) < 5 {
-		t.Errorf("expected baseline tools, got %d", len(tools))
+	if len(tools) != 1 || tools[0] != "*" {
+		t.Errorf(`tools = %v, want ["*"]`, tools)
+	}
+
+	// Hook surface: agentSpawn, userPromptSubmit, two postToolUse
+	// entries with distinct matchers, and stop.
+	var hooksMap map[string][]agentConfigHookEntry
+	if err := json.Unmarshal(raw["hooks"], &hooksMap); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hooksMap["preToolUse"]; ok {
+		t.Error("preToolUse should not be registered")
+	}
+	for _, ev := range []string{"agentSpawn", "userPromptSubmit", "stop"} {
+		entries := hooksMap[ev]
+		if len(entries) != 1 || entries[0].Matcher != "" {
+			t.Errorf("%s entries = %+v, want exactly one unmatched entry", ev, entries)
+		}
+	}
+	postEntries := hooksMap["postToolUse"]
+	if len(postEntries) != 2 {
+		t.Fatalf("postToolUse entries = %d, want 2", len(postEntries))
+	}
+	matchers := map[string]bool{}
+	for _, e := range postEntries {
+		matchers[e.Matcher] = true
+	}
+	for _, m := range []string{"fs_write", "execute_bash"} {
+		if !matchers[m] {
+			t.Errorf("postToolUse missing matcher %q", m)
+		}
 	}
 }
 
-func TestInstallHooks_MergeExisting(t *testing.T) {
+func TestInstallHooks_RefreshesStaleFieldsAndPreservesUserContent(t *testing.T) {
 	repoRoot := t.TempDir()
 	agentsDir := filepath.Join(repoRoot, ".kiro", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	existing := `{"name":"semantica","tools":["read","write","shell","my-custom-tool"],"hooks":{}}`
+	// Pre-existing config: stale tools (empty) and missing
+	// description, plus a user-added prompt that must survive.
+	existing := `{
+  "name": "old-name",
+  "tools": [],
+  "prompt": "You are a security-focused assistant.",
+  "hooks": {}
+}`
 	if err := os.WriteFile(filepath.Join(agentsDir, "semantica.json"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	p := &Provider{}
-	_, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
-	if err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
 		t.Fatal(err)
 	}
 
 	data, _ := os.ReadFile(filepath.Join(agentsDir, "semantica.json"))
-
-	if !strings.Contains(string(data), "my-custom-tool") {
-		t.Error("custom tools were overwritten")
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), semanticaMarker) {
-		t.Error("hooks not merged")
+
+	// Semantica-owned fields are refreshed.
+	var name, description string
+	var tools []string
+	_ = json.Unmarshal(raw["name"], &name)
+	_ = json.Unmarshal(raw["description"], &description)
+	_ = json.Unmarshal(raw["tools"], &tools)
+	if name != agentName {
+		t.Errorf("name not refreshed: got %q", name)
+	}
+	if description == "" {
+		t.Error("description not refreshed")
+	}
+	if len(tools) != 1 || tools[0] != "*" {
+		t.Errorf("tools not refreshed: got %v", tools)
+	}
+
+	// User-added top-level field survives.
+	var prompt string
+	_ = json.Unmarshal(raw["prompt"], &prompt)
+	if prompt != "You are a security-focused assistant." {
+		t.Errorf("user prompt not preserved: got %q", prompt)
+	}
+}
+
+// TestInstallHooks_RemovesStaleSemanticaEntriesOnUpgrade simulates
+// a user upgrading from an earlier Kiro CLI integration that wrote
+// unmatched postToolUse and preToolUse rows. The current install
+// must drop those stale rows before adding the canonical matcher-
+// scoped entries, otherwise the unmatched rows fire for every tool
+// and duplicate capture.
+func TestInstallHooks_RemovesStaleSemanticaEntriesOnUpgrade(t *testing.T) {
+	repoRoot := t.TempDir()
+	agentsDir := filepath.Join(repoRoot, ".kiro", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	staleCmd := "if command -v semantica >/dev/null 2>&1; then semantica capture kiro-cli post-tool-use || true; fi"
+	stalePreCmd := "if command -v semantica >/dev/null 2>&1; then semantica capture kiro-cli pre-tool-use || true; fi"
+	existing := `{
+  "hooks": {
+    "preToolUse":  [{"command": "` + stalePreCmd + `"}],
+    "postToolUse": [{"command": "` + staleCmd + `"}]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(agentsDir, "semantica.json"), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "semantica"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(agentsDir, "semantica.json"))
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	var hooksMap map[string][]agentConfigHookEntry
+	_ = json.Unmarshal(raw["hooks"], &hooksMap)
+
+	if _, ok := hooksMap["preToolUse"]; ok {
+		t.Errorf("stale preToolUse entry survived upgrade: %+v", hooksMap["preToolUse"])
+	}
+	postEntries := hooksMap["postToolUse"]
+	if len(postEntries) != 2 {
+		t.Fatalf("postToolUse entries = %d, want 2 (unmatched stale entry must be removed)", len(postEntries))
+	}
+	for _, e := range postEntries {
+		if e.Matcher == "" {
+			t.Errorf("unmatched postToolUse entry survived: %+v", e)
+		}
+	}
+}
+
+func TestInstallHooks_DedupesByEventMatcherCommand(t *testing.T) {
+	repoRoot := t.TempDir()
+	agentsDir := filepath.Join(repoRoot, ".kiro", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed only one of the two postToolUse entries. A
+	// marker-only de-dupe would skip adding the execute_bash row
+	// because it sees the marker on the fs_write row and assumes
+	// the event is already covered. The (event, matcher, command)
+	// rule must still add the missing matcher.
+	existing := `{
+  "hooks": {
+    "postToolUse": [
+      {"matcher": "fs_write", "command": "if command -v semantica >/dev/null 2>&1; then semantica capture kiro-cli post-tool-use || true; fi"}
+    ]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(agentsDir, "semantica.json"), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "semantica"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(agentsDir, "semantica.json"))
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	var hooksMap map[string][]agentConfigHookEntry
+	_ = json.Unmarshal(raw["hooks"], &hooksMap)
+
+	postEntries := hooksMap["postToolUse"]
+	if len(postEntries) != 2 {
+		t.Fatalf("postToolUse entries = %d, want 2 after refresh", len(postEntries))
+	}
+	matchers := map[string]int{}
+	for _, e := range postEntries {
+		matchers[e.Matcher]++
+	}
+	if matchers["fs_write"] != 1 {
+		t.Errorf("fs_write entries = %d, want 1", matchers["fs_write"])
+	}
+	if matchers["execute_bash"] != 1 {
+		t.Errorf("execute_bash entries = %d, want 1", matchers["execute_bash"])
 	}
 }
 

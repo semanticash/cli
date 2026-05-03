@@ -50,6 +50,42 @@ type agentConfigHookEntry struct {
 	Matcher   string `json:"matcher,omitempty"`
 }
 
+const (
+	agentName        = "semantica"
+	agentDescription = "Semantica capture wrapper. Mirrors default-agent behavior and emits attribution events."
+)
+
+// agentToolsWildcard is the value used for the "tools" field. The
+// wildcard makes the wrapper agent usable for any task without
+// enumerating every built-in tool, which would drift as the host CLI
+// adds new tools.
+var agentToolsWildcard = []string{"*"}
+
+// hookEntries returns the canonical Semantica hook list. Two
+// postToolUse rows share the same command but use different
+// matchers so the event-handler routes file writes and shell
+// commands distinctly. preToolUse is intentionally omitted: the
+// parser does not produce events for non-subagent pre hooks.
+func hookEntries(bin string) []struct {
+	event   string
+	matcher string
+	command string
+	timeout int
+} {
+	return []struct {
+		event   string
+		matcher string
+		command string
+		timeout int
+	}{
+		{"agentSpawn", "", hooks.GuardedCommand(bin, "capture kiro-cli agent-spawn"), 5000},
+		{"userPromptSubmit", "", hooks.GuardedCommand(bin, "capture kiro-cli user-prompt-submit"), 10000},
+		{"postToolUse", "fs_write", hooks.GuardedCommand(bin, "capture kiro-cli post-tool-use"), 10000},
+		{"postToolUse", "execute_bash", hooks.GuardedCommand(bin, "capture kiro-cli post-tool-use"), 10000},
+		{"stop", "", hooks.GuardedCommand(bin, "capture kiro-cli stop"), 60000},
+	}
+}
+
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	agentsDir := filepath.Join(repoRoot, ".kiro", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
@@ -73,18 +109,16 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		raw = make(map[string]json.RawMessage)
 	}
 
-	if _, ok := raw["name"]; !ok {
-		nameJSON, _ := json.Marshal("semantica")
-		raw["name"] = nameJSON
-	}
-
-	if _, ok := raw["tools"]; !ok {
-		toolsJSON, _ := json.Marshal([]string{
-			"read", "write", "shell", "aws", "report", "introspect",
-			"knowledge", "thinking", "todo", "delegate", "grep", "glob",
-		})
-		raw["tools"] = toolsJSON
-	}
+	// Refresh Semantica-owned top-level fields on every install so
+	// stale values from earlier writes are corrected. User-added
+	// fields like prompt or model pass through untouched because
+	// the surrounding raw map is preserved.
+	nameJSON, _ := json.Marshal(agentName)
+	raw["name"] = nameJSON
+	descriptionJSON, _ := json.Marshal(agentDescription)
+	raw["description"] = descriptionJSON
+	toolsJSON, _ := json.Marshal(agentToolsWildcard)
+	raw["tools"] = toolsJSON
 
 	var existingHooks map[string][]agentConfigHookEntry
 	if hooksRaw, ok := raw["hooks"]; ok {
@@ -94,35 +128,35 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		existingHooks = make(map[string][]agentConfigHookEntry)
 	}
 
-	hookDefs := []struct {
-		event   string
-		command string
-		timeout int
-	}{
-		{"userPromptSubmit", hooks.GuardedCommand(bin, "capture kiro-cli user-prompt-submit"), 10000},
-		{"stop", hooks.GuardedCommand(bin, "capture kiro-cli stop"), 60000},
-		{"postToolUse", hooks.GuardedCommand(bin, "capture kiro-cli post-tool-use"), 10000},
-		{"preToolUse", hooks.GuardedCommand(bin, "capture kiro-cli pre-tool-use"), 10000},
-		{"agentSpawn", hooks.GuardedCommand(bin, "capture kiro-cli agent-spawn"), 5000},
+	// Strip every existing Semantica-marked entry before appending
+	// the canonical set. This protects against stale entries from
+	// earlier installs that registered different events or used a
+	// different matcher (or no matcher at all): without this pass,
+	// an old unmatched postToolUse hook would survive alongside the
+	// new fs_write / execute_bash rows and fire for every tool,
+	// duplicating capture. User-added entries that do not contain
+	// the marker are preserved.
+	for event, entries := range existingHooks {
+		var kept []agentConfigHookEntry
+		for _, e := range entries {
+			if !strings.Contains(e.Command, semanticaMarker) {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) > 0 {
+			existingHooks[event] = kept
+		} else {
+			delete(existingHooks, event)
+		}
 	}
 
 	count := 0
-	for _, def := range hookDefs {
-		entries := existingHooks[def.event]
-		found := false
-		for _, e := range entries {
-			if strings.Contains(e.Command, semanticaMarker) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			entries = append(entries, agentConfigHookEntry{
-				Command:   def.command,
-				TimeoutMs: def.timeout,
-			})
-			existingHooks[def.event] = entries
-		}
+	for _, def := range hookEntries(bin) {
+		existingHooks[def.event] = append(existingHooks[def.event], agentConfigHookEntry{
+			Command:   def.command,
+			TimeoutMs: def.timeout,
+			Matcher:   def.matcher,
+		})
 		count++
 	}
 
@@ -137,8 +171,14 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		return 0, fmt.Errorf("write agent config: %w", err)
 	}
 
+	// Print a one-line activation hint. Hooks fire only for sessions
+	// that select this agent, so the user has to opt in explicitly
+	// the first time.
+	fmt.Fprintln(os.Stderr, "Kiro CLI hooks installed. To activate capture, run: kiro-cli agent set-default semantica")
+
 	return count, nil
 }
+
 
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	configPath := filepath.Join(repoRoot, ".kiro", "agents", "semantica.json")
