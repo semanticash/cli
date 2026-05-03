@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.3.8] - 2026-05-02
+
+### Added
+
+- Gemini CLI transcript support now handles both legacy JSON files and newer JSONL files with header session IDs.
+
+### Fixed
+
+- Gemini CLI 0.40+ file-edit hook payloads are now normalized so `write_file` and `replace` events route to the correct repo and contribute line-level attribution.
+- Gemini CLI transcript replay now resolves relative tool-call paths against the captured session working directory before routing replayed events.
+- Provider hook settings are now written without HTML-escaping shell redirection characters, keeping generated hook commands readable in settings files.
+
+### Changed
+
+- Gemini CLI direct hooks and transcript replay now use the same provider session ID when JSONL transcripts expose a header session ID.
+
 ## [0.3.7] - 2026-04-30
 
 ### Added

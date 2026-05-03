@@ -137,18 +137,10 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		count++
 	}
 
-	var hooksBuf bytes.Buffer
-	hooksEnc := json.NewEncoder(&hooksBuf)
-	hooksEnc.SetEscapeHTML(false)
-	_ = hooksEnc.Encode(existingHooks)
-	raw["hooks"] = json.RawMessage(bytes.TrimRight(hooksBuf.Bytes(), "\n"))
+	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
+	raw["hooks"] = json.RawMessage(hooksJSON)
 
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	err = enc.Encode(raw)
-	out := bytes.TrimRight(buf.Bytes(), "\n")
+	out, err := hooks.MarshalSettingsJSON(raw)
 	if err != nil {
 		return 0, fmt.Errorf("marshal settings: %w", err)
 	}
@@ -223,9 +215,9 @@ func removeSemanticaHooksFromFile(settingsPath string) {
 		return
 	}
 
-	hooksJSON, _ := json.Marshal(hooksMap)
+	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
 	raw["hooks"] = hooksJSON
-	out, _ := json.MarshalIndent(raw, "", "  ")
+	out, _ := hooks.MarshalSettingsJSON(raw)
 	_ = os.WriteFile(settingsPath, out, 0o644)
 }
 

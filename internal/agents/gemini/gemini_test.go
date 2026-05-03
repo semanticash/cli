@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -122,6 +123,131 @@ func TestExtractSessionID(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractSessionID(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestParseTranscript_JSONL_040(t *testing.T) {
+	// 0.40 JSONL: header record then per-message records.
+	data := []byte(`{"sessionId":"d6b9c1e2-1234-4abc-9def-0123456789ab","projectHash":"abc123","startTime":"2026-04-01T10:00:00Z","kind":"main"}
+{"type":"user","content":[{"text":"Hi"}]}
+{"type":"gemini","content":"Hello back"}`)
+	tr, err := parseTranscript(data)
+	if err != nil {
+		t.Fatalf("parseTranscript: %v", err)
+	}
+	if tr.SessionID != "d6b9c1e2-1234-4abc-9def-0123456789ab" {
+		t.Errorf("SessionID = %q, want UUID from header", tr.SessionID)
+	}
+	if len(tr.Messages) != 2 {
+		t.Fatalf("messages count = %d, want 2", len(tr.Messages))
+	}
+	if tr.Messages[0].Content != "Hi" {
+		t.Errorf("msg[0] content = %q, want Hi", tr.Messages[0].Content)
+	}
+	if tr.Messages[1].Content != "Hello back" {
+		t.Errorf("msg[1] content = %q, want 'Hello back'", tr.Messages[1].Content)
+	}
+}
+
+func TestParseTranscript_JSONL_SkipsNonMessageRecords(t *testing.T) {
+	// A non-header, non-message metadata record (no "type" field)
+	// must not enter t.Messages, otherwise downstream consumers walk
+	// past blank entries.
+	data := []byte(`{"sessionId":"s1","kind":"main"}
+{"type":"user","content":"A"}
+{"checkpoint":"abc","savedAt":"2026-04-01T10:00:00Z"}
+{"type":"gemini","content":"B"}`)
+	tr, err := parseTranscript(data)
+	if err != nil {
+		t.Fatalf("parseTranscript: %v", err)
+	}
+	if len(tr.Messages) != 2 {
+		t.Fatalf("messages count = %d, want 2 (metadata record dropped)", len(tr.Messages))
+	}
+	if tr.Messages[0].Type != "user" || tr.Messages[1].Type != "gemini" {
+		t.Errorf("unexpected message types: %q, %q", tr.Messages[0].Type, tr.Messages[1].Type)
+	}
+}
+
+func TestParseTranscript_JSONL_SkipsBadLines(t *testing.T) {
+	// Best-effort: malformed lines do not abort the stream.
+	data := []byte(`{"sessionId":"abc","kind":"main"}
+not valid json
+{"type":"user","content":"A"}
+{"type":"gemini","content":"B"}`)
+	tr, err := parseTranscript(data)
+	if err != nil {
+		t.Fatalf("parseTranscript: %v", err)
+	}
+	if tr.SessionID != "abc" {
+		t.Errorf("SessionID = %q, want abc", tr.SessionID)
+	}
+	if len(tr.Messages) != 2 {
+		t.Fatalf("messages count = %d, want 2 (bad line skipped)", len(tr.Messages))
+	}
+}
+
+func TestReadSessionIDFromHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "0.40 header",
+			in:   `{"sessionId":"abc-123","kind":"main","startTime":"2026-04-01T10:00:00Z"}` + "\n" + `{"type":"user","content":"x"}`,
+			want: "abc-123",
+		},
+		{
+			name: "leading blank lines",
+			in:   "\n\n" + `{"sessionId":"def-456","kind":"main"}` + "\n",
+			want: "def-456",
+		},
+		{
+			name: "legacy JSON",
+			in:   `{"messages":[{"type":"user","content":"x"}]}`,
+			want: "",
+		},
+		{
+			name: "first line is a message",
+			in:   `{"type":"user","content":"x"}` + "\n",
+			want: "",
+		},
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := readSessionIDFromHeader(bytes.NewReader([]byte(tt.in)))
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSessionIDFromTranscript(t *testing.T) {
+	// JSONL header value wins.
+	tr := &geminiTranscript{SessionID: "uuid-from-header"}
+	got := sessionIDFromTranscript(tr, "/path/session-2026-01-01T00-00-deadbeef.json")
+	if got != "uuid-from-header" {
+		t.Errorf("got %q, want JSONL header value", got)
+	}
+
+	// Legacy: fall back to filename.
+	legacy := &geminiTranscript{}
+	got = sessionIDFromTranscript(legacy, "/path/session-2026-01-01T00-00-deadbeef.json")
+	if got != "session-2026-01-01T00-00-deadbeef" {
+		t.Errorf("got %q, want filename-derived ID", got)
+	}
+
+	// Nil transcript: fall back to filename.
+	got = sessionIDFromTranscript(nil, "/path/session-x.json")
+	if got != "session-x" {
+		t.Errorf("got %q, want filename-derived ID", got)
 	}
 }
 

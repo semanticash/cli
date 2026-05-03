@@ -98,22 +98,27 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"AfterTool", "*", "semantica-after-tool", hooks.GuardedCommand(bin, "capture gemini-cli after-tool")},
 	}
 
+	// Skip entries whose name already exists. This treats a hand-edited
+	// hook as intentional: if the user (or a debugging workflow) put a
+	// custom command under our name, leave it alone. Resetting to the
+	// canonical form is done by `disable` followed by `enable` since
+	// `disable` removes our entries by marker.
 	count := 0
 	for _, def := range hookDefs {
 		matchers := existingHooks[def.hookPoint]
-		found := false
+		nameExists := false
 		for _, m := range matchers {
 			for _, h := range m.Hooks {
-				if strings.Contains(h.Command, semanticaMarker) && h.Name == def.name {
-					found = true
+				if h.Name == def.name {
+					nameExists = true
 					break
 				}
 			}
-			if found {
+			if nameExists {
 				break
 			}
 		}
-		if !found {
+		if !nameExists {
 			existingHooks[def.hookPoint] = append(matchers, geminiHookMatcher{
 				Matcher: def.matcher,
 				Hooks:   []geminiHookEntry{{Name: def.name, Type: "command", Command: def.command}},
@@ -122,10 +127,10 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		count++
 	}
 
-	hooksJSON, _ := json.Marshal(existingHooks)
+	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
 	raw["hooks"] = hooksJSON
 
-	out, err := json.MarshalIndent(raw, "", "  ")
+	out, err := hooks.MarshalSettingsJSON(raw)
 	if err != nil {
 		return 0, fmt.Errorf("marshal settings: %w", err)
 	}
@@ -184,9 +189,9 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		}
 	}
 
-	hooksJSON, _ := json.Marshal(hooksMap)
+	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
 	raw["hooks"] = hooksJSON
-	out, _ := json.MarshalIndent(raw, "", "  ")
+	out, _ := hooks.MarshalSettingsJSON(raw)
 	return os.WriteFile(settingsPath, out, 0o644)
 }
 
@@ -259,6 +264,36 @@ var subagentTools = map[string]bool{
 	"generalist": true,
 }
 
+// inferGeminiToolName returns the hook tool name, falling back to
+// tool_input shape when Gemini omits tool_name.
+func inferGeminiToolName(toolName string, toolInput json.RawMessage) string {
+	if toolName != "" {
+		return toolName
+	}
+	if len(toolInput) == 0 {
+		return ""
+	}
+	var probe struct {
+		Content   *string `json:"content"`
+		OldString *string `json:"old_string"`
+		NewString *string `json:"new_string"`
+		FilePath  *string `json:"file_path"`
+		Command   *string `json:"command"`
+	}
+	if err := json.Unmarshal(toolInput, &probe); err != nil {
+		return ""
+	}
+	switch {
+	case probe.OldString != nil && probe.NewString != nil && probe.FilePath != nil:
+		return "replace"
+	case probe.Content != nil && probe.FilePath != nil:
+		return "write_file"
+	case probe.Command != nil:
+		return "run_shell_command"
+	}
+	return ""
+}
+
 // parseTimestamp parses a Gemini CLI ISO 8601 timestamp string into unix
 // milliseconds. Falls back to time.Now() if the string is empty or invalid.
 func parseTimestamp(s string) int64 {
@@ -320,23 +355,27 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		// BeforeModel has no lifecycle action - model is captured via context.
 		return nil, nil
 	case "before-tool":
-		if subagentTools[payload.ToolName] {
+		// Some Gemini payloads omit tool_name; infer it from tool_input.
+		resolvedTool := inferGeminiToolName(payload.ToolName, payload.ToolInput)
+		event.ToolName = resolvedTool
+		if subagentTools[resolvedTool] {
 			event.Type = hooks.SubagentPromptSubmitted
 			event.ToolName = "Agent"
-			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, payload.ToolName, payload.ToolInput)
+			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, resolvedTool, payload.ToolInput)
 		} else {
 			// Non-subagent before-tool has no lifecycle action.
 			return nil, nil
 		}
 	case "after-tool":
-		if subagentTools[payload.ToolName] {
+		resolvedTool := inferGeminiToolName(payload.ToolName, payload.ToolInput)
+		if subagentTools[resolvedTool] {
 			event.Type = hooks.SubagentCompleted
 			event.ToolName = "Agent"
-			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, payload.ToolName, payload.ToolInput)
-		} else if stateAlteringTools[payload.ToolName] {
+			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, resolvedTool, payload.ToolInput)
+		} else if stateAlteringTools[resolvedTool] {
 			event.Type = hooks.ToolStepCompleted
-			event.ToolName = normalizeGeminiToolName(payload.ToolName)
-			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, payload.ToolName, payload.ToolInput)
+			event.ToolName = normalizeGeminiToolName(resolvedTool)
+			event.ToolUseID = syntheticToolUseID(payload.SessionID, event.Timestamp, resolvedTool, payload.ToolInput)
 		} else {
 			return nil, nil
 		}
@@ -368,12 +407,19 @@ func syntheticToolUseID(sessionID string, ts int64, toolName string, toolInput j
 	return "gemini-step-" + hex.EncodeToString(hh.Sum(nil))[:16]
 }
 
-// DeriveProviderSessionID returns the session ID as stored in the DB,
-// derived from the transcript filename (e.g., "session-2026-03-24T20-29-7b235c78").
-// This is needed because Gemini hook payloads send raw UUIDs but ReadFromOffset
-// uses the transcript filename stem as the provider session ID.
+// DeriveProviderSessionID returns the DB session key for a transcript.
+// JSONL transcripts carry a header sessionId; older transcripts fall
+// back to the filename stem.
 func (p *Provider) DeriveProviderSessionID(transcriptRef string) string {
-	return agentgemini.ExtractSessionID(transcriptRef)
+	data, err := os.ReadFile(transcriptRef)
+	if err != nil {
+		return agentgemini.ExtractSessionID(transcriptRef)
+	}
+	t, err := agentgemini.ParseTranscript(data)
+	if err != nil {
+		return agentgemini.ExtractSessionID(transcriptRef)
+	}
+	return agentgemini.SessionIDFromTranscript(t, transcriptRef)
 }
 
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
@@ -406,7 +452,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 		return nil, offset, nil
 	}
 
-	providerSessionID := agentgemini.ExtractSessionID(transcriptRef)
+	providerSessionID := agentgemini.SessionIDFromTranscript(t, transcriptRef)
 
 	model := hooks.ModelFromContext(ctx)
 
@@ -442,6 +488,11 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 
 		summary := agentgemini.Truncate(msg.Content, 200)
 		tus := agentgemini.ExtractToolUses(msg)
+		// Gemini may store tool-call paths relative to the session CWD.
+		// Resolve before serialization so replay routes like direct hooks.
+		for j := range tus {
+			tus[j].FilePath = resolveGeminiFilePath(sourceProjectPath, tus[j].FilePath)
+		}
 
 		var contentTypes []string
 		if msg.Content != "" {

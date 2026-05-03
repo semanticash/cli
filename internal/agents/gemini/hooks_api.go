@@ -1,6 +1,9 @@
 package gemini
 
-import "database/sql"
+import (
+	"database/sql"
+	"io"
+)
 
 // GeminiTranscript aliases geminiTranscript for hook integration.
 type GeminiTranscript = geminiTranscript
@@ -34,4 +37,16 @@ func Truncate(s string, max int) string {
 // ExtractSessionID extracts a session ID from a Gemini session file path.
 func ExtractSessionID(sourceKey string) string {
 	return extractSessionID(sourceKey)
+}
+
+// SessionIDFromTranscript prefers a transcript-provided sessionId and
+// falls back to the filename-derived ID.
+func SessionIDFromTranscript(t *GeminiTranscript, sourceKey string) string {
+	return sessionIDFromTranscript(t, sourceKey)
+}
+
+// ReadSessionIDFromHeader returns the JSONL header sessionId from the
+// first non-empty line, or "" when no header is present.
+func ReadSessionIDFromHeader(r io.Reader) string {
+	return readSessionIDFromHeader(r)
 }
