@@ -212,10 +212,10 @@ Semantica installs the following hooks in `.github/hooks/semantica.json`:
 
 - **`userPromptSubmitted`** - Saves the current transcript offset and records the prompt.
 - **`preToolUse`** - Captures subagent prompt boundaries before `task` delegation.
-- **`postToolUse`** - Captures direct file, shell, and task completion provenance.
+- **`postToolUse`** - Captures direct file and shell provenance for `create`, `edit`, and `bash`.
 - **`agentStop`** - Replays the transcript from the saved offset and packages the completed turn.
 - **`sessionStart`** / **`sessionEnd`** - Lifecycle tracking and final flush.
-- **`subagentStop`** - Optional extra subagent metadata when the CLI emits it.
+- **`subagentStop`** - Captures the canonical subagent completion boundary.
 
 Copilot CLI uses direct hook provenance for:
 
@@ -224,11 +224,12 @@ Copilot CLI uses direct hook provenance for:
 - **`bash`** -> `Bash`
 - **`task`** -> `Agent`
 
-The `task` tool is the main delegated-work signal in the current Copilot CLI surface. Transcript replay remains in place as a fallback and as an additional source of session context.
+The `task` tool provides the delegated-work prompt at dispatch time. Copilot reports completion through `subagentStop`; transcript replay remains in place as a fallback and as an additional source of session context.
 
 ### Limitations
 
-- Copilot delegated work is currently modeled from `task` hooks, not from a Claude-style child transcript model.
+- Copilot runs sub-tasks in-process. Subagent inner tool calls (file reads, edits, shell commands made inside a `task`-delegated agent) are not persisted by Copilot anywhere readable, so attribution captures only the dispatch prompt and the completion boundary. Direct user-driven edits get full line-level attribution.
+- `subagentStop` is the canonical subagent completion boundary. The `task` post-tool-use hook is a dispatch acknowledgement and does not emit a separate completion event.
 - `toolArgs` can arrive either as a JSON string or as a structured object, so the provider normalizes both shapes before capture.
 
 ---
