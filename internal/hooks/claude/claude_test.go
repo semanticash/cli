@@ -33,8 +33,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 10 {
-		t.Errorf("count: got %d, want 10", count)
+	if count != 9 {
+		t.Errorf("count: got %d, want 9", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
@@ -74,8 +74,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		}
 	}
 
-	// PostToolUse should have matchers for Task, Agent, Write, Edit, Bash.
-	expectedMatchers := map[string]bool{"Task": false, "Agent": false, "Write": false, "Edit": false, "Bash": false}
+	// PostToolUse should have matchers for Agent, Write, Edit, Bash.
+	expectedMatchers := map[string]bool{"Agent": false, "Write": false, "Edit": false, "Bash": false}
 	for _, m := range hooksMap["PostToolUse"] {
 		for _, h := range m.Hooks {
 			if strings.Contains(h.Command, semanticaMarker) {
@@ -130,8 +130,8 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 			}
 		}
 	}
-	if total != 10 {
-		t.Errorf("total semantica hooks after double install: got %d, want 10", total)
+	if total != 9 {
+		t.Errorf("total semantica hooks after double install: got %d, want 9", total)
 	}
 }
 
@@ -346,22 +346,6 @@ func TestParseHookEvent_Stop(t *testing.T) {
 	}
 	if event.Type != hooks.AgentCompleted {
 		t.Errorf("type: got %v, want AgentCompleted", event.Type)
-	}
-}
-
-func TestParseHookEvent_PostTask(t *testing.T) {
-	p := &Provider{}
-	input := `{"session_id":"sess-123","transcript_path":"/path/to/transcript.jsonl","tool_use_id":"tu-456"}`
-
-	event, err := p.ParseHookEvent(context.Background(), "post-task", strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if event.Type != hooks.SubagentCompleted {
-		t.Errorf("type: got %v, want SubagentCompleted", event.Type)
-	}
-	if event.ToolUseID != "tu-456" {
-		t.Errorf("tool_use_id: got %q", event.ToolUseID)
 	}
 }
 
