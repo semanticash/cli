@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Gemini CLI direct hooks and transcript replay now use the same provider session ID when JSONL transcripts expose a header session ID.
+- Claude Code hook installation no longer registers the obsolete `PostToolUse[Task]` capture hook.
 
 ## [0.3.7] - 2026-04-30
 

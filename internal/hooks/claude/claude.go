@@ -95,7 +95,6 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	}{
 		{"UserPromptSubmit", "", hooks.GuardedCommand(bin, "capture claude-code user-prompt-submit")},
 		{"Stop", "", hooks.GuardedCommand(bin, "capture claude-code stop")},
-		{"PostToolUse", "Task", hooks.GuardedCommand(bin, "capture claude-code post-task")},
 		{"PreToolUse", "Agent", hooks.GuardedCommand(bin, "capture claude-code pre-agent")},
 		{"PostToolUse", "Agent", hooks.GuardedCommand(bin, "capture claude-code post-agent")},
 		{"PostToolUse", "Write", hooks.GuardedCommand(bin, "capture claude-code post-write")},
@@ -373,7 +372,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		event.Type = hooks.PromptSubmitted
 	case "stop":
 		event.Type = hooks.AgentCompleted
-	case "post-task", "post-agent":
+	case "post-agent":
 		event.Type = hooks.SubagentCompleted
 		event.ToolUseID = payload.ToolUseID
 	case "pre-agent":
