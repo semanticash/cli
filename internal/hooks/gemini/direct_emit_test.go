@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -223,16 +224,19 @@ func TestBuildHookEvents_WriteMissingPath(t *testing.T) {
 }
 
 // TestBuildHookEvents_Write_RelativePathResolved covers relative
-// file_path values from Gemini hook payloads.
+// file_path values from Gemini hook payloads. Expected paths are
+// computed via filepath.Join so the assertions match OS-native
+// separators on Windows as well as POSIX hosts.
 func TestBuildHookEvents_Write_RelativePathResolved(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
+	cwd := filepath.FromSlash("/repo")
 	event := &hooks.Event{
 		Type:          hooks.ToolStepCompleted,
 		SessionID:     "sess-gemini-1",
 		ToolName:      "Write",
-		CWD:           "/repo",
+		CWD:           cwd,
 		ToolInput:     json.RawMessage(`{"file_path":"src/a.go","content":"package main\n"}`),
 		TranscriptRef: geminiTranscriptRef,
 		Timestamp:     1000,
@@ -246,12 +250,24 @@ func TestBuildHookEvents_Write_RelativePathResolved(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 
+	wantPath := filepath.Join(cwd, "src", "a.go")
 	ev := events[0]
-	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "/repo/src/a.go" {
-		t.Errorf("file_paths = %v, want [/repo/src/a.go]", ev.FilePaths)
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantPath {
+		t.Errorf("file_paths = %v, want [%s]", ev.FilePaths, wantPath)
 	}
-	if !strings.Contains(ev.ToolUsesJSON, `/repo/src/a.go`) {
-		t.Errorf("tool_uses should contain resolved path, got %q", ev.ToolUsesJSON)
+
+	// Parse tool_uses structurally so the assertion is independent of
+	// JSON-escaped path separator differences across platforms.
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
 	}
 
 	// The scorer payload should use the same resolved path as routing.
@@ -267,8 +283,8 @@ func TestBuildHookEvents_Write_RelativePathResolved(t *testing.T) {
 	if err := json.Unmarshal(bs.stored[ev.PayloadHash], &payload); err != nil {
 		t.Fatalf("unmarshal payload blob: %v", err)
 	}
-	if len(payload.Message.Content) != 1 || payload.Message.Content[0].Input.FilePath != "/repo/src/a.go" {
-		t.Errorf("synthesized payload file_path = %+v, want /repo/src/a.go", payload.Message.Content)
+	if len(payload.Message.Content) != 1 || payload.Message.Content[0].Input.FilePath != wantPath {
+		t.Errorf("synthesized payload file_path = %+v, want %s", payload.Message.Content, wantPath)
 	}
 }
 
@@ -330,11 +346,12 @@ func TestBuildHookEvents_Edit_RelativePathResolved(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
+	cwd := filepath.FromSlash("/repo")
 	event := &hooks.Event{
 		Type:      hooks.ToolStepCompleted,
 		SessionID: "sess-gemini-1",
 		ToolName:  "Edit",
-		CWD:       "/repo",
+		CWD:       cwd,
 		ToolInput: json.RawMessage(`{"file_path":"pkg/x/y.go","old_string":"foo","new_string":"bar"}`),
 	}
 
@@ -345,12 +362,22 @@ func TestBuildHookEvents_Edit_RelativePathResolved(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
+
+	wantPath := filepath.Join(cwd, "pkg", "x", "y.go")
 	ev := events[0]
-	if ev.FilePaths[0] != "/repo/pkg/x/y.go" {
-		t.Errorf("file_paths = %v, want [/repo/pkg/x/y.go]", ev.FilePaths)
+	if ev.FilePaths[0] != wantPath {
+		t.Errorf("file_paths = %v, want [%s]", ev.FilePaths, wantPath)
 	}
-	if !strings.Contains(ev.ToolUsesJSON, `/repo/pkg/x/y.go`) {
-		t.Errorf("tool_uses should contain resolved path, got %q", ev.ToolUsesJSON)
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
 	}
 }
 

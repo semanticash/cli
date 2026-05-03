@@ -726,6 +726,8 @@ func TestReadFromOffset(t *testing.T) {
 
 // TestReadFromOffset_ResolvesRelativeToolPaths ensures transcript
 // replay resolves relative tool-call file paths before routing.
+// Uses filepath.Join for the expected value so the assertion holds
+// on Windows (where filepath.Join produces backslash-separated paths).
 func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
 	dir := t.TempDir()
 
@@ -737,7 +739,8 @@ func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	ctx := context.WithValue(context.Background(), hooks.CWDKey, "/repo")
+	cwd := filepath.FromSlash("/repo")
+	ctx := context.WithValue(context.Background(), hooks.CWDKey, cwd)
 	p := &Provider{}
 	events, _, err := p.ReadFromOffset(ctx, path, 0, nil)
 	if err != nil {
@@ -747,12 +750,21 @@ func TestReadFromOffset_ResolvesRelativeToolPaths(t *testing.T) {
 		t.Fatalf("events: got %d, want 1", len(events))
 	}
 
+	wantPath := filepath.Join(cwd, "src", "a.go")
 	ev := events[0]
-	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "/repo/src/a.go" {
-		t.Errorf("file_paths: got %v, want [/repo/src/a.go]", ev.FilePaths)
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantPath {
+		t.Errorf("file_paths: got %v, want [%s]", ev.FilePaths, wantPath)
 	}
-	if !strings.Contains(ev.ToolUsesJSON, `/repo/src/a.go`) {
-		t.Errorf("tool_uses should contain resolved path, got %q", ev.ToolUsesJSON)
+	var tu struct {
+		Tools []struct {
+			FilePath string `json:"file_path"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(ev.ToolUsesJSON), &tu); err != nil {
+		t.Fatalf("unmarshal tool_uses: %v", err)
+	}
+	if len(tu.Tools) != 1 || tu.Tools[0].FilePath != wantPath {
+		t.Errorf("tool_uses file_path = %+v, want %s", tu.Tools, wantPath)
 	}
 }
 

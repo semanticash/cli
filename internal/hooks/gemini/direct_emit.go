@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/semanticash/cli/internal/agents/api"
 	agentgemini "github.com/semanticash/cli/internal/agents/gemini"
@@ -15,9 +16,16 @@ import (
 )
 
 // resolveGeminiFilePath joins a relative Gemini file_path against CWD.
-// Absolute paths, empty paths, and paths without a CWD are left unchanged.
+// Empty paths, paths without a CWD, OS-native absolute paths, and
+// POSIX-style "/foo" paths are returned unchanged. The POSIX check is
+// important on Windows: Gemini's JSON payloads can serialize forward-
+// slash absolute paths regardless of host OS, and filepath.IsAbs would
+// otherwise treat them as relative and stitch on the CWD.
 func resolveGeminiFilePath(cwd, filePath string) string {
-	if filePath == "" || filepath.IsAbs(filePath) || cwd == "" {
+	if filePath == "" || cwd == "" {
+		return filePath
+	}
+	if filepath.IsAbs(filePath) || strings.HasPrefix(filePath, "/") {
 		return filePath
 	}
 	return filepath.Clean(filepath.Join(cwd, filePath))
