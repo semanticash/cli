@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Gemini CLI transcript support now handles both legacy JSON files and newer JSONL files with header session IDs.
+- Gemini CLI 0.40+ subagent delegation is now captured from `invoke_agent` hooks, including the dispatched agent name and completion state.
 
 ### Fixed
 

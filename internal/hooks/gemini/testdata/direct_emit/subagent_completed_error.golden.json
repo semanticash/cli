@@ -1,6 +1,6 @@
 {
-  "name": "subagent_completed_parts",
-  "description": "Gemini subagent completed with llmContent as an array of {text} objects",
+  "name": "subagent_completed_error",
+  "description": "Gemini 0.40 invoke_agent AfterTool: returnDisplay.state=error (quota / runtime failure)",
   "expected_events": [
     {
       "EventID": "21ce38cb2bfa2b0c24fd84d7dcd667740578926e04215639d366caf6ccf597c7",
@@ -10,8 +10,8 @@
       "Kind": "assistant",
       "Role": "assistant",
       "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Agent\",\"file_op\":\"exec\"}]}",
-      "Summary": "Analyzed payments: one bug in retry logic",
-      "PayloadHash": "af7804e3f18e2ddfd72ab606eac5e4cc5b4426dcea8098598913f7164738c7b1",
+      "Summary": "codebase_investigator subagent error",
+      "PayloadHash": "6f65ebaa2d37ac62f51db6ca32bc3e0c244836594cb8f0d687e52b4d12154655",
       "TokensIn": 0,
       "TokensOut": 0,
       "TokensCacheRead": 0,
@@ -23,7 +23,7 @@
       "ToolUseID": "gemini-agent-2",
       "ToolName": "Agent",
       "EventSource": "hook",
-      "ProvenanceHash": "ce885856eb4115c03856cb25f925245bd39939121c2e5c2386cc5b8e2784b727",
+      "ProvenanceHash": "2ed95a939549e6da9d837fa6939dceea6724721c4ad4d75649583160e2b3213c",
       "ProviderSessionID": "transcript",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000060000,
@@ -33,7 +33,7 @@
     }
   ],
   "expected_blobs": {
-    "af7804e3f18e2ddfd72ab606eac5e4cc5b4426dcea8098598913f7164738c7b1": "{\"message\":{\"content\":[{\"input\":{\"request\":\"Analyze payments/\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
-    "ce885856eb4115c03856cb25f925245bd39939121c2e5c2386cc5b8e2784b727": "{\"tool_input\":{\"request\":\"Analyze payments/\"},\"tool_response\":{\"llmContent\":[{\"text\":\"Analyzed payments: one bug in retry logic\"}]}}"
+    "2ed95a939549e6da9d837fa6939dceea6724721c4ad4d75649583160e2b3213c": "{\"tool_input\":{\"prompt\":\"Analyze payments/\",\"agent_name\":\"codebase_investigator\"},\"tool_response\":{\"llmContent\":\"Subagent 'codebase_investigator' failed. Error: ...\",\"returnDisplay\":{\"isSubagentProgress\":true,\"agentName\":\"codebase_investigator\",\"state\":\"error\"}}}",
+    "6f65ebaa2d37ac62f51db6ca32bc3e0c244836594cb8f0d687e52b4d12154655": "{\"message\":{\"content\":[{\"input\":{\"agent_name\":\"codebase_investigator\",\"prompt\":\"Analyze payments/\",\"state\":\"error\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
   }
 }

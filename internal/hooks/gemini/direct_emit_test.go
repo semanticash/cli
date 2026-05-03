@@ -549,6 +549,8 @@ func TestBuildHookEvents_UnknownTool(t *testing.T) {
 
 // --- Subagent prompts and completions ---
 
+// TestBuildHookEvents_SubagentPrompt covers the Gemini 0.40+
+// invoke_agent before-tool payload.
 func TestBuildHookEvents_SubagentPrompt(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
@@ -559,7 +561,7 @@ func TestBuildHookEvents_SubagentPrompt(t *testing.T) {
 		TurnID:        "turn-1",
 		ToolUseID:     "gemini-agent-1",
 		ToolName:      "Agent",
-		ToolInput:     json.RawMessage(`{"request":"Review the auth package"}`),
+		ToolInput:     json.RawMessage(`{"prompt":"Review the auth package","agent_name":"codebase_investigator"}`),
 		TranscriptRef: geminiTranscriptRef,
 	}
 
@@ -575,8 +577,8 @@ func TestBuildHookEvents_SubagentPrompt(t *testing.T) {
 	if ev.ToolName != "Agent" {
 		t.Errorf("tool_name = %q, want Agent", ev.ToolName)
 	}
-	if !strings.Contains(ev.Summary, "Review the auth package") {
-		t.Errorf("summary should contain the subagent request, got %q", ev.Summary)
+	if ev.Summary != "Review the auth package" {
+		t.Errorf("summary = %q, want the prompt text", ev.Summary)
 	}
 	if ev.PayloadHash == "" {
 		t.Error("expected non-empty payload_hash for subagent prompt")
@@ -586,41 +588,54 @@ func TestBuildHookEvents_SubagentPrompt(t *testing.T) {
 	}
 }
 
-func TestBuildHookEvents_SubagentPromptEmptyRequest(t *testing.T) {
+// TestBuildHookEvents_SubagentPromptMissingPrompt requires prompt.
+func TestBuildHookEvents_SubagentPromptMissingPrompt(t *testing.T) {
 	p := &Provider{}
-	// Missing request field yields no events, mirroring the empty-prompt rule.
-	event := &hooks.Event{
-		Type:      hooks.SubagentPromptSubmitted,
-		SessionID: "sess-gemini-1",
-		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{}`),
-	}
 
-	events, err := p.BuildHookEvents(context.Background(), event, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"empty object", `{}`},
+		{"only agent_name", `{"agent_name":"codebase_investigator"}`},
+		{"empty prompt", `{"prompt":"","agent_name":"x"}`},
+		// Earlier Gemini subagent shapes are not accepted here.
+		{"legacy request field", `{"request":"Do something"}`},
 	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for empty request, got %d", len(events))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := &hooks.Event{
+				Type:      hooks.SubagentPromptSubmitted,
+				SessionID: "sess-gemini-1",
+				ToolName:  "Agent",
+				ToolInput: json.RawMessage(tc.input),
+			}
+			events, err := p.BuildHookEvents(context.Background(), event, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(events) != 0 {
+				t.Errorf("expected 0 events, got %d", len(events))
+			}
+		})
 	}
 }
 
-func TestBuildHookEvents_SubagentCompleted(t *testing.T) {
+// TestBuildHookEvents_SubagentCompletedSuccess covers the structured
+// returnDisplay state used by invoke_agent completions.
+func TestBuildHookEvents_SubagentCompletedSuccess(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// Gemini surfaces the result text from tool_response.llmContent.
-	// Cover the string-valued shape here; the parts-array shape has its
-	// own test below.
 	event := &hooks.Event{
 		Type:      hooks.SubagentCompleted,
 		SessionID: "sess-gemini-1",
 		TurnID:    "turn-1",
 		ToolUseID: "gemini-agent-1",
 		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{"request":"Review the auth package"}`),
+		ToolInput: json.RawMessage(`{"prompt":"Review the auth package","agent_name":"codebase_investigator"}`),
 		ToolResponse: json.RawMessage(
-			`{"llmContent":"Reviewed: found two issues in auth/session.go"}`,
+			`{"llmContent":"Reviewed: found two issues in auth/session.go","returnDisplay":{"isSubagentProgress":true,"agentName":"codebase_investigator","state":"success"}}`,
 		),
 		TranscriptRef: geminiTranscriptRef,
 	}
@@ -637,35 +652,50 @@ func TestBuildHookEvents_SubagentCompleted(t *testing.T) {
 	if ev.ToolName != "Agent" {
 		t.Errorf("tool_name = %q, want Agent", ev.ToolName)
 	}
-	if ev.Summary != "Reviewed: found two issues in auth/session.go" {
-		t.Errorf("summary = %q, want the llmContent text", ev.Summary)
-	}
-	if ev.PayloadHash == "" {
-		t.Error("expected non-empty payload_hash")
-	}
-	if ev.ProvenanceHash == "" {
-		t.Error("expected non-empty provenance_hash")
+	if ev.Summary != "codebase_investigator subagent success" {
+		t.Errorf("summary = %q, want '<agent> subagent <state>' phrasing", ev.Summary)
 	}
 	if !strings.Contains(ev.ToolUsesJSON, `"Agent"`) {
 		t.Errorf("tool_uses should contain Agent, got %q", ev.ToolUsesJSON)
 	}
+
+	// Synthesized payload keeps the renderable subagent fields together.
+	var payload struct {
+		Message struct {
+			Content []struct {
+				Input struct {
+					Prompt    string `json:"prompt"`
+					AgentName string `json:"agent_name"`
+					State     string `json:"state"`
+				} `json:"input"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bs.stored[ev.PayloadHash], &payload); err != nil {
+		t.Fatalf("unmarshal payload blob: %v", err)
+	}
+	if len(payload.Message.Content) != 1 {
+		t.Fatalf("payload content length = %d, want 1", len(payload.Message.Content))
+	}
+	got := payload.Message.Content[0].Input
+	if got.Prompt != "Review the auth package" || got.AgentName != "codebase_investigator" || got.State != "success" {
+		t.Errorf("synthesized payload input = %+v, want prompt/agent_name/state populated", got)
+	}
 }
 
-func TestBuildHookEvents_SubagentCompletedPartsShape(t *testing.T) {
+// TestBuildHookEvents_SubagentCompletedError covers an errored
+// invoke_agent completion.
+func TestBuildHookEvents_SubagentCompletedError(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// llmContent can be an array of {text, ...} objects when the model
-	// emits structured output. The first text entry is used as the summary.
 	event := &hooks.Event{
 		Type:      hooks.SubagentCompleted,
 		SessionID: "sess-gemini-1",
-		TurnID:    "turn-1",
-		ToolUseID: "gemini-agent-2",
 		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{"request":"Analyze payments/"}`),
+		ToolInput: json.RawMessage(`{"prompt":"Analyze payments/","agent_name":"codebase_investigator"}`),
 		ToolResponse: json.RawMessage(
-			`{"llmContent":[{"text":"Analyzed payments: one bug in retry logic"}]}`,
+			`{"llmContent":"Subagent 'codebase_investigator' failed.","returnDisplay":{"isSubagentProgress":true,"agentName":"codebase_investigator","state":"error"}}`,
 		),
 	}
 
@@ -676,22 +706,22 @@ func TestBuildHookEvents_SubagentCompletedPartsShape(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Summary != "Analyzed payments: one bug in retry logic" {
-		t.Errorf("summary = %q, want the first parts text", events[0].Summary)
+	if events[0].Summary != "codebase_investigator subagent error" {
+		t.Errorf("summary = %q, want error-state phrasing", events[0].Summary)
 	}
 }
 
+// TestBuildHookEvents_SubagentCompletedNoResponse keeps empty
+// completions renderable.
 func TestBuildHookEvents_SubagentCompletedNoResponse(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// When tool_response is absent, the provider falls back to a
-	// neutral placeholder summary rather than leaving the field empty.
 	event := &hooks.Event{
 		Type:      hooks.SubagentCompleted,
 		SessionID: "sess-gemini-1",
 		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{"request":"Do something"}`),
+		ToolInput: json.RawMessage(`{"prompt":"Do something","agent_name":"codebase_investigator"}`),
 	}
 
 	events, err := p.BuildHookEvents(context.Background(), event, bs)
@@ -701,8 +731,31 @@ func TestBuildHookEvents_SubagentCompletedNoResponse(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Summary == "" {
-		t.Error("expected a non-empty fallback summary")
+	if events[0].Summary != "Gemini subagent completed" {
+		t.Errorf("summary = %q, want neutral placeholder", events[0].Summary)
+	}
+}
+
+// TestBuildHookEvents_SubagentCompletedLLMContentFallback uses
+// llmContent when structured state is absent.
+func TestBuildHookEvents_SubagentCompletedLLMContentFallback(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	event := &hooks.Event{
+		Type:         hooks.SubagentCompleted,
+		SessionID:    "sess-gemini-1",
+		ToolName:     "Agent",
+		ToolInput:    json.RawMessage(`{"prompt":"Do something"}`),
+		ToolResponse: json.RawMessage(`{"llmContent":"Analyzed payments: one bug in retry logic"}`),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if events[0].Summary != "Analyzed payments: one bug in retry logic" {
+		t.Errorf("summary = %q, want llmContent text", events[0].Summary)
 	}
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "subagent_prompt",
-  "description": "Gemini subagent prompt using the `request` field",
+  "description": "Gemini 0.40 invoke_agent BeforeTool: prompt + agent_name",
   "expected_events": [
     {
       "EventID": "fecf6e5f4e96797de9f7e6f15d90b8c772eb0386aa129025e097723d8b9559e1",
@@ -23,7 +23,7 @@
       "ToolUseID": "gemini-agent-1",
       "ToolName": "Agent",
       "EventSource": "hook",
-      "ProvenanceHash": "22dfa61f57a5f726d192c34b0ce8eb8b9eefaef4cd720fd646422bb7efd65820",
+      "ProvenanceHash": "8199a7704963a84d7f78f8b33055de261f5e2e05ed9044ff8e651656884c2f4c",
       "ProviderSessionID": "transcript",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000040000,
@@ -33,7 +33,7 @@
     }
   ],
   "expected_blobs": {
-    "22dfa61f57a5f726d192c34b0ce8eb8b9eefaef4cd720fd646422bb7efd65820": "{\"tool_input\":{\"request\":\"Review the auth package\"}}",
-    "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40": "Review the auth package"
+    "43569f1aee38f5c39aa087ffdfe5f6d9f3516352b0c2900ad5b6159bdab8bf40": "Review the auth package",
+    "8199a7704963a84d7f78f8b33055de261f5e2e05ed9044ff8e651656884c2f4c": "{\"tool_input\":{\"prompt\":\"Review the auth package\",\"agent_name\":\"codebase_investigator\"}}"
   }
 }

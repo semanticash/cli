@@ -1,6 +1,6 @@
 {
-  "name": "subagent_completed_string",
-  "description": "Gemini subagent completed with llmContent as a single string",
+  "name": "subagent_completed_success",
+  "description": "Gemini 0.40 invoke_agent AfterTool: returnDisplay.state=success",
   "expected_events": [
     {
       "EventID": "68d556fe8f896a7718c0c213238a41e82f3b0e50ad4712a0b14af4c844dc8cd2",
@@ -10,8 +10,8 @@
       "Kind": "assistant",
       "Role": "assistant",
       "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Agent\",\"file_op\":\"exec\"}]}",
-      "Summary": "Reviewed: found two issues in auth/session.go",
-      "PayloadHash": "fe0c4dc7592d5941f6403a6d407789567fd0e0fee295f2022ded2dc2113c0fbd",
+      "Summary": "codebase_investigator subagent success",
+      "PayloadHash": "f6151ceeecddf1ae2ca3add51de271d87413ffecc038c4c4a1e25eae6c6ff56f",
       "TokensIn": 0,
       "TokensOut": 0,
       "TokensCacheRead": 0,
@@ -23,7 +23,7 @@
       "ToolUseID": "gemini-agent-1",
       "ToolName": "Agent",
       "EventSource": "hook",
-      "ProvenanceHash": "b3d159858ce55fade3fb0a11de777eaa718c06cd7d459a361b65ff4784234f11",
+      "ProvenanceHash": "18025106ce4178e050ca094383b6612f75fea61adc7f1d1754ae89775938d1f6",
       "ProviderSessionID": "transcript",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000050000,
@@ -33,7 +33,7 @@
     }
   ],
   "expected_blobs": {
-    "b3d159858ce55fade3fb0a11de777eaa718c06cd7d459a361b65ff4784234f11": "{\"tool_input\":{\"request\":\"Review the auth package\"},\"tool_response\":{\"llmContent\":\"Reviewed: found two issues in auth/session.go\"}}",
-    "fe0c4dc7592d5941f6403a6d407789567fd0e0fee295f2022ded2dc2113c0fbd": "{\"message\":{\"content\":[{\"input\":{\"request\":\"Review the auth package\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+    "18025106ce4178e050ca094383b6612f75fea61adc7f1d1754ae89775938d1f6": "{\"tool_input\":{\"prompt\":\"Review the auth package\",\"agent_name\":\"codebase_investigator\"},\"tool_response\":{\"llmContent\":\"Reviewed: found two issues in auth/session.go\",\"returnDisplay\":{\"isSubagentProgress\":true,\"agentName\":\"codebase_investigator\",\"state\":\"success\"}}}",
+    "f6151ceeecddf1ae2ca3add51de271d87413ffecc038c4c4a1e25eae6c6ff56f": "{\"message\":{\"content\":[{\"input\":{\"agent_name\":\"codebase_investigator\",\"prompt\":\"Review the auth package\",\"state\":\"success\"},\"name\":\"Agent\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
   }
 }

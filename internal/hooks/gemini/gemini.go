@@ -260,8 +260,9 @@ var stateAlteringTools = map[string]bool{
 }
 
 // subagentTools are Gemini tool names for subagent delegation.
+// Gemini 0.40+ dispatches subagents through invoke_agent.
 var subagentTools = map[string]bool{
-	"generalist": true,
+	"invoke_agent": true,
 }
 
 // inferGeminiToolName returns the hook tool name, falling back to
