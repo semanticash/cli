@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Gemini CLI 0.40+ file-edit hook payloads are now normalized so `write_file` and `replace` events route to the correct repo and contribute line-level attribution.
 - Gemini CLI transcript replay now resolves relative tool-call paths against the captured session working directory before routing replayed events.
+- Copilot CLI `task` post-tool hooks no longer emit duplicate subagent completion events; `subagentStop` is now the canonical completion boundary.
 - Provider hook settings are now written without HTML-escaping shell redirection characters, keeping generated hook commands readable in settings files.
 
 ### Changed

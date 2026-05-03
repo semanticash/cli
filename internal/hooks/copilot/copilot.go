@@ -270,16 +270,17 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		if toolName == "" {
 			return nil, nil
 		}
+		// task post-tool-use is only the dispatch acknowledgement.
+		// subagent-stop is the completion boundary.
+		if toolName == "Agent" {
+			return nil, nil
+		}
 		event.TranscriptRef = payload.transcriptRef()
 		event.ToolName = toolName
 		event.ToolUseID = syntheticCopilotToolUseID(payload.SessionID, payload.Timestamp, payload.ToolName, payload.ToolArgs)
 		event.ToolInput = normalizeEmbeddedJSON(payload.ToolArgs)
 		event.ToolResponse = normalizeEmbeddedJSON(payload.ToolResult)
-		if toolName == "Agent" {
-			event.Type = hooks.SubagentCompleted
-		} else {
-			event.Type = hooks.ToolStepCompleted
-		}
+		event.Type = hooks.ToolStepCompleted
 	case "agent-stop":
 		event.Type = hooks.AgentCompleted
 		event.TranscriptRef = payload.transcriptRef()

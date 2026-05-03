@@ -354,6 +354,8 @@ func TestParseHookEvent_PostToolUseEdit(t *testing.T) {
 	}
 }
 
+// TestParseHookEvent_PostToolUseTask keeps dispatch acknowledgements
+// from becoming duplicate completion events.
 func TestParseHookEvent_PostToolUseTask(t *testing.T) {
 	p := &Provider{}
 	input := `{
@@ -362,18 +364,15 @@ func TestParseHookEvent_PostToolUseTask(t *testing.T) {
 		"cwd":"/projects/test",
 		"toolName":"task",
 		"toolArgs":{"description":"Create JSON","prompt":"Do the work","agent_type":"general-purpose","name":"json-creator"},
-		"toolResult":{"resultType":"success","textResultForLlm":"Created file"}
+		"toolResult":{"resultType":"success","textResultForLlm":"Agent started in background with agent_id: json-creator."}
 	}`
 
 	event, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(input))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if event.Type != hooks.SubagentCompleted {
-		t.Fatalf("type: got %v, want SubagentCompleted", event.Type)
-	}
-	if event.ToolName != "Agent" {
-		t.Fatalf("tool_name: got %q, want Agent", event.ToolName)
+	if event != nil {
+		t.Errorf("expected nil event for post-tool-use of task, got %+v", event)
 	}
 }
 
