@@ -435,10 +435,12 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 	parentRef := event.TranscriptRef
 	var turnStartedAt int64
 	var parentCWD string
+	var parentTurnID string
 	if state, err := LoadCaptureState(event.SessionID); err == nil {
 		parentRef = state.TranscriptRef
 		turnStartedAt = state.PromptSubmittedAt
 		parentCWD = state.CWD
+		parentTurnID = state.TurnID
 	}
 	if parentCWD == "" {
 		parentCWD = event.CWD
@@ -475,7 +477,7 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 	}
 
 	for _, path := range paths {
-		ok := captureOneSubagent(ctx, provider, disc, path, event.SessionID, turnStartedAt, bs, blobStore, repos)
+		ok := captureOneSubagent(ctx, provider, disc, path, event.SessionID, parentTurnID, turnStartedAt, bs, blobStore, repos)
 		if !ok {
 			failedKeys = append(failedKeys, disc.SubagentStateKey(path))
 		}
@@ -484,13 +486,17 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 }
 
 // captureOneSubagent reads one child transcript and advances its offset only
-// after all routed writes succeed.
+// after all routed writes succeed. parentSessionID and parentTurnID are
+// stamped onto every child event whose corresponding fields are empty so
+// the lineage join (parent_session_id) and turn correlation work without
+// providers having to derive parent context themselves.
 func captureOneSubagent(
 	ctx context.Context,
 	provider HookProvider,
 	disc SubagentDiscoverer,
 	transcriptPath string,
 	parentSessionID string,
+	parentTurnID string,
 	turnStartedAt int64,
 	bs api.BlobPutter,
 	blobStore *blobs.Store,
@@ -542,6 +548,15 @@ func captureOneSubagent(
 			slog.Warn("subagent: save state failed", "key", stateKey, "err", err)
 		}
 		return true
+	}
+
+	for i := range events {
+		if events[i].ParentSessionID == "" {
+			events[i].ParentSessionID = parentSessionID
+		}
+		if events[i].TurnID == "" {
+			events[i].TurnID = parentTurnID
+		}
 	}
 
 	if err := routeAndWriteEventsToRepos(ctx, events, repos, blobStore); err != nil {

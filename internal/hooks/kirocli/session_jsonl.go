@@ -51,7 +51,7 @@ type kiroAssistantToolUse struct {
 // kiroToolResults carries the tool output for one or more
 // preceding toolUse blocks, addressed by toolUseId.
 type kiroToolResults struct {
-	MessageID string             `json:"message_id"`
+	MessageID string               `json:"message_id"`
 	Content   []kiroToolResContent `json:"content"`
 }
 
@@ -78,9 +78,15 @@ var kiroSessionToolNameAccepted = map[string]bool{
 }
 
 // readKiroSessionJSONL parses a Kiro CLI session JSONL file and
-// returns accepted tool calls plus the number of lines consumed.
-// Malformed and unsupported lines are skipped. They still count
-// toward the returned line count so offsets advance consistently.
+// returns accepted tool calls plus a safe resume offset.
+//
+// The returned offset is the highest line number whose JSON parsed
+// successfully (or was empty). Trailing lines that failed to parse
+// are intentionally excluded so a still-flushing partial line on one
+// pass becomes readable on the next pass without losing the call it
+// describes. Malformed lines in the middle of the stream do not
+// suppress later lines from advancing the offset, only their own
+// position.
 //
 // The reader matches ToolResults to AssistantMessage tool uses by
 // toolUseId. If a ToolResults line appears without a preceding
@@ -113,18 +119,24 @@ func parseKiroSessionJSONL(r io.Reader) ([]kiroSessionToolCall, int, error) {
 	var calls []kiroSessionToolCall
 
 	lineNum := 0
+	lastGoodLine := 0
 	for scanner.Scan() {
 		lineNum++
 		raw := scanner.Bytes()
 		if len(raw) == 0 {
+			lastGoodLine = lineNum
 			continue
 		}
 
 		var line kiroSessionLine
 		if err := json.Unmarshal(raw, &line); err != nil {
-			// Best-effort: skip malformed lines without aborting.
+			// Skip malformed lines without aborting and without
+			// advancing the safe offset. A trailing partial line
+			// will become valid on a later pass; advancing past
+			// it now would skip the call it carries.
 			continue
 		}
+		lastGoodLine = lineNum
 
 		switch line.Kind {
 		case "AssistantMessage":
@@ -179,8 +191,8 @@ func parseKiroSessionJSONL(r io.Reader) ([]kiroSessionToolCall, int, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, lineNum, fmt.Errorf("scan kiro session jsonl: %w", err)
+		return nil, lastGoodLine, fmt.Errorf("scan kiro session jsonl: %w", err)
 	}
 
-	return calls, lineNum, nil
+	return calls, lastGoodLine, nil
 }

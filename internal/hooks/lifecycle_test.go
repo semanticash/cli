@@ -617,6 +617,119 @@ func TestSubagentCompleted_ScansChildTranscripts(t *testing.T) {
 	}
 }
 
+// Child events without parent linkage are stamped from lifecycle
+// capture state before routing.
+func TestSubagentCompleted_StampsParentSessionAndTurn(t *testing.T) {
+	setupTestCaptureDir(t)
+
+	// readSequence keeps parent capture (call 1) empty so it exits
+	// before broker writes, while the child read (call 2) returns the
+	// event the test is going to inspect post-stamp. The slice header
+	// is shared, so the lifecycle's in-place stamping is visible to
+	// the test through readSequence[1].events[0].
+	childEvents := []broker.RawEvent{
+		{
+			ProviderSessionID: "child-uuid",
+			ToolName:          "Write",
+			EventSource:       "transcript",
+		},
+	}
+
+	prov := &fakeSubagentProvider{
+		fakeProvider: fakeProvider{
+			name:             "test",
+			transcriptOffset: 5,
+			readSequence: []fakeReadResult{
+				{events: nil, offset: 5},         // parent capture call
+				{events: childEvents, offset: 5}, // child capture call
+			},
+		},
+		subagentPaths: []string{"/project/parent-uuid/subagents/child.jsonl"},
+	}
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:     "parent-sess",
+		Provider:      "test",
+		TranscriptRef: "/project/parent-uuid.jsonl",
+		Timestamp:     1000,
+		TurnID:        "turn-parent",
+	}); err != nil {
+		t.Fatalf("save capture state: %v", err)
+	}
+
+	event := &Event{
+		Type:          SubagentCompleted,
+		SessionID:     "parent-sess",
+		TranscriptRef: "/project/parent-uuid.jsonl",
+	}
+
+	if err := Dispatch(context.Background(), prov, event, nil, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	if got := childEvents[0].ParentSessionID; got != "parent-sess" {
+		t.Errorf("ParentSessionID = %q, want parent-sess", got)
+	}
+	if got := childEvents[0].TurnID; got != "turn-parent" {
+		t.Errorf("TurnID = %q, want turn-parent", got)
+	}
+	if got := childEvents[0].ProviderSessionID; got != "child-uuid" {
+		t.Errorf("ProviderSessionID = %q, want child-uuid (stamping must be additive only)", got)
+	}
+}
+
+// Provider-supplied parent linkage is preserved when already present.
+func TestSubagentCompleted_DoesNotOverstampParent(t *testing.T) {
+	setupTestCaptureDir(t)
+
+	childEvents := []broker.RawEvent{
+		{
+			ProviderSessionID: "child-uuid",
+			ParentSessionID:   "provider-set-parent",
+			TurnID:            "provider-set-turn",
+			ToolName:          "Write",
+		},
+	}
+
+	prov := &fakeSubagentProvider{
+		fakeProvider: fakeProvider{
+			name:             "test",
+			transcriptOffset: 5,
+			readSequence: []fakeReadResult{
+				{events: nil, offset: 5},
+				{events: childEvents, offset: 5},
+			},
+		},
+		subagentPaths: []string{"/project/parent-uuid/subagents/child.jsonl"},
+	}
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:     "parent-sess",
+		Provider:      "test",
+		TranscriptRef: "/project/parent-uuid.jsonl",
+		TurnID:        "turn-parent",
+	}); err != nil {
+		t.Fatalf("save capture state: %v", err)
+	}
+
+	event := &Event{
+		Type:          SubagentCompleted,
+		SessionID:     "parent-sess",
+		TranscriptRef: "/project/parent-uuid.jsonl",
+	}
+
+	if err := Dispatch(context.Background(), prov, event, nil, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	if got := childEvents[0].ParentSessionID; got != "provider-set-parent" {
+		t.Errorf("ParentSessionID = %q, want provider-set-parent (must not overstamp)", got)
+	}
+	if got := childEvents[0].TurnID; got != "provider-set-turn" {
+		t.Errorf("TurnID = %q, want provider-set-turn (must not overstamp)", got)
+	}
+}
+
 func TestSubagentCompleted_OldChildTranscriptStartsAtEOF(t *testing.T) {
 	setupTestCaptureDir(t)
 

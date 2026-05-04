@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Gemini CLI transcript support now handles both legacy JSON files and newer JSONL files with header session IDs.
 - Gemini CLI 0.40+ subagent delegation is now captured from `invoke_agent` hooks, including the dispatched agent name and completion state.
 - Kiro CLI 2.2 capture now installs a repo-local `semantica` agent profile with matched hooks for prompt, file-edit, shell, and session-boundary events.
+- Kiro CLI 2.2 AgentCrew subagent dispatches and completion boundaries are now captured from `subagent` hooks.
+- Kiro CLI AgentCrew child JSONL sessions are now discovered and replayed when discovery can link them unambiguously to a parent turn.
 
 ### Fixed
 
@@ -28,12 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Copilot CLI `task` post-tool hooks no longer emit duplicate subagent completion events; `subagentStop` is now the canonical completion boundary.
 - Provider hook settings are now written without HTML-escaping shell redirection characters, keeping generated hook commands readable in settings files.
 - Kiro CLI 2.2 `write` and `shell` payloads are now normalized into `Write`, `Edit`, and `Bash` events with repo-relative paths resolved before routing.
+- Kiro CLI child JSONL replay now keeps trailing partial lines retryable instead of advancing offsets past malformed in-progress writes.
 
 ### Changed
 
 - Gemini CLI direct hooks and transcript replay now use the same provider session ID when JSONL transcripts expose a header session ID.
 - Claude Code hook installation no longer registers the obsolete `PostToolUse[Task]` capture hook.
-- Kiro CLI now treats direct `postToolUse` hooks as the capture source for file and shell operations; transcript replay stays silent to avoid duplicate events with mismatched provider tool IDs.
+- Kiro CLI now treats direct `postToolUse` hooks as the parent capture source for file and shell operations; parent SQLite transcript replay stays disabled to avoid duplicate events with mismatched provider tool IDs.
 
 ## [0.3.7] - 2026-04-30
 

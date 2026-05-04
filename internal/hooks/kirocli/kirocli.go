@@ -452,12 +452,18 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	return len(extractToolCalls(conv)), nil
 }
 
-// ReadFromOffset does not emit replay events for Kiro CLI. Direct
-// postToolUse hooks own file and shell capture.
+// ReadFromOffset branches by transcript-ref shape. Parent refs use
+// the SQLite composite form and stay a no-op: direct postToolUse
+// hooks own parent capture, and emitting both replay and hook events
+// for the same call would duplicate writes (their provider tool IDs
+// disagree, so the broker's dedup index does not catch the overlap).
+// Sub-agent refs are .jsonl paths supplied by the discoverer; those
+// are replayed because no direct-hook surface exists for inner stage
+// edits.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
-	// Replay and direct hooks use different provider tool IDs, so
-	// emitting both would duplicate writes. When parsing succeeds,
-	// advance the offset for a future replay implementation.
+	if looksLikeKiroChildJSONLRef(transcriptRef) {
+		return readChildJSONL(ctx, transcriptRef, offset, bs)
+	}
 	if transcriptRef == "" {
 		return nil, offset, nil
 	}

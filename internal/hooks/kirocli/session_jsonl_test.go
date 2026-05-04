@@ -181,9 +181,51 @@ func TestReadKiroSessionJSONL_OrphanToolResultIsDropped(t *testing.T) {
 	}
 }
 
+func TestReadKiroSessionJSONL_TrailingMalformedDoesNotAdvanceOffset(t *testing.T) {
+	// Kiro is in the middle of writing the third line. The valid
+	// lines on disk parse cleanly, but the trailing partial line
+	// fails json.Unmarshal. The reader keeps the returned offset at
+	// the last complete line so the tool call can be read after the
+	// line finishes flushing.
+	src := kiroSessionLines(
+		kiroLineWriteAssistant,
+		kiroLineWriteResult,
+		`{"version":"v1","kind":"AssistantMessage","data":{`, // truncated mid-write
+	)
+	calls, lineCount, err := parseKiroSessionJSONL(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	if lineCount != 2 {
+		t.Errorf("lineCount = %d, want 2 (must not advance past trailing malformed line)", lineCount)
+	}
+}
+
+func TestReadKiroSessionJSONL_MalformedInMiddleAdvancesPastIt(t *testing.T) {
+	// A malformed line followed by valid lines does not keep the
+	// offset at the line before the malformed one. The safe-offset
+	// rule only affects trailing partial lines.
+	src := kiroSessionLines(
+		kiroLineWriteAssistant,
+		`not valid json`,
+		kiroLineWriteResult,
+	)
+	_, lineCount, err := parseKiroSessionJSONL(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if lineCount != 3 {
+		t.Errorf("lineCount = %d, want 3 (later valid line must advance offset)", lineCount)
+	}
+}
+
 func TestReadKiroSessionJSONL_TolerantOfMalformedLines(t *testing.T) {
 	// A malformed line in the middle of the stream does not abort
-	// the read.
+	// the read; the surrounding valid lines parse and the
+	// AssistantMessage still gets matched to its ToolResults.
 	src := kiroSessionLines(
 		kiroLineWriteAssistant,
 		`not valid json`,
@@ -194,7 +236,7 @@ func TestReadKiroSessionJSONL_TolerantOfMalformedLines(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	if lineCount != 3 {
-		t.Errorf("lineCount = %d, want 3 (malformed line still counted)", lineCount)
+		t.Errorf("lineCount = %d, want 3 (later valid line advances past malformed)", lineCount)
 	}
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
