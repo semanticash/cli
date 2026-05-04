@@ -3,7 +3,6 @@ package kirocli
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -179,7 +178,6 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	return count, nil
 }
 
-
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	configPath := filepath.Join(repoRoot, ".kiro", "agents", "semantica.json")
 	data, err := os.ReadFile(configPath)
@@ -334,19 +332,22 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		}
 	}
 
+	// Conversation lookup is best-effort. Direct postToolUse hooks
+	// own capture, so prompt events must still save capture state
+	// even when the local conversation store is unavailable.
 	resolve := p.resolveConversation
 	if resolve == nil {
 		resolve = resolveLatestConversation
 	}
 	dbPath, convID, err := resolve(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("resolve kiro-cli session: %w", err)
+		return event, nil
 	}
 
-	transcriptRef := buildTranscriptRef(dbPath, convID)
-	event.TranscriptRef = transcriptRef
+	event.TranscriptRef = buildTranscriptRef(dbPath, convID)
 
-	// Record the current fs_write boundary before lifecycle state is saved.
+	// The offset marker is advisory while replay emission is disabled.
+	// Skip it if the conversation cannot be read.
 	if event.Type == hooks.PromptSubmitted {
 		loadFn := p.loadConv
 		if loadFn == nil {
@@ -354,36 +355,39 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		}
 		conv, err := loadFn(dbPath, convID)
 		if err != nil {
-			return nil, fmt.Errorf("load conversation for offset: %w", err)
+			return event, nil
 		}
 		calls := extractToolCalls(conv)
 		lastID := ""
 		if len(calls) > 0 {
 			lastID = calls[len(calls)-1].ID
 		}
-		if err := writeSidecar(wsKey, lastID); err != nil {
-			return nil, fmt.Errorf("write offset sidecar: %w", err)
-		}
+		_ = writeSidecar(wsKey, lastID)
 	}
 
 	return event, nil
 }
 
-// normalizeKiroToolName maps Kiro CLI tool names to normalized Semantica tool names.
+// normalizeKiroToolName maps Kiro CLI hook tool names to canonical
+// Semantica tool names. The write tool covers three sub-commands
+// (create, strReplace, insert) keyed off tool_input.command;
+// strReplace and insert both map to Edit because they produce a
+// before-and-after string pair that the scorer treats uniformly.
+// An empty return drops the event.
 func normalizeKiroToolName(toolName string, toolInput json.RawMessage) string {
 	switch toolName {
-	case "fs_write":
+	case "write":
 		var inp fsWriteInput
 		if json.Unmarshal(toolInput, &inp) == nil {
 			switch inp.Command {
 			case "create":
 				return "Write"
-			case "str_replace":
+			case "strReplace", "insert":
 				return "Edit"
 			}
 		}
-		return "Write" // default for unknown fs_write commands
-	case "execute_bash":
+		return ""
+	case "shell":
 		return "Bash"
 	case "use_subagent", "delegate":
 		return "Agent"
@@ -400,74 +404,41 @@ func syntheticToolUseID(wsKey string, ts int64, toolName string, toolInput json.
 	return "kiro-step-" + hex.EncodeToString(hh.Sum(nil))[:16]
 }
 
-// TranscriptOffset returns the current number of file-writing tool calls in
-// the conversation. ReadFromOffset uses the sidecar marker to select new
-// calls on the stop hook.
+// TranscriptOffset reports the current file-write count when the
+// conversation store can be read. Replay is disabled for Kiro CLI, so
+// unreadable or missing transcript refs degrade to offset 0.
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
+	if transcriptRef == "" {
+		return 0, nil
+	}
 	dbPath, convID, err := parseTranscriptRef(transcriptRef)
 	if err != nil {
-		return 0, err
+		return 0, nil
 	}
 	conv, err := loadConversation(dbPath, convID)
 	if err != nil {
-		return 0, err
+		return 0, nil
 	}
 	return len(extractToolCalls(conv)), nil
 }
 
-// ReadFromOffset returns file-writing tool calls that occur after the saved
-// sidecar marker.
+// ReadFromOffset is intentionally silent for Kiro CLI. Direct
+// postToolUse hooks own capture for file and shell operations.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
+	// Replay and direct hooks use different provider tool IDs, so
+	// emitting both would duplicate writes. Keep replay silent until
+	// those keys can be unified. When parsing succeeds, advance the
+	// offset so a future replay implementation has a clean boundary.
+	if transcriptRef == "" {
+		return nil, offset, nil
+	}
 	dbPath, convID, err := parseTranscriptRef(transcriptRef)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, nil
 	}
-
 	conv, err := loadConversation(dbPath, convID)
 	if err != nil {
 		return nil, offset, nil
 	}
-
-	allCalls := extractToolCalls(conv)
-
-	// The conversation key stores the workspace path.
-	wsKey := ""
-	db, dbErr := openReadOnly(dbPath)
-	if dbErr == nil {
-		var key string
-		_ = db.QueryRow(
-			`SELECT key FROM conversations_v2 WHERE conversation_id = ?`, convID,
-		).Scan(&key)
-		_ = db.Close()
-		if key != "" {
-			wsKey = workspaceKey(key)
-		}
-	}
-
-	lastSeenID := ""
-	if wsKey != "" {
-		lastSeenID, _ = readSidecar(wsKey)
-	}
-
-	newCalls := newToolCallsSince(allCalls, lastSeenID)
-
-	workspacePath := ""
-	if db2, err := openReadOnly(dbPath); err == nil {
-		_ = db2.QueryRow(
-			`SELECT key FROM conversations_v2 WHERE conversation_id = ?`, convID,
-		).Scan(&workspacePath)
-		_ = db2.Close()
-	}
-
-	events := toolCallsToEvents(newCalls, transcriptRef, workspacePath, convID, time.Now().UnixMilli())
-
-	// The sidecar is written at prompt submission. Leaving it unchanged here
-	// allows the same events to be retried if routing fails.
-
-	newOffset := len(allCalls)
-	return events, newOffset, nil
-}
-
-func openReadOnly(dbPath string) (*sql.DB, error) {
-	return sql.Open("sqlite", dbPath+"?mode=ro")
+	return nil, len(extractToolCalls(conv)), nil
 }

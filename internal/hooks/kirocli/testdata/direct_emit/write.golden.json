@@ -1,6 +1,6 @@
 {
   "name": "write",
-  "description": "Kiro CLI fs_write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
+  "description": "Kiro CLI write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
   "expected_events": [
     {
       "EventID": "412d61a838db5b0eac509f4d04a0b68050dd6c21f77547d3df5c1e26cb5685a4",
@@ -25,7 +25,7 @@
       "ToolUseID": "kiro-step-1",
       "ToolName": "Write",
       "EventSource": "hook",
-      "ProvenanceHash": "329310be17828a64d1bc57c8ba6e3898452334f2cb4d33b883f51b3ac934a9ec",
+      "ProvenanceHash": "7bf0d2d3041da76fb890421d67540d74c50375992738689eb3a25f44dce1c5dc",
       "ProviderSessionID": "sess-kiro-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000010000,
@@ -35,7 +35,7 @@
     }
   ],
   "expected_blobs": {
-    "329310be17828a64d1bc57c8ba6e3898452334f2cb4d33b883f51b3ac934a9ec": "{\"tool_input\":{\"command\":\"create\",\"path\":\"/repo/new.go\",\"file_text\":\"package main\\n\"}}",
+    "7bf0d2d3041da76fb890421d67540d74c50375992738689eb3a25f44dce1c5dc": "{\"tool_input\":{\"command\":\"create\",\"path\":\"/repo/new.go\",\"content\":\"package main\\n\"}}",
     "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c": "{\"message\":{\"content\":[{\"input\":{\"content\":\"package main\\n\",\"file_path\":\"/repo/new.go\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "edit",
-  "description": "Kiro CLI fs_write str_replace; old_str/new_str renamed to old_string/new_string in the payload blob",
+  "description": "Kiro CLI write strReplace; oldStr/newStr renamed to old_string/new_string in the payload blob",
   "expected_events": [
     {
       "EventID": "59656435aafb76dbeb14be7440d965ee320c7a68058cb461f58eb2e30362cd70",
@@ -25,7 +25,7 @@
       "ToolUseID": "kiro-step-2",
       "ToolName": "Edit",
       "EventSource": "hook",
-      "ProvenanceHash": "3f2c859d9d180cd4a939db185a1d2810897bdb8e268a295efa37968f2bd4b5d8",
+      "ProvenanceHash": "95a97b1863b6cdbc4e6b65ea08fa4a58aa14867ec4fdca4f55cf828c453e8fa2",
       "ProviderSessionID": "sess-kiro-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000020000,
@@ -36,6 +36,6 @@
   ],
   "expected_blobs": {
     "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
-    "3f2c859d9d180cd4a939db185a1d2810897bdb8e268a295efa37968f2bd4b5d8": "{\"tool_input\":{\"command\":\"str_replace\",\"path\":\"/repo/main.go\",\"old_str\":\"foo\",\"new_str\":\"bar\"}}"
+    "95a97b1863b6cdbc4e6b65ea08fa4a58aa14867ec4fdca4f55cf828c453e8fa2": "{\"tool_input\":{\"command\":\"strReplace\",\"path\":\"/repo/main.go\",\"oldStr\":\"foo\",\"newStr\":\"bar\"}}"
   }
 }

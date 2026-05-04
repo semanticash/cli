@@ -1,6 +1,6 @@
 {
   "name": "bash",
-  "description": "Kiro CLI execute_bash with a result array; ToolUsesJSON ships empty, stdout and stderr redacted",
+  "description": "Kiro CLI shell tool_response with an items[].Json variant; ToolUsesJSON ships empty, stdout and stderr redacted",
   "expected_events": [
     {
       "EventID": "629befd3d938f888922eb87ce8760d4f103cd32ba20cb6391109edd9963d1222",

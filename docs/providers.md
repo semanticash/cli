@@ -129,7 +129,7 @@ Kiro execution traces include structured file operations such as `create`, `appe
 
 **Hook config**: `.kiro/agents/semantica.json`
 
-Kiro CLI stores conversation history in a SQLite database and exposes hook payloads as JSON on stdin. Semantica reads the current workspace conversation from the Kiro CLI database, tracks the last processed file-writing tool call in provider-managed sidecar state, and routes new file-writing tool calls to the repo.
+Kiro CLI stores conversation history in a SQLite database and exposes hook payloads as JSON on stdin. Semantica uses direct hooks as the primary capture path for Kiro CLI 2.2+: prompt, file-edit, shell, and session-boundary events are emitted from hook payloads as they arrive. Conversation lookup is best-effort and is not required for file or shell attribution.
 
 ### Detection
 
@@ -140,16 +140,19 @@ Detected by resolving one of the following executables via `PATH`, then common u
 
 ### Hooks
 
-Semantica installs a dedicated repo-local Kiro CLI agent profile at `.kiro/agents/semantica.json` with two hooks:
+Semantica installs a dedicated repo-local Kiro CLI agent profile at `.kiro/agents/semantica.json` with five hooks:
 
-- **`userPromptSubmit`** - Saves the current workspace conversation reference and records the current `fs_write` boundary for that workspace.
-- **`stop`** - Reuses the pinned conversation when capture state exists, reads `fs_write` calls after the saved boundary from the Kiro CLI database, and routes them to the repo.
+- **`agentSpawn`** - Opens a workspace-scoped capture session.
+- **`userPromptSubmit`** - Saves prompt and workspace capture state. Conversation lookup is best-effort.
+- **`postToolUse`** with matcher `fs_write` - Captures Kiro `write` payloads for create, replace, and insert operations.
+- **`postToolUse`** with matcher `execute_bash` - Captures Kiro `shell` payloads.
+- **`stop`** - Closes the workspace-scoped session and flushes any pending lifecycle work.
 
 Kiro CLI hook payloads include `cwd` and `prompt`, but they do not give Semantica an explicit conversation ID. Semantica pairs `userPromptSubmit` and `stop` through a workspace-scoped capture-state key and resolves the active conversation from the current workspace.
 
 ### Attribution
 
-Kiro CLI currently captures `fs_write` tool calls and turns them into provider file-edit signals. That gives file-level attribution today. Exact line-level matching from Kiro CLI tool content can be added in a later iteration.
+Kiro CLI 2.2 file operations arrive as `write` payloads. Semantica maps `create` to `Write`, maps `strReplace` and `insert` to `Edit`, resolves relative paths against the hook working directory, and stores canonical file-edit content for line-level attribution. Shell operations arrive as `shell` payloads and are captured as `Bash` events.
 
 ### Usage
 
@@ -170,8 +173,9 @@ kiro-cli agent set-default semantica
 ### Limitations
 
 - Kiro CLI support in `v1` is tied to the repo-local `semantica` agent config. If Kiro CLI is using some other agent config, Semantica hooks will not be active for that session.
-- Kiro CLI hooks do not expose a conversation ID directly, so conversation selection is still best-effort when multiple Kiro CLI chats exist for the same workspace.
-- If `userPromptSubmit` is missed, the following `stop` event cannot recover the missing offset boundary for that turn.
+- Kiro CLI hooks do not expose a conversation ID directly, so conversation lookup is best-effort when multiple Kiro CLI chats exist for the same workspace.
+- Direct `postToolUse` hooks own file and shell capture. Transcript replay is currently disabled for Kiro CLI to avoid duplicate events with mismatched provider tool IDs.
+- If `userPromptSubmit` is missed, later tool hooks may not have capture state to attach to for that turn.
 
 ---
 

@@ -130,10 +130,9 @@ func TestBuildHookEvents_EmptyPrompt(t *testing.T) {
 
 // --- Tool steps ---
 //
-// Kiro CLI's fs_write tool_input shape differs from the other providers:
-// it uses `path` (not `file_path`) and `file_text` (for create) or
-// `old_str`/`new_str` (for str_replace). These tests exercise that
-// provider-specific shape.
+// Kiro CLI's write tool_input uses provider-specific field names
+// (`path`, `content`, `oldStr`, and `newStr`). These tests pin the
+// normalized events Semantica emits from that shape.
 
 func TestBuildHookEvents_Write(t *testing.T) {
 	p := &Provider{}
@@ -147,7 +146,7 @@ func TestBuildHookEvents_Write(t *testing.T) {
 		ToolName:  "Write",
 		CWD:       "/repo",
 		ToolInput: json.RawMessage(
-			`{"command":"create","path":"/repo/new.go","file_text":"package main\n"}`,
+			`{"command":"create","path":"/repo/new.go","content":"package main\n"}`,
 		),
 		Timestamp: 1000,
 	}
@@ -173,10 +172,8 @@ func TestBuildHookEvents_Write(t *testing.T) {
 	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "/repo/new.go" {
 		t.Errorf("file_paths = %v, want [/repo/new.go]", ev.FilePaths)
 	}
-	// Kiro CLI serializes tool_uses through its own helper which uses
-	// a synthetic tool name (kiro_file_edit) with the real operation
-	// surfaced as file_op. This differs from the other providers and
-	// is captured here as the current baseline.
+	// Kiro uses a provider-specific synthetic tool name and carries
+	// the operation in file_op.
 	if !strings.Contains(ev.ToolUsesJSON, `"kiro_file_edit"`) {
 		t.Errorf("tool_uses should contain kiro_file_edit, got %q", ev.ToolUsesJSON)
 	}
@@ -212,12 +209,12 @@ func TestBuildHookEvents_WriteMissingPath(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// fs_write with no path is a no-op, matching the sibling providers.
+	// A write event with no path is a no-op, matching sibling providers.
 	event := &hooks.Event{
 		Type:      hooks.ToolStepCompleted,
 		SessionID: "sess-kiro-1",
 		ToolName:  "Write",
-		ToolInput: json.RawMessage(`{"command":"create","file_text":"x"}`),
+		ToolInput: json.RawMessage(`{"command":"create","content":"x"}`),
 	}
 
 	events, err := p.BuildHookEvents(context.Background(), event, bs)
@@ -233,8 +230,8 @@ func TestBuildHookEvents_Edit(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// Edit operations use Kiro CLI's str_replace command with old_str
-	// and new_str fields instead of old_string/new_string.
+	// strReplace uses Kiro's oldStr/newStr fields and is normalized
+	// to old_string/new_string in the stored payload.
 	event := &hooks.Event{
 		Type:      hooks.ToolStepCompleted,
 		SessionID: "sess-kiro-1",
@@ -242,7 +239,7 @@ func TestBuildHookEvents_Edit(t *testing.T) {
 		ToolUseID: "kiro-step-2",
 		ToolName:  "Edit",
 		ToolInput: json.RawMessage(
-			`{"command":"str_replace","path":"/repo/main.go","old_str":"foo","new_str":"bar"}`,
+			`{"command":"strReplace","path":"/repo/main.go","oldStr":"foo","newStr":"bar"}`,
 		),
 	}
 
@@ -280,10 +277,8 @@ func TestBuildHookEvents_Bash(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// Kiro CLI's execute_bash shape uses command plus an optional
-	// working_dir field. Unlike Gemini, there is no description field
-	// to use as summary, so the redacted command itself becomes the
-	// summary.
+	// Without a purpose hint, shell events use the redacted command
+	// as their summary.
 	event := &hooks.Event{
 		Type:      hooks.ToolStepCompleted,
 		SessionID: "sess-kiro-1",
@@ -316,10 +311,8 @@ func TestBuildHookEvents_Bash(t *testing.T) {
 	if len(ev.FilePaths) != 0 {
 		t.Errorf("file_paths = %v, want empty for Bash", ev.FilePaths)
 	}
-	// BuildToolUsesJSON returns an empty NullString when file_path is
-	// absent, so Bash events currently ship with empty ToolUsesJSON.
-	// This is Kiro CLI specific behavior and is captured here as the
-	// current baseline.
+	// Bash events have no file path, so Kiro's helper emits no
+	// ToolUsesJSON.
 	if ev.ToolUsesJSON != "" {
 		t.Errorf("tool_uses for Bash = %q, want empty", ev.ToolUsesJSON)
 	}
@@ -329,16 +322,17 @@ func TestBuildHookEvents_BashWithResponse(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// execute_bash emits a result array with {exit_status, stdout, stderr}.
-	// The stdout and stderr are redacted before they reach the
-	// provenance blob.
+	// Shell tool_response is an items array: each entry is either a
+	// Json variant (with exit_status, stdout, stderr) or a Text
+	// variant. The provenance blob redacts stdout/stderr from the
+	// first Json entry it finds.
 	event := &hooks.Event{
 		Type:      hooks.ToolStepCompleted,
 		SessionID: "sess-kiro-1",
 		ToolName:  "Bash",
 		ToolInput: json.RawMessage(`{"command":"ls"}`),
 		ToolResponse: json.RawMessage(
-			`{"success":true,"result":[{"exit_status":"0","stdout":"file1\nfile2","stderr":""}]}`,
+			`{"items":[{"Json":{"exit_status":"exit status: 0","stdout":"file1\nfile2","stderr":""}}]}`,
 		),
 	}
 
@@ -595,7 +589,7 @@ func TestBuildHookEvents_BlobPutFailureDegradesCleanly(t *testing.T) {
 		SessionID: "sess-kiro-1",
 		ToolName:  "Write",
 		ToolInput: json.RawMessage(
-			`{"command":"create","path":"/repo/a.go","file_text":"x"}`,
+			`{"command":"create","path":"/repo/a.go","content":"x"}`,
 		),
 	}
 

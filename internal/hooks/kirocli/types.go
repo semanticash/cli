@@ -20,32 +20,48 @@ var subagentTools = map[string]bool{
 	"delegate":     true,
 }
 
-// fsWriteInput is the tool_input shape for fs_write from Kiro CLI hooks.
+// fsWriteInput is the tool_input shape for the write tool. The same
+// tool name covers create, strReplace, and insert operations,
+// distinguished by the Command field.
 type fsWriteInput struct {
-	Command  string `json:"command"`  // "create" or "str_replace"
-	Path     string `json:"path"`
-	FileText string `json:"file_text,omitempty"` // for create
-	OldStr   string `json:"old_str,omitempty"`   // for str_replace
-	NewStr   string `json:"new_str,omitempty"`   // for str_replace
+	Command string `json:"command"` // "create" | "strReplace" | "insert"
+	Path    string `json:"path"`
+	Content string `json:"content,omitempty"` // for create and insert
+	OldStr  string `json:"oldStr,omitempty"`  // for strReplace
+	NewStr  string `json:"newStr,omitempty"`  // for strReplace
+	Purpose string `json:"__tool_use_purpose,omitempty"`
 }
 
-// bashInput is the tool_input shape for execute_bash from Kiro CLI hooks.
+// bashInput is the tool_input shape for the shell tool. Purpose is
+// a natural-language hint Kiro CLI passes through with each tool
+// call; reusing it as the event summary gives downstream surfaces
+// more context than the raw command alone.
 type bashInput struct {
 	Command    string `json:"command"`
 	WorkingDir string `json:"working_dir,omitempty"`
+	Purpose    string `json:"__tool_use_purpose,omitempty"`
 }
 
-// bashResponseResult is a single result entry in execute_bash tool_response.
+// bashResponseResult is the structured shell result that arrives
+// inside an items[].Json entry on the shell response.
 type bashResponseResult struct {
 	ExitStatus string `json:"exit_status"`
 	Stdout     string `json:"stdout"`
 	Stderr     string `json:"stderr"`
 }
 
-// bashResponse is the tool_response shape for execute_bash.
+// bashResponseItem mirrors the shell tool_response.items[] union:
+// each item carries either a Json payload (structured shell result)
+// or a Text payload (free-form message). Both fields are optional
+// so the unmarshaler leaves the unused branch zero-valued.
+type bashResponseItem struct {
+	Json *bashResponseResult `json:"Json,omitempty"`
+	Text string              `json:"Text,omitempty"`
+}
+
+// bashResponse is the tool_response shape for shell.
 type bashResponse struct {
-	Success bool                 `json:"success"`
-	Result  []bashResponseResult `json:"result"`
+	Items []bashResponseItem `json:"items"`
 }
 
 // subagentInput is the tool_input shape for use_subagent/delegate.
@@ -82,11 +98,25 @@ type toolUse struct {
 	Args json.RawMessage `json:"args"`
 }
 
-// fsWriteArgs is the parsed args for an fs_write tool call (transcript replay).
+// fsWriteArgs is the parsed args for a write/fs_write tool call as
+// stored in the conversation DB at replay time. Both legacy and
+// current Kiro CLI shapes are accepted: legacy stores file content
+// under file_text, current uses content. Only one will be populated
+// per call; ContentText resolves to whichever is non-empty.
 type fsWriteArgs struct {
-	Command  string `json:"command"` // "create" or "edit"
+	Command  string `json:"command"`
 	Path     string `json:"path"`
-	FileText string `json:"file_text"`
+	FileText string `json:"file_text,omitempty"`
+	Content  string `json:"content,omitempty"`
+}
+
+// ContentText returns the new-content string regardless of which
+// shape the conversation DB used.
+func (a fsWriteArgs) ContentText() string {
+	if a.Content != "" {
+		return a.Content
+	}
+	return a.FileText
 }
 
 // sidecarOffset is the provider-managed offset file for Kiro CLI.
