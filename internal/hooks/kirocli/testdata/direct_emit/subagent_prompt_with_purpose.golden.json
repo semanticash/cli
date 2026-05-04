@@ -1,0 +1,39 @@
+{
+  "name": "subagent_prompt_with_purpose",
+  "description": "Kiro CLI AgentCrew dispatch; __tool_use_purpose wins over task",
+  "expected_events": [
+    {
+      "EventID": "00bea5d0433831738d1c28ab9827a7fd8e67dac06c18725708760a4cda513fd5",
+      "SourceKey": "sess-kiro-1",
+      "Provider": "kiro-cli",
+      "Timestamp": 1714000040000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "",
+      "Summary": "Dispatch three repo investigations",
+      "PayloadHash": "773266b5bd513823d6f81470bfdd8fe9c78477e76a7efb2da4ea4ae6aee72b31",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "kiro-subagent-1",
+      "ToolName": "Agent",
+      "EventSource": "hook",
+      "ProvenanceHash": "0f801f2e1203cb9f21e6a9d79dc8ea139cc6b2f91a888be169e50e06e746a4df",
+      "ProviderSessionID": "sess-kiro-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000040000,
+      "SessionMetaJSON": "{}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "0f801f2e1203cb9f21e6a9d79dc8ea139cc6b2f91a888be169e50e06e746a4df": "{\"tool_input\":{\"task\":\"top level fallback\",\"__tool_use_purpose\":\"Dispatch three repo investigations\",\"mode\":\"blocking\",\"stages\":[{\"name\":\"a\",\"role\":\"kiro_default\",\"prompt_template\":\"do A\"},{\"name\":\"b\",\"role\":\"kiro_default\",\"prompt_template\":\"do B\"},{\"name\":\"c\",\"role\":\"kiro_default\",\"prompt_template\":\"do C\"}]}}",
+    "773266b5bd513823d6f81470bfdd8fe9c78477e76a7efb2da4ea4ae6aee72b31": "Dispatch three repo investigations"
+  }
+}

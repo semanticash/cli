@@ -3,9 +3,12 @@ package kirocli
 import "encoding/json"
 
 // hookPayload is the JSON payload Kiro CLI sends to hooks on stdin.
+// SessionID is the Kiro session UUID. Kiro does not include a
+// provider tool id in hook payloads.
 type hookPayload struct {
 	HookEventName     string          `json:"hook_event_name"`
 	Cwd               string          `json:"cwd"`
+	SessionID         string          `json:"session_id,omitempty"`
 	Prompt            string          `json:"prompt,omitempty"`
 	ToolName          string          `json:"tool_name,omitempty"`
 	ToolInput         json.RawMessage `json:"tool_input,omitempty"`
@@ -64,10 +67,20 @@ type bashResponse struct {
 	Items []bashResponseItem `json:"items"`
 }
 
-// subagentInput is the tool_input shape for use_subagent/delegate.
+// subagentInput is the parent-side tool_input shape for AgentCrew.
 type subagentInput struct {
-	Prompt string `json:"prompt,omitempty"`
-	Task   string `json:"task,omitempty"`
+	Task    string          `json:"task,omitempty"`
+	Mode    string          `json:"mode,omitempty"`
+	Stages  []subagentStage `json:"stages,omitempty"`
+	Purpose string          `json:"__tool_use_purpose,omitempty"`
+}
+
+// subagentStage is one stage in an AgentCrew pipeline.
+type subagentStage struct {
+	Name           string `json:"name,omitempty"`
+	Role           string `json:"role,omitempty"`
+	PromptTemplate string `json:"prompt_template,omitempty"`
+	Model          string `json:"model,omitempty"`
 }
 
 // conversationValue is the parsed JSON stored in conversations_v2.value.

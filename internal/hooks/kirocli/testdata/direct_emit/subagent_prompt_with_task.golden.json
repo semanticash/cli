@@ -1,6 +1,6 @@
 {
-  "name": "subagent_prompt_from_task_fallback",
-  "description": "Kiro CLI subagent input missing prompt; task becomes the subagent intent",
+  "name": "subagent_prompt_with_task",
+  "description": "Kiro CLI AgentCrew dispatch missing __tool_use_purpose; top-level task becomes the summary",
   "expected_events": [
     {
       "EventID": "80d32b2da7846c602084f007b07fe373fc45d56409cd246c31ba362b21bd3344",
@@ -23,7 +23,7 @@
       "ToolUseID": "",
       "ToolName": "Agent",
       "EventSource": "hook",
-      "ProvenanceHash": "3d63cad37cd0f7ec6268504f85906e65f9a3a8b258db78eff402b294a1a4f45c",
+      "ProvenanceHash": "be1592cfc7cad61cb793b67ef8d6d12667d0fb37ecd7facafb15feb8284ad078",
       "ProviderSessionID": "sess-kiro-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000050000,
@@ -33,7 +33,7 @@
     }
   ],
   "expected_blobs": {
-    "3d63cad37cd0f7ec6268504f85906e65f9a3a8b258db78eff402b294a1a4f45c": "{\"tool_input\":{\"task\":\"Generate the JSON schema\"}}",
+    "be1592cfc7cad61cb793b67ef8d6d12667d0fb37ecd7facafb15feb8284ad078": "{\"tool_input\":{\"task\":\"Generate the JSON schema\",\"mode\":\"blocking\",\"stages\":[{\"name\":\"only\",\"role\":\"kiro_default\",\"prompt_template\":\"do it\"}]}}",
     "f0e4331d2b424c06c3e0cfbb0ceb5ee49c2b2e373c095f0d538dc110be829da6": "Generate the JSON schema"
   }
 }
