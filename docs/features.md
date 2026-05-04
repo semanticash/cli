@@ -361,9 +361,9 @@ When `semantica enable` detects an AI provider, it installs hooks in the provide
 
 The capture lifecycle follows this pattern:
 
-1. **Prompt submitted** - Semantica records the current transcript boundary to a capture state file at `$SEMANTICA_HOME/capture/capture-{key}.json`. The offset format is provider-specific: line count for JSONL-based providers, message index for Gemini, and provider-managed markers for Kiro CLI.
+1. **Prompt submitted** - Semantica records capture state at `$SEMANTICA_HOME/capture/capture-{key}.json`. The offset format is provider-specific: line count for JSONL-based providers, message index for Gemini, and provider-managed markers where replay is enabled.
 2. **Direct hook events** - When the provider exposes structured tool hooks, Semantica records prompt, file edit, shell, and subagent boundary events immediately.
-3. **Agent stop** - Semantica reads the transcript or provider store from the saved offset forward, extracts new events, and routes them through the broker to the correct repo's database.
+3. **Agent stop** - When a provider relies on replay, Semantica reads the transcript or provider store from the saved offset forward, extracts new events, and routes them through the broker. Providers with complete direct hooks use stop mainly to close the session.
 4. **Turn packaging** - Semantica packages a provenance bundle for the completed turn.
 5. **Session close** - Final transcript flush and state cleanup.
 

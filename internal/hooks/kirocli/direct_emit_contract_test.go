@@ -30,7 +30,7 @@ func TestDirectEmit_Contract(t *testing.T) {
 		},
 		{
 			Name:        "write",
-			Description: "Kiro CLI fs_write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
+			Description: "Kiro CLI write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
 			Event: &hooks.Event{
 				Type:      hooks.ToolStepCompleted,
 				SessionID: "sess-kiro-1",
@@ -38,26 +38,26 @@ func TestDirectEmit_Contract(t *testing.T) {
 				ToolUseID: "kiro-step-1",
 				ToolName:  "Write",
 				CWD:       "/repo",
-				ToolInput: json.RawMessage(`{"command":"create","path":"/repo/new.go","file_text":"package main\n"}`),
+				ToolInput: json.RawMessage(`{"command":"create","path":"/repo/new.go","content":"package main\n"}`),
 				Timestamp: 1714000010000,
 			},
 		},
 		{
 			Name:        "edit",
-			Description: "Kiro CLI fs_write str_replace; old_str/new_str renamed to old_string/new_string in the payload blob",
+			Description: "Kiro CLI write strReplace; oldStr/newStr renamed to old_string/new_string in the payload blob",
 			Event: &hooks.Event{
 				Type:      hooks.ToolStepCompleted,
 				SessionID: "sess-kiro-1",
 				TurnID:    "turn-1",
 				ToolUseID: "kiro-step-2",
 				ToolName:  "Edit",
-				ToolInput: json.RawMessage(`{"command":"str_replace","path":"/repo/main.go","old_str":"foo","new_str":"bar"}`),
+				ToolInput: json.RawMessage(`{"command":"strReplace","path":"/repo/main.go","oldStr":"foo","newStr":"bar"}`),
 				Timestamp: 1714000020000,
 			},
 		},
 		{
 			Name:        "bash",
-			Description: "Kiro CLI execute_bash with a result array; ToolUsesJSON ships empty, stdout and stderr redacted",
+			Description: "Kiro CLI shell tool_response with an items[].Json variant; ToolUsesJSON ships empty, stdout and stderr redacted",
 			Event: &hooks.Event{
 				Type:      hooks.ToolStepCompleted,
 				SessionID: "sess-kiro-1",
@@ -66,8 +66,7 @@ func TestDirectEmit_Contract(t *testing.T) {
 				ToolName:  "Bash",
 				ToolInput: json.RawMessage(`{"command":"ls","working_dir":"/repo"}`),
 				ToolResponse: json.RawMessage(`{
-					"success":true,
-					"result":[{"exit_status":"0","stdout":"file1\nfile2","stderr":""}]
+					"items":[{"Json":{"exit_status":"exit status: 0","stdout":"file1\nfile2","stderr":""}}]
 				}`),
 				Timestamp: 1714000030000,
 			},

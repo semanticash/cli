@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Gemini CLI transcript support now handles both legacy JSON files and newer JSONL files with header session IDs.
 - Gemini CLI 0.40+ subagent delegation is now captured from `invoke_agent` hooks, including the dispatched agent name and completion state.
+- Kiro CLI 2.2 capture now installs a repo-local `semantica` agent profile with matched hooks for prompt, file-edit, shell, and session-boundary events.
 
 ### Fixed
 
@@ -26,11 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Gemini CLI transcript replay now resolves relative tool-call paths against the captured session working directory before routing replayed events.
 - Copilot CLI `task` post-tool hooks no longer emit duplicate subagent completion events; `subagentStop` is now the canonical completion boundary.
 - Provider hook settings are now written without HTML-escaping shell redirection characters, keeping generated hook commands readable in settings files.
+- Kiro CLI 2.2 `write` and `shell` payloads are now normalized into `Write`, `Edit`, and `Bash` events with repo-relative paths resolved before routing.
 
 ### Changed
 
 - Gemini CLI direct hooks and transcript replay now use the same provider session ID when JSONL transcripts expose a header session ID.
 - Claude Code hook installation no longer registers the obsolete `PostToolUse[Task]` capture hook.
+- Kiro CLI now treats direct `postToolUse` hooks as the capture source for file and shell operations; transcript replay stays silent to avoid duplicate events with mismatched provider tool IDs.
 
 ## [0.3.7] - 2026-04-30
 

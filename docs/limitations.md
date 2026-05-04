@@ -27,7 +27,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 ## Attribution fidelity
 
 - Attribution is anchored to captured session data within the checkpoint delta window. Deferred created files can carry forward AI attribution from earlier history when they were already present in the previous commit-linked manifest but committed later.
-- **Provider metadata varies.** Claude Code provides line-level tool call content (Edit/Write payloads), enabling exact and formatted matching. Providers such as Cursor, Kiro IDE, and Kiro CLI may only report file-level tool metadata, which limits attribution to hunk-overlap matching.
+- **Provider metadata varies.** Claude Code and Kiro CLI provide line-level file-edit content, enabling exact and formatted matching. Providers such as Cursor and Kiro IDE may only report file-level tool metadata, which limits attribution to hunk-overlap matching.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
 - Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
 - Attribution is computed against the diff between checkpoints. Squashed or rebased commits that collapse multiple checkpoints may produce less precise results.
@@ -49,7 +49,8 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 - Kiro CLI support currently uses a dedicated repo-local agent config at `.kiro/agents/semantica.json`. Semantica capture is active only when the current Kiro CLI session is using that config. You can select it with `kiro-cli chat --agent semantica`, or make it the repo default with `kiro-cli agent set-default semantica`.
 - Kiro CLI hook payloads do not expose a conversation ID directly. Semantica pairs `userPromptSubmit` and `stop` by workspace-scoped capture state and resolves the active conversation best-effort from the current workspace.
-- If `userPromptSubmit` is missed for a turn, the following `stop` event cannot reconstruct the missing boundary for that turn.
+- Direct `postToolUse` hooks own Kiro CLI file and shell capture. Transcript replay is disabled for now to avoid duplicate events with mismatched provider tool IDs.
+- If `userPromptSubmit` is missed for a turn, later tool hooks may not have capture state to attach to for that turn.
 
 ## Hosted reporting
 

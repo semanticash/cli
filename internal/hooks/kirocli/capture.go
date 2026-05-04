@@ -106,7 +106,9 @@ func loadConversation(dbPath, conversationID string) (*conversationValue, error)
 	return &conv, nil
 }
 
-// extractToolCalls returns fs_write tool calls in conversation order.
+// extractToolCalls returns file-writing calls from a stored
+// conversation. It accepts legacy "fs_write" calls and current
+// "write" calls so offset accounting can read either shape.
 func extractToolCalls(conv *conversationValue) []toolCallInfo {
 	var calls []toolCallInfo
 	for _, entry := range conv.History {
@@ -115,7 +117,7 @@ func extractToolCalls(conv *conversationValue) []toolCallInfo {
 			continue
 		}
 		for _, tu := range asst.ToolUse.ToolUses {
-			if tu.Name != "fs_write" {
+			if tu.Name != "fs_write" && tu.Name != "write" {
 				continue
 			}
 			var args fsWriteArgs
@@ -125,7 +127,7 @@ func extractToolCalls(conv *conversationValue) []toolCallInfo {
 			calls = append(calls, toolCallInfo{
 				ID:       tu.ID,
 				FilePath: args.Path,
-				FileText: args.FileText,
+				FileText: args.ContentText(),
 				Command:  args.Command,
 			})
 		}
