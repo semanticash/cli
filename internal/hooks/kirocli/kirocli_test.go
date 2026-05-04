@@ -884,7 +884,7 @@ func TestSidecar_OverwrittenOnNextPromptSubmit(t *testing.T) {
 	}
 }
 
-// Replay stays silent while direct postToolUse hooks own capture.
+// Replay does not emit events while direct postToolUse hooks own capture.
 func TestReadFromOffset_DisabledReplay(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 

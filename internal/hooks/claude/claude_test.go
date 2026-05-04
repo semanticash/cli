@@ -640,7 +640,7 @@ func TestDiscoverSubagentTranscripts(t *testing.T) {
 	}
 
 	p := &Provider{}
-	paths, err := p.DiscoverSubagentTranscripts(context.Background(), parentPath)
+	paths, err := p.DiscoverSubagentTranscripts(context.Background(), parentPath, hooks.DiscoveryContext{})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestDiscoverSubagentTranscripts_NoSubagents(t *testing.T) {
 	}
 
 	p := &Provider{}
-	paths, err := p.DiscoverSubagentTranscripts(context.Background(), parentPath)
+	paths, err := p.DiscoverSubagentTranscripts(context.Background(), parentPath, hooks.DiscoveryContext{})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

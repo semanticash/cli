@@ -280,7 +280,7 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 // artifacts that coexist with the original transcript. Since event IDs include
 // the transcript path in their content hash, reading both would produce
 // duplicate events with different IDs, inflating attribution.
-func (p *Provider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string) ([]string, error) {
+func (p *Provider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string, _ hooks.DiscoveryContext) ([]string, error) {
 	// Parent transcript: <project>/<parent-uuid>.jsonl
 	// Subagents dir:     <project>/<parent-uuid>/subagents/
 	parentDir := strings.TrimSuffix(parentTranscriptRef, ".jsonl")

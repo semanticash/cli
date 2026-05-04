@@ -405,10 +405,23 @@ func finalSubagentSweepAndCleanup(ctx context.Context, provider HookProvider, ev
 		return
 	}
 	parentRef := event.TranscriptRef
+	var promptTime int64
+	var parentCWD string
 	if state, err := LoadCaptureState(event.SessionID); err == nil {
 		parentRef = state.TranscriptRef
+		promptTime = state.PromptSubmittedAt
+		parentCWD = state.CWD
 	}
-	deleteSubagentCaptureStates(provider, parentRef, failedKeys)
+	if parentCWD == "" {
+		parentCWD = event.CWD
+	}
+	dctx := DiscoveryContext{
+		Cwd:             parentCWD,
+		PromptTime:      promptTime,
+		StopTime:        time.Now().UnixMilli(),
+		ParentSessionID: event.SessionID,
+	}
+	deleteSubagentCaptureStates(provider, parentRef, dctx, failedKeys)
 }
 
 // captureSubagentTranscripts reads each discovered child transcript from its
@@ -421,12 +434,24 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 
 	parentRef := event.TranscriptRef
 	var turnStartedAt int64
+	var parentCWD string
 	if state, err := LoadCaptureState(event.SessionID); err == nil {
 		parentRef = state.TranscriptRef
 		turnStartedAt = state.PromptSubmittedAt
+		parentCWD = state.CWD
+	}
+	if parentCWD == "" {
+		parentCWD = event.CWD
 	}
 
-	paths, err := disc.DiscoverSubagentTranscripts(ctx, parentRef)
+	dctx := DiscoveryContext{
+		Cwd:             parentCWD,
+		PromptTime:      turnStartedAt,
+		StopTime:        time.Now().UnixMilli(),
+		ParentSessionID: event.SessionID,
+	}
+
+	paths, err := disc.DiscoverSubagentTranscripts(ctx, parentRef, dctx)
 	if err != nil {
 		slog.Warn("subagent discovery failed", "err", err)
 		return nil, false
@@ -701,7 +726,7 @@ func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, r
 
 // deleteSubagentCaptureStates removes child state files except those
 // explicitly preserved for retry.
-func deleteSubagentCaptureStates(provider HookProvider, parentTranscriptRef string, failedKeys []string) {
+func deleteSubagentCaptureStates(provider HookProvider, parentTranscriptRef string, dctx DiscoveryContext, failedKeys []string) {
 	disc, ok := provider.(SubagentDiscoverer)
 	if !ok {
 		return
@@ -712,7 +737,7 @@ func deleteSubagentCaptureStates(provider HookProvider, parentTranscriptRef stri
 		skip[k] = true
 	}
 
-	paths, err := disc.DiscoverSubagentTranscripts(context.Background(), parentTranscriptRef)
+	paths, err := disc.DiscoverSubagentTranscripts(context.Background(), parentTranscriptRef, dctx)
 	if err != nil {
 		return
 	}

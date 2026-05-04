@@ -28,6 +28,10 @@ type Provider struct {
 
 	// loadConv overrides conversation loading in tests.
 	loadConv func(dbPath, conversationID string) (*conversationValue, error)
+
+	// sessionsDir overrides ~/.kiro/sessions/cli in tests. Empty means
+	// resolve from the user home dir at call time.
+	sessionsDir string
 }
 
 func init() {
@@ -448,13 +452,12 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	return len(extractToolCalls(conv)), nil
 }
 
-// ReadFromOffset is intentionally silent for Kiro CLI. Direct
-// postToolUse hooks own capture for file and shell operations.
+// ReadFromOffset does not emit replay events for Kiro CLI. Direct
+// postToolUse hooks own file and shell capture.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	// Replay and direct hooks use different provider tool IDs, so
-	// emitting both would duplicate writes. Keep replay silent until
-	// those keys can be unified. When parsing succeeds, advance the
-	// offset so a future replay implementation has a clean boundary.
+	// emitting both would duplicate writes. When parsing succeeds,
+	// advance the offset for a future replay implementation.
 	if transcriptRef == "" {
 		return nil, offset, nil
 	}

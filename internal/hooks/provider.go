@@ -54,6 +54,35 @@ type HookProvider interface {
 	ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error)
 }
 
+// DiscoveryContext carries lifecycle-known facts about the parent turn that
+// some providers need to disambiguate child sessions. Providers whose child
+// transcripts live alongside unrelated sessions in a shared directory (Kiro
+// CLI's ~/.kiro/sessions/cli/, for example) cannot tell child from concurrent
+// parent without these. Providers that store children in a parent-keyed
+// subdirectory (Claude, Cursor) ignore the fields. Fields are best-effort:
+// the lifecycle fills in what it knows from capture state and the hook event,
+// callers must tolerate empty values rather than rejecting outright.
+type DiscoveryContext struct {
+	// Cwd is the parent session's working directory.
+	Cwd string
+
+	// PromptTime is the parent's PromptSubmitted timestamp in unix-ms.
+	// Discovery filters child files whose mtime falls inside this window.
+	PromptTime int64
+
+	// StopTime is the wall-clock time discovery is running. Treated as the
+	// upper bound of the parent's active window.
+	StopTime int64
+
+	// ParentSessionID is the parent's hook session id. Used to skip the
+	// parent's own session file when scanning a shared directory.
+	ParentSessionID string
+
+	// ParentAgentName is the parent's agent name when known. Some providers
+	// use it as a tie-breaker against concurrent unrelated parent sessions.
+	ParentAgentName string
+}
+
 // SubagentDiscoverer is an optional interface for providers that support
 // subagent (child) transcripts stored separately from the parent transcript.
 // When implemented, the SubagentCompleted handler scans for child transcripts
@@ -61,9 +90,13 @@ type HookProvider interface {
 // attributed correctly.
 type SubagentDiscoverer interface {
 	// DiscoverSubagentTranscripts returns paths to all subagent transcript
-	// files associated with the given parent transcript. The parent transcript
-	// path is used to derive the subagents directory (provider-specific).
-	DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string) ([]string, error)
+	// files associated with the given parent transcript. The discovery
+	// context carries facts the lifecycle knows from capture state and the
+	// hook event (parent cwd, prompt-to-stop window, parent session id).
+	// Providers that need disambiguation against concurrent unrelated
+	// sessions consume those fields; providers whose children live in a
+	// parent-keyed subdirectory ignore them.
+	DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string, dctx DiscoveryContext) ([]string, error)
 
 	// SubagentStateKey returns a stable key for the subagent's capture state
 	// file, derived from the subagent transcript path. Must be unique per

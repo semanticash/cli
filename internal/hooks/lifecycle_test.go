@@ -77,7 +77,7 @@ type fakeSubagentProvider struct {
 	subagentPaths []string // paths returned by DiscoverSubagentTranscripts
 }
 
-func (f *fakeSubagentProvider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string) ([]string, error) {
+func (f *fakeSubagentProvider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string, _ DiscoveryContext) ([]string, error) {
 	return f.subagentPaths, nil
 }
 
