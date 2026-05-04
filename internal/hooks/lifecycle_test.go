@@ -622,11 +622,10 @@ func TestSubagentCompleted_ScansChildTranscripts(t *testing.T) {
 func TestSubagentCompleted_StampsParentSessionAndTurn(t *testing.T) {
 	setupTestCaptureDir(t)
 
-	// readSequence keeps parent capture (call 1) empty so it exits
-	// before broker writes, while the child read (call 2) returns the
-	// event the test is going to inspect post-stamp. The slice header
-	// is shared, so the lifecycle's in-place stamping is visible to
-	// the test through readSequence[1].events[0].
+	// Call 1 (parent capture) returns no events so it exits before
+	// broker writes. Call 2 (child capture) returns the event under
+	// test; the shared slice lets the assertion observe in-place
+	// stamping by the lifecycle.
 	childEvents := []broker.RawEvent{
 		{
 			ProviderSessionID: "child-uuid",

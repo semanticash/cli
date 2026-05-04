@@ -11,19 +11,16 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
-// kiroDiscoverFixture is the minimum slice of a Kiro CLI session .json
-// header that the discoverer reads. The tests build files from this
-// shape so the schema sits in one place and a future field rename
-// surfaces as a focused diff rather than a fixture-by-fixture update.
+// kiroDiscoverFixture is the slice of a Kiro CLI session .json header that
+// the discoverer reads. Centralizing the shape keeps a future field rename
+// to a focused diff.
 type kiroDiscoverFixture struct {
 	cwd        string
 	agentNames []string // one entry per user_turn_metadatas item, "" means null
 }
 
-// writeKiroSessionPair writes a .json header and an empty .jsonl with
-// the given mtime, mirroring the on-disk layout of a Kiro CLI session.
-// The .jsonl is what discovery actually returns; the .json is what it
-// reads to apply the cwd and agent-name filters.
+// writeKiroSessionPair writes a .json header and empty .jsonl pair with the
+// given mtime, mirroring the on-disk layout of a Kiro CLI session.
 func writeKiroSessionPair(t *testing.T, dir, sessionID string, fx kiroDiscoverFixture, mtime time.Time) string {
 	t.Helper()
 	turns := make([]map[string]any, 0, len(fx.agentNames))

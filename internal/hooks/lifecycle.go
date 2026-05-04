@@ -487,9 +487,8 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 
 // captureOneSubagent reads one child transcript and advances its offset only
 // after all routed writes succeed. parentSessionID and parentTurnID are
-// stamped onto every child event whose corresponding fields are empty so
-// the lineage join (parent_session_id) and turn correlation work without
-// providers having to derive parent context themselves.
+// stamped onto child events that left those fields empty, so the lineage
+// join works without each provider deriving parent context itself.
 func captureOneSubagent(
 	ctx context.Context,
 	provider HookProvider,

@@ -160,7 +160,11 @@ func TestReadFromOffset_JSONLRef_ResolvesRelativePathAgainstChildCWD(t *testing.
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
-	want := "/child/repo/sub/y.md"
+	// resolveKiroFilePath uses filepath.Join, which produces
+	// platform-native separators. The test pins "child cwd was
+	// used", not a specific slash style, so build the expected
+	// value the same way the resolver does.
+	want := filepath.Join("/child/repo", "sub/y.md")
 	if len(events[0].FilePaths) != 1 || events[0].FilePaths[0] != want {
 		t.Errorf("FilePaths = %v, want [%s]", events[0].FilePaths, want)
 	}

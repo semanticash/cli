@@ -29,8 +29,7 @@ type Provider struct {
 	// loadConv overrides conversation loading in tests.
 	loadConv func(dbPath, conversationID string) (*conversationValue, error)
 
-	// sessionsDir overrides ~/.kiro/sessions/cli in tests. Empty means
-	// resolve from the user home dir at call time.
+	// sessionsDir overrides ~/.kiro/sessions/cli for tests.
 	sessionsDir string
 }
 
@@ -452,14 +451,11 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	return len(extractToolCalls(conv)), nil
 }
 
-// ReadFromOffset branches by transcript-ref shape. Parent refs use
-// the SQLite composite form and stay a no-op: direct postToolUse
-// hooks own parent capture, and emitting both replay and hook events
-// for the same call would duplicate writes (their provider tool IDs
-// disagree, so the broker's dedup index does not catch the overlap).
-// Sub-agent refs are .jsonl paths supplied by the discoverer; those
-// are replayed because no direct-hook surface exists for inner stage
-// edits.
+// ReadFromOffset branches by transcript-ref shape. SQLite composite refs
+// (parent) stay a no-op because direct postToolUse hooks own parent capture
+// and replay would duplicate. JSONL refs (subagent children supplied by the
+// discoverer) are replayed since no direct-hook surface exists for inner
+// stage edits.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	if looksLikeKiroChildJSONLRef(transcriptRef) {
 		return readChildJSONL(ctx, transcriptRef, offset, bs)

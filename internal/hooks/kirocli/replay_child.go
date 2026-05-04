@@ -12,29 +12,21 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
-// looksLikeKiroChildJSONLRef reports whether a transcript ref points
-// at a subagent JSONL file. Parent refs use the SQLite composite
-// form <dbPath>#<conv-id> and never end in .jsonl, so the suffix is
-// sufficient to tell the two shapes apart.
+// looksLikeKiroChildJSONLRef reports whether a transcript ref points at a
+// subagent JSONL file. Parent refs use the SQLite composite form
+// <dbPath>#<conv-id> and never end in .jsonl.
 func looksLikeKiroChildJSONLRef(ref string) bool {
 	return strings.HasSuffix(ref, ".jsonl")
 }
 
-// readChildJSONL replays a subagent JSONL transcript starting at
-// the given line offset. Each accepted tool call is rendered as a
-// RawEvent using the same builders as direct hook capture, then
-// marked as transcript-sourced.
+// readChildJSONL replays a subagent JSONL transcript starting at the given
+// line offset. Calls with Line > offset are emitted; the returned offset is
+// the parser's safe resume point so a trailing partial line can complete on
+// the next pass without losing the call it carries.
 //
-// The returned offset is the parser's safe resume offset. Filtering
-// later reads with call.Line > offset prevents duplicate events while
-// still allowing a trailing partial line to complete on the next pass.
-//
-// File paths are resolved against the child's own cwd (read from the
-// .json companion). The ProviderSessionID is the child's .jsonl
-// stem, which is the Kiro CLI session UUID. Lifecycle is responsible
-// for stamping ParentSessionID and TurnID after this function
-// returns; both pieces of information live in the parent's capture
-// state rather than in the child transcript.
+// File paths resolve against the child's own cwd from its .json companion.
+// ProviderSessionID is the child's Kiro session UUID. The lifecycle stamps
+// ParentSessionID and TurnID after this returns.
 func readChildJSONL(ctx context.Context, path string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	calls, lineCount, err := readKiroSessionJSONL(path)
 	if err != nil {
@@ -57,10 +49,8 @@ func readChildJSONL(ctx context.Context, path string, offset int, bs api.BlobPut
 		childCWD = hdr.CWD
 	}
 
-	// Kiro does not stamp tool lines with a per-event timestamp, so
-	// the .jsonl mtime is used as a wall-clock proxy. It is monotonic
-	// across appends, which is the property the broker actually
-	// cares about for ordering replay events within a session.
+	// Kiro does not stamp tool lines with a per-event timestamp; the
+	// .jsonl mtime is the closest monotonic wall-clock proxy.
 	var ts int64
 	if info, err := os.Stat(path); err == nil {
 		ts = info.ModTime().UnixMilli()

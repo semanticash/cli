@@ -8,12 +8,10 @@ import (
 	"os"
 )
 
-// kiroSessionToolCall is one tool call extracted from a Kiro CLI
-// session JSONL file. Unsupported tool kinds are skipped during
-// parsing, so callers can dispatch on Name directly.
-//
-// Line is the 1-based AssistantMessage line that originated the
-// call. Callers use it for resume watermarks and event ordering.
+// kiroSessionToolCall is one tool call extracted from a Kiro CLI session
+// JSONL file. Unsupported tool kinds are skipped during parsing, so callers
+// can dispatch on Name directly. Line is the 1-based source position of the
+// originating AssistantMessage entry.
 type kiroSessionToolCall struct {
 	ID       string
 	Name     string
@@ -77,20 +75,15 @@ var kiroSessionToolNameAccepted = map[string]bool{
 	"shell": true,
 }
 
-// readKiroSessionJSONL parses a Kiro CLI session JSONL file and
-// returns accepted tool calls plus a safe resume offset.
+// readKiroSessionJSONL parses a Kiro CLI session JSONL file and returns
+// accepted tool calls plus a safe resume offset.
 //
-// The returned offset is the highest line number whose JSON parsed
-// successfully (or was empty). Trailing lines that failed to parse
-// are intentionally excluded so a still-flushing partial line on one
-// pass becomes readable on the next pass without losing the call it
-// describes. Malformed lines in the middle of the stream do not
-// suppress later lines from advancing the offset, only their own
-// position.
+// The offset is the highest line number whose JSON parsed cleanly (or was
+// empty). Trailing partial lines are excluded so a still-flushing line
+// completes on a later pass without losing the call it describes.
 //
-// The reader matches ToolResults to AssistantMessage tool uses by
-// toolUseId. If a ToolResults line appears without a preceding
-// accepted tool use, it is ignored.
+// ToolResults entries are matched to AssistantMessage tool uses by toolUseId.
+// Orphan ToolResults are ignored.
 func readKiroSessionJSONL(path string) ([]kiroSessionToolCall, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -101,17 +94,15 @@ func readKiroSessionJSONL(path string) ([]kiroSessionToolCall, int, error) {
 	return parseKiroSessionJSONL(f)
 }
 
-// parseKiroSessionJSONL is the io.Reader-based core of the reader.
-// Split out from readKiroSessionJSONL so tests can drive it from
-// in-memory buffers without touching the filesystem.
+// parseKiroSessionJSONL is the io.Reader-based core of the reader. Split out
+// so tests can drive it from in-memory buffers.
 func parseKiroSessionJSONL(r io.Reader) ([]kiroSessionToolCall, int, error) {
 	scanner := bufio.NewScanner(r)
-	// Subagent stages can produce large content blocks. Use the
-	// same per-line ceiling as the Gemini transcript reader.
+	// Subagent stages can write large content blocks (file creates with
+	// hundreds of lines). 8 MiB matches the ceiling used by the Gemini
+	// transcript reader.
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 
-	// Tool uses are recorded by id as they are seen. ToolResults
-	// are matched against this map by toolUseId.
 	type pending struct {
 		index int // position in the calls slice
 	}
@@ -130,10 +121,8 @@ func parseKiroSessionJSONL(r io.Reader) ([]kiroSessionToolCall, int, error) {
 
 		var line kiroSessionLine
 		if err := json.Unmarshal(raw, &line); err != nil {
-			// Skip malformed lines without aborting and without
-			// advancing the safe offset. A trailing partial line
-			// will become valid on a later pass; advancing past
-			// it now would skip the call it carries.
+			// Skip without advancing the safe offset: a trailing
+			// partial line will become valid on a later pass.
 			continue
 		}
 		lastGoodLine = lineNum
