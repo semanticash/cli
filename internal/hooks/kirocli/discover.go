@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/hooks"
 )
+
 
 // kiroSessionsCLISubdir holds Kiro CLI session files. Parent sessions and
 // AgentCrew stage children share this directory.
@@ -21,29 +23,9 @@ const kiroSessionsCLISubdir = ".kiro/sessions/cli"
 // .json companion that the discoverer needs. The narrow shape keeps
 // unrelated schema changes from breaking parsing.
 type kiroSessionHeader struct {
-	SessionID    string             `json:"session_id"`
-	CWD          string             `json:"cwd"`
-	SessionState kiroSessionStateLn `json:"session_state"`
-}
-
-type kiroSessionStateLn struct {
-	ConversationMetadata kiroSessionConvMeta `json:"conversation_metadata"`
-}
-
-type kiroSessionConvMeta struct {
-	UserTurnMetadatas []kiroUserTurnMeta `json:"user_turn_metadatas"`
-}
-
-type kiroUserTurnMeta struct {
-	LoopID kiroLoopID `json:"loop_id"`
-}
-
-type kiroLoopID struct {
-	AgentID kiroAgentID `json:"agent_id"`
-}
-
-type kiroAgentID struct {
-	Name string `json:"name"`
+	SessionID string `json:"session_id"`
+	CWD       string `json:"cwd"`
+	CreatedAt string `json:"created_at"` // RFC 3339; populated at session creation
 }
 
 // resolveSessionsDir returns the Kiro CLI sessions directory, honoring a
@@ -59,22 +41,19 @@ func (p *Provider) resolveSessionsDir() (string, error) {
 	return filepath.Join(home, kiroSessionsCLISubdir), nil
 }
 
-// DiscoverSubagentTranscripts returns the .jsonl paths of session files that
-// look like AgentCrew stage children for the parent described by dctx.
+// DiscoverSubagentTranscripts returns AgentCrew child .jsonl paths for dctx.
 //
 // Filtering rules:
 //
 //   - cwd must match dctx.Cwd
 //   - .jsonl mtime must fall in [dctx.PromptTime, dctx.StopTime]
-//   - the .json header's user_turn_metadatas must carry no populated
-//     agent_id.name (AgentCrew stage children dispatch programmatically
-//     and have none; user-driven sessions always do)
+//   - created_at > dctx.PromptTime for a candidate child; <= for a parent.
+//     Kiro stamps created_at at session creation, which precedes the user
+//     prompt for parents and follows it for AgentCrew stages.
 //
 // Discovery requires exactly one parent-shaped session (cwd match, mtime in
-// window, populated agent_id.name) to anchor the returned children. Zero
-// parents means no positive anchor; more than one means ambiguous anchor.
-// Both cases return nil and log a warning when candidate children are dropped.
-// Missing dctx.Cwd or dctx.PromptTime also returns nil.
+// window, created_at <= PromptTime). With no parent anchor or multiple
+// overlapping parents, discovery returns nil to avoid misattribution.
 func (p *Provider) DiscoverSubagentTranscripts(_ context.Context, _ string, dctx hooks.DiscoveryContext) ([]string, error) {
 	if dctx.Cwd == "" || dctx.PromptTime <= 0 {
 		return nil, nil
@@ -123,7 +102,11 @@ func (p *Provider) DiscoverSubagentTranscripts(_ context.Context, _ string, dctx
 		if header.CWD != dctx.Cwd {
 			continue
 		}
-		if hasPopulatedAgentName(header) {
+		createdMS, ok := parseKiroCreatedAt(header.CreatedAt)
+		if !ok {
+			continue
+		}
+		if createdMS <= dctx.PromptTime {
 			parentMatchCount++
 			continue
 		}
@@ -163,6 +146,20 @@ func (p *Provider) SubagentStateKey(subagentTranscriptRef string) string {
 	return "kirocli-subagent-" + strings.TrimSuffix(base, ".jsonl")
 }
 
+// parseKiroCreatedAt converts a Kiro session header's created_at string
+// (RFC 3339 / ISO 8601 with subsecond precision) to unix milliseconds.
+// Returns ok=false on empty or malformed input.
+func parseKiroCreatedAt(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return 0, false
+	}
+	return t.UnixMilli(), true
+}
+
 func readKiroSessionHeader(path string) (kiroSessionHeader, error) {
 	var hdr kiroSessionHeader
 	data, err := os.ReadFile(path)
@@ -173,16 +170,4 @@ func readKiroSessionHeader(path string) (kiroSessionHeader, error) {
 		return hdr, fmt.Errorf("parse kiro session header: %w", err)
 	}
 	return hdr, nil
-}
-
-// hasPopulatedAgentName reports whether any user_turn_metadatas entry
-// carries a non-empty agent name. User-driven parent sessions populate it;
-// AgentCrew stage children do not.
-func hasPopulatedAgentName(hdr kiroSessionHeader) bool {
-	for _, t := range hdr.SessionState.ConversationMetadata.UserTurnMetadatas {
-		if t.LoopID.AgentID.Name != "" {
-			return true
-		}
-	}
-	return false
 }
