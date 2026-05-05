@@ -14,7 +14,7 @@ import (
 // kiroDiscoverFixture writes only the header fields used by discovery.
 type kiroDiscoverFixture struct {
 	cwd       string
-	agentName string // session_state.agent_name; empty for AgentCrew children
+	createdAt time.Time // header created_at; <= PromptTime marks parent-shaped
 }
 
 // writeKiroSessionPair writes a .json header and empty .jsonl pair with the
@@ -24,9 +24,7 @@ func writeKiroSessionPair(t *testing.T, dir, sessionID string, fx kiroDiscoverFi
 	header := map[string]any{
 		"session_id": sessionID,
 		"cwd":        fx.cwd,
-		"session_state": map[string]any{
-			"agent_name": fx.agentName,
-		},
+		"created_at": fx.createdAt.UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(header)
 	if err != nil {
@@ -48,18 +46,19 @@ func writeKiroSessionPair(t *testing.T, dir, sessionID string, fx kiroDiscoverFi
 
 func TestDiscoverSubagentTranscripts_ZeroChildren(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	// Only a parent-shaped session in the same repo.
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -72,22 +71,23 @@ func TestDiscoverSubagentTranscripts_ZeroChildren(t *testing.T) {
 
 func TestDiscoverSubagentTranscripts_OneChild(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	// Parents have agent_name; AgentCrew children do not.
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 	childPath := writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -101,21 +101,22 @@ func TestDiscoverSubagentTranscripts_OneChild(t *testing.T) {
 func TestDiscoverSubagentTranscripts_NegativeDiscovery(t *testing.T) {
 	// A concurrent user session in the same repo makes the window ambiguous.
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 	writeKiroSessionPair(t, dir, "concurrent-user",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -133,17 +134,18 @@ func TestDiscoverSubagentTranscripts_NoParentMatchFailClosed(t *testing.T) {
 	// window, or when its schema is one we do not parse. Without a
 	// positive parent anchor, discovery drops the candidate.
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	writeKiroSessionPair(t, dir, "child-orphan",
-		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -159,26 +161,27 @@ func TestDiscoverSubagentTranscripts_ConcurrentParentsFailClosed(t *testing.T) {
 	// one child-shaped session. Child files carry no pointer back to
 	// either parent, so discovery returns no children.
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	writeKiroSessionPair(t, dir, "parent-A",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 	writeKiroSessionPair(t, dir, "parent-B",
-		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(-time.Second)},
+		mtime,
 	)
 	// This child would match if only one parent were present.
 	writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
-		now,
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -194,17 +197,18 @@ func TestDiscoverSubagentTranscripts_DifferentRepoExcluded(t *testing.T) {
 	// activity from another Kiro CLI invocation. The cwd guard keeps
 	// it out without depending on timing.
 	dir := t.TempDir()
-	now := time.Now()
+	prompt := time.Now()
+	mtime := prompt.Add(10 * time.Second)
 	writeKiroSessionPair(t, dir, "child-other-repo",
-		kiroDiscoverFixture{cwd: "/other", agentName: ""},
-		now,
+		kiroDiscoverFixture{cwd: "/other", createdAt: prompt.Add(time.Second)},
+		mtime,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -220,18 +224,18 @@ func TestDiscoverSubagentTranscripts_OutOfWindowExcluded(t *testing.T) {
 	// this turn even if cwd matches. Mtime older than PromptTime is
 	// the boundary condition.
 	dir := t.TempDir()
-	now := time.Now()
-	stale := now.Add(-time.Hour)
+	prompt := time.Now()
+	stale := prompt.Add(-time.Hour)
 	writeKiroSessionPair(t, dir, "child-stale",
-		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
+		kiroDiscoverFixture{cwd: "/repo", createdAt: prompt.Add(time.Second)},
 		stale,
 	)
 
 	p := &Provider{sessionsDir: dir}
 	dctx := hooks.DiscoveryContext{
 		Cwd:        "/repo",
-		PromptTime: now.Add(-time.Minute).UnixMilli(),
-		StopTime:   now.Add(time.Minute).UnixMilli(),
+		PromptTime: prompt.UnixMilli(),
+		StopTime:   prompt.Add(time.Minute).UnixMilli(),
 	}
 	paths, err := p.DiscoverSubagentTranscripts(context.Background(), "", dctx)
 	if err != nil {
@@ -248,7 +252,7 @@ func TestDiscoverSubagentTranscripts_MissingContextReturnsNothing(t *testing.T) 
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
+		kiroDiscoverFixture{cwd: "/repo", createdAt: time.Now().Add(time.Second)},
 		now,
 	)
 
@@ -258,7 +262,7 @@ func TestDiscoverSubagentTranscripts_MissingContextReturnsNothing(t *testing.T) 
 		name string
 		dctx hooks.DiscoveryContext
 	}{
-		{"missing cwd", hooks.DiscoveryContext{PromptTime: now.UnixMilli()}},
+		{"missing cwd", hooks.DiscoveryContext{PromptTime: time.Now().UnixMilli()}},
 		{"missing prompt time", hooks.DiscoveryContext{Cwd: "/repo"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
