@@ -11,35 +11,21 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
-// kiroDiscoverFixture is the slice of a Kiro CLI session .json header that
-// the discoverer reads. Centralizing the shape keeps a future field rename
-// to a focused diff.
+// kiroDiscoverFixture writes only the header fields used by discovery.
 type kiroDiscoverFixture struct {
-	cwd        string
-	agentNames []string // one entry per user_turn_metadatas item, "" means null
+	cwd       string
+	agentName string // session_state.agent_name; empty for AgentCrew children
 }
 
 // writeKiroSessionPair writes a .json header and empty .jsonl pair with the
 // given mtime, mirroring the on-disk layout of a Kiro CLI session.
 func writeKiroSessionPair(t *testing.T, dir, sessionID string, fx kiroDiscoverFixture, mtime time.Time) string {
 	t.Helper()
-	turns := make([]map[string]any, 0, len(fx.agentNames))
-	for _, n := range fx.agentNames {
-		turns = append(turns, map[string]any{
-			"loop_id": map[string]any{
-				"agent_id": map[string]any{
-					"name": n,
-				},
-			},
-		})
-	}
 	header := map[string]any{
 		"session_id": sessionID,
 		"cwd":        fx.cwd,
 		"session_state": map[string]any{
-			"conversation_metadata": map[string]any{
-				"user_turn_metadatas": turns,
-			},
+			"agent_name": fx.agentName,
 		},
 	}
 	data, err := json.Marshal(header)
@@ -65,7 +51,7 @@ func TestDiscoverSubagentTranscripts_ZeroChildren(t *testing.T) {
 	now := time.Now()
 	// Only a parent-shaped session in the same repo.
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 
@@ -87,13 +73,13 @@ func TestDiscoverSubagentTranscripts_ZeroChildren(t *testing.T) {
 func TestDiscoverSubagentTranscripts_OneChild(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	// Parent has populated agent_id.name, child has none.
+	// Parents have agent_name; AgentCrew children do not.
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 	childPath := writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
 		now,
 	)
 
@@ -113,16 +99,15 @@ func TestDiscoverSubagentTranscripts_OneChild(t *testing.T) {
 }
 
 func TestDiscoverSubagentTranscripts_NegativeDiscovery(t *testing.T) {
-	// A concurrent unrelated user session in the same repo and time
-	// window is excluded by the agent_id.name guard.
+	// A concurrent user session in the same repo makes the window ambiguous.
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "parent-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 	writeKiroSessionPair(t, dir, "concurrent-user",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 
@@ -150,7 +135,7 @@ func TestDiscoverSubagentTranscripts_NoParentMatchFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "child-orphan",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
 		now,
 	)
 
@@ -176,16 +161,16 @@ func TestDiscoverSubagentTranscripts_ConcurrentParentsFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "parent-A",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 	writeKiroSessionPair(t, dir, "parent-B",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: []string{"kiro_default"}},
+		kiroDiscoverFixture{cwd: "/repo", agentName: "semantica"},
 		now,
 	)
 	// This child would match if only one parent were present.
 	writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
 		now,
 	)
 
@@ -211,7 +196,7 @@ func TestDiscoverSubagentTranscripts_DifferentRepoExcluded(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "child-other-repo",
-		kiroDiscoverFixture{cwd: "/other", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/other", agentName: ""},
 		now,
 	)
 
@@ -238,7 +223,7 @@ func TestDiscoverSubagentTranscripts_OutOfWindowExcluded(t *testing.T) {
 	now := time.Now()
 	stale := now.Add(-time.Hour)
 	writeKiroSessionPair(t, dir, "child-stale",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
 		stale,
 	)
 
@@ -263,7 +248,7 @@ func TestDiscoverSubagentTranscripts_MissingContextReturnsNothing(t *testing.T) 
 	dir := t.TempDir()
 	now := time.Now()
 	writeKiroSessionPair(t, dir, "child-1",
-		kiroDiscoverFixture{cwd: "/repo", agentNames: nil},
+		kiroDiscoverFixture{cwd: "/repo", agentName: ""},
 		now,
 	)
 
