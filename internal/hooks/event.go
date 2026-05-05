@@ -13,8 +13,9 @@ const (
 	ContextCompacted
 	SubagentSpawned
 	SubagentCompleted
-		ToolStepCompleted       // state-changing PostToolUse (Write, Edit, Bash)
-		SubagentPromptSubmitted // PreToolUse[Agent] prompt event
+	ToolStepCompleted       // state-changing PostToolUse (Write, Edit, Bash)
+	SubagentPromptSubmitted // PreToolUse[Agent] prompt event
+	IncrementalCapture      // mid-turn trigger to scan transcript from saved offset
 )
 
 // HookPhase returns a short stable string for the event's lifecycle phase.

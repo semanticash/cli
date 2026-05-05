@@ -1,6 +1,7 @@
 package kiroide
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -54,7 +55,8 @@ type kiroHook struct {
 }
 
 type kiroHookWhen struct {
-	Type string `json:"type"`
+	Type     string   `json:"type"`
+	Patterns []string `json:"patterns,omitempty"`
 }
 
 type kiroHookThen struct {
@@ -85,6 +87,15 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 			Then:        kiroHookThen{Type: "runCommand", Command: hooks.GuardedCommand(bin, "capture kiro-ide prompt-submit"), Timeout: 10},
 		},
 		{
+			ID:          "semantica-file-edited",
+			Enabled:     true,
+			Name:        "Semantica Incremental Capture",
+			Description: "Scan the Kiro execution trace after each file edit",
+			Version:     "1",
+			When:        kiroHookWhen{Type: "fileEdited", Patterns: []string{"**/*"}},
+			Then:        kiroHookThen{Type: "runCommand", Command: hooks.GuardedCommand(bin, "capture kiro-ide file-edited"), Timeout: 30},
+		},
+		{
 			ID:          "semantica-agent-stop",
 			Enabled:     true,
 			Name:        "Semantica Capture Stop",
@@ -99,18 +110,21 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	for _, def := range hookDefs {
 		hookPath := filepath.Join(hooksDir, def.ID+".kiro.hook")
 
-		if data, err := os.ReadFile(hookPath); err == nil {
-			if strings.Contains(string(data), semanticaMarker) {
-				count++
-				continue
-			}
-		}
-
-		data, err := hooks.MarshalSettingsJSON(def)
+		rendered, err := hooks.MarshalSettingsJSON(def)
 		if err != nil {
 			return 0, fmt.Errorf("marshal hook %s: %w", def.ID, err)
 		}
-		if err := os.WriteFile(hookPath, data, 0o644); err != nil {
+
+		// Skip writing only when the existing file already matches the
+		// rendered definition byte-for-byte. A Semantica-owned hook may
+		// need to be refreshed when the hook schema changes, such as when
+		// fileEdited requires a patterns field.
+		if existing, err := os.ReadFile(hookPath); err == nil && bytes.Equal(existing, rendered) {
+			count++
+			continue
+		}
+
+		if err := os.WriteFile(hookPath, rendered, 0o644); err != nil {
 			return 0, fmt.Errorf("write hook %s: %w", def.ID, err)
 		}
 		count++
@@ -202,6 +216,8 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		eventType = hooks.PromptSubmitted
 	case "stop":
 		eventType = hooks.AgentCompleted
+	case "file-edited":
+		eventType = hooks.IncrementalCapture
 	default:
 		return nil, fmt.Errorf("unknown kiro-ide hook: %s", hookName)
 	}
@@ -214,7 +230,10 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	wsKey := workspaceKey(cwd)
 
 	// Reuse the pinned session history reference when it is available.
-	if eventType == hooks.AgentCompleted {
+	// Both the agent-stop and the per-edit incremental hooks rely on the
+	// transcript ref pinned by the matching prompt-submit hook earlier in
+	// the turn; without that ref we cannot scan the right session.
+	if eventType == hooks.AgentCompleted || eventType == hooks.IncrementalCapture {
 		if state, err := hooks.LoadCaptureStateByKey(wsKey); err == nil {
 			return &hooks.Event{
 				Type:          eventType,
@@ -223,6 +242,11 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 				Timestamp:     time.Now().UnixMilli(),
 				CWD:           cwd,
 			}, nil
+		}
+		// IncrementalCapture without state is a no-op; skip the
+		// session lookup that follows since there is nothing to pin.
+		if eventType == hooks.IncrementalCapture {
+			return nil, nil
 		}
 	}
 

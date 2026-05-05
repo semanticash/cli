@@ -3,6 +3,7 @@ package kiroide
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,11 +128,11 @@ func TestInstallHooks_CreatesCorrectFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
-		t.Errorf("installed %d hooks, want 2", count)
+	if count != 3 {
+		t.Errorf("installed %d hooks, want 3", count)
 	}
 
-	for _, name := range []string{"semantica-prompt-submit.kiro.hook", "semantica-agent-stop.kiro.hook"} {
+	for _, name := range []string{"semantica-prompt-submit.kiro.hook", "semantica-file-edited.kiro.hook", "semantica-agent-stop.kiro.hook"} {
 		path := filepath.Join(repoRoot, ".kiro", "hooks", name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -166,8 +167,76 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
-		t.Errorf("second install returned %d, want 2 (idempotent)", count)
+	if count != 3 {
+		t.Errorf("second install returned %d, want 3 (idempotent)", count)
+	}
+}
+
+// TestInstallHooks_RefreshesStaleSemanticaOwnedHook checks that an existing
+// Semantica-owned hook file is refreshed when the rendered definition changes.
+func TestInstallHooks_RefreshesStaleSemanticaOwnedHook(t *testing.T) {
+	repoRoot := t.TempDir()
+	hooksDir := filepath.Join(repoRoot, ".kiro", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Older fileEdited hooks may be missing patterns even though the command
+	// marker shows they are Semantica-owned.
+	stale := `{"id":"semantica-file-edited","enabled":true,"name":"Old","version":"1","when":{"type":"fileEdited"},"then":{"type":"runCommand","command":"semantica capture kiro-ide file-edited","timeout":5}}`
+	stalePath := filepath.Join(hooksDir, "semantica-file-edited.kiro.hook")
+	if err := os.WriteFile(stalePath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hook kiroHook
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("invalid JSON after refresh: %v", err)
+	}
+	if len(hook.When.Patterns) == 0 {
+		t.Fatal("install did not refresh stale hook; patterns still empty after install")
+	}
+	if hook.Then.Timeout != 30 {
+		t.Errorf("timeout = %d, want 30 (stale hook was 5; refresh should overwrite)", hook.Then.Timeout)
+	}
+}
+
+// TestInstallHooks_FileEditedPatternsRequired checks that fileEdited hooks
+// include a non-empty patterns list. Kiro IDE requires patterns before the
+// hook can match file edits.
+func TestInstallHooks_FileEditedPatternsRequired(t *testing.T) {
+	repoRoot := t.TempDir()
+	p := &Provider{}
+
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".kiro", "hooks", "semantica-file-edited.kiro.hook"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hook kiroHook
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if hook.When.Type != "fileEdited" {
+		t.Errorf("when.type = %q, want fileEdited", hook.When.Type)
+	}
+	if len(hook.When.Patterns) == 0 {
+		t.Errorf("when.patterns is empty; Kiro IDE drops fileEdited hooks without patterns")
+	}
+	if !strings.Contains(hook.Then.Command, "capture kiro-ide file-edited") {
+		t.Errorf("command missing file-edited subcommand: %q", hook.Then.Command)
 	}
 }
 
@@ -226,6 +295,73 @@ func TestHookBinary_ExtractsBinaryPath(t *testing.T) {
 	}
 	if bin != "/opt/bin/semantica" {
 		t.Errorf("binary = %q, want /opt/bin/semantica", bin)
+	}
+}
+
+// TestParseHookEvent_FileEditedReusesPinnedRef checks that file-edited hooks
+// reuse the transcript ref pinned by the matching prompt-submit hook.
+func TestParseHookEvent_FileEditedReusesPinnedRef(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	histPath := filepath.Join(t.TempDir(), "session.json")
+	if err := os.WriteFile(histPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{
+		resolveSession: func(workspacePath string) (string, string, error) {
+			return "session-1", histPath, nil
+		},
+	}
+
+	submit, err := p.ParseHookEvent(context.Background(), "prompt-submit", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID:     submit.SessionID,
+		Provider:      providerName,
+		TranscriptRef: submit.TranscriptRef,
+		Timestamp:     submit.Timestamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hooks.DeleteCaptureState(submit.SessionID) }()
+
+	edited, err := p.ParseHookEvent(context.Background(), "file-edited", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == nil {
+		t.Fatal("file-edited returned nil event despite capture state being present")
+	}
+	if edited.Type != hooks.IncrementalCapture {
+		t.Errorf("Type = %v, want IncrementalCapture", edited.Type)
+	}
+	if edited.SessionID != submit.SessionID {
+		t.Errorf("SessionID = %q, want %q (workspace-keyed)", edited.SessionID, submit.SessionID)
+	}
+	if edited.TranscriptRef != histPath {
+		t.Errorf("TranscriptRef = %q, want pinned %q", edited.TranscriptRef, histPath)
+	}
+}
+
+// TestParseHookEvent_FileEditedNoStateNoOp checks that file-edited hooks
+// without capture state are ignored because there is no pinned session to scan.
+func TestParseHookEvent_FileEditedNoStateNoOp(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	p := &Provider{
+		resolveSession: func(workspacePath string) (string, string, error) {
+			t.Error("resolveSession should not be called for file-edited without capture state")
+			return "", "", fmt.Errorf("unused")
+		},
+	}
+
+	ev, err := p.ParseHookEvent(context.Background(), "file-edited", nil)
+	if err != nil {
+		t.Fatalf("file-edited without state should not error, got: %v", err)
+	}
+	if ev != nil {
+		t.Errorf("file-edited without state should return nil event, got: %+v", ev)
 	}
 }
 
