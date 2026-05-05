@@ -195,25 +195,28 @@ func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	return []broker.RawEvent{ev}, nil
 }
 
-// buildSubagentPromptEvent parses Kiro CLI's subagent input with a
-// prompt-then-task fallback. Older Kiro CLI versions used `task`
-// while newer versions use `prompt`; supporting both keeps the
-// emitter compatible with the in-flight transition.
+// buildSubagentPromptEvent emits the parent boundary for a Kiro
+// AgentCrew call. Summaries prefer purpose, then task, then a stage
+// count placeholder.
 func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var inp subagentInput
 	if len(event.ToolInput) > 0 {
 		_ = json.Unmarshal(event.ToolInput, &inp)
 	}
-	prompt := inp.Prompt
-	if prompt == "" {
-		prompt = inp.Task
-	}
-	if prompt == "" {
+
+	summary := subagentDispatchSummary(inp)
+	if summary == "" {
 		return nil, nil
 	}
 
-	payloadHash := builder.StorePromptPayload(ctx, bs, prompt)
-	summary := builder.TruncateWithEllipsis(prompt, 200)
+	body := inp.Purpose
+	if body == "" {
+		body = inp.Task
+	}
+	if body == "" {
+		body = summary
+	}
+	payloadHash := builder.StorePromptPayload(ctx, bs, body)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
 
 	ev := makeBaseRawEvent(event)
@@ -230,17 +233,34 @@ func buildSubagentPromptEvent(ctx context.Context, event *hooks.Event, bs api.Bl
 	return []broker.RawEvent{ev}, nil
 }
 
-// buildSubagentCompletedEvent uses the first subagent result string
-// as the summary when Kiro provides one.
+// subagentDispatchSummary returns the display summary for a subagent
+// dispatch.
+func subagentDispatchSummary(inp subagentInput) string {
+	if inp.Purpose != "" {
+		return builder.TruncateWithEllipsis(inp.Purpose, 200)
+	}
+	if inp.Task != "" {
+		return builder.TruncateWithEllipsis(inp.Task, 200)
+	}
+	if len(inp.Stages) > 0 {
+		return fmt.Sprintf("Kiro subagent: %d stages", len(inp.Stages))
+	}
+	return ""
+}
+
+// buildSubagentCompletedEvent emits the completion boundary for an
+// AgentCrew call. The first text response becomes the summary.
 func buildSubagentCompletedEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	summary := "Kiro subagent completed"
 	if len(event.ToolResponse) > 0 {
-		var resp struct {
-			Success bool     `json:"success"`
-			Result  []string `json:"result"`
-		}
-		if json.Unmarshal(event.ToolResponse, &resp) == nil && len(resp.Result) > 0 {
-			summary = resp.Result[0]
+		var resp bashResponse
+		if json.Unmarshal(event.ToolResponse, &resp) == nil {
+			for _, item := range resp.Items {
+				if item.Text != "" {
+					summary = item.Text
+					break
+				}
+			}
 		}
 	}
 	summary = builder.TruncateWithEllipsis(summary, 200)

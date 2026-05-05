@@ -23,8 +23,8 @@ func TestInstallHooks_NewConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 5 {
-		t.Errorf("installed %d hooks, want 5", count)
+	if count != 7 {
+		t.Errorf("installed %d hooks, want 7", count)
 	}
 
 	configPath := filepath.Join(repoRoot, ".kiro", "agents", "semantica.json")
@@ -61,14 +61,12 @@ func TestInstallHooks_NewConfig(t *testing.T) {
 		t.Errorf(`tools = %v, want ["*"]`, tools)
 	}
 
-	// Hook surface: agentSpawn, userPromptSubmit, two postToolUse
-	// entries with distinct matchers, and stop.
+	// Hook surface: agentSpawn, userPromptSubmit, three postToolUse
+	// matchers (fs_write, execute_bash, subagent), one preToolUse
+	// matcher (subagent), and stop.
 	var hooksMap map[string][]agentConfigHookEntry
 	if err := json.Unmarshal(raw["hooks"], &hooksMap); err != nil {
 		t.Fatal(err)
-	}
-	if _, ok := hooksMap["preToolUse"]; ok {
-		t.Error("preToolUse should not be registered")
 	}
 	for _, ev := range []string{"agentSpawn", "userPromptSubmit", "stop"} {
 		entries := hooksMap[ev]
@@ -76,15 +74,19 @@ func TestInstallHooks_NewConfig(t *testing.T) {
 			t.Errorf("%s entries = %+v, want exactly one unmatched entry", ev, entries)
 		}
 	}
+	preEntries := hooksMap["preToolUse"]
+	if len(preEntries) != 1 || preEntries[0].Matcher != "subagent" {
+		t.Errorf("preToolUse entries = %+v, want one entry with matcher=subagent", preEntries)
+	}
 	postEntries := hooksMap["postToolUse"]
-	if len(postEntries) != 2 {
-		t.Fatalf("postToolUse entries = %d, want 2", len(postEntries))
+	if len(postEntries) != 3 {
+		t.Fatalf("postToolUse entries = %d, want 3", len(postEntries))
 	}
 	matchers := map[string]bool{}
 	for _, e := range postEntries {
 		matchers[e.Matcher] = true
 	}
-	for _, m := range []string{"fs_write", "execute_bash"} {
+	for _, m := range []string{"fs_write", "execute_bash", "subagent"} {
 		if !matchers[m] {
 			t.Errorf("postToolUse missing matcher %q", m)
 		}
@@ -181,12 +183,19 @@ func TestInstallHooks_RemovesStaleSemanticaEntriesOnUpgrade(t *testing.T) {
 	var hooksMap map[string][]agentConfigHookEntry
 	_ = json.Unmarshal(raw["hooks"], &hooksMap)
 
-	if _, ok := hooksMap["preToolUse"]; ok {
-		t.Errorf("stale preToolUse entry survived upgrade: %+v", hooksMap["preToolUse"])
+	// preToolUse should now contain only the canonical
+	// matcher=subagent entry; the stale unmatched preToolUse from
+	// the fixture must be gone.
+	preEntries := hooksMap["preToolUse"]
+	if len(preEntries) != 1 || preEntries[0].Matcher != "subagent" {
+		t.Errorf("preToolUse after upgrade = %+v, want one entry with matcher=subagent", preEntries)
 	}
+	// postToolUse contains the canonical fs_write, execute_bash,
+	// and subagent matchers; the stale unmatched fixture entry
+	// must be gone.
 	postEntries := hooksMap["postToolUse"]
-	if len(postEntries) != 2 {
-		t.Fatalf("postToolUse entries = %d, want 2 (unmatched stale entry must be removed)", len(postEntries))
+	if len(postEntries) != 3 {
+		t.Fatalf("postToolUse entries = %d, want 3 (canonical set, stale unmatched removed)", len(postEntries))
 	}
 	for _, e := range postEntries {
 		if e.Matcher == "" {
@@ -230,18 +239,17 @@ func TestInstallHooks_DedupesByEventMatcherCommand(t *testing.T) {
 	_ = json.Unmarshal(raw["hooks"], &hooksMap)
 
 	postEntries := hooksMap["postToolUse"]
-	if len(postEntries) != 2 {
-		t.Fatalf("postToolUse entries = %d, want 2 after refresh", len(postEntries))
+	if len(postEntries) != 3 {
+		t.Fatalf("postToolUse entries = %d, want 3 after refresh", len(postEntries))
 	}
 	matchers := map[string]int{}
 	for _, e := range postEntries {
 		matchers[e.Matcher]++
 	}
-	if matchers["fs_write"] != 1 {
-		t.Errorf("fs_write entries = %d, want 1", matchers["fs_write"])
-	}
-	if matchers["execute_bash"] != 1 {
-		t.Errorf("execute_bash entries = %d, want 1", matchers["execute_bash"])
+	for _, m := range []string{"fs_write", "execute_bash", "subagent"} {
+		if matchers[m] != 1 {
+			t.Errorf("%s entries = %d, want 1", m, matchers[m])
+		}
 	}
 }
 
@@ -257,8 +265,8 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 
 	data, _ := os.ReadFile(filepath.Join(repoRoot, ".kiro", "agents", "semantica.json"))
 	count := strings.Count(string(data), semanticaMarker)
-	if count != 5 {
-		t.Errorf("marker appears %d times, want 5 (one per hook)", count)
+	if count != 7 {
+		t.Errorf("marker appears %d times, want 7 (one per hook)", count)
 	}
 }
 
@@ -536,6 +544,155 @@ func TestParseHookEvent_PostToolUse_Write_UnknownSubcommand(t *testing.T) {
 	}
 }
 
+// Kiro subagent preToolUse emits the prompt boundary.
+func TestParseHookEvent_PreToolUse_Subagent(t *testing.T) {
+	p := &Provider{}
+	stdin := strings.NewReader(`{
+		"hook_event_name":"preToolUse",
+		"cwd":"/workspace",
+		"session_id":"parent-sess-uuid",
+		"tool_name":"subagent",
+		"tool_input":{"task":"Run a single read-only investigation","mode":"blocking","stages":[{"name":"a","role":"kiro_default","prompt_template":"do A"}],"__tool_use_purpose":"Dispatch one read-only sub-task"}
+	}`)
+	event, err := p.ParseHookEvent(context.Background(), "pre-tool-use", stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event == nil || event.Type != hooks.SubagentPromptSubmitted {
+		t.Fatalf("expected SubagentPromptSubmitted, got %+v", event)
+	}
+	if event.ToolName != "Agent" {
+		t.Errorf("tool_name = %q, want Agent", event.ToolName)
+	}
+	if !strings.HasPrefix(event.ToolUseID, "kiro-subagent-") {
+		t.Errorf("tool_use_id = %q, want kiro-subagent- prefix", event.ToolUseID)
+	}
+}
+
+// Pre and post boundaries for the same subagent call share an id.
+func TestParseHookEvent_SubagentToolUseIDPairsPreAndPost(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	wsKey := workspaceKey("/workspace")
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: wsKey, Provider: providerName, TurnID: "turn-A", Timestamp: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hooks.DeleteCaptureState(wsKey) }()
+
+	p := &Provider{}
+	preInput := `{
+		"hook_event_name":"preToolUse",
+		"cwd":"/workspace",
+		"session_id":"parent-sess-uuid",
+		"tool_name":"subagent",
+		"tool_input":{"task":"X","mode":"blocking","stages":[{"name":"a"}]}
+	}`
+	postInput := `{
+		"hook_event_name":"postToolUse",
+		"cwd":"/workspace",
+		"session_id":"parent-sess-uuid",
+		"tool_name":"subagent",
+		"tool_input":{"task":"X","mode":"blocking","stages":[{"name":"a"}]},
+		"tool_response":{"items":[{"Text":"Pipeline completed: 1 stages finished."}]}
+	}`
+	pre, err := p.ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(preInput))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(postInput))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.ToolUseID == "" || post.ToolUseID == "" {
+		t.Fatalf("empty tool_use_id: pre=%q post=%q", pre.ToolUseID, post.ToolUseID)
+	}
+	if pre.ToolUseID != post.ToolUseID {
+		t.Errorf("pre/post mismatch: pre=%q post=%q", pre.ToolUseID, post.ToolUseID)
+	}
+}
+
+// Identical subagent calls within one turn intentionally share an id.
+func TestParseHookEvent_SubagentToolUseIDCollidesWithinSameTurn(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	wsKey := workspaceKey("/workspace")
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: wsKey,
+		Provider:  providerName,
+		TurnID:    "turn-A",
+		Timestamp: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hooks.DeleteCaptureState(wsKey) }()
+
+	p := &Provider{}
+	input := `{
+		"hook_event_name":"postToolUse",
+		"cwd":"/workspace",
+		"session_id":"parent-sess-uuid",
+		"tool_name":"subagent",
+		"tool_input":{"task":"X","mode":"blocking","stages":[{"name":"a"}]},
+		"tool_response":{"items":[{"Text":"Pipeline completed: 1 stages finished."}]}
+	}`
+	first, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ToolUseID != second.ToolUseID {
+		t.Errorf("expected identical tool_use_id within same turn, got %q vs %q", first.ToolUseID, second.ToolUseID)
+	}
+}
+
+// Identical subagent calls in different turns must get different ids.
+func TestParseHookEvent_SubagentToolUseIDDiffersAcrossTurns(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	wsKey := workspaceKey("/workspace")
+	input := `{
+		"hook_event_name":"postToolUse",
+		"cwd":"/workspace",
+		"session_id":"parent-sess-uuid",
+		"tool_name":"subagent",
+		"tool_input":{"task":"X","mode":"blocking","stages":[{"name":"a"}]},
+		"tool_response":{"items":[{"Text":"Pipeline completed: 1 stages finished."}]}
+	}`
+	p := &Provider{}
+
+	// Turn A.
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: wsKey, Provider: providerName, TurnID: "turn-A", Timestamp: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn B (same Kiro session, different Semantica turn).
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: wsKey, Provider: providerName, TurnID: "turn-B", Timestamp: 2000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hooks.DeleteCaptureState(wsKey) }()
+	second, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ToolUseID == second.ToolUseID {
+		t.Errorf("expected different tool_use_id across turns, both got %q", first.ToolUseID)
+	}
+}
+
 func TestParseHookEvent_UnknownHook(t *testing.T) {
 	p := &Provider{}
 	stdin := strings.NewReader(`{"hook_event_name":"unknown","cwd":"/workspace"}`)
@@ -727,7 +884,7 @@ func TestSidecar_OverwrittenOnNextPromptSubmit(t *testing.T) {
 	}
 }
 
-// Replay stays silent while direct postToolUse hooks own capture.
+// Replay does not emit events while direct postToolUse hooks own capture.
 func TestReadFromOffset_DisabledReplay(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 

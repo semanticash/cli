@@ -420,20 +420,19 @@ func TestBuildHookEvents_UnknownTool(t *testing.T) {
 
 // --- Subagent prompts and completions ---
 
-func TestBuildHookEvents_SubagentPromptWithPrompt(t *testing.T) {
+// Purpose is the highest-priority subagent summary source.
+func TestBuildHookEvents_SubagentPromptWithPurpose(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// Kiro CLI accepts either `prompt` or `task` in the subagent input;
-	// `prompt` takes precedence when both are present.
 	event := &hooks.Event{
 		Type:      hooks.SubagentPromptSubmitted,
 		SessionID: "sess-kiro-1",
 		TurnID:    "turn-1",
-		ToolUseID: "kiro-agent-1",
+		ToolUseID: "kiro-subagent-1",
 		ToolName:  "Agent",
 		ToolInput: json.RawMessage(
-			`{"prompt":"Review this PR","task":"fallback task"}`,
+			`{"task":"top level fallback","__tool_use_purpose":"Dispatch three repo investigations","stages":[{"name":"a"},{"name":"b"},{"name":"c"}]}`,
 		),
 	}
 
@@ -449,24 +448,24 @@ func TestBuildHookEvents_SubagentPromptWithPrompt(t *testing.T) {
 	if ev.ToolName != "Agent" {
 		t.Errorf("tool_name = %q, want Agent", ev.ToolName)
 	}
-	if !strings.Contains(ev.Summary, "Review this PR") {
-		t.Errorf("summary should contain the prompt, got %q", ev.Summary)
+	if ev.Summary != "Dispatch three repo investigations" {
+		t.Errorf("summary = %q, want __tool_use_purpose to win", ev.Summary)
 	}
 	if ev.PayloadHash == "" {
 		t.Error("expected non-empty payload_hash for subagent prompt")
 	}
 }
 
-func TestBuildHookEvents_SubagentPromptWithTaskFallback(t *testing.T) {
+// Task is the summary fallback when purpose is absent.
+func TestBuildHookEvents_SubagentPromptWithTask(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// When `prompt` is absent, `task` is used as the subagent intent.
 	event := &hooks.Event{
 		Type:      hooks.SubagentPromptSubmitted,
 		SessionID: "sess-kiro-1",
 		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{"task":"Generate the JSON schema"}`),
+		ToolInput: json.RawMessage(`{"task":"Generate the JSON schema","stages":[{"name":"a"}]}`),
 	}
 
 	events, err := p.BuildHookEvents(context.Background(), event, bs)
@@ -476,14 +475,43 @@ func TestBuildHookEvents_SubagentPromptWithTaskFallback(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if !strings.Contains(events[0].Summary, "Generate the JSON schema") {
-		t.Errorf("summary should fall back to task, got %q", events[0].Summary)
+	if events[0].Summary != "Generate the JSON schema" {
+		t.Errorf("summary = %q, want top-level task", events[0].Summary)
+	}
+}
+
+// Stage count is the fallback when no purpose or task is present.
+func TestBuildHookEvents_SubagentPromptStageCountFallback(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	event := &hooks.Event{
+		Type:      hooks.SubagentPromptSubmitted,
+		SessionID: "sess-kiro-1",
+		ToolName:  "Agent",
+		ToolInput: json.RawMessage(
+			`{"stages":[{"name":"a","prompt_template":"do A"},{"name":"b","prompt_template":"do B"},{"name":"c","prompt_template":"do C"}]}`,
+		),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Summary != "Kiro subagent: 3 stages" {
+		t.Errorf("summary = %q, want stage-count placeholder", events[0].Summary)
+	}
+	if strings.Contains(events[0].Summary, "do A") {
+		t.Error("summary must not surface the first stage prompt")
 	}
 }
 
 func TestBuildHookEvents_SubagentPromptEmpty(t *testing.T) {
 	p := &Provider{}
-	// Neither prompt nor task yields no events. Mirrors the
+	// No purpose, no task, no stages: drop. Mirrors the
 	// empty-prompt rule above.
 	event := &hooks.Event{
 		Type:      hooks.SubagentPromptSubmitted,
@@ -501,21 +529,20 @@ func TestBuildHookEvents_SubagentPromptEmpty(t *testing.T) {
 	}
 }
 
+// The first AgentCrew text response becomes the completion summary.
 func TestBuildHookEvents_SubagentCompleted(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()
 
-	// Kiro CLI's subagent response shape is {success, result: []string};
-	// the first result string becomes the event summary.
 	event := &hooks.Event{
 		Type:      hooks.SubagentCompleted,
 		SessionID: "sess-kiro-1",
 		TurnID:    "turn-1",
-		ToolUseID: "kiro-agent-1",
+		ToolUseID: "kiro-subagent-1",
 		ToolName:  "Agent",
-		ToolInput: json.RawMessage(`{"prompt":"Review the auth package"}`),
+		ToolInput: json.RawMessage(`{"task":"Review the auth package","stages":[{"name":"a"}]}`),
 		ToolResponse: json.RawMessage(
-			`{"success":true,"result":["Reviewed: found two issues in auth/session.go"]}`,
+			`{"items":[{"Text":"Pipeline completed: 1 stages finished.\n\n## a\n\nReviewed: found two issues in auth/session.go"}]}`,
 		),
 	}
 
@@ -531,8 +558,8 @@ func TestBuildHookEvents_SubagentCompleted(t *testing.T) {
 	if ev.ToolName != "Agent" {
 		t.Errorf("tool_name = %q, want Agent", ev.ToolName)
 	}
-	if ev.Summary != "Reviewed: found two issues in auth/session.go" {
-		t.Errorf("summary = %q, want the first result string", ev.Summary)
+	if !strings.Contains(ev.Summary, "Reviewed: found two issues") {
+		t.Errorf("summary = %q, want first items[].Text", ev.Summary)
 	}
 	if ev.ProvenanceHash == "" {
 		t.Error("expected non-empty provenance_hash")

@@ -503,7 +503,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 
 // DiscoverSubagentTranscripts scans the parent transcript's subagents/
 // directory and returns any child JSONL transcripts.
-func (p *Provider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string) ([]string, error) {
+func (p *Provider) DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string, _ hooks.DiscoveryContext) ([]string, error) {
 	subagentsDir := filepath.Join(filepath.Dir(parentTranscriptRef), "subagents")
 
 	entries, err := os.ReadDir(subagentsDir)

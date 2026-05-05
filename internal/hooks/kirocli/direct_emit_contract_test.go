@@ -8,12 +8,8 @@ import (
 	"github.com/semanticash/cli/internal/hooks/testutil"
 )
 
-// TestDirectEmit_Contract freezes Kiro CLI's output. The most
-// important invariants here are the synthetic kiro_file_edit tool
-// name in ToolUsesJSON for Write and Edit, the empty ToolUsesJSON
-// for Bash, and the Prompt-then-Task fallback for subagent inputs.
-// These capture the full wire shape including hashes and
-// blob contents.
+// TestDirectEmit_Contract freezes Kiro CLI's direct-emission shape,
+// including tool-use JSON, summaries, hashes, and stored blobs.
 func TestDirectEmit_Contract(t *testing.T) {
 	cases := []testutil.Case{
 		{
@@ -72,42 +68,41 @@ func TestDirectEmit_Contract(t *testing.T) {
 			},
 		},
 		{
-			Name:        "subagent_prompt_from_prompt_field",
-			Description: "Kiro CLI subagent input with prompt field set; prompt takes precedence over task",
+			Name:        "subagent_prompt_with_purpose",
+			Description: "Kiro CLI AgentCrew dispatch; __tool_use_purpose wins over task",
 			Event: &hooks.Event{
 				Type:      hooks.SubagentPromptSubmitted,
 				SessionID: "sess-kiro-1",
 				TurnID:    "turn-1",
-				ToolUseID: "kiro-agent-1",
+				ToolUseID: "kiro-subagent-1",
 				ToolName:  "Agent",
-				ToolInput: json.RawMessage(`{"prompt":"Review this PR","task":"fallback task"}`),
+				ToolInput: json.RawMessage(`{"task":"top level fallback","__tool_use_purpose":"Dispatch three repo investigations","mode":"blocking","stages":[{"name":"a","role":"kiro_default","prompt_template":"do A"},{"name":"b","role":"kiro_default","prompt_template":"do B"},{"name":"c","role":"kiro_default","prompt_template":"do C"}]}`),
 				Timestamp: 1714000040000,
 			},
 		},
 		{
-			Name:        "subagent_prompt_from_task_fallback",
-			Description: "Kiro CLI subagent input missing prompt; task becomes the subagent intent",
+			Name:        "subagent_prompt_with_task",
+			Description: "Kiro CLI AgentCrew dispatch missing __tool_use_purpose; top-level task becomes the summary",
 			Event: &hooks.Event{
 				Type:      hooks.SubagentPromptSubmitted,
 				SessionID: "sess-kiro-1",
 				ToolName:  "Agent",
-				ToolInput: json.RawMessage(`{"task":"Generate the JSON schema"}`),
+				ToolInput: json.RawMessage(`{"task":"Generate the JSON schema","mode":"blocking","stages":[{"name":"only","role":"kiro_default","prompt_template":"do it"}]}`),
 				Timestamp: 1714000050000,
 			},
 		},
 		{
 			Name:        "subagent_completed",
-			Description: "Kiro CLI subagent response {success, result: []string}; summary is result[0]",
+			Description: "Kiro CLI AgentCrew response items[].Text; first text becomes the summary",
 			Event: &hooks.Event{
 				Type:      hooks.SubagentCompleted,
 				SessionID: "sess-kiro-1",
 				TurnID:    "turn-1",
-				ToolUseID: "kiro-agent-1",
+				ToolUseID: "kiro-subagent-1",
 				ToolName:  "Agent",
-				ToolInput: json.RawMessage(`{"prompt":"Review the auth package"}`),
+				ToolInput: json.RawMessage(`{"task":"Review the auth package","stages":[{"name":"a"}]}`),
 				ToolResponse: json.RawMessage(`{
-					"success":true,
-					"result":["Reviewed: found two issues in auth/session.go"]
+					"items":[{"Text":"Pipeline completed: 1 stages finished.\n\n## a\n\nReviewed: found two issues in auth/session.go"}]
 				}`),
 				Timestamp: 1714000060000,
 			},

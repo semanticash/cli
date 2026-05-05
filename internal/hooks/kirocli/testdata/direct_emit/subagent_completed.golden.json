@@ -1,16 +1,16 @@
 {
   "name": "subagent_completed",
-  "description": "Kiro CLI subagent response {success, result: []string}; summary is result[0]",
+  "description": "Kiro CLI AgentCrew response items[].Text; first text becomes the summary",
   "expected_events": [
     {
-      "EventID": "f6e95fbed01ce09c6cf3228bd0d965f79ad6aeeb0e38803e2e3a80b4b689126b",
+      "EventID": "4e49dcda5a5a337f7eed3b46e3ecfacdd82097ee85bdef037ffa769524f4a2f3",
       "SourceKey": "sess-kiro-1",
       "Provider": "kiro-cli",
       "Timestamp": 1714000060000,
       "Kind": "assistant",
       "Role": "assistant",
       "ToolUsesJSON": "",
-      "Summary": "Reviewed: found two issues in auth/session.go",
+      "Summary": "Pipeline completed: 1 stages finished.\n\n## a\n\nReviewed: found two issues in auth/session.go",
       "PayloadHash": "",
       "TokensIn": 0,
       "TokensOut": 0,
@@ -20,10 +20,10 @@
       "SourcePosition": 0,
       "FilePaths": null,
       "TurnID": "turn-1",
-      "ToolUseID": "kiro-agent-1",
+      "ToolUseID": "kiro-subagent-1",
       "ToolName": "Agent",
       "EventSource": "hook",
-      "ProvenanceHash": "5086d0a8bafd8a0f09688c0f789fa6c890a3a2d230741eb59a05300fb6902f4a",
+      "ProvenanceHash": "444ee7027fa6b1370c747264d36128210aecb2b60c1f96bc29f30ccf399a8645",
       "ProviderSessionID": "sess-kiro-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000060000,
@@ -33,6 +33,6 @@
     }
   ],
   "expected_blobs": {
-    "5086d0a8bafd8a0f09688c0f789fa6c890a3a2d230741eb59a05300fb6902f4a": "{\"tool_input\":{\"prompt\":\"Review the auth package\"},\"tool_response\":{\"success\":true,\"result\":[\"Reviewed: found two issues in auth/session.go\"]}}"
+    "444ee7027fa6b1370c747264d36128210aecb2b60c1f96bc29f30ccf399a8645": "{\"tool_input\":{\"task\":\"Review the auth package\",\"stages\":[{\"name\":\"a\"}]},\"tool_response\":{\"items\":[{\"Text\":\"Pipeline completed: 1 stages finished.\\n\\n## a\\n\\nReviewed: found two issues in auth/session.go\"}]}}"
   }
 }

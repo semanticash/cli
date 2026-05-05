@@ -54,16 +54,36 @@ type HookProvider interface {
 	ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error)
 }
 
+// DiscoveryContext carries lifecycle-known facts about the parent turn for
+// providers that store child transcripts in a directory shared with unrelated
+// sessions and need extra signals to disambiguate. Fields may be empty;
+// implementations must tolerate that rather than fail outright.
+type DiscoveryContext struct {
+	// Cwd is the parent session's working directory.
+	Cwd string
+
+	// PromptTime is the parent's PromptSubmitted timestamp in unix-ms.
+	PromptTime int64
+
+	// StopTime is the upper bound of the parent's active window in unix-ms.
+	StopTime int64
+
+	// ParentSessionID is the parent's hook session id.
+	ParentSessionID string
+
+	// ParentAgentName is the parent's agent name when the provider exposes it.
+	ParentAgentName string
+}
+
 // SubagentDiscoverer is an optional interface for providers that support
 // subagent (child) transcripts stored separately from the parent transcript.
 // When implemented, the SubagentCompleted handler scans for child transcripts
-// and reads each one with its own capture state, ensuring subagent edits are
-// attributed correctly.
+// and reads each one with its own capture state.
 type SubagentDiscoverer interface {
 	// DiscoverSubagentTranscripts returns paths to all subagent transcript
-	// files associated with the given parent transcript. The parent transcript
-	// path is used to derive the subagents directory (provider-specific).
-	DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string) ([]string, error)
+	// files associated with the given parent transcript. Implementations
+	// consume only the DiscoveryContext fields they need.
+	DiscoverSubagentTranscripts(ctx context.Context, parentTranscriptRef string, dctx DiscoveryContext) ([]string, error)
 
 	// SubagentStateKey returns a stable key for the subagent's capture state
 	// file, derived from the subagent transcript path. Must be unique per

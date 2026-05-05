@@ -49,7 +49,8 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 - Kiro CLI support currently uses a dedicated repo-local agent config at `.kiro/agents/semantica.json`. Semantica capture is active only when the current Kiro CLI session is using that config. You can select it with `kiro-cli chat --agent semantica`, or make it the repo default with `kiro-cli agent set-default semantica`.
 - Kiro CLI hook payloads do not expose a conversation ID directly. Semantica pairs `userPromptSubmit` and `stop` by workspace-scoped capture state and resolves the active conversation best-effort from the current workspace.
-- Direct `postToolUse` hooks own Kiro CLI file and shell capture. Transcript replay is disabled for now to avoid duplicate events with mismatched provider tool IDs.
+- Direct `postToolUse` hooks own parent Kiro CLI file and shell capture. Parent SQLite transcript replay is disabled to avoid duplicate events with mismatched provider tool IDs.
+- AgentCrew child sessions are replayed from Kiro JSONL files only when discovery has a single parent-shaped session anchor in the same cwd and prompt-to-stop window. Overlapping same-repo Kiro sessions or missing parent metadata cause child replay to fail closed.
 - If `userPromptSubmit` is missed for a turn, later tool hooks may not have capture state to attach to for that turn.
 
 ## Hosted reporting

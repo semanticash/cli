@@ -129,7 +129,7 @@ Kiro execution traces include structured file operations such as `create`, `appe
 
 **Hook config**: `.kiro/agents/semantica.json`
 
-Kiro CLI stores conversation history in a SQLite database and exposes hook payloads as JSON on stdin. Semantica uses direct hooks as the primary capture path for Kiro CLI 2.2+: prompt, file-edit, shell, and session-boundary events are emitted from hook payloads as they arrive. Conversation lookup is best-effort and is not required for file or shell attribution.
+Kiro CLI stores parent conversation history in a SQLite database, writes AgentCrew child sessions as JSONL files, and exposes hook payloads as JSON on stdin. Semantica uses direct hooks as the primary capture path for Kiro CLI 2.2+: prompt, file-edit, shell, subagent, and session-boundary events are emitted from hook payloads as they arrive. Conversation lookup is best-effort and is not required for direct file or shell attribution.
 
 ### Detection
 
@@ -140,19 +140,23 @@ Detected by resolving one of the following executables via `PATH`, then common u
 
 ### Hooks
 
-Semantica installs a dedicated repo-local Kiro CLI agent profile at `.kiro/agents/semantica.json` with five hooks:
+Semantica installs a dedicated repo-local Kiro CLI agent profile at `.kiro/agents/semantica.json` with seven hooks:
 
 - **`agentSpawn`** - Opens a workspace-scoped capture session.
 - **`userPromptSubmit`** - Saves prompt and workspace capture state. Conversation lookup is best-effort.
+- **`preToolUse`** with matcher `subagent` - Captures the AgentCrew dispatch boundary.
 - **`postToolUse`** with matcher `fs_write` - Captures Kiro `write` payloads for create, replace, and insert operations.
 - **`postToolUse`** with matcher `execute_bash` - Captures Kiro `shell` payloads.
-- **`stop`** - Closes the workspace-scoped session and flushes any pending lifecycle work.
+- **`postToolUse`** with matcher `subagent` - Captures the AgentCrew completion boundary.
+- **`stop`** - Closes the workspace-scoped session, discovers child AgentCrew JSONL sessions, and flushes any pending lifecycle work.
 
-Kiro CLI hook payloads include `cwd` and `prompt`, but they do not give Semantica an explicit conversation ID. Semantica pairs `userPromptSubmit` and `stop` through a workspace-scoped capture-state key and resolves the active conversation from the current workspace.
+Kiro CLI hook payloads include `cwd` and `prompt`, but they do not give Semantica an explicit parent conversation ID. Semantica pairs `userPromptSubmit` and `stop` through a workspace-scoped capture-state key and resolves the active conversation from the current workspace when it is useful. AgentCrew child sessions are discovered from Kiro's session directory with cwd, time-window, and session-shape guards.
 
 ### Attribution
 
 Kiro CLI 2.2 file operations arrive as `write` payloads. Semantica maps `create` to `Write`, maps `strReplace` and `insert` to `Edit`, resolves relative paths against the hook working directory, and stores canonical file-edit content for line-level attribution. Shell operations arrive as `shell` payloads and are captured as `Bash` events.
+
+AgentCrew subagent calls are captured at the parent boundary and, when discovery is unambiguous, Semantica replays each child JSONL session to attribute inner `write` and `shell` operations back to the parent turn. Child replay uses Kiro's own `toolUseId` values and links child provider sessions to the parent session for drill-down.
 
 ### Usage
 
@@ -174,7 +178,8 @@ kiro-cli agent set-default semantica
 
 - Kiro CLI support in `v1` is tied to the repo-local `semantica` agent config. If Kiro CLI is using some other agent config, Semantica hooks will not be active for that session.
 - Kiro CLI hooks do not expose a conversation ID directly, so conversation lookup is best-effort when multiple Kiro CLI chats exist for the same workspace.
-- Direct `postToolUse` hooks own file and shell capture. Transcript replay is currently disabled for Kiro CLI to avoid duplicate events with mismatched provider tool IDs.
+- Direct `postToolUse` hooks own parent file and shell capture. Parent SQLite transcript replay stays disabled to avoid duplicate events with mismatched provider tool IDs.
+- AgentCrew child discovery requires exactly one parent-shaped Kiro session in the same cwd and prompt-to-stop window. If the parent anchor is missing or multiple same-repo parents overlap, Semantica skips child replay rather than attaching children to the wrong parent.
 - If `userPromptSubmit` is missed, later tool hooks may not have capture state to attach to for that turn.
 
 ---
