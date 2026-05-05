@@ -82,7 +82,9 @@ type CreateInput struct {
 	OriginalContent string `json:"originalContent"`
 }
 
-// AppendInput is the parsed input for an "append" action.
+// AppendInput is the parsed input for in-place edit actions. Used for both
+// "replace" (current Kiro IDE) and "append" (legacy, retained for older
+// session traces still on disk); the JSON shape is identical.
 type AppendInput struct {
 	File            string `json:"file"`
 	ModifiedContent string `json:"modifiedContent"`

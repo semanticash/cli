@@ -10,16 +10,33 @@ import (
 )
 
 // FileOperation represents a single file change extracted from an execution trace.
+//
+// ActionType preserves the trace's original value: "create", "replace"
+// (current Kiro IDE), "append" (legacy, identical shape to replace), or
+// "smartRelocate". OriginalContent is the pre-edit content for replace and
+// append; empty for create (new file) and smartRelocate (rename, no diff).
+// ActionID is Kiro's per-action identifier (e.g. "tooluse_<random>"); used
+// downstream to keep two edits to the same file in the same execution
+// distinct.
 type FileOperation struct {
-	ActionType string // "create", "append", "smartRelocate"
-	FilePath   string // relative path within the workspace
-	Content    string // the content the agent wrote (empty for relocate)
-	SourcePath string // for relocate: original path
-	DestPath   string // for relocate: new path
-	EmittedAt  int64  // unix ms timestamp of the action
+	ActionType      string
+	ActionID        string
+	FilePath        string // relative path within the workspace
+	Content         string // the content the agent wrote (empty for relocate)
+	OriginalContent string // pre-edit content for replace/append; empty otherwise
+	SourcePath      string // for relocate: original path
+	DestPath        string // for relocate: new path
+	EmittedAt       int64  // unix ms timestamp of the action
 }
 
 // ExtractFileOps parses an execution trace and returns all file operations.
+//
+// The "replace" action type (current Kiro IDE) shares the AppendInput shape
+// with the legacy "append" but is intentionally not handled here yet:
+// downstream callers do not yet route unknown action types safely, so adding
+// "replace" alongside this extractor change in isolation would surface
+// phantom events with empty fields. Both action types will be handled
+// together with the matching downstream wire-up.
 func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 	var ops []FileOperation
 	for _, action := range trace.Actions {
@@ -30,10 +47,12 @@ func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 				continue
 			}
 			ops = append(ops, FileOperation{
-				ActionType: "create",
-				FilePath:   input.File,
-				Content:    input.ModifiedContent,
-				EmittedAt:  action.EmittedAt,
+				ActionType:      "create",
+				ActionID:        action.ActionID,
+				FilePath:        input.File,
+				Content:         input.ModifiedContent,
+				OriginalContent: input.OriginalContent,
+				EmittedAt:       action.EmittedAt,
 			})
 
 		case "append":
@@ -42,10 +61,12 @@ func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 				continue
 			}
 			ops = append(ops, FileOperation{
-				ActionType: "append",
-				FilePath:   input.File,
-				Content:    input.ModifiedContent,
-				EmittedAt:  action.EmittedAt,
+				ActionType:      "append",
+				ActionID:        action.ActionID,
+				FilePath:        input.File,
+				Content:         input.ModifiedContent,
+				OriginalContent: input.OriginalContent,
+				EmittedAt:       action.EmittedAt,
 			})
 
 		case "smartRelocate":
@@ -55,6 +76,7 @@ func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 			}
 			ops = append(ops, FileOperation{
 				ActionType: "smartRelocate",
+				ActionID:   action.ActionID,
 				SourcePath: input.SourcePath,
 				DestPath:   input.DestinationPath,
 				EmittedAt:  action.EmittedAt,
