@@ -96,7 +96,7 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := agentKiro.BuildToolUsesJSON(resolvedPath, "create").String
+	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, resolvedPath, "create").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -141,7 +141,7 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := agentKiro.BuildToolUsesJSON(resolvedPath, "edit").String
+	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, resolvedPath, "edit").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -178,7 +178,7 @@ func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	inputJSON, _ := json.Marshal(map[string]string{"command": redactedCmd})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
 	provenanceHash := storeRedactedBashProvenance(ctx, bs, event, redactedCmd)
-	toolUsesJSON := agentKiro.BuildToolUsesJSON("", "exec").String
+	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, "", "exec").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"

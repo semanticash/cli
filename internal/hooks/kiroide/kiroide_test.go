@@ -12,6 +12,113 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
+// TestHashEventID_ActionIDDistinguishesSameFileOps checks that same-file edits
+// with different action IDs get different event IDs.
+func TestHashEventID_ActionIDDistinguishesSameFileOps(t *testing.T) {
+	first := hashEventID("exec-1", "replace", "main.go", "tooluse_a")
+	second := hashEventID("exec-1", "replace", "main.go", "tooluse_b")
+	if first == second {
+		t.Errorf("event IDs collide despite distinct action IDs: both = %q", first)
+	}
+}
+
+// TestHashEventID_StableAcrossRuns checks that event IDs stay deterministic
+// for identical inputs.
+func TestHashEventID_StableAcrossRuns(t *testing.T) {
+	a := hashEventID("exec-1", "create", "main.go", "tooluse_z")
+	b := hashEventID("exec-1", "create", "main.go", "tooluse_z")
+	if a != b {
+		t.Errorf("hash not stable: %q != %q", a, b)
+	}
+}
+
+// TestBuildEventForOp_CreateUsesCanonicalWriteShape checks that create
+// actions use canonical Write tool_uses.
+func TestBuildEventForOp_CreateUsesCanonicalWriteShape(t *testing.T) {
+	op := agentKiro.FileOperation{
+		ActionType: "create",
+		ActionID:   "tooluse_create_1",
+		FilePath:   "main.go",
+		Content:    "package main\n",
+	}
+	ev, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", nil)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.ToolName != agentKiro.ToolNameWrite {
+		t.Errorf("ToolName = %q, want %q", ev.ToolName, agentKiro.ToolNameWrite)
+	}
+	if !strings.Contains(ev.ToolUsesJSON, `"name":"`+agentKiro.ToolNameWrite+`"`) {
+		t.Errorf("ToolUsesJSON missing canonical Write name: %q", ev.ToolUsesJSON)
+	}
+	if strings.Contains(ev.ToolUsesJSON, agentKiro.ToolNameFileEdit) {
+		t.Errorf("ToolUsesJSON unexpectedly contains kiro_file_edit (would short-circuit scoring): %q", ev.ToolUsesJSON)
+	}
+}
+
+// TestBuildEventForOp_ReplaceUsesCanonicalEditShape checks that replace
+// actions use canonical Edit tool_uses.
+func TestBuildEventForOp_ReplaceUsesCanonicalEditShape(t *testing.T) {
+	op := agentKiro.FileOperation{
+		ActionType:      "replace",
+		ActionID:        "tooluse_replace_1",
+		FilePath:        "main.go",
+		Content:         "after",
+		OriginalContent: "before",
+	}
+	ev, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", nil)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.ToolName != agentKiro.ToolNameEdit {
+		t.Errorf("ToolName = %q, want %q", ev.ToolName, agentKiro.ToolNameEdit)
+	}
+	if !strings.Contains(ev.ToolUsesJSON, `"name":"`+agentKiro.ToolNameEdit+`"`) {
+		t.Errorf("ToolUsesJSON missing canonical Edit name: %q", ev.ToolUsesJSON)
+	}
+}
+
+// TestBuildEventForOp_SmartRelocateSetsFileTouchEvidence checks that rename
+// actions use file-touch tool_uses on the destination path.
+func TestBuildEventForOp_SmartRelocateSetsFileTouchEvidence(t *testing.T) {
+	op := agentKiro.FileOperation{
+		ActionType: "smartRelocate",
+		ActionID:   "tooluse_relocate_1",
+		SourcePath: "old/name.go",
+		DestPath:   "new/name.go",
+	}
+	ev, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", nil)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.ToolUsesJSON == "" {
+		t.Fatal("ToolUsesJSON empty: rename has no file-touch evidence downstream")
+	}
+	if !strings.Contains(ev.ToolUsesJSON, agentKiro.ToolNameFileEdit) {
+		t.Errorf("ToolUsesJSON missing kiro_file_edit (file-touch fast path), got %q", ev.ToolUsesJSON)
+	}
+	if !strings.Contains(ev.ToolUsesJSON, "new/name.go") {
+		t.Errorf("ToolUsesJSON should reference destination path, got %q", ev.ToolUsesJSON)
+	}
+	if len(ev.FilePaths) != 1 || !strings.HasSuffix(ev.FilePaths[0], "new/name.go") {
+		t.Errorf("FilePaths = %v, want destination resolved against workspace", ev.FilePaths)
+	}
+}
+
+// TestBuildEventForOp_UnknownActionTypeDropped checks that unknown action
+// types are dropped instead of emitted as partial rows.
+func TestBuildEventForOp_UnknownActionTypeDropped(t *testing.T) {
+	op := agentKiro.FileOperation{
+		ActionType: "futureKindWeDoNotKnow",
+		ActionID:   "tooluse_x",
+		FilePath:   "main.go",
+	}
+	_, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", nil)
+	if ok {
+		t.Error("expected ok=false for unrecognized action type")
+	}
+}
+
 func TestInstallHooks_CreatesCorrectFiles(t *testing.T) {
 	repoRoot := t.TempDir()
 	p := &Provider{}

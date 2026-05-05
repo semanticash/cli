@@ -310,79 +310,13 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 			continue
 		}
 
+		sessionStartedAtTs := sessionStartedAt(transcriptRef, history.SessionID)
 		ops := agentKiro.ExtractFileOps(trace)
 		for _, op := range ops {
-			event := broker.RawEvent{
-				Provider:          providerName,
-				SourceKey:         transcriptRef,
-				Kind:              "assistant",
-				Role:              "assistant",
-				Timestamp:         actionTimestamp(op.EmittedAt, trace.StartTime),
-				ProviderSessionID: history.SessionID,
-				SessionStartedAt:  sessionStartedAt(transcriptRef, history.SessionID),
-				SourceProjectPath: workspaceDir,
-				EventSource:       "transcript",
+			ev, ok := buildEventForOp(ctx, op, exec.ExecutionID, trace.StartTime, history.SessionID, sessionStartedAtTs, transcriptRef, workspaceDir, bs)
+			if ok {
+				events = append(events, ev)
 			}
-
-			switch op.ActionType {
-			case "create", "append":
-				event.EventID = hashEventID(exec.ExecutionID, op.ActionType, op.FilePath)
-				fileOp := op.ActionType
-				toolName := "Write"
-				if fileOp == "append" {
-					fileOp = "edit"
-					toolName = "Edit"
-				}
-				event.ToolUsesJSON = agentKiro.BuildToolUsesJSON(op.FilePath, fileOp).String
-				event.ToolName = toolName
-				event.Summary = fmt.Sprintf("%s %s", op.ActionType, op.FilePath)
-
-				if op.FilePath != "" {
-					event.FilePaths = []string{filepath.Join(workspaceDir, op.FilePath)}
-				}
-
-				// Store provenance blob with file content.
-				if bs != nil && op.Content != "" {
-					blob, _ := json.Marshal(map[string]any{
-						"action":    op.ActionType,
-						"file_path": op.FilePath,
-						"content":   op.Content,
-					})
-					if h, _, err := bs.Put(ctx, blob); err == nil {
-						event.ProvenanceHash = h
-					}
-				}
-
-				// Synthesize standard assistant payload for attribution scoring.
-				if bs != nil && op.FilePath != "" {
-					inputJSON, _ := json.Marshal(map[string]any{
-						"file_path": op.FilePath,
-						"content":   op.Content,
-					})
-					payloadBlob, _ := json.Marshal(map[string]any{
-						"type": "assistant",
-						"message": map[string]any{
-							"content": []map[string]any{
-								{"type": "tool_use", "name": toolName, "input": json.RawMessage(inputJSON)},
-							},
-						},
-					})
-					if h, _, err := bs.Put(ctx, payloadBlob); err == nil {
-						event.PayloadHash = h
-					}
-				}
-
-			case "smartRelocate":
-				event.EventID = hashEventID(exec.ExecutionID, op.ActionType, op.SourcePath)
-				event.ToolName = "Write"
-				event.Summary = fmt.Sprintf("rename %s -> %s", op.SourcePath, op.DestPath)
-
-				if op.DestPath != "" {
-					event.FilePaths = []string{filepath.Join(workspaceDir, op.DestPath)}
-				}
-			}
-
-			events = append(events, event)
 		}
 
 	}
@@ -518,11 +452,143 @@ func actionTimestamp(emittedAt, execStartTime int64) int64 {
 	return execStartTime
 }
 
-func hashEventID(executionID, actionType, filePath string) string {
+// buildEventForOp converts one Kiro file operation into a RawEvent.
+// Unknown action types return ok=false so callers do not emit partial rows.
+//
+// Tool names choose the attribution path:
+//   - create -> Write, with full content payload
+//   - replace/append -> Edit, with old/new payload
+//   - smartRelocate -> kiro_file_edit, file-touch only
+func buildEventForOp(
+	ctx context.Context,
+	op agentKiro.FileOperation,
+	executionID string,
+	traceStart int64,
+	sessionID string,
+	sessionStartedAtTs int64,
+	transcriptRef string,
+	workspaceDir string,
+	bs api.BlobPutter,
+) (broker.RawEvent, bool) {
+	event := broker.RawEvent{
+		Provider:          providerName,
+		SourceKey:         transcriptRef,
+		Kind:              "assistant",
+		Role:              "assistant",
+		Timestamp:         actionTimestamp(op.EmittedAt, traceStart),
+		ProviderSessionID: sessionID,
+		SessionStartedAt:  sessionStartedAtTs,
+		SourceProjectPath: workspaceDir,
+		EventSource:       "transcript",
+	}
+
+	switch op.ActionType {
+	case "create":
+		event.EventID = hashEventID(executionID, op.ActionType, op.FilePath, op.ActionID)
+		event.ToolUsesJSON = agentKiro.BuildToolUsesJSON(agentKiro.ToolNameWrite, op.FilePath, "write").String
+		event.ToolName = agentKiro.ToolNameWrite
+		event.Summary = fmt.Sprintf("create %s", op.FilePath)
+
+		if op.FilePath != "" {
+			event.FilePaths = []string{filepath.Join(workspaceDir, op.FilePath)}
+		}
+
+		if bs != nil && op.Content != "" {
+			provBlob, _ := json.Marshal(map[string]any{
+				"action":    op.ActionType,
+				"file_path": op.FilePath,
+				"content":   op.Content,
+			})
+			if h, _, err := bs.Put(ctx, provBlob); err == nil {
+				event.ProvenanceHash = h
+			}
+		}
+
+		if bs != nil && op.FilePath != "" {
+			inputJSON, _ := json.Marshal(map[string]any{
+				"file_path": op.FilePath,
+				"content":   op.Content,
+			})
+			payloadBlob, _ := json.Marshal(map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []map[string]any{
+						{"type": "tool_use", "name": agentKiro.ToolNameWrite, "input": json.RawMessage(inputJSON)},
+					},
+				},
+			})
+			if h, _, err := bs.Put(ctx, payloadBlob); err == nil {
+				event.PayloadHash = h
+			}
+		}
+
+	case "replace", "append":
+		event.EventID = hashEventID(executionID, op.ActionType, op.FilePath, op.ActionID)
+		event.ToolUsesJSON = agentKiro.BuildToolUsesJSON(agentKiro.ToolNameEdit, op.FilePath, "edit").String
+		event.ToolName = agentKiro.ToolNameEdit
+		event.Summary = fmt.Sprintf("%s %s", op.ActionType, op.FilePath)
+
+		if op.FilePath != "" {
+			event.FilePaths = []string{filepath.Join(workspaceDir, op.FilePath)}
+		}
+
+		if bs != nil {
+			provBlob, _ := json.Marshal(map[string]any{
+				"action":           op.ActionType,
+				"file_path":        op.FilePath,
+				"original_content": op.OriginalContent,
+				"modified_content": op.Content,
+			})
+			if h, _, err := bs.Put(ctx, provBlob); err == nil {
+				event.ProvenanceHash = h
+			}
+		}
+
+		if bs != nil && op.FilePath != "" {
+			inputJSON, _ := json.Marshal(map[string]any{
+				"file_path":  op.FilePath,
+				"old_string": op.OriginalContent,
+				"new_string": op.Content,
+			})
+			payloadBlob, _ := json.Marshal(map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"content": []map[string]any{
+						{"type": "tool_use", "name": agentKiro.ToolNameEdit, "input": json.RawMessage(inputJSON)},
+					},
+				},
+			})
+			if h, _, err := bs.Put(ctx, payloadBlob); err == nil {
+				event.PayloadHash = h
+			}
+		}
+
+	case "smartRelocate":
+		event.EventID = hashEventID(executionID, op.ActionType, op.SourcePath, op.ActionID)
+		event.ToolUsesJSON = agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, op.DestPath, "rename").String
+		event.ToolName = agentKiro.ToolNameWrite
+		event.Summary = fmt.Sprintf("rename %s -> %s", op.SourcePath, op.DestPath)
+
+		if op.DestPath != "" {
+			event.FilePaths = []string{filepath.Join(workspaceDir, op.DestPath)}
+		}
+
+	default:
+		return broker.RawEvent{}, false
+	}
+
+	return event, true
+}
+
+// hashEventID builds a stable replay event ID. ActionID keeps repeated
+// same-file edits in one execution distinct; empty ActionID preserves the
+// deterministic shape for older traces.
+func hashEventID(executionID, actionType, filePath, actionID string) string {
 	h := sha256.New()
 	h.Write([]byte(executionID))
 	h.Write([]byte(actionType))
 	h.Write([]byte(filePath))
+	h.Write([]byte(actionID))
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 

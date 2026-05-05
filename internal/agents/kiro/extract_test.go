@@ -76,10 +76,36 @@ func TestExtractFileOps_Create(t *testing.T) {
 	}
 }
 
-// TestExtractFileOps_Append covers the legacy actionType still present in
-// older session traces on disk. Same input shape as the current "replace"
-// action which is handled by a follow-up commit alongside its downstream
-// wire-up.
+// TestExtractFileOps_Replace covers the current in-place edit shape.
+func TestExtractFileOps_Replace(t *testing.T) {
+	input, _ := json.Marshal(AppendInput{
+		File:            "name.txt",
+		OriginalContent: "John Doe\n",
+		ModifiedContent: "John Smith\n",
+	})
+	trace := &ExecutionTrace{
+		Actions: []ExecutionAction{
+			{ActionType: "replace", ActionID: "tooluse_replace_1", Input: input, EmittedAt: 1234},
+		},
+	}
+	ops := ExtractFileOps(trace)
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	got := ops[0]
+	if got.ActionType != "replace" {
+		t.Errorf("ActionType = %q, want replace (preserved verbatim)", got.ActionType)
+	}
+	if got.ActionID != "tooluse_replace_1" {
+		t.Errorf("ActionID = %q", got.ActionID)
+	}
+	if got.OriginalContent != "John Doe\n" || got.Content != "John Smith\n" {
+		t.Errorf("op = %+v", got)
+	}
+}
+
+// TestExtractFileOps_Append covers the legacy in-place edit action retained
+// in older traces.
 func TestExtractFileOps_Append(t *testing.T) {
 	input, _ := json.Marshal(AppendInput{
 		File:            "name.txt",
@@ -104,11 +130,8 @@ func TestExtractFileOps_Append(t *testing.T) {
 	}
 }
 
-// TestExtractFileOps_TwoEditsSameFile pins the regression that surfaced
-// during the spike: two in-place edits to the same file in one execution
-// must produce two operations with distinct ActionIDs. Downstream uses the
-// ActionID in the event-ID hash so the two edits do not collapse into one
-// row via the broker's INSERT OR IGNORE path.
+// TestExtractFileOps_TwoEditsSameFile checks that repeated edits to the same
+// file keep distinct action IDs.
 func TestExtractFileOps_TwoEditsSameFile(t *testing.T) {
 	first, _ := json.Marshal(AppendInput{
 		File:            "name.txt",
@@ -161,9 +184,8 @@ func TestExtractFileOps_Relocate(t *testing.T) {
 	}
 }
 
-// TestExtractFileOps_SkipsMalformedInput pins the tolerance contract: an
-// action with malformed JSON in its Input is skipped without aborting the
-// rest of the trace, so partial corruption does not lose surrounding data.
+// TestExtractFileOps_SkipsMalformedInput checks that malformed action input is
+// skipped without aborting the rest of the trace.
 func TestExtractFileOps_SkipsMalformedInput(t *testing.T) {
 	good, _ := json.Marshal(CreateInput{File: "ok.txt", ModifiedContent: "x"})
 	trace := &ExecutionTrace{

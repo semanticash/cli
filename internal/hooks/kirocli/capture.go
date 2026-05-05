@@ -180,7 +180,7 @@ func toolCallsToEvents(calls []toolCallInfo, transcriptRef, workspacePath, provi
 			Kind:              "assistant",
 			Role:              "assistant",
 			Timestamp:         timestamp,
-			ToolUsesJSON:      agentKiro.BuildToolUsesJSON(tc.FilePath, fileOp).String,
+			ToolUsesJSON:      agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, tc.FilePath, fileOp).String,
 			Summary:           fmt.Sprintf("%s %s", fileOp, filepath.Base(tc.FilePath)),
 			ProviderSessionID: providerSessionID,
 			SourceProjectPath: workspacePath,

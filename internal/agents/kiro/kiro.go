@@ -14,8 +14,14 @@ const (
 	// ProviderNameCLI is the provider identifier for the Kiro CLI hook provider.
 	ProviderNameCLI = "kiro-cli"
 
-	// ToolNameFileEdit marks file-modifying Kiro actions for attribution.
+	// ToolNameFileEdit marks Kiro actions that only support file-touch
+	// attribution, such as renames with no old/new content delta.
 	ToolNameFileEdit = "kiro_file_edit"
+
+	// ToolNameWrite and ToolNameEdit are canonical tool names for events
+	// that carry line-level payloads.
+	ToolNameWrite = "Write"
+	ToolNameEdit  = "Edit"
 )
 
 // WorkspaceKey derives a deterministic capture-state key from a workspace path
