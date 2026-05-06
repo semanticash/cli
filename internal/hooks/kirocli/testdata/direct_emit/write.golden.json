@@ -1,6 +1,6 @@
 {
   "name": "write",
-  "description": "Kiro CLI write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
+  "description": "Kiro CLI write create; ToolUsesJSON carries the canonical Write tool name for line-level attribution",
   "expected_events": [
     {
       "EventID": "412d61a838db5b0eac509f4d04a0b68050dd6c21f77547d3df5c1e26cb5685a4",
@@ -9,7 +9,7 @@
       "Timestamp": 1714000010000,
       "Kind": "assistant",
       "Role": "assistant",
-      "ToolUsesJSON": "{\"tools\":[{\"name\":\"kiro_file_edit\",\"file_path\":\"/repo/new.go\",\"file_op\":\"create\"}]}",
+      "ToolUsesJSON": "{\"tools\":[{\"name\":\"Write\",\"file_path\":\"/repo/new.go\",\"file_op\":\"write\"}]}",
       "Summary": "",
       "PayloadHash": "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c",
       "TokensIn": 0,

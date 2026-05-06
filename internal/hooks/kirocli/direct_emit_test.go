@@ -172,13 +172,16 @@ func TestBuildHookEvents_Write(t *testing.T) {
 	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "/repo/new.go" {
 		t.Errorf("file_paths = %v, want [/repo/new.go]", ev.FilePaths)
 	}
-	// Kiro uses a provider-specific synthetic tool name and carries
-	// the operation in file_op.
-	if !strings.Contains(ev.ToolUsesJSON, `"kiro_file_edit"`) {
-		t.Errorf("tool_uses should contain kiro_file_edit, got %q", ev.ToolUsesJSON)
+	// Write events use canonical tool_uses so the scorer reads the
+	// synthesized payload blob for line-level attribution.
+	if !strings.Contains(ev.ToolUsesJSON, `"name":"Write"`) {
+		t.Errorf("tool_uses should contain canonical Write name, got %q", ev.ToolUsesJSON)
 	}
-	if !strings.Contains(ev.ToolUsesJSON, `"file_op":"create"`) {
-		t.Errorf("tool_uses should record file_op=create, got %q", ev.ToolUsesJSON)
+	if strings.Contains(ev.ToolUsesJSON, `kiro_file_edit`) {
+		t.Errorf("tool_uses must not contain kiro_file_edit (would short-circuit scoring), got %q", ev.ToolUsesJSON)
+	}
+	if !strings.Contains(ev.ToolUsesJSON, `"file_op":"write"`) {
+		t.Errorf("tool_uses should record file_op=write, got %q", ev.ToolUsesJSON)
 	}
 	if !strings.Contains(ev.ToolUsesJSON, `"file_path":"/repo/new.go"`) {
 		t.Errorf("tool_uses should record file_path, got %q", ev.ToolUsesJSON)
@@ -258,9 +261,12 @@ func TestBuildHookEvents_Edit(t *testing.T) {
 	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "/repo/main.go" {
 		t.Errorf("file_paths = %v, want [/repo/main.go]", ev.FilePaths)
 	}
-	// Same synthetic-name pattern as Write (see TestBuildHookEvents_Write).
-	if !strings.Contains(ev.ToolUsesJSON, `"kiro_file_edit"`) {
-		t.Errorf("tool_uses should contain kiro_file_edit, got %q", ev.ToolUsesJSON)
+	// Edit events use the same canonical tool_uses pattern as Write.
+	if !strings.Contains(ev.ToolUsesJSON, `"name":"Edit"`) {
+		t.Errorf("tool_uses should contain canonical Edit name, got %q", ev.ToolUsesJSON)
+	}
+	if strings.Contains(ev.ToolUsesJSON, `kiro_file_edit`) {
+		t.Errorf("tool_uses must not contain kiro_file_edit (would short-circuit scoring), got %q", ev.ToolUsesJSON)
 	}
 	if !strings.Contains(ev.ToolUsesJSON, `"file_op":"edit"`) {
 		t.Errorf("tool_uses should record file_op=edit, got %q", ev.ToolUsesJSON)

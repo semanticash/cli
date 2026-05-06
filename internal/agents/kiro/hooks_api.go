@@ -15,15 +15,16 @@ type toolEntry struct {
 	FileOp   string `json:"file_op"`
 }
 
-// BuildToolUsesJSON returns a serialized tool_uses payload for a file
-// operation.
-func BuildToolUsesJSON(filePath, fileOp string) sql.NullString {
+// BuildToolUsesJSON returns a serialized tool_uses payload for one tool
+// entry. The tool name is significant: Write/Edit rows use line-level
+// attribution, while kiro_file_edit rows use file-touch attribution.
+func BuildToolUsesJSON(toolName, filePath, fileOp string) sql.NullString {
 	if filePath == "" {
 		return sql.NullString{}
 	}
 	payload := toolUsesPayload{
 		Tools: []toolEntry{
-			{Name: ToolNameFileEdit, FilePath: filePath, FileOp: fileOp},
+			{Name: toolName, FilePath: filePath, FileOp: fileOp},
 		},
 	}
 	data, err := json.Marshal(payload)

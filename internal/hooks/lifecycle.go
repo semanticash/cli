@@ -180,6 +180,22 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		return nil
 
+	case IncrementalCapture:
+		// Mid-turn trigger: scan the transcript from the saved offset and
+		// route any new events without running turn-end cleanup. Used by
+		// providers that fire per-edit hooks (e.g. Kiro IDE fileEdited)
+		// to land events during the turn instead of waiting for stop.
+		// agentStop is still expected later as a final sweep.
+		if _, err := LoadCaptureState(event.SessionID); err != nil {
+			// No capture state means PromptSubmitted has not pinned a turn
+			// yet; nothing to capture incrementally.
+			return nil
+		}
+		if err := CaptureAndRoute(ctx, provider, event, bh, blobStore); err != nil {
+			slog.Warn("incremental capture failed", "err", err)
+		}
+		return nil
+
 	case ContextCompacted:
 		// Compaction can invalidate saved offsets. Reset to EOF and accept a gap.
 		newOffset, err := provider.TranscriptOffset(ctx, event.TranscriptRef)

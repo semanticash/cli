@@ -9,17 +9,26 @@ import (
 	"strings"
 )
 
-// FileOperation represents a single file change extracted from an execution trace.
+// FileOperation represents a file change extracted from an execution trace.
+//
+// create writes full file content, replace/append carry old and new content,
+// and smartRelocate carries a rename without content. ActionID is stable per
+// Kiro action and keeps repeated edits distinct downstream.
 type FileOperation struct {
-	ActionType string // "create", "append", "smartRelocate"
-	FilePath   string // relative path within the workspace
-	Content    string // the content the agent wrote (empty for relocate)
-	SourcePath string // for relocate: original path
-	DestPath   string // for relocate: new path
-	EmittedAt  int64  // unix ms timestamp of the action
+	ActionType      string
+	ActionID        string
+	FilePath        string // relative path within the workspace
+	Content         string // the content the agent wrote (empty for relocate)
+	OriginalContent string // pre-edit content for replace/append; empty otherwise
+	SourcePath      string // for relocate: original path
+	DestPath        string // for relocate: new path
+	EmittedAt       int64  // unix ms timestamp of the action
 }
 
 // ExtractFileOps parses an execution trace and returns all file operations.
+//
+// "replace" is the current in-place edit action; "append" is the legacy
+// on-disk name with the same JSON shape.
 func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 	var ops []FileOperation
 	for _, action := range trace.Actions {
@@ -30,22 +39,26 @@ func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 				continue
 			}
 			ops = append(ops, FileOperation{
-				ActionType: "create",
-				FilePath:   input.File,
-				Content:    input.ModifiedContent,
-				EmittedAt:  action.EmittedAt,
+				ActionType:      "create",
+				ActionID:        action.ActionID,
+				FilePath:        input.File,
+				Content:         input.ModifiedContent,
+				OriginalContent: input.OriginalContent,
+				EmittedAt:       action.EmittedAt,
 			})
 
-		case "append":
+		case "replace", "append":
 			var input AppendInput
 			if json.Unmarshal(action.Input, &input) != nil || input.File == "" {
 				continue
 			}
 			ops = append(ops, FileOperation{
-				ActionType: "append",
-				FilePath:   input.File,
-				Content:    input.ModifiedContent,
-				EmittedAt:  action.EmittedAt,
+				ActionType:      action.ActionType,
+				ActionID:        action.ActionID,
+				FilePath:        input.File,
+				Content:         input.ModifiedContent,
+				OriginalContent: input.OriginalContent,
+				EmittedAt:       action.EmittedAt,
 			})
 
 		case "smartRelocate":
@@ -55,6 +68,7 @@ func ExtractFileOps(trace *ExecutionTrace) []FileOperation {
 			}
 			ops = append(ops, FileOperation{
 				ActionType: "smartRelocate",
+				ActionID:   action.ActionID,
 				SourcePath: input.SourcePath,
 				DestPath:   input.DestinationPath,
 				EmittedAt:  action.EmittedAt,

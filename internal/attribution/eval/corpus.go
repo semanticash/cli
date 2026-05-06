@@ -4,6 +4,7 @@
 package eval
 
 import (
+	agentKiro "github.com/semanticash/cli/internal/agents/kiro"
 	"github.com/semanticash/cli/internal/attribution/events"
 	"github.com/semanticash/cli/internal/attribution/reporting"
 )
@@ -14,13 +15,13 @@ type EvalCase struct {
 	Description string
 
 	// Inputs
-	Diff     string           // unified diff text
+	Diff     string            // unified diff text
 	Events   []events.EventRow // event rows with inline payloads
-	RepoRoot string           // repo root for path normalization
+	RepoRoot string            // repo root for path normalization
 
 	// Evidence context (optional)
-	CarryForwardFiles    map[string]bool                       // files known to come from historical lookback
-	TouchOriginOverrides map[string]reporting.TouchOrigin      // explicit touch origin overrides for testing
+	CarryForwardFiles    map[string]bool                  // files known to come from historical lookback
+	TouchOriginOverrides map[string]reporting.TouchOrigin // explicit touch origin overrides for testing
 
 	// Expected outcomes
 	Expected ExpectedResult
@@ -29,7 +30,7 @@ type EvalCase struct {
 // ExpectedResult defines the ground-truth attribution for a case.
 type ExpectedResult struct {
 	AIPercentage  float64 // headline AI% (within tolerance)
-	Evidence    string  // commit-level: "High", "Medium", "Low"
+	Evidence      string  // commit-level: "High", "Medium", "Low"
 	FallbackCount int     // expected number of fallback files
 
 	Files []ExpectedFile // per-file expectations
@@ -37,12 +38,12 @@ type ExpectedResult struct {
 
 // ExpectedFile defines the expected attribution for a single file.
 type ExpectedFile struct {
-	Path                   string
-	AILines                int
-	HumanLines             int
-	PrimaryEvidence        reporting.EvidenceClass
-	ContributingEvidence   []reporting.EvidenceClass // all evidence classes that should appear
-	Notes                  string                    // optional: known ambiguity or edge case
+	Path                 string
+	AILines              int
+	HumanLines           int
+	PrimaryEvidence      reporting.EvidenceClass
+	ContributingEvidence []reporting.EvidenceClass // all evidence classes that should appear
+	Notes                string                    // optional: known ambiguity or edge case
 }
 
 // claudePayload builds an assistant payload blob in Claude's format for
@@ -89,6 +90,66 @@ func claudeEvent(toolName, filePath, content, repoRoot string) events.EventRow {
 		PayloadHash: "eval-fixture", // non-empty so BuildCandidatesFromRows processes the payload
 		Payload:     claudePayload(toolName, absPath, content),
 		Model:       "opus-4",
+	}
+}
+
+// kiroCLIEvent builds a Kiro CLI assistant EventRow with a Write or Edit
+// payload. ToolUses comes from the production agentKiro.BuildToolUsesJSON
+// helper so this fixture stays in lockstep with the runtime row shape.
+//
+// Like kiroIDEEvent, this helper does not choose the provider's tool name for
+// each action type. Direct-emitter tests cover that mapping. The corpus case
+// covers the scoring pipeline: canonical Write/Edit tool_uses should route to
+// line-level attribution rather than file-touch attribution.
+func kiroCLIEvent(toolName, filePath, content, repoRoot string) events.EventRow {
+	fileOp := "write"
+	if toolName == "Edit" {
+		fileOp = "edit"
+	}
+	toolUses := agentKiro.BuildToolUsesJSON(toolName, filePath, fileOp).String
+
+	absPath := filePath
+	if repoRoot != "" && len(filePath) > 0 && filePath[0] != '/' {
+		absPath = repoRoot + "/" + filePath
+	}
+
+	return events.EventRow{
+		Provider:    "kiro-cli",
+		Role:        "assistant",
+		ToolUses:    toolUses,
+		PayloadHash: "eval-fixture",
+		Payload:     claudePayload(toolName, absPath, content),
+		Model:       "kiro-default",
+	}
+}
+
+// kiroIDEEvent builds a Kiro IDE assistant EventRow. ToolUses comes from the
+// production agentKiro.BuildToolUsesJSON helper so this fixture follows the
+// same payload shape as runtime events.
+//
+// This helper does not choose the tool-name constant for each action type;
+// buildEventForOp tests cover that provider-level mapping. The corpus case
+// covers the scoring pipeline: canonical Write/Edit tool_uses should route
+// to line-level attribution rather than file-touch attribution.
+func kiroIDEEvent(toolName, filePath, content, repoRoot string) events.EventRow {
+	fileOp := "write"
+	if toolName == "Edit" {
+		fileOp = "edit"
+	}
+	toolUses := agentKiro.BuildToolUsesJSON(toolName, filePath, fileOp).String
+
+	absPath := filePath
+	if repoRoot != "" && len(filePath) > 0 && filePath[0] != '/' {
+		absPath = repoRoot + "/" + filePath
+	}
+
+	return events.EventRow{
+		Provider:    "kiro-ide",
+		Role:        "assistant",
+		ToolUses:    toolUses,
+		PayloadHash: "eval-fixture",
+		Payload:     claudePayload(toolName, absPath, content),
+		Model:       "kiro-default",
 	}
 }
 
@@ -141,7 +202,7 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence: "High",
+			Evidence:      "High",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -177,7 +238,7 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence: "High",
+			Evidence:      "High",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -215,7 +276,7 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence: "Medium",
+			Evidence:      "Medium",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -253,7 +314,7 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  50,
-			Evidence: "High",
+			Evidence:      "High",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -291,7 +352,7 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence: "Medium",
+			Evidence:      "Medium",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -329,7 +390,7 @@ var Corpus = []EvalCase{
 		CarryForwardFiles: map[string]bool{"utils.go": true},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence: "High",
+			Evidence:      "High",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -368,7 +429,7 @@ var Corpus = []EvalCase{
 		// narrowed it to files that actually scored AI lines (actualCF).
 		Expected: ExpectedResult{
 			AIPercentage:  0,
-			Evidence: "",
+			Evidence:      "",
 			FallbackCount: 0,
 			Files: []ExpectedFile{
 				{
@@ -399,9 +460,9 @@ var Corpus = []EvalCase{
 			claudeEvent("Bash", "", "rm /repo/old.go", "/repo"),
 		},
 		Expected: ExpectedResult{
-			AIPercentage:  0, // deleted files have 0 added lines
-			Evidence:    "Low", // LineScore=0, penalty=0.35 -> score=0
-			FallbackCount: 1,    // deletion file counts as fallback
+			AIPercentage:  0,     // deleted files have 0 added lines
+			Evidence:      "Low", // LineScore=0, penalty=0.35 -> score=0
+			FallbackCount: 1,     // deletion file counts as fallback
 			Files: []ExpectedFile{
 				{
 					Path: "old.go", AILines: 0, HumanLines: 0,
@@ -410,6 +471,93 @@ var Corpus = []EvalCase{
 					Notes: "File has zero added lines but is in the AI-touched set via bash deletion. " +
 						"Evidence class is 'deletion' (inferential). The file appears in both " +
 						"Files (with zero lines) and FilesDeleted in the commit result.",
+				},
+			},
+		},
+	},
+
+	// Case 9: Kiro IDE line-level via canonical Write/Edit tool_uses.
+	// A row carrying canonical Write/Edit tool_uses should flow through
+	// BuildCandidatesFromRows and ScoreFiles as exact line-level
+	// attribution, not the file-touch path. Provider action-to-tool-name
+	// mapping is covered by buildEventForOp tests in the kiroide package.
+	{
+		Name:        "kiro-ide-line-level",
+		Description: "Kiro IDE Write (create) and Edit (replace) emit canonical tool_uses; lines score line-level",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/main.go b/main.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/main.go\n" +
+			"@@ -0,0 +1,2 @@\n" +
+			"+package main\n" +
+			"+func main() {}\n" +
+			"diff --git a/util.go b/util.go\n" +
+			"--- a/util.go\n" +
+			"+++ b/util.go\n" +
+			"@@ -1,1 +1,2 @@\n" +
+			" package main\n" +
+			"+func helper() {}\n",
+		Events: []events.EventRow{
+			kiroIDEEvent("Write", "main.go", "package main\nfunc main() {}\n", "/repo"),
+			kiroIDEEvent("Edit", "util.go", "package main\nfunc helper() {}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path: "main.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+				{
+					Path: "util.go", AILines: 1, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+			},
+		},
+	},
+
+	// Case 10: Kiro CLI line-level via canonical Write/Edit tool_uses.
+	// A Kiro CLI row carrying canonical Write/Edit tool_uses should flow
+	// through BuildCandidatesFromRows and ScoreFiles as exact line-level
+	// attribution, not the file-touch path.
+	{
+		Name:        "kiro-cli-line-level",
+		Description: "Kiro CLI Write (create) and Edit (strReplace/insert) emit canonical tool_uses; lines score line-level",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/main.go b/main.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/main.go\n" +
+			"@@ -0,0 +1,2 @@\n" +
+			"+package main\n" +
+			"+func main() {}\n" +
+			"diff --git a/util.go b/util.go\n" +
+			"--- a/util.go\n" +
+			"+++ b/util.go\n" +
+			"@@ -1,1 +1,2 @@\n" +
+			" package main\n" +
+			"+func helper() {}\n",
+		Events: []events.EventRow{
+			kiroCLIEvent("Write", "main.go", "package main\nfunc main() {}\n", "/repo"),
+			kiroCLIEvent("Edit", "util.go", "package main\nfunc helper() {}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path: "main.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+				{
+					Path: "util.go", AILines: 1, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
 				},
 			},
 		},

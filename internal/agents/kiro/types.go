@@ -82,7 +82,8 @@ type CreateInput struct {
 	OriginalContent string `json:"originalContent"`
 }
 
-// AppendInput is the parsed input for an "append" action.
+// AppendInput is the parsed input for in-place edits. Current "replace" and
+// legacy "append" actions use the same JSON shape.
 type AppendInput struct {
 	File            string `json:"file"`
 	ModifiedContent string `json:"modifiedContent"`

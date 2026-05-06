@@ -27,7 +27,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 ## Attribution fidelity
 
 - Attribution is anchored to captured session data within the checkpoint delta window. Deferred created files can carry forward AI attribution from earlier history when they were already present in the previous commit-linked manifest but committed later.
-- **Provider metadata varies.** Claude Code and Kiro CLI provide line-level file-edit content, enabling exact and formatted matching. Providers such as Cursor and Kiro IDE may only report file-level tool metadata, which limits attribution to hunk-overlap matching.
+- **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata, which limits attribution to hunk-overlap matching.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
 - Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
 - Attribution is computed against the diff between checkpoints. Squashed or rebased commits that collapse multiple checkpoints may produce less precise results.
@@ -42,8 +42,9 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Kiro IDE
 
-- Kiro IDE hooks do not expose an explicit session ID to external commands. Semantica pairs `promptSubmit` and `agentStop` by workspace-scoped capture state and chooses the session best-effort at prompt submission.
+- Kiro IDE hooks do not expose an explicit session ID to external commands. Semantica pairs `promptSubmit`, `fileEdited`, and `agentStop` by workspace-scoped capture state and chooses the session best-effort at prompt submission.
 - If multiple Kiro chats exist for the same workspace, Semantica may still select the wrong one at prompt submission because the hook API does not identify the active chat directly.
+- Kiro IDE rename actions are file-touch attribution only because Kiro does not provide old/new content for `smartRelocate`.
 
 ## Kiro CLI
 

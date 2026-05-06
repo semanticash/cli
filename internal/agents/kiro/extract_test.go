@@ -57,31 +57,107 @@ func TestExtractFileOps_Create(t *testing.T) {
 	input, _ := json.Marshal(CreateInput{File: "name.txt", ModifiedContent: "John Doe\n"})
 	trace := &ExecutionTrace{
 		Actions: []ExecutionAction{
-			{ActionType: "create", Input: input},
+			{ActionType: "create", ActionID: "tooluse_create_1", Input: input, EmittedAt: 1234},
 		},
 	}
 	ops := ExtractFileOps(trace)
 	if len(ops) != 1 {
 		t.Fatalf("got %d ops, want 1", len(ops))
 	}
-	if ops[0].ActionType != "create" || ops[0].FilePath != "name.txt" || ops[0].Content != "John Doe\n" {
-		t.Errorf("op = %+v", ops[0])
+	got := ops[0]
+	if got.ActionType != "create" || got.FilePath != "name.txt" || got.Content != "John Doe\n" {
+		t.Errorf("op = %+v", got)
+	}
+	if got.ActionID != "tooluse_create_1" {
+		t.Errorf("ActionID = %q, want tooluse_create_1", got.ActionID)
+	}
+	if got.OriginalContent != "" {
+		t.Errorf("OriginalContent = %q, want empty for create", got.OriginalContent)
 	}
 }
 
-func TestExtractFileOps_Append(t *testing.T) {
-	input, _ := json.Marshal(AppendInput{File: "name.txt", ModifiedContent: "John Doe\nJane Doe\n"})
+// TestExtractFileOps_Replace covers the current in-place edit shape.
+func TestExtractFileOps_Replace(t *testing.T) {
+	input, _ := json.Marshal(AppendInput{
+		File:            "name.txt",
+		OriginalContent: "John Doe\n",
+		ModifiedContent: "John Smith\n",
+	})
 	trace := &ExecutionTrace{
 		Actions: []ExecutionAction{
-			{ActionType: "append", Input: input},
+			{ActionType: "replace", ActionID: "tooluse_replace_1", Input: input, EmittedAt: 1234},
 		},
 	}
 	ops := ExtractFileOps(trace)
 	if len(ops) != 1 {
 		t.Fatalf("got %d ops, want 1", len(ops))
 	}
-	if ops[0].ActionType != "append" || ops[0].Content != "John Doe\nJane Doe\n" {
-		t.Errorf("op = %+v", ops[0])
+	got := ops[0]
+	if got.ActionType != "replace" {
+		t.Errorf("ActionType = %q, want replace (preserved verbatim)", got.ActionType)
+	}
+	if got.ActionID != "tooluse_replace_1" {
+		t.Errorf("ActionID = %q", got.ActionID)
+	}
+	if got.OriginalContent != "John Doe\n" || got.Content != "John Smith\n" {
+		t.Errorf("op = %+v", got)
+	}
+}
+
+// TestExtractFileOps_Append covers the legacy in-place edit action retained
+// in older traces.
+func TestExtractFileOps_Append(t *testing.T) {
+	input, _ := json.Marshal(AppendInput{
+		File:            "name.txt",
+		OriginalContent: "John Doe\n",
+		ModifiedContent: "John Doe\nJane Doe\n",
+	})
+	trace := &ExecutionTrace{
+		Actions: []ExecutionAction{
+			{ActionType: "append", ActionID: "tooluse_append_1", Input: input, EmittedAt: 1234},
+		},
+	}
+	ops := ExtractFileOps(trace)
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	got := ops[0]
+	if got.ActionType != "append" {
+		t.Errorf("ActionType = %q, want append", got.ActionType)
+	}
+	if got.OriginalContent != "John Doe\n" || got.Content != "John Doe\nJane Doe\n" {
+		t.Errorf("op = %+v", got)
+	}
+}
+
+// TestExtractFileOps_TwoEditsSameFile checks that repeated edits to the same
+// file keep distinct action IDs.
+func TestExtractFileOps_TwoEditsSameFile(t *testing.T) {
+	first, _ := json.Marshal(AppendInput{
+		File:            "name.txt",
+		OriginalContent: "v1",
+		ModifiedContent: "v2",
+	})
+	second, _ := json.Marshal(AppendInput{
+		File:            "name.txt",
+		OriginalContent: "v2",
+		ModifiedContent: "v3",
+	})
+	trace := &ExecutionTrace{
+		Actions: []ExecutionAction{
+			{ActionType: "append", ActionID: "tooluse_a", Input: first, EmittedAt: 1000},
+			{ActionType: "append", ActionID: "tooluse_b", Input: second, EmittedAt: 1001},
+		},
+	}
+	ops := ExtractFileOps(trace)
+	if len(ops) != 2 {
+		t.Fatalf("got %d ops, want 2", len(ops))
+	}
+	if ops[0].ActionID == ops[1].ActionID {
+		t.Errorf("ActionIDs collide: %q == %q", ops[0].ActionID, ops[1].ActionID)
+	}
+	if ops[0].ActionID != "tooluse_a" || ops[1].ActionID != "tooluse_b" {
+		t.Errorf("ActionIDs = [%q, %q], want [tooluse_a, tooluse_b]", ops[0].ActionID, ops[1].ActionID)
 	}
 }
 
@@ -89,15 +165,39 @@ func TestExtractFileOps_Relocate(t *testing.T) {
 	input, _ := json.Marshal(RelocateInput{SourcePath: "old.txt", DestinationPath: "new.txt"})
 	trace := &ExecutionTrace{
 		Actions: []ExecutionAction{
-			{ActionType: "smartRelocate", Input: input},
+			{ActionType: "smartRelocate", ActionID: "tooluse_relocate_1", Input: input},
 		},
 	}
 	ops := ExtractFileOps(trace)
 	if len(ops) != 1 {
 		t.Fatalf("got %d ops, want 1", len(ops))
 	}
-	if ops[0].SourcePath != "old.txt" || ops[0].DestPath != "new.txt" {
-		t.Errorf("op = %+v", ops[0])
+	got := ops[0]
+	if got.SourcePath != "old.txt" || got.DestPath != "new.txt" {
+		t.Errorf("op = %+v", got)
+	}
+	if got.ActionID != "tooluse_relocate_1" {
+		t.Errorf("ActionID = %q", got.ActionID)
+	}
+	if got.OriginalContent != "" {
+		t.Errorf("OriginalContent should be empty for smartRelocate, got %q", got.OriginalContent)
+	}
+}
+
+// TestExtractFileOps_SkipsMalformedInput checks that malformed action input is
+// skipped without aborting the rest of the trace.
+func TestExtractFileOps_SkipsMalformedInput(t *testing.T) {
+	good, _ := json.Marshal(CreateInput{File: "ok.txt", ModifiedContent: "x"})
+	trace := &ExecutionTrace{
+		Actions: []ExecutionAction{
+			{ActionType: "create", ActionID: "good", Input: good},
+			{ActionType: "create", ActionID: "broken", Input: json.RawMessage(`{not valid`)},
+			{ActionType: "append", ActionID: "missing-file", Input: json.RawMessage(`{"file":""}`)},
+		},
+	}
+	ops := ExtractFileOps(trace)
+	if len(ops) != 1 || ops[0].ActionID != "good" {
+		t.Errorf("ops = %+v, want only the good create", ops)
 	}
 }
 

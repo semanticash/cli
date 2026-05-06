@@ -197,6 +197,74 @@ func TestDispatch_AgentCompleted_MissingState_SnapshotsToEOF(t *testing.T) {
 	}
 }
 
+// TestDispatch_IncrementalCapture_AdvancesOffsetWithoutCleanup checks the
+// mid-turn semantics: an IncrementalCapture event advances the transcript
+// offset without deleting capture state.
+func TestDispatch_IncrementalCapture_AdvancesOffsetWithoutCleanup(t *testing.T) {
+	setupTestCaptureDir(t)
+
+	prov := &fakeProvider{name: "test", transcriptOffset: 50}
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:        "sess-incr",
+		Provider:         "test",
+		TranscriptRef:    "/transcript.jsonl",
+		TranscriptOffset: 10,
+		TurnID:           "turn-1",
+		Timestamp:        1000,
+	}); err != nil {
+		t.Fatalf("save capture state: %v", err)
+	}
+
+	event := &Event{
+		Type:          IncrementalCapture,
+		SessionID:     "sess-incr",
+		TranscriptRef: "/transcript.jsonl",
+	}
+
+	if err := Dispatch(context.Background(), prov, event, nil, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	state, err := LoadCaptureState("sess-incr")
+	if err != nil {
+		t.Fatalf("state should still exist mid-turn, got: %v", err)
+	}
+	if state.TranscriptOffset != 50 {
+		t.Errorf("offset = %d, want 50 (advanced by incremental scan)", state.TranscriptOffset)
+	}
+	if state.TurnID != "turn-1" {
+		t.Errorf("TurnID = %q, want turn-1 (preserved)", state.TurnID)
+	}
+}
+
+// TestDispatch_IncrementalCapture_NoStateNoOp checks that IncrementalCapture
+// without saved state is a no-op, not an error.
+func TestDispatch_IncrementalCapture_NoStateNoOp(t *testing.T) {
+	setupTestCaptureDir(t)
+
+	prov := &fakeProvider{name: "test", transcriptOffset: 50}
+
+	event := &Event{
+		Type:          IncrementalCapture,
+		SessionID:     "sess-no-state",
+		TranscriptRef: "/transcript.jsonl",
+	}
+
+	if err := Dispatch(context.Background(), prov, event, nil, nil); err != nil {
+		t.Fatalf("dispatch should not error without state, got: %v", err)
+	}
+
+	// State should still not exist.
+	_, err := LoadCaptureState("sess-no-state")
+	if err != ErrNoCaptureState {
+		t.Errorf("expected ErrNoCaptureState, got: %v", err)
+	}
+	if prov.readCalls != 0 {
+		t.Errorf("readCalls = %d, want 0 (no work to do without state)", prov.readCalls)
+	}
+}
+
 func TestDispatch_SubagentCompleted_AdvancesOffset(t *testing.T) {
 	setupTestCaptureDir(t)
 
