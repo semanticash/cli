@@ -9,6 +9,7 @@ import (
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/store/blobs"
+	"github.com/semanticash/cli/internal/util"
 
 	// Register hook providers via init().
 	_ "github.com/semanticash/cli/internal/hooks/claude"
@@ -57,14 +58,14 @@ func NewCaptureCmd() *cobra.Command {
 			// Look up provider.
 			provider := hooks.GetProvider(providerName)
 			if provider == nil {
-				logCaptureError("unknown provider: %s", providerName)
+				logCaptureError(providerName, hookName, "unknown provider: %s", providerName)
 				return nil
 			}
 
 			// Parse event from stdin.
 			event, err := provider.ParseHookEvent(ctx, hookName, os.Stdin)
 			if err != nil {
-				logCaptureError("parse hook event (%s/%s): %v", providerName, hookName, err)
+				logCaptureError(providerName, hookName, "parse hook event (%s/%s): %v", providerName, hookName, err)
 				return nil
 			}
 			if event == nil {
@@ -78,7 +79,7 @@ func NewCaptureCmd() *cobra.Command {
 			var blobStore *blobs.Store
 			if objDir, err := broker.GlobalObjectsDir(); err == nil {
 				if bs, err := blobs.NewStore(objDir); err != nil {
-					logCaptureError("global blob store: %v (attribution will degrade)", err)
+					logCaptureError(providerName, hookName, "global blob store: %v (attribution will degrade)", err)
 				} else {
 					blobStore = bs
 				}
@@ -86,7 +87,7 @@ func NewCaptureCmd() *cobra.Command {
 
 			// Dispatch lifecycle event.
 			if err := hooks.Dispatch(ctx, provider, event, bh, blobStore); err != nil {
-				logCaptureError("dispatch (%s/%s): %v", providerName, hookName, err)
+				logCaptureError(providerName, hookName, "dispatch (%s/%s): %v", providerName, hookName, err)
 			}
 
 			return nil
@@ -96,7 +97,14 @@ func NewCaptureCmd() *cobra.Command {
 	return cmd
 }
 
-// logCaptureError logs capture errors to stderr.
-func logCaptureError(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "semantica capture: "+format+"\n", args...)
+// logCaptureError reports a capture-time failure on stderr (for
+// developers running interactively) and appends a structured entry
+// to the global hook-errors sidecar log so `semantica doctor` can
+// surface it later. The shell `|| true` wrapper around hook
+// invocations still swallows our exit code, which is the contract
+// keeping hooks non-blocking.
+func logCaptureError(provider, hook, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintf(os.Stderr, "semantica capture: %s\n", msg)
+	util.AppendHookError(provider, hook, msg)
 }

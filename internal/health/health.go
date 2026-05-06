@@ -110,6 +110,8 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	checks = append(checks, checkState(ctx, opts)...)
 	checks = append(checks, checkRecentEvents(ctx, opts)...)
 	checks = append(checks, checkManifests(ctx, opts)...)
+	checks = append(checks, checkProviderFootguns(ctx, opts)...)
+	checks = append(checks, checkHookErrors(ctx)...)
 
 	return assemble(checks), nil
 }

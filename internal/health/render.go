@@ -10,22 +10,26 @@ import (
 // categoryOrder is the display order in text output. Entries not in
 // the map fall to the end alphabetically.
 var categoryOrder = map[string]int{
-	"binary":    0,
-	"launcher":  1,
-	"hooks":     2,
-	"state":     3,
-	"events":    4,
-	"manifests": 5,
+	"binary":      0,
+	"launcher":    1,
+	"hooks":       2,
+	"state":       3,
+	"events":      4,
+	"manifests":   5,
+	"footguns":    6,
+	"diagnostics": 7,
 }
 
 // categoryTitle is the human-readable label for each category.
 var categoryTitle = map[string]string{
-	"binary":    "Binary",
-	"launcher":  "Launcher",
-	"hooks":     "Hooks",
-	"state":     "Capture state",
-	"events":    "Recent events",
-	"manifests": "Manifests",
+	"binary":      "Binary",
+	"launcher":    "Launcher",
+	"hooks":       "Hooks",
+	"state":       "Capture state",
+	"events":      "Recent events",
+	"manifests":   "Manifests",
+	"footguns":    "Provider configuration",
+	"diagnostics": "Diagnostics",
 }
 
 // RenderText writes a human-readable diagnostic to w.

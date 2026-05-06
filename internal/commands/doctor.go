@@ -107,7 +107,7 @@ func renderDoctorCard(r health.Report) string {
 			)
 			sections = append(sections, "  "+line)
 			if c.Remediation != "" {
-				sections = append(sections, "      "+remediationStyle.Render("→ "+c.Remediation))
+				sections = append(sections, "      "+remediationStyle.Render("-> "+c.Remediation))
 			}
 		}
 	}
@@ -187,18 +187,24 @@ func categoryTitle(cat string) string {
 		return "Recent events"
 	case "manifests":
 		return "Manifests"
+	case "footguns":
+		return "Provider configuration"
+	case "diagnostics":
+		return "Diagnostics"
 	default:
 		return cat
 	}
 }
 
 var doctorCategoryOrder = map[string]int{
-	"binary":    0,
-	"launcher":  1,
-	"hooks":     2,
-	"state":     3,
-	"events":    4,
-	"manifests": 5,
+	"binary":      0,
+	"launcher":    1,
+	"hooks":       2,
+	"state":       3,
+	"events":      4,
+	"manifests":   5,
+	"footguns":    6,
+	"diagnostics": 7,
 }
 
 func orderedCategoriesForCard(checks []health.Check) []string {

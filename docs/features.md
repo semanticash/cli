@@ -396,7 +396,7 @@ semantica doctor
 semantica doctor --json
 ```
 
-Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active capture state, recent provider events, hosted sync manifests, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
+Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active capture state, recent provider events, hosted sync manifests, recent hook errors, provider configuration risks, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
 
 ### Caveats
 

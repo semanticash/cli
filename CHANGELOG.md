@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `semantica doctor` now runs read-only local health checks for the CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, capture state, recent capture activity, hosted sync manifests, repo connection, and authentication, with styled terminal output plus plain text and JSON modes.
+- `semantica doctor` now runs read-only local health checks for the CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, capture state, recent capture activity, hosted sync manifests, hook-error diagnostics, provider configuration risks, repo connection, and authentication, with styled terminal output plus plain text and JSON modes.
+- Hook capture failures are now written to a bounded `hook-errors.log` sidecar so `semantica doctor` can report recent non-blocking hook failures.
 
 ### Fixed
 
