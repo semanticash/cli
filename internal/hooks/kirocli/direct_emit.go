@@ -96,7 +96,7 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, resolvedPath, "create").String
+	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameWrite, resolvedPath, "write").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -106,7 +106,7 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 	ev.ToolUsesJSON = toolUsesJSON
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
-	ev.ToolName = "Write"
+	ev.ToolName = agentKiro.ToolNameWrite
 	ev.EventSource = "hook"
 	ev.FilePaths = []string{resolvedPath}
 
@@ -141,7 +141,7 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
 	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
-	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameFileEdit, resolvedPath, "edit").String
+	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameEdit, resolvedPath, "edit").String
 
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
@@ -151,7 +151,7 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	ev.ToolUsesJSON = toolUsesJSON
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
-	ev.ToolName = "Edit"
+	ev.ToolName = agentKiro.ToolNameEdit
 	ev.EventSource = "hook"
 	ev.FilePaths = []string{resolvedPath}
 

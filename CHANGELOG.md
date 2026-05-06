@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Gemini CLI transcript replay now resolves relative tool-call paths against the captured session working directory before routing replayed events.
 - Copilot CLI `task` post-tool hooks no longer emit duplicate subagent completion events; `subagentStop` is now the canonical completion boundary.
 - Provider hook settings are now written without HTML-escaping shell redirection characters, keeping generated hook commands readable in settings files.
-- Kiro CLI 2.2 `write` and `shell` payloads are now normalized into `Write`, `Edit`, and `Bash` events with repo-relative paths resolved before routing.
+- Kiro CLI 2.2 `write` and `shell` payloads are now normalized into `Write`, `Edit`, and `Bash` events with repo-relative paths resolved before routing, and direct `Write`/`Edit` events now use canonical `tool_uses` so their payload blobs contribute line-level attribution.
 - Kiro CLI child JSONL replay now keeps trailing partial lines retryable instead of advancing offsets past malformed in-progress writes.
 - Kiro IDE repeated edits to the same file in one execution now keep distinct event IDs by including Kiro action IDs in replay event identity.
 - Kiro IDE rename events now carry file-touch evidence for the destination path.

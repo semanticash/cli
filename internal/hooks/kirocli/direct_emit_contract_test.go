@@ -26,7 +26,7 @@ func TestDirectEmit_Contract(t *testing.T) {
 		},
 		{
 			Name:        "write",
-			Description: "Kiro CLI write create; ToolUsesJSON uses the synthetic kiro_file_edit name",
+			Description: "Kiro CLI write create; ToolUsesJSON carries the canonical Write tool name for line-level attribution",
 			Event: &hooks.Event{
 				Type:      hooks.ToolStepCompleted,
 				SessionID: "sess-kiro-1",
@@ -40,7 +40,7 @@ func TestDirectEmit_Contract(t *testing.T) {
 		},
 		{
 			Name:        "edit",
-			Description: "Kiro CLI write strReplace; oldStr/newStr renamed to old_string/new_string in the payload blob",
+			Description: "Kiro CLI write strReplace; ToolUsesJSON carries the canonical Edit tool name; oldStr/newStr renamed to old_string/new_string in the payload blob",
 			Event: &hooks.Event{
 				Type:      hooks.ToolStepCompleted,
 				SessionID: "sess-kiro-1",
@@ -49,6 +49,19 @@ func TestDirectEmit_Contract(t *testing.T) {
 				ToolName:  "Edit",
 				ToolInput: json.RawMessage(`{"command":"strReplace","path":"/repo/main.go","oldStr":"foo","newStr":"bar"}`),
 				Timestamp: 1714000020000,
+			},
+		},
+		{
+			Name:        "edit_insert",
+			Description: "Kiro CLI write insert; new content lands as new_string with old_string=\"\"; ToolUsesJSON still carries the canonical Edit tool name (line-level scoring)",
+			Event: &hooks.Event{
+				Type:      hooks.ToolStepCompleted,
+				SessionID: "sess-kiro-1",
+				TurnID:    "turn-1",
+				ToolUseID: "kiro-step-3",
+				ToolName:  "Edit",
+				ToolInput: json.RawMessage(`{"command":"insert","path":"/repo/main.go","content":"// new line\n"}`),
+				Timestamp: 1714000030000,
 			},
 		},
 		{

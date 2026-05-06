@@ -1,6 +1,6 @@
 {
   "name": "edit",
-  "description": "Kiro CLI write strReplace; oldStr/newStr renamed to old_string/new_string in the payload blob",
+  "description": "Kiro CLI write strReplace; ToolUsesJSON carries the canonical Edit tool name; oldStr/newStr renamed to old_string/new_string in the payload blob",
   "expected_events": [
     {
       "EventID": "59656435aafb76dbeb14be7440d965ee320c7a68058cb461f58eb2e30362cd70",
@@ -9,7 +9,7 @@
       "Timestamp": 1714000020000,
       "Kind": "assistant",
       "Role": "assistant",
-      "ToolUsesJSON": "{\"tools\":[{\"name\":\"kiro_file_edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
+      "ToolUsesJSON": "{\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/main.go\",\"file_op\":\"edit\"}]}",
       "Summary": "",
       "PayloadHash": "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50",
       "TokensIn": 0,

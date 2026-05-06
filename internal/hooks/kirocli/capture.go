@@ -165,6 +165,11 @@ func newToolCallsSince(calls []toolCallInfo, lastSeenID string) []toolCallInfo {
 }
 
 // toolCallsToEvents converts tool calls into broker RawEvents.
+//
+// Parent-side SQLite replay is currently disabled. This helper keeps the
+// legacy kiro_file_edit shape because it does not synthesize scorer-readable
+// payload blobs. If parent replay is re-enabled, switch the tool names and
+// payload synthesis together so replayed rows continue to score correctly.
 func toolCallsToEvents(calls []toolCallInfo, transcriptRef, workspacePath, providerSessionID string, timestamp int64) []broker.RawEvent {
 	var events []broker.RawEvent
 	for _, tc := range calls {

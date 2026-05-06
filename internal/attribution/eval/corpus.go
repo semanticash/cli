@@ -93,6 +93,36 @@ func claudeEvent(toolName, filePath, content, repoRoot string) events.EventRow {
 	}
 }
 
+// kiroCLIEvent builds a Kiro CLI assistant EventRow with a Write or Edit
+// payload. ToolUses comes from the production agentKiro.BuildToolUsesJSON
+// helper so this fixture stays in lockstep with the runtime row shape.
+//
+// Like kiroIDEEvent, this helper does not choose the provider's tool name for
+// each action type. Direct-emitter tests cover that mapping. The corpus case
+// covers the scoring pipeline: canonical Write/Edit tool_uses should route to
+// line-level attribution rather than file-touch attribution.
+func kiroCLIEvent(toolName, filePath, content, repoRoot string) events.EventRow {
+	fileOp := "write"
+	if toolName == "Edit" {
+		fileOp = "edit"
+	}
+	toolUses := agentKiro.BuildToolUsesJSON(toolName, filePath, fileOp).String
+
+	absPath := filePath
+	if repoRoot != "" && len(filePath) > 0 && filePath[0] != '/' {
+		absPath = repoRoot + "/" + filePath
+	}
+
+	return events.EventRow{
+		Provider:    "kiro-cli",
+		Role:        "assistant",
+		ToolUses:    toolUses,
+		PayloadHash: "eval-fixture",
+		Payload:     claudePayload(toolName, absPath, content),
+		Model:       "kiro-default",
+	}
+}
+
 // kiroIDEEvent builds a Kiro IDE assistant EventRow. ToolUses comes from the
 // production agentKiro.BuildToolUsesJSON helper so this fixture follows the
 // same payload shape as runtime events.
@@ -470,6 +500,49 @@ var Corpus = []EvalCase{
 		Events: []events.EventRow{
 			kiroIDEEvent("Write", "main.go", "package main\nfunc main() {}\n", "/repo"),
 			kiroIDEEvent("Edit", "util.go", "package main\nfunc helper() {}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path: "main.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+				{
+					Path: "util.go", AILines: 1, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+			},
+		},
+	},
+
+	// Case 10: Kiro CLI line-level via canonical Write/Edit tool_uses.
+	// A Kiro CLI row carrying canonical Write/Edit tool_uses should flow
+	// through BuildCandidatesFromRows and ScoreFiles as exact line-level
+	// attribution, not the file-touch path.
+	{
+		Name:        "kiro-cli-line-level",
+		Description: "Kiro CLI Write (create) and Edit (strReplace/insert) emit canonical tool_uses; lines score line-level",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/main.go b/main.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/main.go\n" +
+			"@@ -0,0 +1,2 @@\n" +
+			"+package main\n" +
+			"+func main() {}\n" +
+			"diff --git a/util.go b/util.go\n" +
+			"--- a/util.go\n" +
+			"+++ b/util.go\n" +
+			"@@ -1,1 +1,2 @@\n" +
+			" package main\n" +
+			"+func helper() {}\n",
+		Events: []events.EventRow{
+			kiroCLIEvent("Write", "main.go", "package main\nfunc main() {}\n", "/repo"),
+			kiroCLIEvent("Edit", "util.go", "package main\nfunc helper() {}\n", "/repo"),
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,

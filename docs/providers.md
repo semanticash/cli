@@ -110,18 +110,19 @@ Detected by checking for Kiro's `globalStorage` directory:
 Semantica installs repo-local Kiro hooks in `.kiro/hooks/` using `runCommand` actions:
 
 - **`promptSubmit`** - Resolves and pins the session history reference for the current workspace so the matching stop hook can reuse it.
+- **`fileEdited`** - Performs incremental mid-turn capture after file edits. The hook includes `patterns: ["**/*"]`, which Kiro requires before `fileEdited` can match.
 - **`agentStop`** - Scans Kiro's execution trace store for the pinned session, extracts file operations, and routes them to the repo.
 
-Unlike Claude, Cursor, Gemini, and Copilot, Kiro IDE does not expose an explicit session ID to external hook commands. Semantica pairs `promptSubmit` and `agentStop` through a workspace-scoped capture-state key and pins the session chosen at prompt submission. At stop time it scans the execution trace store, filters traces back to that session, and relies on deterministic event IDs for idempotent writes.
+Unlike Claude, Cursor, Gemini, and Copilot, Kiro IDE does not expose an explicit session ID to external hook commands. Semantica uses a workspace-scoped capture-state key to reuse the session chosen at `promptSubmit` for both incremental `fileEdited` scans and the final `agentStop` sweep. Trace reads filter back to the pinned session and rely on deterministic event IDs for idempotent writes.
 
 ### Attribution
 
-Kiro execution traces include structured file operations such as `create`, `append`, and `smartRelocate`. In the current implementation, Semantica uses these as provider file-edit signals, which gives file-level attribution. Line-level exact matching from Kiro content blobs is reserved for a later iteration.
+Kiro execution traces include structured file operations such as `create`, `replace`, `append`, and `smartRelocate`. Semantica maps create actions to canonical `Write` events and replace/append actions to canonical `Edit` events when the trace includes old and new content, enabling line-level attribution. `smartRelocate` remains file-touch attribution because Kiro does not provide source content for the rename.
 
 ### Limitations
 
 - Kiro IDE hook commands do not receive an explicit session ID, so session selection at prompt submission is still best-effort when multiple Kiro chats exist for the same workspace.
-- Kiro attribution is currently file-level rather than exact line-level.
+- `smartRelocate` rename actions are attributed at file-touch granularity because there is no old/new content payload to score line by line.
 
 ---
 
