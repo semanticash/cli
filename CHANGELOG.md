@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.3.9] - 2026-05-08
+
+### Fixed
+
+- Provenance upload redaction now fails closed for prompts, bundles, step provenance, and unknown blob kinds instead of falling back to raw outbound content on redactor or JSON parsing failures.
+- Tool input and response redaction now handles object, array, string, number, boolean, and null JSON shapes without treating valid non-object values as malformed.
+
+### Changed
+
+- Hosted sync manifest failure reasons now distinguish redaction failures from missing local blobs, with consistent `redaction failed: <kind>: <error>` messages for redaction drops.
+
 ## [0.3.8] - 2026-05-06
 
 ### Added

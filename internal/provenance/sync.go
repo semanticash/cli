@@ -158,7 +158,7 @@ func buildSyncResult(
 	if promptLocalHash != "" {
 		hash, redacted, err := loadAndRedact(ctx, bs, promptLocalHash, "prompt", repoPath)
 		if err != nil {
-			markFailed(ctx, h, m.ManifestID, "prompt blob referenced by bundle but missing locally: "+err.Error())
+			markFailed(ctx, h, m.ManifestID, formatLoadOrRedactReason("prompt", promptLocalHash, err))
 			result.Skipped = true
 			return result
 		}
@@ -172,7 +172,7 @@ func buildSyncResult(
 	for _, localHash := range stepLocalHashes {
 		hash, redacted, err := loadAndRedact(ctx, bs, localHash, "step_provenance", repoPath)
 		if err != nil {
-			markFailed(ctx, h, m.ManifestID, "step provenance blob "+localHash[:8]+" referenced by bundle but missing locally: "+err.Error())
+			markFailed(ctx, h, m.ManifestID, formatLoadOrRedactReason("step_provenance", localHash, err))
 			result.Skipped = true
 			return result
 		}
@@ -189,7 +189,7 @@ func buildSyncResult(
 	rewrittenBundle := RewriteBundleHashes(rawBundle, hashMap)
 	bundleHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoPath)
 	if err != nil {
-		markFailed(ctx, h, m.ManifestID, "bundle redaction failed: "+err.Error())
+		markFailed(ctx, h, m.ManifestID, redactionFailedReason("bundle", err))
 		result.Skipped = true
 		return result
 	}
@@ -239,12 +239,50 @@ func buildSyncResult(
 	return result
 }
 
+// loadAndRedact loads a CAS blob and returns upload-ready redacted bytes.
+// It tags load and redaction errors so manifest reasons stay consistent.
 func loadAndRedact(ctx context.Context, bs *blobs.Store, localHash, kind, repoRoot string) (uploadHash string, redacted []byte, err error) {
 	raw, err := bs.Get(ctx, localHash)
 	if err != nil {
-		return "", nil, err
+		return "", nil, &loadError{err: err}
 	}
-	return DeriveUploadHash(raw, kind, repoRoot)
+	uploadHash, redacted, err = DeriveUploadHash(raw, kind, repoRoot)
+	if err != nil {
+		return "", nil, &redactError{err: err}
+	}
+	return uploadHash, redacted, nil
+}
+
+// loadError tags local blob store failures.
+type loadError struct{ err error }
+
+func (e *loadError) Error() string { return e.err.Error() }
+func (e *loadError) Unwrap() error { return e.err }
+
+// redactError tags RedactForUpload failures.
+type redactError struct{ err error }
+
+func (e *redactError) Error() string { return e.err.Error() }
+func (e *redactError) Unwrap() error { return e.err }
+
+func formatLoadOrRedactReason(kind, localHash string, err error) string {
+	hashPrefix := localHash
+	if len(hashPrefix) > 8 {
+		hashPrefix = hashPrefix[:8]
+	}
+	switch e := err.(type) {
+	case *redactError:
+		return redactionFailedReason(kind, e.Unwrap())
+	case *loadError:
+		return kind + " blob " + hashPrefix + " referenced by bundle but missing locally: " + e.Error()
+	default:
+		return kind + " load " + hashPrefix + ": " + err.Error()
+	}
+}
+
+// redactionFailedReason formats redaction failures consistently across blob kinds.
+func redactionFailedReason(kind string, err error) string {
+	return "redaction failed: " + kind + ": " + err.Error()
 }
 
 func markFailed(ctx context.Context, h *sqlstore.Handle, manifestID, reason string) {

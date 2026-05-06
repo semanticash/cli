@@ -1,9 +1,12 @@
 package provenance
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +21,9 @@ const UploadTransformVersion = 1
 // RedactForUpload transforms a raw CAS blob into an upload-safe artifact.
 // Applies path normalization and secret redaction based on the object kind.
 // The output is deterministic for a given transform version.
+//
+// Invalid JSON, unknown kinds, and redactor failures return an error
+// without upload bytes.
 func RedactForUpload(blob []byte, kind string, repoRoot string) ([]byte, error) {
 	switch kind {
 	case "prompt":
@@ -27,7 +33,8 @@ func RedactForUpload(blob []byte, kind string, repoRoot string) ([]byte, error) 
 	case "step_provenance":
 		return redactStepProvenance(blob, repoRoot)
 	default:
-		return blob, nil
+		slog.Warn("provenance: redaction failed", "kind", kind, "reason", "unknown_kind")
+		return nil, fmt.Errorf("unknown blob kind for upload: %q", kind)
 	}
 }
 
@@ -46,7 +53,8 @@ func DeriveUploadHash(blob []byte, kind string, repoRoot string) (uploadHash str
 func redactPrompt(blob []byte) ([]byte, error) {
 	redacted, err := redact.Bytes(blob)
 	if err != nil {
-		return blob, nil // fail open - return original
+		slog.Warn("provenance: redaction failed", "kind", "prompt", "reason", "apply", "err", err)
+		return nil, fmt.Errorf("redact prompt: %w", err)
 	}
 	return redacted, nil
 }
@@ -55,7 +63,8 @@ func redactPrompt(blob []byte) ([]byte, error) {
 func redactBundle(blob []byte, repoRoot string) ([]byte, error) {
 	var bundle map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &bundle); err != nil {
-		return blob, nil
+		slog.Warn("provenance: redaction failed", "kind", "bundle", "reason", "unmarshal", "err", err)
+		return nil, fmt.Errorf("redact bundle: unmarshal: %w", err)
 	}
 
 	// Normalize cwd to repo-relative.
@@ -102,7 +111,8 @@ func redactBundle(blob []byte, repoRoot string) ([]byte, error) {
 func redactStepProvenance(blob []byte, repoRoot string) ([]byte, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &obj); err != nil {
-		return blob, nil
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "err", err)
+		return nil, fmt.Errorf("redact step_provenance: unmarshal: %w", err)
 	}
 
 	// Drop or normalize top-level local-only fields.
@@ -128,35 +138,70 @@ func redactStepProvenance(blob []byte, repoRoot string) ([]byte, error) {
 			var s string
 			if json.Unmarshal(v, &s) == nil && s != "" {
 				redacted, err := redact.String(s)
-				if err == nil {
-					r, _ := json.Marshal(redacted)
-					obj[key] = r
+				if err != nil {
+					slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "apply", "field", key, "err", err)
+					return nil, fmt.Errorf("redact step_provenance: top-level %s: %w", key, err)
 				}
+				r, _ := json.Marshal(redacted)
+				obj[key] = r
 			}
 		}
 	}
 
 	// Normalize and redact nested tool_input fields.
 	if inputRaw, ok := obj["tool_input"]; ok {
-		redacted := redactToolFields(inputRaw, repoRoot)
+		redacted, err := redactToolFields(inputRaw, repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("redact step_provenance: tool_input: %w", err)
+		}
 		obj["tool_input"] = redacted
 	}
 
 	// Normalize and redact nested tool_response fields.
 	if respRaw, ok := obj["tool_response"]; ok {
-		redacted := redactToolFields(respRaw, repoRoot)
+		redacted, err := redactToolFields(respRaw, repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("redact step_provenance: tool_response: %w", err)
+		}
 		obj["tool_response"] = redacted
 	}
 
 	return json.Marshal(obj)
 }
 
-// redactToolFields normalizes paths and redacts secret content in a tool
-// input or response JSON object.
-func redactToolFields(raw json.RawMessage, repoRoot string) json.RawMessage {
+// redactToolFields normalizes paths and redacts secret content in a
+// tool_input or tool_response JSON value. Providers may store these
+// fields as objects, arrays, or scalar values.
+func redactToolFields(raw json.RawMessage, repoRoot string) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, nil
+	}
+
+	switch trimmed[0] {
+	case '{':
+		return redactToolFieldsObject(raw, repoRoot)
+	case '[':
+		return redactToolFieldsArray(raw, repoRoot)
+	case '"':
+		return redactToolFieldsString(raw)
+	default:
+		// Numbers, booleans, and null do not need redaction, but still
+		// need to parse as valid JSON.
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "field", "tool_fields", "err", err)
+			return nil, fmt.Errorf("tool_fields: unmarshal: %w", err)
+		}
+		return raw, nil
+	}
+}
+
+func redactToolFieldsObject(raw json.RawMessage, repoRoot string) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return raw
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "field", "tool_fields_object", "err", err)
+		return nil, fmt.Errorf("tool_fields object: unmarshal: %w", err)
 	}
 
 	// Path fields: normalize to repo-relative.
@@ -182,16 +227,62 @@ func redactToolFields(raw json.RawMessage, repoRoot string) json.RawMessage {
 			var s string
 			if json.Unmarshal(v, &s) == nil && s != "" {
 				redacted, err := redact.String(s)
-				if err == nil {
-					r, _ := json.Marshal(redacted)
-					fields[key] = r
+				if err != nil {
+					slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "apply", "field", key, "err", err)
+					return nil, fmt.Errorf("tool_fields object: %s: %w", key, err)
 				}
+				r, _ := json.Marshal(redacted)
+				fields[key] = r
 			}
 		}
 	}
 
-	result, _ := json.Marshal(fields)
-	return result
+	result, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("tool_fields object: marshal: %w", err)
+	}
+	return result, nil
+}
+
+func redactToolFieldsArray(raw json.RawMessage, repoRoot string) (json.RawMessage, error) {
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "field", "tool_fields_array", "err", err)
+		return nil, fmt.Errorf("tool_fields array: unmarshal: %w", err)
+	}
+	for i, el := range elements {
+		redacted, err := redactToolFields(el, repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("tool_fields array[%d]: %w", i, err)
+		}
+		elements[i] = redacted
+	}
+	result, err := json.Marshal(elements)
+	if err != nil {
+		return nil, fmt.Errorf("tool_fields array: marshal: %w", err)
+	}
+	return result, nil
+}
+
+func redactToolFieldsString(raw json.RawMessage) (json.RawMessage, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "field", "tool_fields_string", "err", err)
+		return nil, fmt.Errorf("tool_fields string: unmarshal: %w", err)
+	}
+	if s == "" {
+		return raw, nil
+	}
+	redacted, err := redact.String(s)
+	if err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "apply", "field", "tool_fields_string", "err", err)
+		return nil, fmt.Errorf("tool_fields string: %w", err)
+	}
+	out, err := json.Marshal(redacted)
+	if err != nil {
+		return nil, fmt.Errorf("tool_fields string: marshal: %w", err)
+	}
+	return out, nil
 }
 
 // RewriteBundleHashes replaces local CAS hashes embedded in a bundle blob
