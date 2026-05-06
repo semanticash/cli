@@ -27,7 +27,7 @@ semantica blame HEAD          # aggregate AI percentage
 semantica blame HEAD --json   # per-file breakdown with exact/formatted/modified counts
 ```
 
-The JSON output includes per-file `ai_percentage`, per-provider breakdown (provider name, model, AI lines), and diagnostics (events considered, payloads loaded, match counts).
+The JSON output includes per-file `ai_percentage`, per-provider breakdown (provider name, model, AI lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
 
 ### Prerequisites
 
@@ -41,6 +41,7 @@ The JSON output includes per-file `ai_percentage`, per-provider breakdown (provi
 - Lines that a developer manually edits after AI generation may count as "modified" rather than "exact."
 - Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
 - Provider-level attribution (file touched by AI) is available for all providers; line-level payload analysis requires providers that report Edit/Write tool call content.
+- When weaker evidence contributes to a file that also has line-level matches, Semantica keeps the strongest class as `evidence_class` and preserves the weaker signals in `evidence_classes`.
 
 ### Provenance packaging
 

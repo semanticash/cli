@@ -76,6 +76,7 @@ You can also provide credentials through `SEMANTICA_API_KEY`, which is useful fo
 
 - Redaction applies only to outbound sync artifacts. Local raw capture and local blob storage under `.semantica/` are not rewritten.
 - Semantica redacts likely secrets and normalizes known provenance path fields to repo-relative form where possible before sync.
+- If redaction cannot complete for an outbound artifact, that upload fails closed instead of sending raw content.
 - Redaction is best-effort, not a guarantee. Unknown secret formats, future provider fields, or provider-specific payload changes may still require updates.
 - Even when credentials are redacted, synced prompts, command output, and edited content can still contain sensitive business context.
 

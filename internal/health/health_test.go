@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -427,6 +428,11 @@ func TestFindSemanticaOnPath_DedupesSymlink(t *testing.T) {
 }
 
 func TestFindSemanticaOnPath_SkipsNonExecutable(t *testing.T) {
+	// Windows has no executable mode bit, so the skip path has no analogue.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only permission semantics")
+	}
+
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "semantica"), []byte("not exec"), 0o644); err != nil {
 		t.Fatal(err)

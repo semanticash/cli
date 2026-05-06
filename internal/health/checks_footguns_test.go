@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestCheckHookErrors_UnreadableLog_Warns(t *testing.T) {
 	// Skip on Windows because chmod 0 on a directory does not block
 	// reads under Windows ACLs the way it does on POSIX, so the
 	// "unreadable" precondition cannot be reproduced cheaply.
-	if runtimeIsWindows() {
+	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only permission test")
 	}
 	if os.Getuid() == 0 {
@@ -59,8 +60,6 @@ func TestCheckHookErrors_UnreadableLog_Warns(t *testing.T) {
 		t.Error("expected a remediation hint pointing at the log path")
 	}
 }
-
-func runtimeIsWindows() bool { return filepath.Separator == '\\' }
 
 func TestCheckHookErrors_OnlyOldEntries_OK(t *testing.T) {
 	dir := t.TempDir()

@@ -1,6 +1,7 @@
 package health
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,16 +258,23 @@ func TestRelativeAge_Buckets(t *testing.T) {
 }
 
 func TestSameRepo(t *testing.T) {
+	// Use real temp dirs so paths carry an OS-native volume on Windows.
+	repo := filepath.Clean(t.TempDir())
+	sibling := filepath.Clean(t.TempDir())
+	sub := filepath.Join(repo, "sub")
+	subOfSub := filepath.Join(sub, "deeper")
+
 	cases := []struct {
 		name      string
 		root      string
 		candidate string
 		want      bool
 	}{
-		{"identical", "/repo", "/repo", true},
-		{"subdir-of-root", "/repo", "/repo/sub", true},
-		{"sibling", "/repo", "/other", false},
-		{"parent-not-subdir", "/repo/sub", "/repo", false},
+		{"identical", repo, repo, true},
+		{"subdir-of-root", repo, sub, true},
+		{"deeper-subdir", repo, subOfSub, true},
+		{"sibling", repo, sibling, false},
+		{"parent-not-subdir", sub, repo, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -280,14 +288,12 @@ func TestSameRepo(t *testing.T) {
 func TestActiveProvidersForRepo_FiltersByCwdAndWindow(t *testing.T) {
 	repoA := t.TempDir()
 	repoB := t.TempDir()
-	t.Setenv("HOME", t.TempDir())
 
-	// Capture-state directory lives under broker.GlobalBase(), which
-	// honors HOME via the per-platform helper. Resolve once and seed.
-	baseDir, err := captureBaseDirForTest(t)
-	if err != nil {
-		t.Skipf("could not resolve capture base dir: %v", err)
-	}
+	// SEMANTICA_HOME is the cross-platform redirect for broker.GlobalBase.
+	semHome := filepath.Join(t.TempDir(), "semantica-home")
+	t.Setenv("SEMANTICA_HOME", semHome)
+
+	baseDir := filepath.Join(semHome, "capture")
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -323,21 +329,15 @@ func TestActiveProvidersForRepo_FiltersByCwdAndWindow(t *testing.T) {
 	}
 }
 
-func captureBaseDirForTest(t *testing.T) (string, error) {
-	t.Helper()
-		// Match the layout used by hooks.captureDir(): broker.GlobalBase()
-		// resolves to <HOME>/.semantica on darwin/linux, then capture/.
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", os.ErrNotExist
-	}
-	return filepath.Join(home, ".semantica", "capture"), nil
-}
-
 func writeState(t *testing.T, baseDir, sessionID, provider, cwd string, ts int64) {
 	t.Helper()
+	// JSON-encode cwd so Windows backslashes escape correctly.
+	cwdJSON, err := json.Marshal(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := `{"session_id":"` + sessionID + `","provider":"` + provider + `","transcript_ref":"x","transcript_offset":0,"timestamp":` +
-		formatInt(ts) + `,"cwd":"` + cwd + `"}`
+		formatInt(ts) + `,"cwd":` + string(cwdJSON) + `}`
 	path := filepath.Join(baseDir, "capture-"+sessionID+".json")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

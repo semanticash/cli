@@ -27,7 +27,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 ## Attribution fidelity
 
 - Attribution is anchored to captured session data within the checkpoint delta window. Deferred created files can carry forward AI attribution from earlier history when they were already present in the previous commit-linked manifest but committed later.
-- **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata, which limits attribution to hunk-overlap matching.
+- **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata, which limits attribution to hunk-overlap matching. These weaker provider-touch signals are preserved as contributing evidence classes rather than being treated as equivalent to exact line evidence.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
 - Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
 - Attribution is computed against the diff between checkpoints. Squashed or rebased commits that collapse multiple checkpoints may produce less precise results.
@@ -64,5 +64,6 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 - Secret redaction is outbound only. Local raw capture, transcript payloads, and blob content in `.semantica/` remain unchanged.
 - Detection is best-effort and uses embedded Gitleaks rules. Unknown formats may be missed, and false positives can still remove some prompt context.
+- If outbound redaction cannot complete for a sync artifact, Semantica fails that upload closed instead of sending the raw artifact.
 - Path normalization covers the provenance fields Semantica knows how to rewrite today. New or provider-specific fields may require follow-up support.
 - Redaction lowers the chance of leaking credentials or local filesystem details, but it does not guarantee that synced prompts, command output, or edited content are free of sensitive business context.

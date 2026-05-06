@@ -74,7 +74,7 @@ func TestScoreFiles_NormalizedMatch(t *testing.T) {
 		"",
 	}, "\n")))
 
-	// AI wrote "func foo(){" (no space before brace), diff has "func foo() {".
+	// Captured AI output has no space before the brace; the diff does.
 	aiLines := map[string]map[string]struct{}{
 		"main.go": {"func foo(){": {}},
 	}

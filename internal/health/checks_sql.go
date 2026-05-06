@@ -100,7 +100,7 @@ func checkRecentEvents(ctx context.Context, opts Options) []Check {
 
 	var checks []Check
 	checks = append(checks, summariseEvents(eventsByProvider, mostRecentByProvider))
-	checks = append(checks, silentDropChecks(opts, eventsByProvider, stateActiveByProvider)...)
+	checks = append(checks, silentDropChecks(ctx, opts, eventsByProvider, stateActiveByProvider)...)
 
 	return checks
 }
@@ -193,7 +193,7 @@ func summariseEvents(eventsByProvider, mostRecentByProvider map[string]int64) Ch
 // silentDropChecks returns a warning for each provider that has hooks
 // installed and shows capture-state activity in the window but
 // produced zero events. That combination is the regression signal.
-func silentDropChecks(opts Options, eventsByProvider map[string]int64, stateActiveByProvider map[string]bool) []Check {
+func silentDropChecks(ctx context.Context, opts Options, eventsByProvider map[string]int64, stateActiveByProvider map[string]bool) []Check {
 	if opts.RepoPath == "" {
 		return nil
 	}
@@ -201,7 +201,7 @@ func silentDropChecks(opts Options, eventsByProvider map[string]int64, stateActi
 	var checks []Check
 	for _, p := range hooks.ListProviders() {
 		name := p.Name()
-		if !p.AreHooksInstalled(nil, opts.RepoPath) {
+		if !p.AreHooksInstalled(ctx, opts.RepoPath) {
 			continue
 		}
 		if !stateActiveByProvider[name] {

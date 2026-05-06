@@ -44,7 +44,10 @@ type Summary struct {
 	EvidenceUsage map[reporting.EvidenceClass]int
 	// Files with multiple contributing classes.
 	MultiEvidenceFiles int
-	// Files where primary evidence is a fallback class.
+	// Files where any contributing evidence class is a fallback
+	// class. Mirrors the CommitEvidence aggregation: line-level
+	// primary plus weaker corroboration still counts. Each file
+	// contributes at most once.
 	FallbackFiles int
 	// Files where primary (display) class is stronger than the weakest
 	// contributing class. Shows how often the "highest wins" rule hides
@@ -83,7 +86,11 @@ func RunCorpus(cases []EvalCase) Summary {
 			if len(fr.AllEvidence) > 1 {
 				s.MultiEvidenceFiles++
 			}
-			if isFallback(fr.PrimaryEvidence) {
+			// FallbackFiles mirrors CommitEvidence: walk AllEvidence
+			// so corroborating fallback classes count even when a
+			// stronger class wins primary. Each file counts at most
+			// once.
+			if hasFallbackEvidence(fr) {
 				s.FallbackFiles++
 			}
 
@@ -110,11 +117,17 @@ func RunCorpus(cases []EvalCase) Summary {
 	return s
 }
 
-func isFallback(ec reporting.EvidenceClass) bool {
-	switch ec {
-	case reporting.EvidenceProviderTouch, reporting.EvidenceProviderCoarse,
-		reporting.EvidenceCarryForward, reporting.EvidenceDeletion:
-		return true
+// hasFallbackEvidence reports whether any class on the file is in the
+// fallback set, falling back to PrimaryEvidence when AllEvidence is
+// empty so older callers still produce sensible counts.
+func hasFallbackEvidence(fr FileResult) bool {
+	if len(fr.AllEvidence) == 0 {
+		return reporting.IsFallbackEvidence(fr.PrimaryEvidence)
+	}
+	for _, c := range fr.AllEvidence {
+		if reporting.IsFallbackEvidence(c) {
+			return true
+		}
 	}
 	return false
 }

@@ -79,6 +79,18 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	return classes
 }
 
+// IsFallbackEvidence reports whether an evidence class indicates the
+// file's attribution required a non-line-level signal. Fallback
+// classes pull commit-level strength down via the penalty term in
+// CommitEvidence.
+func IsFallbackEvidence(c EvidenceClass) bool {
+	switch c {
+	case EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion:
+		return true
+	}
+	return false
+}
+
 // CommitEvidence computes the evidence level, score, and fallback count
 // from per-file evidence using a weighted formula.
 //
@@ -93,6 +105,13 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 //	Low:    Score < 0.45
 //
 // Thresholds may be tuned as the evaluation corpus grows.
+//
+// Fallback bucket selection walks AllEvidence (not PrimaryEvidence) so
+// a file with line-level evidence plus weaker corroboration (e.g.
+// modified + provider_touch) still contributes to the penalty term.
+// Each file counts at most once toward fallbackCount and toward at
+// most one of tpd/tpc/cf/del, picking the strongest fallback class
+// present in AllEvidence.
 func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount int) {
 	var exactLines, normLines, modLines int
 	var aiFiles int
@@ -107,7 +126,8 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 		normLines += f.AIFormattedLines
 		modLines += f.AIModifiedLines
 
-		switch f.PrimaryEvidence {
+		bucket := selectFallbackBucket(f)
+		switch bucket {
 		case EvidenceProviderTouch:
 			tpd++
 			fallbackCount++
@@ -157,6 +177,39 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 		level = "Low"
 	}
 	return level, fallbackCount
+}
+
+// selectFallbackBucket returns the strongest fallback class among a
+// file's evidence (AllEvidence takes priority over PrimaryEvidence so
+// corroborating fallback signals on a line-level file still count).
+// Returns EvidenceNone when no fallback class is present, in which
+// case the file does not contribute to the penalty term.
+//
+// Strength order (strongest fallback first): provider_touch >
+// provider_coarse > carry_forward > deletion. Each file counts at
+// most once.
+func selectFallbackBucket(f FileAttributionOutput) EvidenceClass {
+	classes := f.AllEvidence
+	if len(classes) == 0 && IsFallbackEvidence(f.PrimaryEvidence) {
+		// Defense for older paths that never populated AllEvidence:
+		// fall back to PrimaryEvidence so the bucket logic still
+		// produces a sane result.
+		return f.PrimaryEvidence
+	}
+	priority := []EvidenceClass{
+		EvidenceProviderTouch,
+		EvidenceProviderCoarse,
+		EvidenceCarryForward,
+		EvidenceDeletion,
+	}
+	for _, want := range priority {
+		for _, c := range classes {
+			if c == want {
+				return want
+			}
+		}
+	}
+	return EvidenceNone
 }
 
 // EvidenceExplanation returns a short sentence explaining the evidence level.

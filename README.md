@@ -139,7 +139,7 @@ will offer to request access. Workspace owners and admins can review pending
 requests with `semantica workspace requests`.
 
 The CLI works fully offline without any remote configuration. Connecting a repo only affects optional hosted sync. Local capture, checkpoints, attribution, rewind, and playbooks continue to work the same way.
-Before prompt content or remote sync payloads leave the machine, Semantica applies best-effort secret redaction and normalizes known provenance path fields to repo-relative form where possible. This applies only to outbound sync artifacts. Local raw capture in `.semantica/` is left unchanged. 
+Before prompt content or remote sync payloads leave the machine, Semantica redacts likely secrets and normalizes known provenance path fields to repo-relative form where possible. If outbound redaction cannot complete for an artifact, that upload fails closed instead of sending raw content. This applies only to outbound sync artifacts. Local raw capture in `.semantica/` is left unchanged.
 
 ---
 

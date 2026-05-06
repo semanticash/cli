@@ -276,15 +276,21 @@ var Corpus = []EvalCase{
 		},
 		Expected: ExpectedResult{
 			AIPercentage:  100,
-			Evidence:      "Medium",
-			FallbackCount: 0,
+			Evidence:      "Low",
+			FallbackCount: 1,
 			Files: []ExpectedFile{
 				{
 					Path: "config.go", AILines: 3, HumanLines: 0,
-					PrimaryEvidence:      reporting.EvidenceModified,
-					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceModified},
-					Notes: "All lines become ModifiedLines via provider-touch-only path in ScoreFiles. " +
-						"Primary evidence is 'modified' (not fallback) because ScoreFiles actually scores the lines.",
+					PrimaryEvidence: reporting.EvidenceModified,
+					ContributingEvidence: []reporting.EvidenceClass{
+						reporting.EvidenceModified,
+						reporting.EvidenceProviderTouch,
+					},
+					Notes: "All lines become ModifiedLines via the provider-touch-only path in ScoreFiles, " +
+						"so PrimaryEvidence is 'modified'. AllEvidence also carries 'provider_touch' " +
+						"because the touch origin had no line-level payload. CommitEvidence walks " +
+						"AllEvidence and counts the file as a fallback, pulling the strength label " +
+						"from Medium to Low.",
 				},
 			},
 		},
@@ -391,7 +397,7 @@ var Corpus = []EvalCase{
 		Expected: ExpectedResult{
 			AIPercentage:  100,
 			Evidence:      "High",
-			FallbackCount: 0,
+			FallbackCount: 1,
 			Files: []ExpectedFile{
 				{
 					Path: "utils.go", AILines: 2, HumanLines: 0,
@@ -401,7 +407,10 @@ var Corpus = []EvalCase{
 						reporting.EvidenceCarryForward,
 					},
 					Notes: "Exact line match wins for display, but carry-forward is a contributing " +
-						"class because the lines came from a historical window.",
+						"class because the lines came from a historical window. CommitEvidence walks " +
+						"AllEvidence so the carry-forward signal counts as a fallback even when an " +
+						"exact match wins for PrimaryEvidence. Strength stays High because " +
+						"penalty (0.25/1) leaves score = 0.75.",
 				},
 			},
 		},
