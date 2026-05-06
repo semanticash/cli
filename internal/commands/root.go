@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -56,6 +57,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewCaptureCmd())
 	cmd.AddCommand(NewImplementationsCmd(opts))
 	cmd.AddCommand(NewLauncherCmd(opts))
+	cmd.AddCommand(NewDoctorCmd(opts))
 	cmd.AddCommand(newVersionCmd())
 
 	return cmd
@@ -87,6 +89,12 @@ func Execute() {
 	rootCommand := NewRootCmd()
 	err := rootCommand.ExecuteContext(ctx)
 	if err != nil {
+		var exitErr interface{ ExitCode() int }
+		if errors.As(err, &exitErr) {
+			cancel()
+			os.Exit(exitErr.ExitCode())
+		}
+
 		out := rootCommand.OutOrStderr()
 
 		msg := err.Error()

@@ -387,6 +387,17 @@ Events are matched to repositories by file path (deepest-match rule). Events wit
 - Provider detected and hooks installed (`semantica enable` or `semantica agents`)
 - `semantica` binary on PATH (hooks silently no-op when the binary is absent)
 
+### Health checks
+
+Use `semantica doctor` to verify local capture health without changing repo state:
+
+```bash
+semantica doctor
+semantica doctor --json
+```
+
+Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active capture state, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
+
 ### Caveats
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.

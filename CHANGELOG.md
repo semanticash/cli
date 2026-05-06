@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.3.9] - 2026-05-08
 
+### Added
+
+- `semantica doctor` now runs read-only local health checks for the CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, capture state, repo connection, and authentication, with styled terminal output plus plain text and JSON modes.
+
 ### Fixed
 
 - Provenance upload redaction now fails closed for prompts, bundles, step provenance, and unknown blob kinds instead of falling back to raw outbound content on redactor or JSON parsing failures.
