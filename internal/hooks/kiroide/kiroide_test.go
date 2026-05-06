@@ -101,8 +101,11 @@ func TestBuildEventForOp_SmartRelocateSetsFileTouchEvidence(t *testing.T) {
 	if !strings.Contains(ev.ToolUsesJSON, "new/name.go") {
 		t.Errorf("ToolUsesJSON should reference destination path, got %q", ev.ToolUsesJSON)
 	}
-	if len(ev.FilePaths) != 1 || !strings.HasSuffix(ev.FilePaths[0], "new/name.go") {
-		t.Errorf("FilePaths = %v, want destination resolved against workspace", ev.FilePaths)
+	// filepath.Join uses platform-native separators; build the suffix
+	// the same way so the assertion holds on POSIX and Windows.
+	wantSuffix := filepath.Join("new", "name.go")
+	if len(ev.FilePaths) != 1 || !strings.HasSuffix(ev.FilePaths[0], wantSuffix) {
+		t.Errorf("FilePaths = %v, want destination resolved against workspace (suffix %q)", ev.FilePaths, wantSuffix)
 	}
 }
 
