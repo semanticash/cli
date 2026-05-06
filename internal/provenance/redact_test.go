@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/semanticash/cli/internal/redact"
 )
 
 var (
@@ -362,6 +365,170 @@ func TestExtractStepProvenanceHashes(t *testing.T) {
 	}
 }
 
+func TestRedactPrompt_FailsClosedOnRedactError(t *testing.T) {
+	cleanup := redact.ForceInitError(errors.New("forced detector failure"))
+	defer cleanup()
+
+	_, err := RedactForUpload([]byte("ordinary prompt text"), "prompt", "/repo")
+	if err == nil {
+		t.Fatal("expected error when redactor fails, got nil")
+	}
+}
+
+func TestRedactBundle_FailsClosedOnInvalidJSON(t *testing.T) {
+	_, err := RedactForUpload([]byte("not json {{"), "bundle", testRepoRoot)
+	if err == nil {
+		t.Fatal("expected error on malformed bundle JSON, got nil")
+	}
+}
+
+func TestRedactStepProvenance_FailsClosedOnInvalidJSON(t *testing.T) {
+	_, err := RedactForUpload([]byte("not json {{"), "step_provenance", testRepoRoot)
+	if err == nil {
+		t.Fatal("expected error on malformed step_provenance JSON, got nil")
+	}
+}
+
+func TestRedactStepProvenance_FailsClosedOnTopLevelRedactError(t *testing.T) {
+	prov := map[string]any{
+		"command": "echo hello",
+	}
+	blob, _ := json.Marshal(prov)
+
+	cleanup := redact.ForceInitError(errors.New("forced detector failure"))
+	defer cleanup()
+
+	_, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+	if err == nil {
+		t.Fatal("expected error when redactor fails on top-level command, got nil")
+	}
+}
+
+func TestRedactToolFields_FailsClosedOnNestedRedactError(t *testing.T) {
+	prov := map[string]any{
+		"tool_input": map[string]any{
+			"new_string": "some content",
+		},
+	}
+	blob, _ := json.Marshal(prov)
+
+	cleanup := redact.ForceInitError(errors.New("forced detector failure"))
+	defer cleanup()
+
+	_, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+	if err == nil {
+		t.Fatal("expected error when redactor fails on nested new_string, got nil")
+	}
+}
+
+// fakeSlackWebhook returns a string gitleaks reliably matches.
+// Built from parts so this file does not itself trip secret scanners.
+func fakeSlackWebhook() string {
+	return "https://hooks.slack.com/" +
+		"services/" +
+		"T00000000/" +
+		"B00000000/" +
+		"XXXXXXXXXXXXXXXXXXXXXXXX"
+}
+
+func TestRedactToolFields_ScalarStringRedacted(t *testing.T) {
+	secret := fakeSlackWebhook()
+	// tool_response stored as a raw JSON string with a fake secret.
+	prov := map[string]any{
+		"tool_response": "Posted to " + secret + " successfully.",
+	}
+	blob, _ := json.Marshal(prov)
+
+	result, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+	if err != nil {
+		t.Fatalf("scalar string tool_response should not fail: %v", err)
+	}
+	if strings.Contains(string(result), secret) {
+		t.Errorf("expected secret to be redacted in scalar string tool_response, got: %s", string(result))
+	}
+}
+
+func TestRedactToolFields_ArrayRecurses(t *testing.T) {
+	secret := fakeSlackWebhook()
+	// tool_response stored as an array mixing strings and objects.
+	prov := map[string]any{
+		"tool_response": []any{
+			"first contains " + secret + " value",
+			map[string]any{
+				"stdout": "second contains " + secret + " too",
+			},
+			42,
+			nil,
+		},
+	}
+	blob, _ := json.Marshal(prov)
+
+	result, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+	if err != nil {
+		t.Fatalf("array tool_response should not fail: %v", err)
+	}
+	if strings.Contains(string(result), secret) {
+		t.Errorf("expected all secret occurrences in the array to be redacted, got: %s", string(result))
+	}
+	if !strings.Contains(string(result), "42") {
+		t.Errorf("expected number element to be preserved, got: %s", string(result))
+	}
+	if !strings.Contains(string(result), "null") {
+		t.Errorf("expected null element to be preserved, got: %s", string(result))
+	}
+}
+
+func TestRedactToolFields_NumberBoolNullPassthrough(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"number", 42},
+		{"bool", true},
+		{"null", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := map[string]any{
+				"tool_response": tc.value,
+			}
+			blob, _ := json.Marshal(prov)
+
+			result, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+			if err != nil {
+				t.Fatalf("scalar %s tool_response should not fail: %v", tc.name, err)
+			}
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(result, &out); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			origJSON, _ := json.Marshal(tc.value)
+			if string(out["tool_response"]) != string(origJSON) {
+				t.Errorf("tool_response = %s, want %s", string(out["tool_response"]), string(origJSON))
+			}
+		})
+	}
+}
+
+func TestRedactToolFields_FailsClosedOnMalformedJSON(t *testing.T) {
+	blob := []byte(`{"tool_response": not_valid_json}`)
+
+	_, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+	if err == nil {
+		t.Fatal("expected error on malformed tool_response, got nil")
+	}
+}
+
+func TestRedactForUpload_UnknownKindFailsClosed(t *testing.T) {
+	_, err := RedactForUpload([]byte(`{"x":1}`), "future_kind", "/repo")
+	if err == nil {
+		t.Fatal("expected error on unknown blob kind, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown blob kind") {
+		t.Errorf("expected error message to mention unknown blob kind, got: %v", err)
+	}
+}
+
 func TestNormalizePath_RepoRelative(t *testing.T) {
 	cases := []struct {
 		path     string
@@ -370,11 +537,11 @@ func TestNormalizePath_RepoRelative(t *testing.T) {
 	}{
 		{filepath.Join(testGenericRepoRoot, "src", "main.go"), testGenericRepoRoot, "src/main.go"},
 		{testGenericRepoRoot, testGenericRepoRoot, "."},
-		{"/other/path/file.go", testGenericRepoRoot, ""},                                     // absolute outside repo - dropped
-		{"relative/path.go", testGenericRepoRoot, "relative/path.go"},                        // already relative inside repo
-		{"../secret.txt", testGenericRepoRoot, ""},                                           // relative escape - dropped
-		{"../../other-repo/file.go", testGenericRepoRoot, ""},                                // relative escape - dropped
-		{filepath.Join("src", "..", "src", "main.go"), testGenericRepoRoot, "src/main.go"},   // cleaned but still inside repo
+		{"/other/path/file.go", testGenericRepoRoot, ""},                                   // absolute outside repo - dropped
+		{"relative/path.go", testGenericRepoRoot, "relative/path.go"},                      // already relative inside repo
+		{"../secret.txt", testGenericRepoRoot, ""},                                         // relative escape - dropped
+		{"../../other-repo/file.go", testGenericRepoRoot, ""},                              // relative escape - dropped
+		{filepath.Join("src", "..", "src", "main.go"), testGenericRepoRoot, "src/main.go"}, // cleaned but still inside repo
 		{"", testGenericRepoRoot, ""},
 	}
 	for _, tc := range cases {

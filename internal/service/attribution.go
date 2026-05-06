@@ -53,18 +53,19 @@ type AttributionInput struct {
 // Classification is the coarse AI-touched flag from the attribution
 // pipeline, not a majority-authorship verdict.
 type FileAttribution struct {
-	Path             string  `json:"path"`
-	Operation        string  `json:"operation,omitempty"`      // created, edited, deleted
-	Classification   string  `json:"classification,omitempty"` // ai, human (coarse pipeline flag)
-	AIExactLines     int     `json:"ai_exact_lines"`
-	AIFormattedLines int     `json:"ai_formatted_lines"`
-	AIModifiedLines  int     `json:"ai_modified_lines"`
-	AILines          int     `json:"ai_lines,omitempty"` // exact + formatted + modified
-	HumanLines       int     `json:"human_lines"`
-	TotalLines       int     `json:"total_lines"`
-	DeletedNonBlank  int     `json:"deleted_non_blank"`        // deleted non-blank lines (not attributed, display only)
-	AIPercent        float64 `json:"ai_percentage"`            // (exact + formatted + modified) / total * 100
-	EvidenceClass    string  `json:"evidence_class,omitempty"` // primary evidence class for this file
+	Path             string   `json:"path"`
+	Operation        string   `json:"operation,omitempty"`      // created, edited, deleted
+	Classification   string   `json:"classification,omitempty"` // ai, human (coarse pipeline flag)
+	AIExactLines     int      `json:"ai_exact_lines"`
+	AIFormattedLines int      `json:"ai_formatted_lines"`
+	AIModifiedLines  int      `json:"ai_modified_lines"`
+	AILines          int      `json:"ai_lines,omitempty"` // exact + formatted + modified
+	HumanLines       int      `json:"human_lines"`
+	TotalLines       int      `json:"total_lines"`
+	DeletedNonBlank  int      `json:"deleted_non_blank"`         // deleted non-blank lines (not attributed, display only)
+	AIPercent        float64  `json:"ai_percentage"`             // (exact + formatted + modified) / total * 100
+	EvidenceClass    string   `json:"evidence_class,omitempty"`  // primary (strongest) evidence class for this file
+	EvidenceClasses  []string `json:"evidence_classes,omitempty"` // every contributing evidence class, strongest first
 }
 
 // FileChange records a file that was created, edited, or deleted in a commit,
@@ -864,6 +865,7 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 			DeletedNonBlank:  f.DeletedNonBlank,
 			AIPercent:        f.AIPercent,
 			EvidenceClass:    string(f.PrimaryEvidence),
+			EvidenceClasses:  evidenceClassesAsStrings(f.AllEvidence),
 		})
 	}
 	for _, p := range cr.ProviderDetails {
@@ -874,6 +876,21 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		})
 	}
 	return result
+}
+
+// evidenceClassesAsStrings converts a typed AllEvidence slice into the
+// strings the wire schema carries. Order is preserved so consumers can
+// rely on strongest-first; empty input returns nil so the field is
+// omitted by `omitempty`.
+func evidenceClassesAsStrings(classes []attrreporting.EvidenceClass) []string {
+	if len(classes) == 0 {
+		return nil
+	}
+	out := make([]string, len(classes))
+	for i, c := range classes {
+		out[i] = string(c)
+	}
+	return out
 }
 
 // classificationString maps the coarse AI-touched flag from the

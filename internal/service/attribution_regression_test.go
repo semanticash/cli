@@ -119,11 +119,13 @@ func assertResultsEqual(t *testing.T, label string, got, want AttributionResult)
 	}
 
 	// Per-file attribution rows (canonicalized: sorted by path).
+	// FileAttribution carries EvidenceClasses []string so == is no
+	// longer valid; use reflect.DeepEqual.
 	if len(g.Files) != len(w.Files) {
 		t.Errorf("%s Files count: got %d, want %d", label, len(g.Files), len(w.Files))
 	} else {
 		for i := range g.Files {
-			if g.Files[i] != w.Files[i] {
+			if !reflect.DeepEqual(g.Files[i], w.Files[i]) {
 				t.Errorf("%s Files[%d]: got %+v, want %+v", label, i, g.Files[i], w.Files[i])
 			}
 		}

@@ -248,3 +248,120 @@ func TestEvidenceExplanation(t *testing.T) {
 		}
 	}
 }
+
+// CommitEvidence walks AllEvidence so corroborating fallback classes
+// (e.g. provider_touch on top of line-level modified) count toward the
+// strength penalty even when a stronger class wins primary.
+func TestCommitEvidence_FallbackCountFromAllEvidence(t *testing.T) {
+	files := []FileAttributionOutput{
+		{
+			PrimaryEvidence: EvidenceModified,
+			AIModifiedLines: 5,
+			AllEvidence:     []EvidenceClass{EvidenceModified, EvidenceProviderTouch},
+		},
+	}
+	level, fallback := CommitEvidence(files)
+	if fallback != 1 {
+		t.Errorf("fallback = %d, want 1 (provider_touch corroboration must count)", fallback)
+	}
+	// 5 modified lines + 1 provider_touch fallback -> score below 0.45 -> Low.
+	if level == "High" {
+		t.Errorf("level = %q, want a non-High label since fallback now applies", level)
+	}
+}
+
+func TestCommitEvidence_NoDoubleCount(t *testing.T) {
+	files := []FileAttributionOutput{
+		{
+			PrimaryEvidence: EvidenceModified,
+			AIModifiedLines: 5,
+			AllEvidence: []EvidenceClass{
+				EvidenceModified,
+				EvidenceProviderTouch,
+				EvidenceCarryForward,
+			},
+		},
+	}
+	_, fallback := CommitEvidence(files)
+	if fallback != 1 {
+		t.Errorf("fallback = %d, want 1 (each file counts once across multiple fallback classes)", fallback)
+	}
+}
+
+func TestCommitEvidence_PrimaryOnlyFallback_StillCounts(t *testing.T) {
+	// Backward compat: when AllEvidence is empty (older callers), the
+	// bucket selector falls back to PrimaryEvidence. A pure
+	// provider_touch file must still count.
+	files := []FileAttributionOutput{
+		{PrimaryEvidence: EvidenceProviderTouch, AIModifiedLines: 0},
+	}
+	_, fallback := CommitEvidence(files)
+	if fallback != 1 {
+		t.Errorf("fallback = %d, want 1 (defense path for empty AllEvidence)", fallback)
+	}
+}
+
+func TestCommitEvidence_LineLevelOnly_NoFallback(t *testing.T) {
+	files := []FileAttributionOutput{
+		{
+			PrimaryEvidence: EvidenceExact,
+			AIExactLines:    10,
+			AllEvidence:     []EvidenceClass{EvidenceExact},
+		},
+	}
+	level, fallback := CommitEvidence(files)
+	if fallback != 0 {
+		t.Errorf("fallback = %d, want 0 (no fallback class in AllEvidence)", fallback)
+	}
+	if level != "High" {
+		t.Errorf("level = %q, want High", level)
+	}
+}
+
+func TestSelectFallbackBucket_StrongestWins(t *testing.T) {
+	// provider_touch is the strongest fallback in AllEvidence; the
+	// bucket selector should pick it even when others are present.
+	f := FileAttributionOutput{
+		AllEvidence: []EvidenceClass{
+			EvidenceModified,
+			EvidenceCarryForward,
+			EvidenceProviderTouch,
+			EvidenceDeletion,
+		},
+	}
+	got := selectFallbackBucket(f)
+	if got != EvidenceProviderTouch {
+		t.Errorf("got %q, want %q (provider_touch is strongest fallback)", got, EvidenceProviderTouch)
+	}
+}
+
+func TestSelectFallbackBucket_NoneWhenNoFallback(t *testing.T) {
+	f := FileAttributionOutput{
+		AllEvidence: []EvidenceClass{EvidenceExact, EvidenceNormalized, EvidenceModified},
+	}
+	got := selectFallbackBucket(f)
+	if got != EvidenceNone {
+		t.Errorf("got %q, want EvidenceNone (no fallback class present)", got)
+	}
+}
+
+func TestIsFallbackEvidence(t *testing.T) {
+	cases := []struct {
+		c    EvidenceClass
+		want bool
+	}{
+		{EvidenceExact, false},
+		{EvidenceNormalized, false},
+		{EvidenceModified, false},
+		{EvidenceProviderTouch, true},
+		{EvidenceProviderCoarse, true},
+		{EvidenceCarryForward, true},
+		{EvidenceDeletion, true},
+		{EvidenceNone, false},
+	}
+	for _, tc := range cases {
+		if got := IsFallbackEvidence(tc.c); got != tc.want {
+			t.Errorf("IsFallbackEvidence(%q) = %v, want %v", tc.c, got, tc.want)
+		}
+	}
+}

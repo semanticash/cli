@@ -14,6 +14,9 @@ import (
 
 const semanticaHookMarker = "Semantica git hook"
 
+// SemanticaHookMarker returns the marker written into Semantica-owned git hooks.
+func SemanticaHookMarker() string { return semanticaHookMarker }
+
 type HookInstallOptions struct {
 	Name       string // "pre-commit", "post-commit"
 	Subcommand string // "pre-commit", "post-commit"

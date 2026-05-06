@@ -463,6 +463,45 @@ limit ?;
 update provenance_manifests set status = 'packaged', updated_at = ?
 where status = 'uploading' and updated_at < ?;
 
+-- name: ListEventsByProviderInWindow :many
+-- Returns event count and most-recent event timestamp per provider for the
+-- repository in the given window (ts >= since_ts). Used by `semantica doctor`
+-- to surface per-provider activity. Providers with zero events are omitted
+-- by the GROUP BY; the doctor command joins this against the registered
+-- provider list to flag installed-but-silent providers.
+select s.provider, count(e.event_id) as event_count, max(e.ts) as most_recent_ts
+from agent_events e
+join agent_sessions s on s.session_id = e.session_id
+where e.repository_id = ? and e.ts >= ?
+group by s.provider
+order by s.provider;
+
+-- name: CountManifestsByStatus :many
+-- Counts manifests by status for the repository within the given window.
+-- Used by `semantica doctor` to summarize sync state.
+select status, count(*) as count
+from provenance_manifests
+where repository_id = ?
+  and created_at >= ?
+group by status
+order by status;
+
+-- name: ListFailedManifestReasons :many
+-- Returns each distinct last_error and its count for failed manifests in the
+-- repository within the given window. No limit: doctor folds these into
+-- stable reason groups in Go (e.g. "redaction failed: prompt"). A SQL-side
+-- limit would cap raw rows before grouping, which can undercount stable
+-- groups that manifest as many per-instance error strings (one per blob
+-- hash). The result set is bounded by the number of *distinct* error
+-- strings within the 7d window, which is small in practice.
+select coalesce(last_error, '<no error>') as last_error, count(*) as count
+from provenance_manifests
+where repository_id = ?
+  and status = 'failed'
+  and created_at >= ?
+group by last_error
+order by count desc, last_error;
+
 -- name: ListStepProvenanceForTurn :many
 -- Returns step provenance hashes for a turn, used to build the upload envelope.
 select event_id, tool_use_id, tool_name, provenance_hash

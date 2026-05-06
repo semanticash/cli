@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.3.9] - 2026-05-07
+
+### Added
+
+- `semantica doctor` now runs read-only local health checks for the CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, capture state, recent capture activity, hosted sync manifests, hook-error diagnostics, provider configuration risks, repo connection, and authentication, with styled terminal output plus plain text and JSON modes.
+- Hook capture failures are now written to a bounded `hook-errors.log` sidecar so `semantica doctor` can report recent non-blocking hook failures.
+- Per-file attribution results now include `evidence_classes`, a strongest-first list of all contributing evidence classes, while keeping `evidence_class` as the backwards-compatible display field.
+
+### Fixed
+
+- Provenance upload redaction now fails closed for prompts, bundles, step provenance, and unknown blob kinds instead of falling back to raw outbound content on redactor or JSON parsing failures.
+- Tool input and response redaction now handles object, array, string, number, boolean, and null JSON shapes without treating valid non-object values as malformed.
+
+### Changed
+
+- Hosted sync manifest failure reasons now distinguish redaction failures from missing local blobs, with consistent `redaction failed: <kind>: <error>` messages for redaction drops.
+- Commit evidence strength now accounts for weaker contributing fallback evidence, such as provider-touch or carry-forward signals, even when a stronger line-level class remains the primary display evidence.
+
 ## [0.3.8] - 2026-05-06
 
 ### Added

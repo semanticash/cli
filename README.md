@@ -139,7 +139,7 @@ will offer to request access. Workspace owners and admins can review pending
 requests with `semantica workspace requests`.
 
 The CLI works fully offline without any remote configuration. Connecting a repo only affects optional hosted sync. Local capture, checkpoints, attribution, rewind, and playbooks continue to work the same way.
-Before prompt content or remote sync payloads leave the machine, Semantica applies best-effort secret redaction and normalizes known provenance path fields to repo-relative form where possible. This applies only to outbound sync artifacts. Local raw capture in `.semantica/` is left unchanged. 
+Before prompt content or remote sync payloads leave the machine, Semantica redacts likely secrets and normalizes known provenance path fields to repo-relative form where possible. If outbound redaction cannot complete for an artifact, that upload fails closed instead of sending raw content. This applies only to outbound sync artifacts. Local raw capture in `.semantica/` is left unchanged.
 
 ---
 
@@ -235,6 +235,7 @@ semantica suggest commit # generates a concise commit message from your current 
 semantica suggest pr # generates a pull request title and description from your branch diff.
 semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
+semantica doctor # diagnoses local binary, hook, launcher, capture, and auth health.
 ```
 
 ### Agent sessions
@@ -306,6 +307,7 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 |---------|-------------|
 | `enable` / `disable` | Initialize or disable Semantica in a repo |
 | `status` | Show AI activity overview |
+| `doctor` | Diagnose local Semantica install and capture health |
 | `blame <ref>` | AI attribution for a commit |
 | `explain <commit>` | Explain a commit with AI breakdown |
 | `implementations [id]` | List or inspect cross-repo implementation stories |
