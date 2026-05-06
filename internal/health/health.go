@@ -108,6 +108,8 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	checks = append(checks, checkLauncher(ctx)...)
 	checks = append(checks, checkHooks(ctx, opts, pathBins)...)
 	checks = append(checks, checkState(ctx, opts)...)
+	checks = append(checks, checkRecentEvents(ctx, opts)...)
+	checks = append(checks, checkManifests(ctx, opts)...)
 
 	return assemble(checks), nil
 }

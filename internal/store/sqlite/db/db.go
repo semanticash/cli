@@ -36,6 +36,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countCheckpointsWithSummaryStmt, err = db.PrepareContext(ctx, countCheckpointsWithSummary); err != nil {
 		return nil, fmt.Errorf("error preparing query CountCheckpointsWithSummary: %w", err)
 	}
+	if q.countManifestsByStatusStmt, err = db.PrepareContext(ctx, countManifestsByStatus); err != nil {
+		return nil, fmt.Errorf("error preparing query CountManifestsByStatus: %w", err)
+	}
 	if q.countSessionsForCheckpointStmt, err = db.PrepareContext(ctx, countSessionsForCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query CountSessionsForCheckpoint: %w", err)
 	}
@@ -144,11 +147,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listDistinctProvidersStmt, err = db.PrepareContext(ctx, listDistinctProviders); err != nil {
 		return nil, fmt.Errorf("error preparing query ListDistinctProviders: %w", err)
 	}
+	if q.listEventsByProviderInWindowStmt, err = db.PrepareContext(ctx, listEventsByProviderInWindow); err != nil {
+		return nil, fmt.Errorf("error preparing query ListEventsByProviderInWindow: %w", err)
+	}
 	if q.listEventsBySessionASCStmt, err = db.PrepareContext(ctx, listEventsBySessionASC); err != nil {
 		return nil, fmt.Errorf("error preparing query ListEventsBySessionASC: %w", err)
 	}
 	if q.listEventsInWindowStmt, err = db.PrepareContext(ctx, listEventsInWindow); err != nil {
 		return nil, fmt.Errorf("error preparing query ListEventsInWindow: %w", err)
+	}
+	if q.listFailedManifestReasonsStmt, err = db.PrepareContext(ctx, listFailedManifestReasons); err != nil {
+		return nil, fmt.Errorf("error preparing query ListFailedManifestReasons: %w", err)
 	}
 	if q.listPackagedManifestsStmt, err = db.PrepareContext(ctx, listPackagedManifests); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPackagedManifests: %w", err)
@@ -281,6 +290,11 @@ func (q *Queries) Close() error {
 	if q.countCheckpointsWithSummaryStmt != nil {
 		if cerr := q.countCheckpointsWithSummaryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countCheckpointsWithSummaryStmt: %w", cerr)
+		}
+	}
+	if q.countManifestsByStatusStmt != nil {
+		if cerr := q.countManifestsByStatusStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countManifestsByStatusStmt: %w", cerr)
 		}
 	}
 	if q.countSessionsForCheckpointStmt != nil {
@@ -463,6 +477,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listDistinctProvidersStmt: %w", cerr)
 		}
 	}
+	if q.listEventsByProviderInWindowStmt != nil {
+		if cerr := q.listEventsByProviderInWindowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listEventsByProviderInWindowStmt: %w", cerr)
+		}
+	}
 	if q.listEventsBySessionASCStmt != nil {
 		if cerr := q.listEventsBySessionASCStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listEventsBySessionASCStmt: %w", cerr)
@@ -471,6 +490,11 @@ func (q *Queries) Close() error {
 	if q.listEventsInWindowStmt != nil {
 		if cerr := q.listEventsInWindowStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listEventsInWindowStmt: %w", cerr)
+		}
+	}
+	if q.listFailedManifestReasonsStmt != nil {
+		if cerr := q.listFailedManifestReasonsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listFailedManifestReasonsStmt: %w", cerr)
 		}
 	}
 	if q.listPackagedManifestsStmt != nil {
@@ -696,6 +720,7 @@ type Queries struct {
 	completeBackfillStmt                     *sql.Stmt
 	completeCheckpointStmt                   *sql.Stmt
 	countCheckpointsWithSummaryStmt          *sql.Stmt
+	countManifestsByStatusStmt               *sql.Stmt
 	countSessionsForCheckpointStmt           *sql.Stmt
 	deleteCheckpointByIDStmt                 *sql.Stmt
 	failCheckpointStmt                       *sql.Stmt
@@ -732,8 +757,10 @@ type Queries struct {
 	listCommitLinksByRepositoryStmt          *sql.Stmt
 	listCrossRepoSessionsStmt                *sql.Stmt
 	listDistinctProvidersStmt                *sql.Stmt
+	listEventsByProviderInWindowStmt         *sql.Stmt
 	listEventsBySessionASCStmt               *sql.Stmt
 	listEventsInWindowStmt                   *sql.Stmt
+	listFailedManifestReasonsStmt            *sql.Stmt
 	listPackagedManifestsStmt                *sql.Stmt
 	listPendingManifestsStmt                 *sql.Stmt
 	listProvidersByCheckpointStmt            *sql.Stmt
@@ -780,6 +807,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		completeBackfillStmt:                     q.completeBackfillStmt,
 		completeCheckpointStmt:                   q.completeCheckpointStmt,
 		countCheckpointsWithSummaryStmt:          q.countCheckpointsWithSummaryStmt,
+		countManifestsByStatusStmt:               q.countManifestsByStatusStmt,
 		countSessionsForCheckpointStmt:           q.countSessionsForCheckpointStmt,
 		deleteCheckpointByIDStmt:                 q.deleteCheckpointByIDStmt,
 		failCheckpointStmt:                       q.failCheckpointStmt,
@@ -816,8 +844,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listCommitLinksByRepositoryStmt:          q.listCommitLinksByRepositoryStmt,
 		listCrossRepoSessionsStmt:                q.listCrossRepoSessionsStmt,
 		listDistinctProvidersStmt:                q.listDistinctProvidersStmt,
+		listEventsByProviderInWindowStmt:         q.listEventsByProviderInWindowStmt,
 		listEventsBySessionASCStmt:               q.listEventsBySessionASCStmt,
 		listEventsInWindowStmt:                   q.listEventsInWindowStmt,
+		listFailedManifestReasonsStmt:            q.listFailedManifestReasonsStmt,
 		listPackagedManifestsStmt:                q.listPackagedManifestsStmt,
 		listPendingManifestsStmt:                 q.listPendingManifestsStmt,
 		listProvidersByCheckpointStmt:            q.listProvidersByCheckpointStmt,

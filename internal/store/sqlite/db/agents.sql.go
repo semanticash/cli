@@ -10,6 +10,50 @@ import (
 	"database/sql"
 )
 
+const countManifestsByStatus = `-- name: CountManifestsByStatus :many
+select status, count(*) as count
+from provenance_manifests
+where repository_id = ?
+  and created_at >= ?
+group by status
+order by status
+`
+
+type CountManifestsByStatusParams struct {
+	RepositoryID string `json:"repository_id"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
+type CountManifestsByStatusRow struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+// Counts manifests by status for the repository within the given window.
+// Used by `semantica doctor` to summarize sync state.
+func (q *Queries) CountManifestsByStatus(ctx context.Context, arg CountManifestsByStatusParams) ([]CountManifestsByStatusRow, error) {
+	rows, err := q.query(ctx, q.countManifestsByStatusStmt, countManifestsByStatus, arg.RepositoryID, arg.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountManifestsByStatusRow{}
+	for rows.Next() {
+		var i CountManifestsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getActiveAgentSessionForRepo = `-- name: GetActiveAgentSessionForRepo :one
 select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions where repository_id = ? order by last_seen_at desc limit 1
 `
@@ -607,6 +651,54 @@ func (q *Queries) ListDistinctProviders(ctx context.Context, repositoryID string
 	return items, nil
 }
 
+const listEventsByProviderInWindow = `-- name: ListEventsByProviderInWindow :many
+select s.provider, count(e.event_id) as event_count, max(e.ts) as most_recent_ts
+from agent_events e
+join agent_sessions s on s.session_id = e.session_id
+where e.repository_id = ? and e.ts >= ?
+group by s.provider
+order by s.provider
+`
+
+type ListEventsByProviderInWindowParams struct {
+	RepositoryID string `json:"repository_id"`
+	Ts           int64  `json:"ts"`
+}
+
+type ListEventsByProviderInWindowRow struct {
+	Provider     string      `json:"provider"`
+	EventCount   int64       `json:"event_count"`
+	MostRecentTs interface{} `json:"most_recent_ts"`
+}
+
+// Returns event count and most-recent event timestamp per provider for the
+// repository in the given window (ts >= since_ts). Used by `semantica doctor`
+// to surface per-provider activity. Providers with zero events are omitted
+// by the GROUP BY; the doctor command joins this against the registered
+// provider list to flag installed-but-silent providers.
+func (q *Queries) ListEventsByProviderInWindow(ctx context.Context, arg ListEventsByProviderInWindowParams) ([]ListEventsByProviderInWindowRow, error) {
+	rows, err := q.query(ctx, q.listEventsByProviderInWindowStmt, listEventsByProviderInWindow, arg.RepositoryID, arg.Ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEventsByProviderInWindowRow{}
+	for rows.Next() {
+		var i ListEventsByProviderInWindowRow
+		if err := rows.Scan(&i.Provider, &i.EventCount, &i.MostRecentTs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsBySessionASC = `-- name: ListEventsBySessionASC :many
 select e.event_id, e.session_id, e.repository_id, e.ts, e.kind, e.payload_hash, e.role, e.tool_uses, e.tokens_in, e.tokens_out, e.tokens_cache_read, e.tokens_cache_create, e.summary, e.provider_event_id, e.turn_id, e.tool_use_id, e.tool_name, e.event_source, e.provenance_hash, s.provider from agent_events e
     join agent_sessions s on s.session_id = e.session_id
@@ -667,6 +759,56 @@ func (q *Queries) ListEventsBySessionASC(ctx context.Context, sessionID string) 
 			&i.ProvenanceHash,
 			&i.Provider,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFailedManifestReasons = `-- name: ListFailedManifestReasons :many
+select coalesce(last_error, '<no error>') as last_error, count(*) as count
+from provenance_manifests
+where repository_id = ?
+  and status = 'failed'
+  and created_at >= ?
+group by last_error
+order by count desc, last_error
+`
+
+type ListFailedManifestReasonsParams struct {
+	RepositoryID string `json:"repository_id"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
+type ListFailedManifestReasonsRow struct {
+	LastError string `json:"last_error"`
+	Count     int64  `json:"count"`
+}
+
+// Returns each distinct last_error and its count for failed manifests in the
+// repository within the given window. No limit: doctor folds these into
+// stable reason groups in Go (e.g. "redaction failed: prompt"). A SQL-side
+// limit would cap raw rows before grouping, which can undercount stable
+// groups that manifest as many per-instance error strings (one per blob
+// hash). The result set is bounded by the number of *distinct* error
+// strings within the 7d window, which is small in practice.
+func (q *Queries) ListFailedManifestReasons(ctx context.Context, arg ListFailedManifestReasonsParams) ([]ListFailedManifestReasonsRow, error) {
+	rows, err := q.query(ctx, q.listFailedManifestReasonsStmt, listFailedManifestReasons, arg.RepositoryID, arg.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFailedManifestReasonsRow{}
+	for rows.Next() {
+		var i ListFailedManifestReasonsRow
+		if err := rows.Scan(&i.LastError, &i.Count); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

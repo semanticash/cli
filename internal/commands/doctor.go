@@ -183,16 +183,22 @@ func categoryTitle(cat string) string {
 		return "Hooks"
 	case "state":
 		return "Capture state"
+	case "events":
+		return "Recent events"
+	case "manifests":
+		return "Manifests"
 	default:
 		return cat
 	}
 }
 
 var doctorCategoryOrder = map[string]int{
-	"binary":   0,
-	"launcher": 1,
-	"hooks":    2,
-	"state":    3,
+	"binary":    0,
+	"launcher":  1,
+	"hooks":     2,
+	"state":     3,
+	"events":    4,
+	"manifests": 5,
 }
 
 func orderedCategoriesForCard(checks []health.Check) []string {
