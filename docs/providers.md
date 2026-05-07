@@ -159,6 +159,16 @@ Kiro CLI 2.2 file operations arrive as `write` payloads. Semantica maps `create`
 
 AgentCrew subagent calls are captured at the parent boundary and, when discovery is unambiguous, Semantica replays each child JSONL session to attribute inner `write` and `shell` operations back to the parent turn. Child replay uses Kiro's own `toolUseId` values and links child provider sessions to the parent session for drill-down.
 
+### LLM-backed features
+
+Semantica can use Kiro CLI for playbook generation and other LLM-backed text features when `kiro-cli` is installed. The fallback chain tries Claude Code, Cursor, Gemini CLI, and Copilot first, then runs:
+
+```bash
+kiro-cli chat --no-interactive
+```
+
+Kiro CLI authentication is managed by Kiro itself through a cached login or `KIRO_API_KEY`.
+
 ### Usage
 
 Kiro CLI stores behavior in named agent configs. Semantica installs a repo-local config named `semantica` at `.kiro/agents/semantica.json`.

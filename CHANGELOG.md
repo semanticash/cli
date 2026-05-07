@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `semantica doctor` now runs read-only local health checks for the CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, capture state, recent capture activity, hosted sync manifests, hook-error diagnostics, provider configuration risks, repo connection, and authentication, with styled terminal output plus plain text and JSON modes.
 - Hook capture failures are now written to a bounded `hook-errors.log` sidecar so `semantica doctor` can report recent non-blocking hook failures.
 - Per-file attribution results now include `evidence_classes`, a strongest-first list of all contributing evidence classes, while keeping `evidence_class` as the backwards-compatible display field.
+- Kiro CLI can now be used as a fallback provider for playbook generation and other LLM-backed text features through `kiro-cli chat --no-interactive`.
 
 ### Fixed
 

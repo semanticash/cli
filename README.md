@@ -31,7 +31,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 - **Git** - Semantica hooks into the Git commit lifecycle
 - **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
 - **At least one supported AI provider** for capture (Claude Code, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
-- **At least one supported CLI version** for `suggest commit`, `suggest pr`, and playbook generation (`claude`, `agent`, `gemini`, or `copilot`) - not required for core capture and attribution
+- **At least one supported CLI version** for `suggest commit`, `suggest pr`, and playbook generation (`claude`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
 
 ---
 
