@@ -212,3 +212,41 @@ func TestVSCodeClaudeBinaries_EmptyWhenNoExtension(t *testing.T) {
 		t.Errorf("expected 0 candidates, got %d: %v", len(got), got)
 	}
 }
+
+// kiro-cli prints chat responses with a leading "> " marker; the
+// cleaner strips it so callers receive just the model's text.
+func TestCleanKiroCLIResponse_StripsPromptMarker(t *testing.T) {
+	got := cleanKiroCLIResponse("> Hello! How can I help you?\n")
+	if got != "Hello! How can I help you?" {
+		t.Errorf("got %q, want %q", got, "Hello! How can I help you?")
+	}
+}
+
+func TestCleanKiroCLIResponse_PreservesMultilineBody(t *testing.T) {
+	in := "> Line one.\nLine two.\nLine three."
+	got := cleanKiroCLIResponse(in)
+	want := "Line one.\nLine two.\nLine three."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCleanKiroCLIResponse_NoMarkerPassesThrough(t *testing.T) {
+	in := "plain text without a prefix"
+	if got := cleanKiroCLIResponse(in); got != in {
+		t.Errorf("got %q, want %q", got, in)
+	}
+}
+
+func TestCleanKiroCLIResponse_TrimsSurroundingWhitespace(t *testing.T) {
+	got := cleanKiroCLIResponse("\n\n> Hi.\n\n")
+	if got != "Hi." {
+		t.Errorf("got %q, want %q", got, "Hi.")
+	}
+}
+
+func TestCleanKiroCLIResponse_EmptyInput(t *testing.T) {
+	if got := cleanKiroCLIResponse(""); got != "" {
+		t.Errorf("got %q, want empty string", got)
+	}
+}

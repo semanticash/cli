@@ -86,6 +86,12 @@ var providers = []llmProvider{
 		find:    findCopilot,
 		runText: runCopilot,
 	},
+	{
+		name:    "kiro_cli",
+		model:   "unknown",
+		find:    findKiroCLI,
+		runText: runKiroCLI,
+	},
 }
 
 // GenerateText sends a redacted prompt to an available AI CLI and returns raw
@@ -127,7 +133,7 @@ func GenerateText(ctx context.Context, prompt string) (*GenerateTextResult, erro
 	if lastErr != nil {
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
-	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, or GitHub Copilot CLI")
+	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI")
 }
 
 // Generate sends a redacted prompt to an available AI CLI and returns a parsed
@@ -179,7 +185,7 @@ func Generate(ctx context.Context, prompt string) (*GenerateResult, error) {
 	if lastErr != nil {
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
-	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, or GitHub Copilot CLI")
+	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI")
 }
 
 // --- Provider runners ---
@@ -293,6 +299,42 @@ func runCopilot(ctx context.Context, copilotPath, prompt string) (string, error)
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// runKiroCLI shells out to Kiro CLI in headless mode. Kiro CLI
+// routes status lines to stderr, so stdout contains the model
+// response. Authentication is handled by Kiro CLI through its cached
+// login or KIRO_API_KEY. Failures are reported like the other provider
+// runners so the fallback chain can continue.
+func runKiroCLI(ctx context.Context, kiroPath, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, llmShellTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, kiroPath,
+		"chat",
+		"--no-interactive",
+		prompt,
+	)
+	platform.HideWindow(cmd)
+	cmd.Dir = os.TempDir()
+	cmd.Env = cleanEnv(os.Environ())
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		return "", formatShellError(ctx, err, &stderr, start)
+	}
+
+	return cleanKiroCLIResponse(stdout.String()), nil
+}
+
+// cleanKiroCLIResponse strips Kiro CLI's leading chat prompt marker
+// and trims surrounding whitespace.
+func cleanKiroCLIResponse(s string) string {
+	return strings.TrimPrefix(strings.TrimSpace(s), "> ")
+}
+
 // --- Provider discovery ---
 
 func findClaude() string {
@@ -337,6 +379,10 @@ func findGemini() string {
 
 func findCopilot() string {
 	return util.ResolveExecutable([]string{"copilot"})
+}
+
+func findKiroCLI() string {
+	return util.ResolveExecutable([]string{"kiro-cli"})
 }
 
 // --- Helpers ---
