@@ -1,7 +1,8 @@
 // Package explain implements the backing engine for the
-// `semantica skills explain` command. Explain currently returns
-// git-only output after ref resolution; local and remote provenance
-// can be added without changing the JSON contract.
+// `semantica skills explain` command. It checks local lineage data
+// first and falls back to a redacted git diff when no local record
+// exists. Remote provenance can be added later without changing the
+// JSON contract.
 //
 // The contract: callers always get a structured Output back when
 // the engine could decide what to say. Errors from this package are
@@ -151,9 +152,8 @@ func IsSafeRef(ref string) bool {
 }
 
 // Explain resolves the requested ref and returns the best available
-// explanation shape. The current implementation returns git-only
-// output after ref resolution; local and remote provenance can be
-// added without changing the JSON shape.
+// explanation shape: local provenance first, then a redacted git
+// diff fallback when local has no record.
 func (s *Service) Explain(ctx context.Context, in Input) (*Output, error) {
 	if !IsSafeRef(in.Ref) {
 		return &Output{
@@ -177,14 +177,31 @@ func (s *Service) Explain(ctx context.Context, in Input) (*Output, error) {
 		}, nil
 	}
 
+	if text := localProvenance(ctx, repo.Root(), hash); text != "" {
+		// Local provenance can include user-authored prose, so it
+		// gets the same fail-closed redaction treatment as git diffs.
+		redacted, err := redact.String(text)
+		if err != nil {
+			return &Output{
+				Mode:    ModeBlocked,
+				Reason:  ReasonRedactionFailed,
+				Message: "redactor failed to process the local provenance for this commit; refusing to render unredacted content",
+			}, nil
+		}
+		return &Output{
+			Mode:      ModeProvenance,
+			HumanText: redacted,
+		}, nil
+	}
+
 	return gitOnly(ctx, repo, hash)
 }
 
 // gitOnly populates commit_metadata and the redacted diff_excerpt
-// for layer 3. Redaction is fail-closed: a redactor error returns
-// mode: blocked rather than leaking unredacted content or
-// masquerading as not-found. Order is redact-then-truncate so a
-// secret straddling the byte cap cannot leak its prefix.
+// fallback. Redaction is fail-closed: a redactor error returns mode:
+// blocked rather than leaking unredacted content or masquerading as
+// not-found. Order is redact-then-truncate so a secret straddling the
+// byte cap cannot leak its prefix.
 func gitOnly(ctx context.Context, repo *git.Repo, hash string) (*Output, error) {
 	meta, err := readCommitMetadata(ctx, repo, hash)
 	if err != nil {
