@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.4.0] - 2026-05-10
+
+### Added
+
+- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Claude Code capture session so a fresh agent session can resume without reprinting the full context into the original chat.
+
+### Fixed
+
+- Handoff bundle assembly resolves provider session IDs to Semantica's local session IDs before reading `agent_events`, so real bundles include the captured prompt, assistant summary, and file-touch evidence.
+- Handoff degraded-state notes now avoid raw database errors and absolute local paths in the generated markdown.
+
+### Changed
+
+- Handoff writes always resolve the Git repository root before reading lineage data or writing `.semantica/handoff.md`, so subdirectory invocations target the correct repo.
+
 ## [0.3.9] - 2026-05-07
 
 ### Added
