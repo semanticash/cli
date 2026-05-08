@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
+	"github.com/semanticash/cli/internal/explain"
 	"github.com/semanticash/cli/internal/skills"
 	"github.com/semanticash/cli/internal/version"
 	"github.com/spf13/cobra"
@@ -24,6 +26,7 @@ func NewSkillsCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.AddCommand(newSkillsInstallCmd())
 	cmd.AddCommand(newSkillsUninstallCmd())
 	cmd.AddCommand(newSkillsHandoffCmd(rootOpts))
+	cmd.AddCommand(newSkillsExplainCmd(rootOpts))
 	return cmd
 }
 
@@ -143,6 +146,41 @@ func joinWithCommas(parts []string) string {
 		out += ", " + p
 	}
 	return out
+}
+
+// newSkillsExplainCmd is the hidden backing command for the
+// semantica-explain SKILL.md body. The skill body invokes this
+// command with a single ref argument and parses the JSON it
+// emits. Exit codes follow the skill command contract: zero whenever
+// structured JSON is produced (including the blocked and
+// not-found modes), non-zero only when the command itself failed
+// before producing output.
+func newSkillsExplainCmd(rootOpts *RootOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "explain <ref>",
+		Short:         "Backing command for the semantica-explain skill (hidden)",
+		Args:          cobra.ExactArgs(1),
+		Hidden:        true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := explain.NewService()
+			out, err := svc.Explain(cmd.Context(), explain.Input{
+				RepoPath: rootOpts.RepoPath,
+				Ref:      args[0],
+			})
+			if err != nil {
+				return err
+			}
+			body, err := json.Marshal(out)
+			if err != nil {
+				return fmt.Errorf("marshal explain output: %w", err)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(body))
+			return nil
+		},
+	}
+	return cmd
 }
 
 // newSkillsHandoffCmd is the hidden backing command for the

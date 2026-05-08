@@ -211,6 +211,26 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 	return cleanGitOutput(out), nil
 }
 
+// CommitFormat runs `git show -s --format=<format> <commitHash>` and
+// returns the trimmed output. Callers compose multi-field formats
+// (e.g. "%H%n%an%n%ai%n%s") and parse the result by line. This is
+// the single git-show entry point for callers that need more than
+// just the subject.
+func (r *Repo) CommitFormat(ctx context.Context, commitHash, format string) (string, error) {
+	if strings.TrimSpace(commitHash) == "" {
+		return "", fmt.Errorf("commit hash is empty")
+	}
+	if format == "" {
+		return "", fmt.Errorf("format is empty")
+	}
+	cmd := r.gitCmd(ctx, "show", "-s", "--format="+format, commitHash)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return cleanGitOutput(out), nil
+}
+
 // parentForCommit resolves the first parent of a commit hash, returning the
 // magic empty-tree SHA for the initial commit (no parents).
 func (r *Repo) parentForCommit(ctx context.Context, hash string) (string, error) {

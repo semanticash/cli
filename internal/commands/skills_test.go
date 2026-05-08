@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,12 +36,14 @@ func TestSkillsCmd_VisibilityWiring(t *testing.T) {
 		}
 	}
 
-	handoff, _, err := root.Find([]string{"skills", "handoff"})
-	if err != nil {
-		t.Fatalf("skills handoff command not found: %v", err)
-	}
-	if !handoff.Hidden {
-		t.Errorf("skills handoff backing command must remain Hidden")
+	for _, name := range []string{"handoff", "explain"} {
+		c, _, err := root.Find([]string{"skills", name})
+		if err != nil {
+			t.Fatalf("skills %s backing command not found: %v", name, err)
+		}
+		if !c.Hidden {
+			t.Errorf("skills %s backing command must remain Hidden", name)
+		}
 	}
 }
 
@@ -108,6 +111,129 @@ func runRoot(t *testing.T, args []string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return buf.String(), err
+}
+
+// --- skills explain command-level contract ---
+//
+// SKILL.md consumers depend on the cobra wiring as much as the
+// engine: structured modes (including not-found and blocked) must
+// exit zero with valid JSON on stdout, and runtime failures must
+// not leak cobra's usage / error noise into the output the agent
+// reads. These tests pin those invariants alongside the engine
+// tests in internal/explain/.
+
+// TestSkillsExplain_UnsafeRefExitsZeroWithJSON exercises the
+// not-found branch: an unsafe ref must return structured JSON and
+// exit code zero so the SKILL.md body parses the message rather
+// than treating it as a runtime error.
+func TestSkillsExplain_UnsafeRefExitsZeroWithJSON(t *testing.T) {
+	repo := initBareGitRepoForTest(t)
+	out, err := runRoot(t, []string{"--repo", repo, "skills", "explain", "main; rm -rf /"})
+	if err != nil {
+		t.Fatalf("expected zero-exit (structured JSON), got err: %v\nstdout:\n%s", err, out)
+	}
+	parsed := mustParseJSON(t, out)
+	if got := parsed["mode"]; got != "not-found" {
+		t.Errorf("mode = %v, want not-found", got)
+	}
+	if got := parsed["reason"]; got != "ref_unsafe" {
+		t.Errorf("reason = %v, want ref_unsafe", got)
+	}
+	if _, ok := parsed["message"]; !ok {
+		t.Errorf("message field missing for not-found / ref_unsafe: %s", out)
+	}
+}
+
+// TestSkillsExplain_GitOnlyExitsZeroWithJSON exercises the happy
+// path through cobra: HEAD on a real commit returns mode=git-only,
+// fallback_reason=remote_not_attempted, and a non-empty diff
+// excerpt, which is the contract a SKILL.md body relies on for layer 3.
+func TestSkillsExplain_GitOnlyExitsZeroWithJSON(t *testing.T) {
+	repo := initRepoWithCommitForTest(t, "feat: command contract", "package main\nfunc Run() {}\n")
+	out, err := runRoot(t, []string{"--repo", repo, "skills", "explain", "HEAD"})
+	if err != nil {
+		t.Fatalf("expected zero-exit, got err: %v\nstdout:\n%s", err, out)
+	}
+	parsed := mustParseJSON(t, out)
+	if got := parsed["mode"]; got != "git-only" {
+		t.Fatalf("mode = %v, want git-only\nstdout:\n%s", got, out)
+	}
+	if got := parsed["fallback_reason"]; got != "remote_not_attempted" {
+		t.Errorf("fallback_reason = %v, want remote_not_attempted", got)
+	}
+	if _, ok := parsed["commit_metadata"].(map[string]any); !ok {
+		t.Errorf("commit_metadata missing or wrong shape: %s", out)
+	}
+	if got, _ := parsed["diff_excerpt"].(string); got == "" {
+		t.Errorf("diff_excerpt empty: %s", out)
+	}
+}
+
+// TestSkillsExplain_RuntimeFailureIsNonZeroAndQuiet pins the other
+// half of the contract: when the command itself can't produce
+// structured output (here, `--repo` points at a non-git path), the
+// process exits non-zero and the output does not contain cobra's
+// usage block or its `Error:` prefix.
+func TestSkillsExplain_RuntimeFailureIsNonZeroAndQuiet(t *testing.T) {
+	notARepo := t.TempDir()
+	out, err := runRoot(t, []string{"--repo", notARepo, "skills", "explain", "HEAD"})
+	if err == nil {
+		t.Fatalf("expected runtime failure for non-git repo, got nil err\nstdout:\n%s", out)
+	}
+	if strings.Contains(out, "Usage:") {
+		t.Errorf("usage block leaked despite SilenceUsage:\n%s", out)
+	}
+	if strings.HasPrefix(strings.TrimSpace(out), "Error:") {
+		t.Errorf("cobra printed its own Error: line despite SilenceErrors:\n%s", out)
+	}
+}
+
+// mustParseJSON unmarshals the captured stdout and fails the test
+// with a clear pointer if it isn't valid JSON. The skill body
+// would error out the same way; pinning this here means a future
+// change that prints anything before the JSON line gets caught.
+func mustParseJSON(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	trimmed := strings.TrimSpace(raw)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nraw:\n%s", err, raw)
+	}
+	return parsed
+}
+
+// initRepoWithCommitForTest creates a temp git repo with one
+// commit so `skills explain HEAD` resolves through the happy path.
+// Mirrors the helper in internal/explain/explain_test.go but lives
+// in this package so the command-level tests stay self-contained.
+func initRepoWithCommitForTest(t *testing.T, message, fileBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	gitCmd := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitCmd("init", ".")
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(fileBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "main.go")
+	gitCmd("commit", "-m", message)
+	return dir
 }
 
 // initBareGitRepoForTest returns a temp directory that is a real git
