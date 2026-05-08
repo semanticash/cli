@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Claude Code capture session so a fresh agent session can resume without reprinting the full context into the original chat.
+- Hidden `semantica skills handoff` backing command now shares the same writer as `semantica handoff --write`, preparing the CLI side of the `semantica-handoff` skill.
 
 ### Fixed
 

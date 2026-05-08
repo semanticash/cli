@@ -33,33 +33,42 @@ func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 			if !write {
 				return cmd.Help()
 			}
-
-			svc := handoff.NewService()
-			res, err := svc.Write(cmd.Context(), handoff.Input{
-				RepoPath: rootOpts.RepoPath,
-			})
-			switch {
-			case errors.Is(err, handoff.ErrNoSession):
-				return fmt.Errorf("no claude-code session active for this repo. " +
-					"open Claude here, work for a turn, then retry")
-			case errors.Is(err, handoff.ErrAmbiguousSession):
-				return fmt.Errorf("multiple claude-code sessions active for this repo. " +
-					"close all but one and retry")
-			case err != nil:
-				return err
-			}
-
-			out := cmd.OutOrStdout()
-			displayPath := res.Path
-			if rel, relErr := filepath.Rel(rootOpts.RepoPath, res.Path); relErr == nil && rel != "" {
-				displayPath = rel
-			}
-			_, _ = fmt.Fprintf(out, "Handoff saved to %s.\n", displayPath)
-			_, _ = fmt.Fprintln(out, "Exit this session, start a fresh one in this repo, and ask the agent to read the file above.")
-			return nil
+			return runHandoffWrite(cmd, rootOpts.RepoPath)
 		},
 	}
 
 	cmd.Flags().BoolVar(&write, "write", false, "Write a handoff bundle to .semantica/handoff.md")
 	return cmd
+}
+
+// runHandoffWrite is the shared implementation behind both
+// `semantica handoff --write` (user-facing) and
+// `semantica skills handoff` (hidden, invoked by the
+// semantica-handoff SKILL.md body). Keeping the two surfaces on the
+// same helper ensures the skill backing command and terminal command
+// return identical output and errors.
+func runHandoffWrite(cmd *cobra.Command, repoPath string) error {
+	svc := handoff.NewService()
+	res, err := svc.Write(cmd.Context(), handoff.Input{
+		RepoPath: repoPath,
+	})
+	switch {
+	case errors.Is(err, handoff.ErrNoSession):
+		return fmt.Errorf("no claude-code session active for this repo. " +
+			"open Claude here, work for a turn, then retry")
+	case errors.Is(err, handoff.ErrAmbiguousSession):
+		return fmt.Errorf("multiple claude-code sessions active for this repo. " +
+			"close all but one and retry")
+	case err != nil:
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	displayPath := res.Path
+	if rel, relErr := filepath.Rel(repoPath, res.Path); relErr == nil && rel != "" {
+		displayPath = rel
+	}
+	_, _ = fmt.Fprintf(out, "Handoff saved to %s.\n", displayPath)
+	_, _ = fmt.Fprintln(out, "Exit this session, start a fresh one in this repo, and ask the agent to read the file above.")
+	return nil
 }

@@ -236,6 +236,7 @@ semantica suggest pr # generates a pull request title and description from your 
 semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
 semantica doctor # diagnoses local binary, hook, launcher, capture, and auth health.
+semantica handoff --write # writes a redacted handoff bundle for a fresh agent session.
 ```
 
 ### Agent sessions
@@ -246,6 +247,14 @@ View tracked AI sessions and their transcripts:
 semantica sessions
 semantica sessions <session_id> --transcript
 ```
+
+Prepare a fresh-agent handoff from the active Claude Code capture session:
+
+```bash
+semantica handoff --write
+```
+
+The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat.
 
 ### Playbooks
 

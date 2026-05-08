@@ -199,6 +199,30 @@ semantica explain HEAD --generate
 
 ---
 
+## Session Handoff
+
+`semantica handoff --write` prepares a redacted markdown bundle for continuing work in a fresh agent session.
+
+### How it works
+
+The command resolves the active Claude Code capture session for the current repo, reads recent captured prompt, assistant, and file-touch context from `.semantica/lineage.db`, redacts prose fields, and writes the result to `.semantica/handoff.md`.
+
+### What you see
+
+```bash
+semantica handoff --write
+```
+
+The command prints the saved path and asks you to start a fresh session in the same repo. It does not echo the handoff bundle into the originating chat.
+
+### Caveats
+
+- The initial handoff writer supports Claude Code capture sessions.
+- If lineage data is missing or the session is not yet registered locally, Semantica writes a minimal bundle with a generic note instead of exposing raw database errors.
+- The `continue` launcher is not part of the initial writer; start the fresh agent session manually and ask it to read `.semantica/handoff.md`.
+
+---
+
 ## Commit and PR Suggestions
 
 Semantica can generate commit messages and pull request descriptions from the
