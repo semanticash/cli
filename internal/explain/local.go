@@ -42,9 +42,8 @@ func localProvenance(ctx context.Context, repoPath, commitHash string) string {
 	if err != nil {
 		return ""
 	}
-	// "no Semantica capture for this commit" is a miss, not a hit.
-	// SessionCount=0 plus AILines=0 means the commit predates
-	// Semantica or was made without an enabled hook.
+		// No linked sessions and no AI lines means local provenance
+		// has no useful record for this commit.
 	if res.SessionCount == 0 && res.AILines == 0 {
 		return ""
 	}

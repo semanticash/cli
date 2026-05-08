@@ -1,8 +1,7 @@
 // Package explain implements the backing engine for the
-// `semantica skills explain` command. It checks local lineage data
-// first and falls back to a redacted git diff when no local record
-// exists. Remote provenance can be added later without changing the
-// JSON contract.
+// `semantica skills explain` command. The layered fallback runs
+// local lineage data first, then the workspace API for connected
+// repos, then a redacted git diff when neither has a record.
 //
 // The contract: callers always get a structured Output back when
 // the engine could decide what to say. Errors from this package are
@@ -152,8 +151,15 @@ func IsSafeRef(ref string) bool {
 }
 
 // Explain resolves the requested ref and returns the best available
-// explanation shape: local provenance first, then a redacted git
-// diff fallback when local has no record.
+// explanation shape, walking the layered fallback in order:
+//
+//  1. Local lineage.db - captured prompts and attribution data on
+//     this machine.
+//  2. Remote API - workspace playbooks for commits another
+//     teammate's CLI uploaded.
+//  3. Git-only - bounded, redacted diff with a fallback_reason that
+//     tells the SKILL.md body why the upper layers did not produce
+//     content.
 func (s *Service) Explain(ctx context.Context, in Input) (*Output, error) {
 	if !IsSafeRef(in.Ref) {
 		return &Output{
@@ -178,23 +184,36 @@ func (s *Service) Explain(ctx context.Context, in Input) (*Output, error) {
 	}
 
 	if text := localProvenance(ctx, repo.Root(), hash); text != "" {
-		// Local provenance can include user-authored prose, so it
-		// gets the same fail-closed redaction treatment as git diffs.
-		redacted, err := redact.String(text)
-		if err != nil {
-			return &Output{
-				Mode:    ModeBlocked,
-				Reason:  ReasonRedactionFailed,
-				Message: "redactor failed to process the local provenance for this commit; refusing to render unredacted content",
-			}, nil
-		}
-		return &Output{
-			Mode:      ModeProvenance,
-			HumanText: redacted,
-		}, nil
+		return emitProvenance(text), nil
 	}
 
-	return gitOnly(ctx, repo, hash)
+	text, fallback := remoteProvenance(ctx, repo.Root(), hash)
+	if text != "" {
+		return emitProvenance(text), nil
+	}
+
+	return gitOnly(ctx, repo, hash, fallback)
+}
+
+// emitProvenance applies the fail-closed redaction guarantee shared
+// by both local and remote provenance text. Provenance content
+// flows from sources (commit subjects, cached playbooks, workspace
+// playbooks) that are presumed redacted at write time, but a final
+// pass at read time means the agent never sees a string we have not
+// just verified ourselves. A redactor error blocks the response.
+func emitProvenance(text string) *Output {
+	redacted, err := redact.String(text)
+	if err != nil {
+		return &Output{
+			Mode:    ModeBlocked,
+			Reason:  ReasonRedactionFailed,
+			Message: "redactor failed to process the provenance for this commit; refusing to render unredacted content",
+		}
+	}
+	return &Output{
+		Mode:      ModeProvenance,
+		HumanText: redacted,
+	}
 }
 
 // gitOnly populates commit_metadata and the redacted diff_excerpt
@@ -202,7 +221,13 @@ func (s *Service) Explain(ctx context.Context, in Input) (*Output, error) {
 // blocked rather than leaking unredacted content or masquerading as
 // not-found. Order is redact-then-truncate so a secret straddling the
 // byte cap cannot leak its prefix.
-func gitOnly(ctx context.Context, repo *git.Repo, hash string) (*Output, error) {
+//
+// The fallback parameter is stamped into the returned Output so the
+// SKILL.md body's footer accurately reflects whether a remote
+// playbook was unavailable (not_in_remote), the API was unreachable
+// (remote_unavailable), or the API was never queried
+// (remote_not_attempted).
+func gitOnly(ctx context.Context, repo *git.Repo, hash string, fallback FallbackReason) (*Output, error) {
 	meta, err := readCommitMetadata(ctx, repo, hash)
 	if err != nil {
 		return nil, fmt.Errorf("read commit metadata: %w", err)
@@ -228,11 +253,18 @@ func gitOnly(ctx context.Context, repo *git.Repo, hash string) (*Output, error) 
 		excerpt += truncatedMarker
 	}
 
+	if fallback == "" {
+		// Defensive default: callers should always supply a reason,
+		// but if one is missing we mark the response as
+		// remote_not_attempted rather than emitting an empty
+		// fallback_reason and breaking the SKILL.md footer.
+		fallback = FallbackRemoteNotAttempted
+	}
 	return &Output{
 		Mode:           ModeGitOnly,
 		CommitMetadata: meta,
 		DiffExcerpt:    excerpt,
-		FallbackReason: FallbackRemoteNotAttempted,
+		FallbackReason: fallback,
 	}, nil
 }
 
