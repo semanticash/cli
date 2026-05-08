@@ -9,17 +9,30 @@ import (
 	"testing"
 )
 
-// TestSkillsCmd_ParentAndBackingAreHidden locks the wiring invariant
-// that the `skills` parent and its backing subcommands stay out of
-// help output until `install` / `uninstall` ship.
-func TestSkillsCmd_ParentAndBackingAreHidden(t *testing.T) {
+// TestSkillsCmd_VisibilityWiring locks the wiring invariant for
+// the `skills` subtree once install/uninstall ship: the parent and
+// install/uninstall are visible to terminal users, while the
+// per-skill backing commands stay hidden because SKILL.md bodies
+// invoke them directly.
+func TestSkillsCmd_VisibilityWiring(t *testing.T) {
 	root := NewRootCmd()
+
 	skills, _, err := root.Find([]string{"skills"})
 	if err != nil {
 		t.Fatalf("skills command not found on root: %v", err)
 	}
-	if !skills.Hidden {
-		t.Errorf("skills parent should be Hidden until install/uninstall ship")
+	if skills.Hidden {
+		t.Errorf("skills parent should be visible now that install/uninstall ship")
+	}
+
+	for _, name := range []string{"install", "uninstall"} {
+		c, _, err := root.Find([]string{"skills", name})
+		if err != nil {
+			t.Fatalf("skills %s not found: %v", name, err)
+		}
+		if c.Hidden {
+			t.Errorf("skills %s should be visible to terminal users", name)
+		}
 	}
 
 	handoff, _, err := root.Find([]string{"skills", "handoff"})
@@ -27,7 +40,7 @@ func TestSkillsCmd_ParentAndBackingAreHidden(t *testing.T) {
 		t.Fatalf("skills handoff command not found: %v", err)
 	}
 	if !handoff.Hidden {
-		t.Errorf("skills handoff backing command must be Hidden")
+		t.Errorf("skills handoff backing command must remain Hidden")
 	}
 }
 
