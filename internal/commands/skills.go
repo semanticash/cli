@@ -13,7 +13,7 @@ import (
 
 // NewSkillsCmd builds the `semantica skills` command tree. The
 // visible subcommands (`install`, `uninstall`) provision and remove
-// SKILL.md files at the agent's user-global skills directory; the
+// SKILL.md files in detected agent skills directories; the
 // hidden subcommands (`handoff`, plus future skill-specific commands)
 // back the SKILL.md bodies themselves. Hidden subcommands stay
 // reachable: cobra's hidden flag only affects help output, so SKILL.md
@@ -32,15 +32,14 @@ func NewSkillsCmd(rootOpts *RootOptions) *cobra.Command {
 
 // newSkillsInstallCmd wires `semantica skills install --source
 // <path>`. This release supports local source directories only;
-// release tarball or git-clone sources can be added later. The install
-// targets the Claude Code user-global skills directory; multi-agent
-// targeting can be added after other loaders are verified.
+// release tarball or git-clone sources can be added later. The
+// install targets every detected supported agent.
 func newSkillsInstallCmd() *cobra.Command {
 	var source string
 	var force bool
 	cmd := &cobra.Command{
 		Use:           "install",
-		Short:         "Install Semantica skill files into the user-global skills directory",
+		Short:         "Install Semantica skill files into detected agent skills directories",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -66,15 +65,15 @@ func newSkillsInstallCmd() *cobra.Command {
 }
 
 // newSkillsUninstallCmd wires `semantica skills uninstall`. It
-// scans the user-global skills directory for Semantica-managed
-// files and removes the ones whose hash matches what was installed.
-// Edited Semantica-managed files are preserved unless --force is set.
+// scans detected agent skills directories for Semantica-managed files
+// and removes the ones whose hash matches what was installed. Edited
+// Semantica-managed files are preserved unless --force is set.
 // Marker-missing files are always preserved.
 func newSkillsUninstallCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:           "uninstall",
-		Short:         "Remove Semantica skill files from the user-global skills directory",
+		Short:         "Remove Semantica skill files from detected agent skills directories",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -91,9 +90,10 @@ func newSkillsUninstallCmd() *cobra.Command {
 	return cmd
 }
 
-// renderSkillsReport prints a deterministic per-skill summary so a
-// terminal user (and any CI log) can see exactly what changed.
-// Tallies appear at the bottom for at-a-glance.
+// renderSkillsReport prints a deterministic per-(skill, target)
+// summary so a terminal user (and any CI log) can see exactly
+// what changed for which agent. Tallies appear at the bottom for
+// at-a-glance.
 func renderSkillsReport(cmd *cobra.Command, rep *skills.Report, verb string) {
 	out := cmd.OutOrStdout()
 	if len(rep.Actions) == 0 {
@@ -102,13 +102,17 @@ func renderSkillsReport(cmd *cobra.Command, rep *skills.Report, verb string) {
 	}
 	tally := map[skills.ActionKind]int{}
 	for _, a := range rep.Actions {
+		label := a.Skill
+		if a.Target != "" {
+			label = a.Skill + " (" + a.Target + ")"
+		}
 		switch a.Action {
 		case skills.ActionSkipped:
-			_, _ = fmt.Fprintf(out, "  skipped  %s - %s\n", a.Skill, a.Reason)
+			_, _ = fmt.Fprintf(out, "  skipped  %s - %s\n", label, a.Reason)
 		case skills.ActionForced:
-			_, _ = fmt.Fprintf(out, "  forced   %s - %s\n", a.Skill, a.Reason)
+			_, _ = fmt.Fprintf(out, "  forced   %s - %s\n", label, a.Reason)
 		default:
-			_, _ = fmt.Fprintf(out, "  %-8s %s\n", string(a.Action), a.Skill)
+			_, _ = fmt.Fprintf(out, "  %-8s %s\n", string(a.Action), label)
 		}
 		tally[a.Action]++
 	}

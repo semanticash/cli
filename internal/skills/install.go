@@ -12,8 +12,32 @@ import (
 
 // ClaudeSkillsDirEnv lets tests override the Claude Code skills
 // root without redirecting the entire user home. Set it to a temp
-// path to exercise install / uninstall flows hermetically.
+// path to exercise install / uninstall flows hermetically. A
+// set-but-empty value explicitly disables this agent target (used
+// by tests that want to exercise only the Cursor path).
 const ClaudeSkillsDirEnv = "SEMANTICA_CLAUDE_SKILLS_DIR"
+
+// CursorSkillsDirEnv mirrors ClaudeSkillsDirEnv for Cursor's
+// user-global skills directory (`~/.cursor/skills`). Cursor's
+// loader uses the same SKILL.md-with-frontmatter format Claude
+// Code does, so the install / uninstall logic is shared.
+const CursorSkillsDirEnv = "SEMANTICA_CURSOR_SKILLS_DIR"
+
+// GeminiSkillsDirEnv mirrors the same pattern for Gemini CLI's
+// user-global skills directory (`~/.gemini/skills`). See
+// geminicli.com/docs/cli/skills.
+const GeminiSkillsDirEnv = "SEMANTICA_GEMINI_SKILLS_DIR"
+
+// CopilotSkillsDirEnv mirrors the same pattern for GitHub
+// Copilot CLI's user-global skills directory (`~/.copilot/skills`).
+// See docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills.
+const CopilotSkillsDirEnv = "SEMANTICA_COPILOT_SKILLS_DIR"
+
+// KiroSkillsDirEnv mirrors the same pattern for Kiro's
+// user-global skills directory (`~/.kiro/skills`). The path is
+// shared by Kiro IDE and Kiro CLI; both load skills from the same
+// location. See kiro.dev/docs/cli/skills.
+const KiroSkillsDirEnv = "SEMANTICA_KIRO_SKILLS_DIR"
 
 // SkillFileName is the fixed name Anthropic Agent Skills loaders
 // expect inside each skill subdirectory.
@@ -85,9 +109,13 @@ const (
 	ActionForced    ActionKind = "forced"
 )
 
-// SkillAction is one row in an Install or Uninstall report.
+// SkillAction is one row in an Install or Uninstall report. The
+// same skill can produce multiple rows when more than one agent
+// target is detected (e.g., a user with both Claude Code and
+// Cursor installed).
 type SkillAction struct {
 	Skill  string
+	Target string // "claude-code", "cursor"
 	Path   string
 	Action ActionKind
 	Reason string // populated for ActionSkipped / ActionForced
@@ -108,15 +136,24 @@ type InstallOptions struct {
 	Force      bool
 }
 
+// ErrNoAgentsDetected indicates the install command found no agent
+// home directories (`~/.claude`, `~/.cursor`) and no env-override
+// targets. The skill files have nowhere to land, so the command
+// surfaces a clear error rather than creating directories under
+// home dirs the user doesn't actually have.
+var ErrNoAgentsDetected = errors.New("no supported agent skills directory found")
+
 // Install walks the source tree, stamps each SKILL.md, and writes
-// the result to the Claude Code user-global skills directory. The
+// the result to every detected agent target (Claude Code at
+// `~/.claude/skills/` and/or Cursor at `~/.cursor/skills/`). The
 // function is idempotent for files that pass Verify against the
 // existing destination: re-running with the same CLI version is a
 // no-op write of identical bytes; re-running after a CLI version
 // bump rewrites with the new version stamped in. Files that have
 // been edited since install, or that exist at the destination
 // without the Semantica ownership marker, are refused unless
-// Force is set.
+// Force is set. Each (skill, target) pair produces its own row in
+// the returned report.
 func Install(opts InstallOptions) (*Report, error) {
 	if opts.Source == "" {
 		return nil, ErrSourceMissing
@@ -129,9 +166,12 @@ func Install(opts InstallOptions) (*Report, error) {
 		return nil, fmt.Errorf("%w: %s", ErrSourceMissing, opts.Source)
 	}
 
-	dstRoot, err := claudeSkillsDir()
+	targets, err := agentTargets()
 	if err != nil {
 		return nil, err
+	}
+	if len(targets) == 0 {
+		return nil, ErrNoAgentsDetected
 	}
 
 	entries, err := os.ReadDir(opts.Source)
@@ -152,11 +192,13 @@ func Install(opts InstallOptions) (*Report, error) {
 		}
 		found++
 
-		action, actErr := installOne(opts, dirName, srcPath, dstRoot)
-		if actErr != nil {
-			return nil, fmt.Errorf("install %s: %w", dirName, actErr)
+		for _, target := range targets {
+			action, actErr := installOne(opts, dirName, srcPath, target)
+			if actErr != nil {
+				return nil, fmt.Errorf("install %s into %s: %w", dirName, target.Name, actErr)
+			}
+			rep.Actions = append(rep.Actions, action)
 		}
-		rep.Actions = append(rep.Actions, action)
 	}
 
 	if found == 0 {
@@ -167,11 +209,11 @@ func Install(opts InstallOptions) (*Report, error) {
 }
 
 // installOne performs the integrity checks and write for a single
-// skill. The directory name must match the frontmatter name;
-// destination paths are derived from the validated frontmatter
-// name only, so an attacker-controlled directory name cannot push
-// content outside the skills root.
-func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAction, error) {
+// skill into a single agent target. The directory name must match
+// the frontmatter name; destination paths are derived from the
+// validated frontmatter name only, so an attacker-controlled
+// directory name cannot push content outside the skills root.
+func installOne(opts InstallOptions, dirName, srcPath string, target agentTarget) (SkillAction, error) {
 	src, err := os.ReadFile(srcPath)
 	if err != nil {
 		return SkillAction{}, fmt.Errorf("read source: %w", err)
@@ -197,7 +239,7 @@ func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAct
 			ErrSkillNameMismatch, dirName, name)
 	}
 
-	dstDir := filepath.Join(dstRoot, name)
+	dstDir := filepath.Join(target.Dir, name)
 	dstPath := filepath.Join(dstDir, SkillFileName)
 
 	existing, statErr := os.ReadFile(dstPath)
@@ -213,6 +255,7 @@ func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAct
 			if !opts.Force {
 				return SkillAction{
 					Skill:  name,
+					Target: target.Name,
 					Path:   dstPath,
 					Action: ActionSkipped,
 					Reason: "destination SKILL.md is not Semantica-managed; use --force to overwrite",
@@ -224,6 +267,7 @@ func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAct
 			if !opts.Force {
 				return SkillAction{
 					Skill:  name,
+					Target: target.Name,
 					Path:   dstPath,
 					Action: ActionSkipped,
 					Reason: "installed SKILL.md has been edited since install; use --force to overwrite",
@@ -240,16 +284,17 @@ func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAct
 	}
 
 	if existing == nil {
-		return SkillAction{Skill: name, Path: dstPath, Action: ActionInstalled}, nil
+		return SkillAction{Skill: name, Target: target.Name, Path: dstPath, Action: ActionInstalled}, nil
 	}
-	return SkillAction{Skill: name, Path: dstPath, Action: ActionUpdated}, nil
+	return SkillAction{Skill: name, Target: target.Name, Path: dstPath, Action: ActionUpdated}, nil
 }
 
-// Uninstall scans the Claude Code user-global skills directory and
-// removes Semantica-installed SKILL.md files. Discovery is scoped
-// to directories whose name starts with SemanticaSkillNamePrefix.
-// third-party or user-authored skills (e.g. `~/.claude/skills/review/`)
-// are out of scope and never touched, regardless of the force flag.
+// Uninstall scans every detected agent's user-global skills
+// directory and removes Semantica-installed SKILL.md files.
+// Discovery is scoped to directories whose name starts with
+// SemanticaSkillNamePrefix - third-party or user-authored skills
+// (e.g. `~/.claude/skills/review/`) are out of scope and never
+// touched, regardless of the force flag.
 //
 // Within scope:
 //   - hash matches stored value: removed (ActionRemoved).
@@ -264,19 +309,34 @@ func installOne(opts InstallOptions, dirName, srcPath, dstRoot string) (SkillAct
 // is gone, but only when the directory ends up empty so user-added
 // sibling files are preserved.
 func Uninstall(force bool) (*Report, error) {
-	dstRoot, err := claudeSkillsDir()
+	targets, err := agentTargets()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dstRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return &Report{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read skills dir: %w", err)
-	}
 
 	var rep Report
+	for _, target := range targets {
+		if err := uninstallOne(target, force, &rep); err != nil {
+			return nil, err
+		}
+	}
+	sortReport(&rep)
+	return &rep, nil
+}
+
+// uninstallOne walks one agent target's skills directory and
+// appends per-file actions to rep. A nonexistent skills directory
+// is treated as "nothing to remove" (no error), so a fresh user
+// who has never installed sees an empty report.
+func uninstallOne(target agentTarget, force bool, rep *Report) error {
+	entries, err := os.ReadDir(target.Dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read skills dir for %s: %w", target.Name, err)
+	}
+
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -293,13 +353,13 @@ func Uninstall(force bool) (*Report, error) {
 		if !safeSkillName.MatchString(name) {
 			continue
 		}
-		path := filepath.Join(dstRoot, name, SkillFileName)
+		path := filepath.Join(target.Dir, name, SkillFileName)
 		body, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return fmt.Errorf("read %s: %w", path, err)
 		}
 
 		ok, vErr := Verify(body)
@@ -310,16 +370,16 @@ func Uninstall(force bool) (*Report, error) {
 			// here themselves; --force should never let us delete
 			// content we never marked as ours.
 			rep.Actions = append(rep.Actions, SkillAction{
-				Skill: name, Path: path, Action: ActionSkipped,
+				Skill: name, Target: target.Name, Path: path, Action: ActionSkipped,
 				Reason: "not Semantica-managed (marker missing); refusing to remove",
 			})
 			continue
 		case vErr != nil:
-			return nil, fmt.Errorf("verify %s: %w", path, vErr)
+			return fmt.Errorf("verify %s: %w", path, vErr)
 		case !ok:
 			if !force {
 				rep.Actions = append(rep.Actions, SkillAction{
-					Skill: name, Path: path, Action: ActionSkipped,
+					Skill: name, Target: target.Name, Path: path, Action: ActionSkipped,
 					Reason: "edited since install; use --force to remove",
 				})
 				continue
@@ -327,14 +387,14 @@ func Uninstall(force bool) (*Report, error) {
 		}
 
 		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("remove %s: %w", path, err)
+			return fmt.Errorf("remove %s: %w", path, err)
 		}
 		// Best-effort: drop the skill subdirectory if it is now
 		// empty. Failing here is non-fatal because the SKILL.md is
 		// already gone.
-		_ = os.Remove(filepath.Join(dstRoot, name))
+		_ = os.Remove(filepath.Join(target.Dir, name))
 
-		action := SkillAction{Skill: name, Path: path, Action: ActionRemoved}
+		action := SkillAction{Skill: name, Target: target.Name, Path: path, Action: ActionRemoved}
 		if !ok {
 			// Hash-mismatch removal is the only --force path now,
 			// since the marker-missing case never reaches here.
@@ -343,28 +403,77 @@ func Uninstall(force bool) (*Report, error) {
 		}
 		rep.Actions = append(rep.Actions, action)
 	}
-
-	sortReport(&rep)
-	return &rep, nil
+	return nil
 }
 
-// claudeSkillsDir resolves to "$HOME/.claude/skills" with an env
-// override for tests. Claude Code is the only loader supported in
-// this release; other agents can be added after their loader paths
-// are verified.
-func claudeSkillsDir() (string, error) {
-	if override := strings.TrimSpace(os.Getenv(ClaudeSkillsDirEnv)); override != "" {
-		return override, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".claude", "skills"), nil
+// agentTarget is one agent's user-global skills directory plus the
+// short name install/uninstall reports use to identify it.
+type agentTarget struct {
+	Name string // "claude-code", "cursor"
+	Dir  string // absolute path to the skills root
 }
 
-// sortReport orders actions by skill name so the command layer's
-// output is deterministic regardless of directory iteration order.
+// agentTargets returns the set of agent skills directories install
+// and uninstall should operate on, in stable order. An agent is
+// included when:
+//
+//   - its env override is set to a non-empty path (used by tests
+//     and power users), OR
+//   - the env override is unset and the agent's home directory
+//     (`~/.claude`, `~/.cursor`) already exists on disk.
+//
+// A set-but-empty env override explicitly excludes the agent
+// (lets tests exercise one target in isolation without leaking
+// onto the developer's real home directory). When no agents are
+// detected, the install command surfaces a clear error rather
+// than creating directories under home dirs that don't exist.
+func agentTargets() ([]agentTarget, error) {
+	home, homeErr := os.UserHomeDir()
+	resolve := func(envVar, parentDir string) (string, bool) {
+		if val, set := os.LookupEnv(envVar); set {
+			trimmed := strings.TrimSpace(val)
+			if trimmed == "" {
+				return "", false
+			}
+			return trimmed, true
+		}
+		if homeErr != nil {
+			return "", false
+		}
+		parent := filepath.Join(home, parentDir)
+		if _, err := os.Stat(parent); err != nil {
+			return "", false
+		}
+		return filepath.Join(parent, "skills"), true
+	}
+
+	var targets []agentTarget
+	if dir, ok := resolve(ClaudeSkillsDirEnv, ".claude"); ok {
+		targets = append(targets, agentTarget{Name: "claude-code", Dir: dir})
+	}
+	if dir, ok := resolve(CursorSkillsDirEnv, ".cursor"); ok {
+		targets = append(targets, agentTarget{Name: "cursor", Dir: dir})
+	}
+	if dir, ok := resolve(GeminiSkillsDirEnv, ".gemini"); ok {
+		targets = append(targets, agentTarget{Name: "gemini-cli", Dir: dir})
+	}
+	if dir, ok := resolve(CopilotSkillsDirEnv, ".copilot"); ok {
+		targets = append(targets, agentTarget{Name: "copilot", Dir: dir})
+	}
+	if dir, ok := resolve(KiroSkillsDirEnv, ".kiro"); ok {
+		targets = append(targets, agentTarget{Name: "kiro", Dir: dir})
+	}
+	return targets, nil
+}
+
+// sortReport orders actions by (skill, target) so the command
+// layer's output is deterministic regardless of directory
+// iteration or target detection order.
 func sortReport(r *Report) {
-	sort.Slice(r.Actions, func(i, j int) bool { return r.Actions[i].Skill < r.Actions[j].Skill })
+	sort.Slice(r.Actions, func(i, j int) bool {
+		if r.Actions[i].Skill != r.Actions[j].Skill {
+			return r.Actions[i].Skill < r.Actions[j].Skill
+		}
+		return r.Actions[i].Target < r.Actions[j].Target
+	})
 }

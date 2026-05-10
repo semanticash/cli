@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session so a fresh agent session can resume without reprinting the full context into the original chat.
+- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session, including recent user prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context for a fresh agent session.
 - Hidden `semantica skills handoff` backing command now shares the same writer as `semantica handoff --write`, preparing the CLI side of the `semantica-handoff` skill.
-- `semantica skills install --source <path>` and `semantica skills uninstall` install local Semantica skill sources with versioned content hashes; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed skills.
+- `semantica skills install --source <path>` and `semantica skills uninstall` install local Semantica skill sources into detected Claude Code and Cursor skill directories with versioned content hashes; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed skills.
 - Hidden `semantica skills explain <ref>` backing command now emits structured JSON for skill integrations, using local provenance when available, workspace API playbooks for connected repos, and a redacted git diff fallback otherwise.
 
 ### Fixed

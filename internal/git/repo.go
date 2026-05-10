@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/platform"
 )
@@ -165,6 +166,68 @@ func (r *Repo) IsDirty(ctx context.Context) (bool, error) {
 	}
 
 	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// StatusShort returns `git status --short` output (one line per
+// file, e.g. " M path/to/file"). Used by the handoff bundle to
+// summarize uncommitted changes a fresh agent session needs to
+// know about.
+func (r *Repo) StatusShort(ctx context.Context) (string, error) {
+	cmd := r.gitCmd(ctx, "status", "--short", "--no-renames")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return "", fmt.Errorf("git status --short failed: %w: %s", err, string(ee.Stderr))
+		}
+		return "", fmt.Errorf("git status --short failed: %w", err)
+	}
+	return cleanGitOutput(out), nil
+}
+
+// LogSince returns `git log --since=<unix-ts> --pretty=...` output as
+// a list of "<short-hash> <subject>" lines. Capped at limit entries.
+// Used by the handoff bundle to surface commits that landed during
+// the session being handed off.
+func (r *Repo) LogSince(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	args := []string{
+		"log",
+		fmt.Sprintf("--since=%d", since.Unix()),
+		"--max-count", fmt.Sprintf("%d", limit),
+		"--pretty=format:%h %s",
+		"--no-color",
+	}
+	cmd := r.gitCmd(ctx, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, fmt.Errorf("git log failed: %w: %s", err, string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git log failed: %w", err)
+	}
+	cleaned := cleanGitOutput(out)
+	if cleaned == "" {
+		return nil, nil
+	}
+	return strings.Split(cleaned, "\n"), nil
+}
+
+// DiffWorkingTree returns the combined unstaged + staged diff
+// against HEAD. Used by the handoff bundle to surface uncommitted
+// changes; callers redact the result before including it in any
+// agent-visible payload.
+func (r *Repo) DiffWorkingTree(ctx context.Context) ([]byte, error) {
+	cmd := r.gitCmd(ctx, "diff", "--no-color", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, fmt.Errorf("git diff HEAD failed: %w: %s", err, string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git diff HEAD failed: %w", err)
+	}
+	return out, nil
 }
 
 // ResolveRef resolves a git ref (HEAD, branch name, tag, commit prefix) to a

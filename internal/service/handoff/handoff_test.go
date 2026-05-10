@@ -157,6 +157,166 @@ func TestExtractLastPrompt_TruncatesAtCap(t *testing.T) {
 	}
 }
 
+// TestExtractRecentUserPrompts_ChronologicalOrderAndCap covers the
+// recent-prompt contract: walk the event slice for up to N user
+// prompts and return them oldest-first so the rendered list reads as
+// a session arc. Events come in descending ts order from the sqlc
+// query.
+func TestExtractRecentUserPrompts_ChronologicalOrderAndCap(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		userEvent("most recent prompt"),
+		assistantEvent("answer 5"),
+		userEvent("fourth prompt"),
+		assistantEvent("answer 4"),
+		userEvent("third prompt"),
+		assistantEvent("answer 3"),
+		userEvent("second prompt"),
+		assistantEvent("answer 2"),
+		userEvent("first prompt"),
+		assistantEvent("answer 1"),
+		userEvent("ancient prompt that should be cut"),
+	}
+	got := extractRecentUserPrompts(events, 5)
+	want := []string{
+		"first prompt",
+		"second prompt",
+		"third prompt",
+		"fourth prompt",
+		"most recent prompt",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d prompts, want %d:\n%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestExtractRecentUserPrompts_FewerThanCap(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		userEvent("two"),
+		userEvent("one"),
+	}
+	got := extractRecentUserPrompts(events, 5)
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("got %v, want [one two]", got)
+	}
+}
+
+func TestExtractRecentUserPrompts_SkipsEmptyAndNonUserEvents(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		assistantEvent("not user"),
+		{}, // role unset
+		userEvent(""),
+		userEvent("real prompt"),
+	}
+	got := extractRecentUserPrompts(events, 5)
+	if len(got) != 1 || got[0] != "real prompt" {
+		t.Errorf("got %v, want [real prompt]", got)
+	}
+}
+
+// TestExtractRecentUserPrompts_FiltersToolResults guards the
+// signal-quality fix: Claude Code emits tool_result events with
+// role="user" because those are user-side responses to assistant
+// tool calls. They look like prompts to a naive role-only filter
+// but are actually bash/edit/read output. Including them in the
+// bundle pollutes the "recent prompts" section with shell stdout
+// the next agent doesn't care about.
+func TestExtractRecentUserPrompts_FiltersToolResults(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		userEvent("real prompt 2"),
+		{
+			Role:    sql.NullString{Valid: true, String: "user"},
+			Kind:    "tool_result",
+			Summary: sql.NullString{Valid: true, String: "File updated successfully."},
+		},
+		{
+			Role:    sql.NullString{Valid: true, String: "user"},
+			Kind:    "tool_result",
+			Summary: sql.NullString{Valid: true, String: "$ ls -la\\nfoo bar"},
+		},
+		userEvent("real prompt 1"),
+	}
+	got := extractRecentUserPrompts(events, 5)
+	if len(got) != 2 || got[0] != "real prompt 1" || got[1] != "real prompt 2" {
+		t.Errorf("got %v, want [real prompt 1, real prompt 2]", got)
+	}
+}
+
+func TestExtractRecentUserPrompts_TruncatesEachEntry(t *testing.T) {
+	long := strings.Repeat("x", maxPromptChars+50)
+	events := []sqldb.AgentEvent{userEvent(long)}
+	got := extractRecentUserPrompts(events, 5)
+	if len(got) != 1 {
+		t.Fatalf("got %d prompts, want 1", len(got))
+	}
+	if !strings.HasSuffix(got[0], "...") {
+		t.Errorf("expected ellipsis suffix on truncated prompt: %q", got[0])
+	}
+}
+
+// TestSessionStartTime_PicksEarliestNonZeroTimestamp confirms the
+// session-start anchor is the oldest event in the bundle, used as
+// `--since` for the recent-commits git query.
+func TestSessionStartTime_PicksEarliestNonZeroTimestamp(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		{Ts: 30_000},
+		{Ts: 10_000},
+		{Ts: 20_000},
+	}
+	got := sessionStartTime(events)
+	if got.UnixMilli() != 10_000 {
+		t.Errorf("got %d, want 10_000", got.UnixMilli())
+	}
+}
+
+func TestSessionStartTime_EmptySliceReturnsZero(t *testing.T) {
+	got := sessionStartTime(nil)
+	if !got.IsZero() {
+		t.Errorf("expected zero time, got %v", got)
+	}
+}
+
+// TestSessionStartTime_OldestEventHasZeroTimestamp is the
+// regression for the seed-from-zero bug. The query returns events
+// in descending ts order; the oldest entry is at the slice's tail.
+// If that tail entry has Ts == 0 (unset / stripped during capture),
+// older code seeded earliest=0 and the `e.Ts < earliest` test
+// could never replace it (Ts is non-negative), so the function
+// would falsely return time.Time{} even when other events in the
+// slice had perfectly good positive timestamps.
+func TestSessionStartTime_OldestEventHasZeroTimestamp(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		{Ts: 30_000},
+		{Ts: 10_000},
+		{Ts: 20_000},
+		{Ts: 0}, // stripped or unset
+	}
+	got := sessionStartTime(events)
+	if got.UnixMilli() != 10_000 {
+		t.Errorf("got %d, want 10_000 (the smallest positive ts)", got.UnixMilli())
+	}
+}
+
+// TestSessionStartTime_AllZeroTimestampsReturnsZero is the natural
+// counterpart: when no event has a positive ts, there's no anchor
+// for `git log --since`, so the function returns zero and the
+// caller skips the "recent commits in this session" section
+// entirely rather than emitting a meaningless `--since=0` query.
+func TestSessionStartTime_AllZeroTimestampsReturnsZero(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		{Ts: 0},
+		{Ts: 0},
+	}
+	got := sessionStartTime(events)
+	if !got.IsZero() {
+		t.Errorf("expected zero time when no positive ts present, got %v", got)
+	}
+}
+
 func TestRedactString_EmptyStaysEmpty(t *testing.T) {
 	if got := redactString(""); got != "" {
 		t.Errorf("got %q, want empty", got)
@@ -173,12 +333,12 @@ func TestRedactString_HappyPathPassesThrough(t *testing.T) {
 
 func TestRenderBundle_Headline(t *testing.T) {
 	body := renderBundle(bundleView{
-		Repo:        "myrepo",
-		Branch:      "main",
-		Provider:    "claude-code",
-		SessionID:   "sess-abc123",
-		GeneratedAt: "2026-05-08T08:30:00Z",
-		LastPrompt:  "fix the auth bug",
+		Repo:          "myrepo",
+		Branch:        "main",
+		Provider:      "claude-code",
+		SessionID:     "sess-abc123",
+		GeneratedAt:   "2026-05-08T08:30:00Z",
+		RecentPrompts: []string{"first ask", "fix the auth bug"},
 		FileTouches: []fileTouch{
 			{Path: "src/auth.go", Summary: "Edit x2", Total: 2},
 		},
@@ -192,11 +352,71 @@ func TestRenderBundle_Headline(t *testing.T) {
 		"## Files touched this session",
 		"src/auth.go (Edit x2)",
 		"## Where I left off",
-		"fix the auth bug",
+		"Recent user prompts",
+		"- first ask",
+		"- fix the auth bug",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered bundle missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+}
+
+// TestRenderBundle_RecentCommitsAndUncommittedSections covers the
+// recent-commit and uncommitted-work sections.
+func TestRenderBundle_RecentCommitsAndUncommittedSections(t *testing.T) {
+	body := renderBundle(bundleView{
+		Repo:        "myrepo",
+		Branch:      "feat/x",
+		Provider:    "claude-code",
+		SessionID:   "sess-x",
+		GeneratedAt: "2026-05-10T08:30:00Z",
+		RecentCommits: []string{
+			"abcd123 feat: add handler",
+			"abce456 chore: lint fixes",
+		},
+		UncommittedList: " M src/auth.go\n?? src/auth_test.go",
+		UncommittedDiff: "@@ -1 +1,2 @@\n-old\n+new\n+more",
+	})
+	out := string(body)
+
+	for _, want := range []string{
+		"## Recent commits during this session",
+		"- abcd123 feat: add handler",
+		"- abce456 chore: lint fixes",
+		"## Working tree changes (uncommitted)",
+		"Files:",
+		" M src/auth.go",
+		"?? src/auth_test.go",
+		"Diff (redacted, bounded):",
+		"```diff",
+		"+new",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered bundle missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderBundle_UncommittedListWithoutDiffStillRenders covers
+// the redaction-failed-on-diff branch in readUncommittedWork: the
+// file list should still appear so the next session knows what
+// changed, even if the diff itself was dropped.
+func TestRenderBundle_UncommittedListWithoutDiffStillRenders(t *testing.T) {
+	body := renderBundle(bundleView{
+		Repo:            "myrepo",
+		Provider:        "claude-code",
+		SessionID:       "sess-x",
+		GeneratedAt:     "2026-05-10T08:30:00Z",
+		UncommittedList: " M src/auth.go",
+		// UncommittedDiff intentionally empty (redaction failed).
+	})
+	out := string(body)
+	if !strings.Contains(out, " M src/auth.go") {
+		t.Errorf("file list missing when diff redaction dropped diff:\n%s", out)
+	}
+	if strings.Contains(out, "Diff (redacted, bounded):") {
+		t.Errorf("diff section should be omitted when diff is empty:\n%s", out)
 	}
 }
 

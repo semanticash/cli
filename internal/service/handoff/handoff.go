@@ -296,12 +296,86 @@ func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureSt
 		return renderBundle(view), nil
 	}
 
-	view.LastPrompt = redactString(extractLastPrompt(events))
+	prompts := extractRecentUserPrompts(events, recentPromptsLimit)
+	for i, p := range prompts {
+		prompts[i] = redactString(p)
+	}
+	view.RecentPrompts = prompts
 	view.LastAssistant = redactString(extractLastAssistant(events))
 	view.FileTouches = aggregateFileTouches(events)
 
+	// Working-tree state and recent-commit context: best-effort. A
+	// failure on either (broken git, detached state, no HEAD) leaves
+	// the section empty rather than blocking the bundle.
+	if commits, gErr := readRecentCommits(ctx, repoPath, sessionStartTime(events)); gErr == nil {
+		view.RecentCommits = commits
+	}
+	statusList, diffText := readUncommittedWork(ctx, repoPath)
+	view.UncommittedList = statusList
+	view.UncommittedDiff = diffText
+
 	return renderBundle(view), nil
 }
+
+// recentPromptsLimit caps how many of the session's most-recent
+// user prompts the bundle surfaces. Five fits in a typical bundle
+// without bloating the response, while giving the next session
+// enough context to reconstruct the arc of the work.
+const recentPromptsLimit = 5
+
+// recentCommitsLimit caps the commit list shown in the bundle.
+// Keeps the section bounded for noisy sessions.
+const recentCommitsLimit = 10
+
+// readRecentCommits returns commits landed since the session
+// started, capped at recentCommitsLimit. Returns nil on any error
+// (broken git, no HEAD, no commits in window) so the bundle still
+// renders without the section.
+func readRecentCommits(ctx context.Context, repoPath string, sessionStart time.Time) ([]string, error) {
+	if sessionStart.IsZero() {
+		return nil, nil
+	}
+	repo, err := git.OpenRepo(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return repo.LogSince(ctx, sessionStart, recentCommitsLimit)
+}
+
+// readUncommittedWork returns the `git status --short` file list and
+// a bounded, redacted `git diff HEAD` excerpt. Either may be empty
+// (clean tree or git error). Redaction failure clears the diff but
+// preserves the path-only file list, which is useful local repo
+// context for the next agent session.
+func readUncommittedWork(ctx context.Context, repoPath string) (statusList, diffText string) {
+	repo, err := git.OpenRepo(repoPath)
+	if err != nil {
+		return "", ""
+	}
+	statusList, _ = repo.StatusShort(ctx)
+	if statusList == "" {
+		return "", ""
+	}
+	rawDiff, err := repo.DiffWorkingTree(ctx)
+	if err != nil {
+		return statusList, ""
+	}
+	redacted, err := redact.Bytes(rawDiff)
+	if err != nil {
+		// Fail-closed on the diff: drop it, keep the file list.
+		return statusList, ""
+	}
+	if len(redacted) > maxUncommittedDiffBytes {
+		return statusList, string(redacted[:maxUncommittedDiffBytes]) + "\n... (truncated)"
+	}
+	return statusList, string(redacted)
+}
+
+// maxUncommittedDiffBytes caps the redacted working-tree diff so a
+// session with a huge uncommitted refactor still produces a bundle
+// the next agent can read without choking on a 10MB diff. Same
+// rationale and same value as explain's diff bound.
+const maxUncommittedDiffBytes = 12_000
 
 // matchSessionByProvider picks the agent_sessions row whose provider
 // matches the capture state's provider via the alias set. Returns
@@ -388,6 +462,75 @@ func extractLastPrompt(events []sqldb.AgentEvent) string {
 		}
 	}
 	return ""
+}
+
+// extractRecentUserPrompts walks the (descending-ts) events slice
+// for up to n user-role prompts, returning them oldest-first so the
+// rendered list reads as a natural session arc. The single-prompt
+// view that the bundle used to surface only shows the latest meta
+// turn (often "handoff please"); a fresh agent reading the bundle
+// gets much more useful context from "the last 5 things you asked"
+// than from "the last 1 thing you asked."
+//
+// Tool-result events also carry role="user" because the Claude Code
+// transcript model treats them as user-side responses to assistant
+// tool calls. Those are explicitly filtered out here: what we want
+// in the bundle is what the human typed, not the bash/edit/read
+// outputs the agent received back.
+func extractRecentUserPrompts(events []sqldb.AgentEvent, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	var out []string
+	for _, e := range events {
+		if !e.Role.Valid || e.Role.String != "user" {
+			continue
+		}
+		if e.Kind == "tool_result" {
+			continue
+		}
+		if !e.Summary.Valid || e.Summary.String == "" {
+			continue
+		}
+		out = append(out, truncateRunes(e.Summary.String, maxPromptChars))
+		if len(out) >= n {
+			break
+		}
+	}
+	// Reverse so the rendered list reads chronologically (oldest first).
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// sessionStartTime returns the timestamp of the earliest event in
+// the slice with a positive Ts, or time.Time{} when no event has a
+// usable timestamp. Used as the `--since` anchor for `git log` so
+// the "recent commits in this session" section only surfaces
+// commits actually related to the session being handed off.
+//
+// Events with Ts == 0 (unset, or stripped during capture) are
+// skipped entirely. Seeding from any element's Ts up front would
+// risk anchoring on a zero, after which `e.Ts < earliest` never
+// fires (Ts is non-negative) and the function would return zero
+// even when later entries carry valid positive timestamps.
+func sessionStartTime(events []sqldb.AgentEvent) time.Time {
+	var earliest int64
+	found := false
+	for _, e := range events {
+		if e.Ts <= 0 {
+			continue
+		}
+		if !found || e.Ts < earliest {
+			earliest = e.Ts
+			found = true
+		}
+	}
+	if !found {
+		return time.Time{}
+	}
+	return time.UnixMilli(earliest)
 }
 
 // extractLastAssistant returns the most recent assistant-role event's
@@ -507,15 +650,18 @@ type fileTouch struct {
 // bundleView holds everything renderBundle needs. Filling fields is
 // best-effort; renderBundle handles missing values gracefully.
 type bundleView struct {
-	Repo          string
-	Branch        string
-	Provider      string
-	SessionID     string
-	GeneratedAt   string
-	LastPrompt    string
-	LastAssistant string
-	FileTouches   []fileTouch
-	Note          string // optional caveat shown when assembly degraded
+	Repo            string
+	Branch          string
+	Provider        string
+	SessionID       string
+	GeneratedAt     string
+	RecentPrompts   []string // oldest-first list of user prompts
+	LastAssistant   string
+	FileTouches     []fileTouch
+	RecentCommits   []string // "<short-hash> <subject>" lines
+	UncommittedList string   // `git status --short` output
+	UncommittedDiff string   // bounded, redacted `git diff HEAD` output
+	Note            string   // optional caveat shown when assembly degraded
 }
 
 func renderBundle(v bundleView) []byte {
@@ -546,18 +692,48 @@ func renderBundle(v bundleView) []byte {
 	b.WriteString("\n")
 
 	b.WriteString("## Where I left off\n\n")
-	if v.LastPrompt != "" {
-		b.WriteString("**Last user prompt (truncated, redacted):**\n\n")
-		b.WriteString(v.LastPrompt)
-		b.WriteString("\n\n")
+	if len(v.RecentPrompts) > 0 {
+		b.WriteString("**Recent user prompts (oldest first, truncated, redacted):**\n\n")
+		for _, p := range v.RecentPrompts {
+			fmt.Fprintf(&b, "- %s\n", p)
+		}
+		b.WriteString("\n")
 	}
 	if v.LastAssistant != "" {
 		b.WriteString("**Last assistant message (truncated, redacted):**\n\n")
 		b.WriteString(v.LastAssistant)
 		b.WriteString("\n\n")
 	}
-	if v.LastPrompt == "" && v.LastAssistant == "" {
+	if len(v.RecentPrompts) == 0 && v.LastAssistant == "" {
 		b.WriteString("_No prompt or assistant message available for this session yet._\n\n")
+	}
+
+	if len(v.RecentCommits) > 0 {
+		b.WriteString("## Recent commits during this session\n\n")
+		for _, line := range v.RecentCommits {
+			fmt.Fprintf(&b, "- %s\n", line)
+		}
+		b.WriteString("\n")
+	}
+
+	if v.UncommittedList != "" {
+		b.WriteString("## Working tree changes (uncommitted)\n\n")
+		b.WriteString("Files:\n\n")
+		b.WriteString("```\n")
+		b.WriteString(v.UncommittedList)
+		if !strings.HasSuffix(v.UncommittedList, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString("```\n\n")
+		if v.UncommittedDiff != "" {
+			b.WriteString("Diff (redacted, bounded):\n\n")
+			b.WriteString("```diff\n")
+			b.WriteString(v.UncommittedDiff)
+			if !strings.HasSuffix(v.UncommittedDiff, "\n") {
+				b.WriteByte('\n')
+			}
+			b.WriteString("```\n\n")
+		}
 	}
 
 	return []byte(b.String())
