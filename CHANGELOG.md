@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session, including recent user prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context for a fresh agent session.
 - Hidden `semantica skills handoff` backing command now shares the same writer as `semantica handoff --write`, preparing the CLI side of the `semantica-handoff` skill.
-- `semantica skills install --source <path>` and `semantica skills uninstall` install local Semantica skill sources into detected Claude Code and Cursor skill directories with versioned content hashes; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed skills.
+- `semantica skills install` fetches SKILL.md files from the `semanticash/skills` GitHub repo (release builds pull `refs/tags/<cli-version>`, dev builds pull `refs/heads/main`) and writes them into every detected agent skills directory (Claude Code, Cursor, Gemini CLI, Copilot CLI, Kiro). `--source <path>` overrides the network fetch with a local checkout for development and offline use. `semantica skills uninstall` removes Semantica-managed files from the same directories. Each installed file carries a versioned content hash; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed files.
 - Hidden `semantica skills explain <ref>` backing command now emits structured JSON for skill integrations, using local provenance when available, workspace API playbooks for connected repos, and a redacted git diff fallback otherwise.
 
 ### Fixed

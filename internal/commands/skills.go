@@ -30,10 +30,9 @@ func NewSkillsCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-// newSkillsInstallCmd wires `semantica skills install --source
-// <path>`. This release supports local source directories only;
-// release tarball or git-clone sources can be added later. The
-// install targets every detected supported agent.
+// newSkillsInstallCmd wires `semantica skills install`. By default
+// it fetches Semantica-authored skills from GitHub; --source points
+// at a local checkout for development and offline installs.
 func newSkillsInstallCmd() *cobra.Command {
 	var source string
 	var force bool
@@ -44,10 +43,7 @@ func newSkillsInstallCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if source == "" {
-				return fmt.Errorf("--source is required (path to a directory laid out as <source>/<skill-name>/SKILL.md)")
-			}
-			rep, err := skills.Install(skills.InstallOptions{
+			rep, err := skills.Install(cmd.Context(), skills.InstallOptions{
 				Source:     source,
 				CLIVersion: version.Version,
 				Force:      force,
@@ -59,7 +55,7 @@ func newSkillsInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&source, "source", "", "path to a local skills source directory")
+	cmd.Flags().StringVar(&source, "source", "", "path to a local skills source directory (default: fetch from semanticash/skills GitHub repo)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite edited or unmanaged destination files")
 	return cmd
 }

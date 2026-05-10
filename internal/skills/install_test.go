@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func installTestSetup(t *testing.T) (srcRoot, dstRoot string) {
 func TestInstall_FreshInstallStampsAndWritesFile(t *testing.T) {
 	src, dst := installTestSetup(t)
 
-	rep, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -80,12 +81,12 @@ func TestInstall_RerunIsIdempotentForUnchangedSourceAndVersion(t *testing.T) {
 	src, dst := installTestSetup(t)
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
 
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	first, _ := os.ReadFile(dstFile)
 
-	rep, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestInstall_RefusesEditedDestinationWithoutForce(t *testing.T) {
 	src, dst := installTestSetup(t)
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
 
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	// Tamper with the body after install.
@@ -114,7 +115,7 @@ func TestInstall_RefusesEditedDestinationWithoutForce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestInstall_ForceOverwritesEditedDestination(t *testing.T) {
 	src, dst := installTestSetup(t)
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
 
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	body, _ := os.ReadFile(dstFile)
@@ -144,7 +145,7 @@ func TestInstall_ForceOverwritesEditedDestination(t *testing.T) {
 		"Body content edited by user.", 1)
 	_ = os.WriteFile(dstFile, []byte(tampered), 0o644)
 
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9", Force: true}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9", Force: true}); err != nil {
 		t.Fatalf("forced install: %v", err)
 	}
 	out, _ := os.ReadFile(dstFile)
@@ -170,7 +171,7 @@ func TestInstall_RefusesUnmanagedDestinationWithoutForce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestInstall_RejectsSourceWithDirNameMismatch(t *testing.T) {
 	_ = os.MkdirAll(skillDir, 0o755)
 	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(sampleSkill), 0o644)
 
-	_, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSkillNameMismatch) {
 		t.Errorf("expected ErrSkillNameMismatch, got %v", err)
 	}
@@ -220,7 +221,7 @@ func TestInstall_RejectsUnsafeDirectoryName(t *testing.T) {
 	_ = os.MkdirAll(skillDir, 0o755)
 	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(sampleSkill), 0o644)
 
-	_, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrUnsafeSkillName) && !errors.Is(err, ErrSkillNameMismatch) {
 		t.Errorf("expected unsafe-name or name-mismatch error, got %v", err)
 	}
@@ -237,7 +238,7 @@ func TestInstall_RejectsEmptySource(t *testing.T) {
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
 
-	_, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSourceNoSkills) {
 		t.Errorf("expected ErrSourceNoSkills, got %v", err)
 	}
@@ -249,7 +250,7 @@ func TestInstall_RejectsMissingSource(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
-	_, err := Install(InstallOptions{Source: "/nonexistent-skills-dir-12345", CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: "/nonexistent-skills-dir-12345", CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSourceMissing) {
 		t.Errorf("expected ErrSourceMissing, got %v", err)
 	}
@@ -257,7 +258,7 @@ func TestInstall_RejectsMissingSource(t *testing.T) {
 
 func TestUninstall_RemovesManagedFiles(t *testing.T) {
 	src, dst := installTestSetup(t)
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
@@ -279,7 +280,7 @@ func TestUninstall_RemovesManagedFiles(t *testing.T) {
 
 func TestUninstall_SkipsEditedFilesWithoutForce(t *testing.T) {
 	src, dst := installTestSetup(t)
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
@@ -301,7 +302,7 @@ func TestUninstall_SkipsEditedFilesWithoutForce(t *testing.T) {
 
 func TestUninstall_ForceRemovesEdited(t *testing.T) {
 	src, dst := installTestSetup(t)
-	if _, err := Install(InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: src, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	dstFile := filepath.Join(dst, "semantica-handoff", SkillFileName)
@@ -457,7 +458,7 @@ func TestInstall_RejectsNonPrefixedSkillName(t *testing.T) {
 	_ = os.MkdirAll(skillDir, 0o755)
 	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(src), 0o644)
 
-	_, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSkillNameNotPrefixed) {
 		t.Errorf("expected ErrSkillNameNotPrefixed, got %v", err)
 	}
@@ -510,7 +511,7 @@ func TestInstall_BothTargetsDetected(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, cursorDst)
 	writeSampleSkill(t, srcRoot)
 
-	rep, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -548,7 +549,7 @@ func TestInstall_OnlyCursorDetected(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, cursorDst)
 	writeSampleSkill(t, srcRoot)
 
-	rep, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	rep, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -575,7 +576,7 @@ func TestInstall_NoAgentsDetectedErrors(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, "")
 	writeSampleSkill(t, srcRoot)
 
-	_, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrNoAgentsDetected) {
 		t.Errorf("expected ErrNoAgentsDetected, got %v", err)
 	}
@@ -594,7 +595,7 @@ func TestUninstall_BothTargetsDetected(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, cursorDst)
 	writeSampleSkill(t, srcRoot)
 
-	if _, err := Install(InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"}); err != nil {
+	if _, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 

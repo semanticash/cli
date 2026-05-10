@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -145,7 +146,7 @@ var ErrNoAgentsDetected = errors.New("no supported agent skills directory found"
 
 // Install walks the source tree, stamps each SKILL.md, and writes
 // the result to every detected agent target (Claude Code at
-// `~/.claude/skills/` and/or Cursor at `~/.cursor/skills/`). The
+// `~/.claude/skills/`, Cursor at `~/.cursor/skills/`, etc.). The
 // function is idempotent for files that pass Verify against the
 // existing destination: re-running with the same CLI version is a
 // no-op write of identical bytes; re-running after a CLI version
@@ -154,18 +155,22 @@ var ErrNoAgentsDetected = errors.New("no supported agent skills directory found"
 // without the Semantica ownership marker, are refused unless
 // Force is set. Each (skill, target) pair produces its own row in
 // the returned report.
-func Install(opts InstallOptions) (*Report, error) {
-	if opts.Source == "" {
-		return nil, ErrSourceMissing
-	}
+//
+// When opts.Source is empty, Install fetches the skills archive
+// from GitHub at install time (see fetch.go). The release CLI
+// pulls a tagged tarball matching its own version; dev / dirty
+// builds pull refs/heads/main. opts.Source overrides the network
+// path entirely so developers can install from a local checkout.
+func Install(ctx context.Context, opts InstallOptions) (*Report, error) {
 	if opts.CLIVersion == "" {
 		return nil, ErrCLIVersionEmpty
 	}
-	st, err := os.Stat(opts.Source)
-	if err != nil || !st.IsDir() {
-		return nil, fmt.Errorf("%w: %s", ErrSourceMissing, opts.Source)
-	}
 
+	// Resolve install targets first. If no agent dirs exist on
+	// this machine, there is nowhere to write. Surface that as
+	// ErrNoAgentsDetected before doing any network work, so
+	// offline users on a fresh machine get a clear local error
+	// rather than a fetch failure that hides the real problem.
 	targets, err := agentTargets()
 	if err != nil {
 		return nil, err
@@ -174,7 +179,22 @@ func Install(opts InstallOptions) (*Report, error) {
 		return nil, ErrNoAgentsDetected
 	}
 
-	entries, err := os.ReadDir(opts.Source)
+	source := opts.Source
+	if source == "" {
+		fetched, cleanup, err := fetchSkillsArchive(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		source = fetched
+	}
+
+	st, err := os.Stat(source)
+	if err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("%w: %s", ErrSourceMissing, source)
+	}
+
+	entries, err := os.ReadDir(source)
 	if err != nil {
 		return nil, fmt.Errorf("read source dir: %w", err)
 	}
@@ -186,7 +206,7 @@ func Install(opts InstallOptions) (*Report, error) {
 			continue
 		}
 		dirName := e.Name()
-		srcPath := filepath.Join(opts.Source, dirName, SkillFileName)
+		srcPath := filepath.Join(source, dirName, SkillFileName)
 		if _, err := os.Stat(srcPath); err != nil {
 			continue
 		}
@@ -202,7 +222,7 @@ func Install(opts InstallOptions) (*Report, error) {
 	}
 
 	if found == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrSourceNoSkills, opts.Source)
+		return nil, fmt.Errorf("%w: %s", ErrSourceNoSkills, source)
 	}
 	sortReport(&rep)
 	return &rep, nil
