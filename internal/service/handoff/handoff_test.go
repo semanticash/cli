@@ -317,17 +317,82 @@ func TestResolveSession_MultipleMatches_ErrAmbiguous(t *testing.T) {
 	}
 }
 
-func TestResolveSession_WrongProvider_Filtered(t *testing.T) {
+// TestResolveSession_NonClaudeProvidersResolve confirms the resolver
+// is provider-agnostic. A session captured under cursor (or kiro-cli,
+// or any other Semantica-tracked agent) is just as eligible to be
+// the handoff source as a Claude Code session.
+func TestResolveSession_CursorProviderResolves(t *testing.T) {
 	repoA := t.TempDir()
 	now := time.Now()
 
 	baseDir := setupCaptureDir(t)
-	writeCaptureState(t, baseDir, captureFixture{SessionID: "cursor-1", Provider: "cursor", CWD: repoA, Timestamp: now.UnixMilli()})
-	writeCaptureState(t, baseDir, captureFixture{SessionID: "kiro-1", Provider: "kiro-cli", CWD: repoA, Timestamp: now.UnixMilli()})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "cursor-1",
+		Provider:  "cursor",
+		CWD:       repoA,
+		Timestamp: now.UnixMilli(),
+	})
+
+	got, err := resolveSession(repoA, now)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if got.SessionID != "cursor-1" {
+		t.Errorf("got %q, want cursor-1", got.SessionID)
+	}
+	if got.Provider != "cursor" {
+		t.Errorf("provider = %q, want cursor", got.Provider)
+	}
+}
+
+func TestResolveSession_KiroCLIProviderResolves(t *testing.T) {
+	repoA := t.TempDir()
+	now := time.Now()
+
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "kiro-1",
+		Provider:  "kiro-cli",
+		CWD:       repoA,
+		Timestamp: now.UnixMilli(),
+	})
+
+	got, err := resolveSession(repoA, now)
+	if err != nil {
+		t.Fatalf("resolveSession: %v", err)
+	}
+	if got.SessionID != "kiro-1" {
+		t.Errorf("got %q, want kiro-1", got.SessionID)
+	}
+}
+
+// TestResolveSession_MixedProviders_StillAmbiguous confirms the
+// ambiguity check no longer respects provider boundaries: two
+// active sessions in the same repo (one Claude Code, one Cursor)
+// produce an ambiguity error, not a silent pick of Claude Code.
+// Users who genuinely have two agents open at once need to close
+// one before handing off.
+func TestResolveSession_MixedProviders_StillAmbiguous(t *testing.T) {
+	repoA := t.TempDir()
+	now := time.Now()
+
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "claude-1",
+		Provider:  "claude-code",
+		CWD:       repoA,
+		Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "cursor-1",
+		Provider:  "cursor",
+		CWD:       repoA,
+		Timestamp: now.UnixMilli(),
+	})
 
 	_, err := resolveSession(repoA, now)
-	if !errors.Is(err, ErrNoSession) {
-		t.Errorf("err = %v, want ErrNoSession (only claude-code matches)", err)
+	if !errors.Is(err, ErrAmbiguousSession) {
+		t.Errorf("err = %v, want ErrAmbiguousSession", err)
 	}
 }
 
@@ -591,7 +656,7 @@ func TestWrite_EndToEnd_PopulatesBundleFromLineageDB(t *testing.T) {
 			Kind:         "tool_use",
 			Role:         sql.NullString{Valid: true, String: "assistant"},
 			ToolName:     sql.NullString{Valid: true, String: "Edit"},
-			ToolUses: sql.NullString{Valid: true, String: `{"tools":[{"name":"Edit","file_path":"src/auth/handler.go"}]}`},
+			ToolUses:     sql.NullString{Valid: true, String: `{"tools":[{"name":"Edit","file_path":"src/auth/handler.go"}]}`},
 			EventSource:  "hook",
 		},
 		{
@@ -602,7 +667,7 @@ func TestWrite_EndToEnd_PopulatesBundleFromLineageDB(t *testing.T) {
 			Kind:         "tool_use",
 			Role:         sql.NullString{Valid: true, String: "assistant"},
 			ToolName:     sql.NullString{Valid: true, String: "Edit"},
-			ToolUses: sql.NullString{Valid: true, String: `{"tools":[{"name":"Edit","file_path":"src/auth/handler.go"}]}`},
+			ToolUses:     sql.NullString{Valid: true, String: `{"tools":[{"name":"Edit","file_path":"src/auth/handler.go"}]}`},
 			EventSource:  "hook",
 		},
 		{
@@ -613,7 +678,7 @@ func TestWrite_EndToEnd_PopulatesBundleFromLineageDB(t *testing.T) {
 			Kind:         "tool_use",
 			Role:         sql.NullString{Valid: true, String: "assistant"},
 			ToolName:     sql.NullString{Valid: true, String: "Write"},
-			ToolUses: sql.NullString{Valid: true, String: `{"tools":[{"name":"Write","file_path":"src/auth/handler_test.go"}]}`},
+			ToolUses:     sql.NullString{Valid: true, String: `{"tools":[{"name":"Write","file_path":"src/auth/handler_test.go"}]}`},
 			EventSource:  "hook",
 		},
 	}
@@ -676,12 +741,213 @@ func TestWrite_EndToEnd_PopulatesBundleFromLineageDB(t *testing.T) {
 		}
 	}
 
-		// Degraded notes must not leak raw absolute paths or SQL details.
+	// Degraded notes must not leak raw absolute paths or SQL details.
 	if strings.Contains(body, dbPath) {
 		t.Errorf("bundle leaked absolute lineage.db path %q", dbPath)
 	}
 	if strings.Contains(body, "no such") || strings.Contains(body, "sql:") {
 		t.Errorf("bundle leaked SQL error fragment:\n%s", body)
+	}
+}
+
+// TestWrite_EndToEnd_PopulatesBundleFromCursorSession confirms that
+// Cursor capture states populate handoff bundles end-to-end.
+func TestWrite_EndToEnd_PopulatesBundleFromCursorSession(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-cursor"
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID,
+		RootPath:     repoPath,
+		CreatedAt:    now.UnixMilli(),
+		EnabledAt:    now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+	source, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID:     "source-cursor",
+		RepositoryID: repoID,
+		Provider:     "cursor",
+		SourceKey:    "default",
+		LastSeenAt:   now.UnixMilli(),
+		CreatedAt:    now.UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("upsert agent source: %v", err)
+	}
+	const providerSessionID = "cursor-sess-abc"
+	session, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID:         "local-uuid-cursor",
+		ProviderSessionID: providerSessionID,
+		RepositoryID:      repoID,
+		Provider:          "cursor",
+		SourceID:          source.SourceID,
+		StartedAt:         now.UnixMilli(),
+		LastSeenAt:        now.UnixMilli(),
+		MetadataJson:      "{}",
+	})
+	if err != nil {
+		t.Fatalf("upsert agent session: %v", err)
+	}
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID:      "evt-cursor-user",
+		SessionID:    session.SessionID,
+		RepositoryID: repoID,
+		Ts:           now.Add(-1 * time.Minute).UnixMilli(),
+		Kind:         "user",
+		Role:         sql.NullString{Valid: true, String: "user"},
+		Summary:      sql.NullString{Valid: true, String: "Refactor the auth middleware to be testable."},
+		EventSource:  "hook",
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: providerSessionID,
+		Provider:  "cursor",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if res.SessionID != providerSessionID {
+		t.Errorf("res.SessionID = %q, want %q", res.SessionID, providerSessionID)
+	}
+	if res.Provider != "cursor" {
+		t.Errorf("res.Provider = %q, want cursor", res.Provider)
+	}
+	body := string(res.Bytes)
+	if !strings.Contains(body, "Refactor the auth middleware to be testable.") {
+		t.Errorf("bundle missing user prompt from cursor session:\n%s", body)
+	}
+	for _, note := range []string{
+		noteLineageMissing, noteLineageUnavail, noteSessionUnknown, noteEventsUnavail,
+	} {
+		if strings.Contains(body, note) {
+			t.Errorf("cursor happy-path bundle contained degraded note %q:\n%s", note, body)
+		}
+	}
+}
+
+// TestWrite_DuplicateProviderSessionID_PicksByProvider confirms that
+// provider_session_id collisions across providers do not mix events.
+// The (repository_id, provider, provider_session_id) unique index
+// allows the same provider_session_id to appear under different
+// providers, so the matcher must use the capture state's provider
+// aliases before reading events.
+//
+// Setup plants two complete agent_session rows + distinct events
+// per provider. The capture state declares the cursor provider;
+// the bundle must contain the cursor event text and never the
+// claude_code event text.
+func TestWrite_DuplicateProviderSessionID_PicksByProvider(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-collision"
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID,
+		RootPath:     repoPath,
+		CreatedAt:    now.UnixMilli(),
+		EnabledAt:    now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+
+	// The shared provider_session_id is the wedge: both providers
+	// register their session under the same wire identifier.
+	const sharedProviderSessionID = "shared-sess"
+
+	insert := func(label, dbProvider, eventText string) string {
+		t.Helper()
+		src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+			SourceID:     "source-" + label,
+			RepositoryID: repoID,
+			Provider:     dbProvider,
+			SourceKey:    "key-" + label,
+			LastSeenAt:   now.UnixMilli(),
+			CreatedAt:    now.UnixMilli(),
+		})
+		if err != nil {
+			t.Fatalf("upsert source for %s: %v", label, err)
+		}
+		sess, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+			SessionID:         "local-" + label,
+			ProviderSessionID: sharedProviderSessionID,
+			RepositoryID:      repoID,
+			Provider:          dbProvider,
+			SourceID:          src.SourceID,
+			StartedAt:         now.UnixMilli(),
+			LastSeenAt:        now.UnixMilli(),
+			MetadataJson:      "{}",
+		})
+		if err != nil {
+			t.Fatalf("upsert session for %s: %v", label, err)
+		}
+		if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+			EventID:      "evt-" + label,
+			SessionID:    sess.SessionID,
+			RepositoryID: repoID,
+			Ts:           now.Add(-1 * time.Minute).UnixMilli(),
+			Kind:         "user",
+			Role:         sql.NullString{Valid: true, String: "user"},
+			Summary:      sql.NullString{Valid: true, String: eventText},
+			EventSource:  "hook",
+		}); err != nil {
+			t.Fatalf("insert event for %s: %v", label, err)
+		}
+		return sess.SessionID
+	}
+
+	const claudeText = "CLAUDE PROVIDER PROMPT - should not appear in cursor handoff"
+	const cursorText = "CURSOR PROVIDER PROMPT - should appear in cursor handoff"
+
+	insert("claude", "claude_code", claudeText)
+	insert("cursor", "cursor", cursorText)
+
+	// Capture state declares the cursor provider with the shared
+	// provider_session_id. The resolver must pick the cursor row,
+	// not the claude_code row.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: sharedProviderSessionID,
+		Provider:  "cursor",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	body := string(res.Bytes)
+
+	if !strings.Contains(body, cursorText) {
+		t.Errorf("bundle missing cursor prompt; the resolver did not match by provider:\n%s", body)
+	}
+	if strings.Contains(body, claudeText) {
+		t.Errorf("bundle leaked claude prompt - the resolver picked the wrong provider:\n%s", body)
 	}
 }
 

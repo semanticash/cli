@@ -248,7 +248,7 @@ semantica sessions
 semantica sessions <session_id> --transcript
 ```
 
-Prepare a fresh-agent handoff from the active Claude Code capture session:
+Prepare a fresh-agent handoff from the active Semantica-tracked agent session:
 
 ```bash
 semantica handoff --write

@@ -54,10 +54,10 @@ func runHandoffWrite(cmd *cobra.Command, repoPath string) error {
 	})
 	switch {
 	case errors.Is(err, handoff.ErrNoSession):
-		return fmt.Errorf("no claude-code session active for this repo. " +
-			"open Claude here, work for a turn, then retry")
+		return fmt.Errorf("no agent session active for this repo. " +
+			"open your agent here, work for a turn, then retry")
 	case errors.Is(err, handoff.ErrAmbiguousSession):
-		return fmt.Errorf("multiple claude-code sessions active for this repo. " +
+		return fmt.Errorf("multiple agent sessions active for this repo. " +
 			"close all but one and retry")
 	case err != nil:
 		return err

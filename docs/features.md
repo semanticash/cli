@@ -205,7 +205,7 @@ semantica explain HEAD --generate
 
 ### How it works
 
-The command resolves the active Claude Code capture session for the current repo, reads recent captured prompt, assistant, and file-touch context from `.semantica/lineage.db`, redacts prose fields, and writes the result to `.semantica/handoff.md`.
+The command resolves the active Semantica-tracked agent session for the current repo, reads recent captured prompt, assistant, and file-touch context from `.semantica/lineage.db`, redacts prose fields, and writes the result to `.semantica/handoff.md`.
 
 ### What you see
 
@@ -217,7 +217,7 @@ The command prints the saved path and asks you to start a fresh session in the s
 
 ### Caveats
 
-- The initial handoff writer supports Claude Code capture sessions.
+- The handoff writer supports Semantica-tracked provider sessions.
 - If lineage data is missing or the session is not yet registered locally, Semantica writes a minimal bundle with a generic note instead of exposing raw database errors.
 - The `continue` launcher is not part of the initial writer; start the fresh agent session manually and ask it to read `.semantica/handoff.md`.
 

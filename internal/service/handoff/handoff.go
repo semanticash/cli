@@ -37,11 +37,6 @@ const HandoffFilename = "handoff.md"
 // off.
 const recentSessionWindow = 24 * time.Hour
 
-// supportedProvider gates the v1 resolver. The initial release scopes
-// the writer to Claude Code; other providers can be added once their
-// capture states cover the same fields the resolver relies on.
-const supportedProvider = "claude-code"
-
 // maxPromptChars is the redaction-friendly cap on prompt and
 // assistant-message text included in the bundle.
 const maxPromptChars = 500
@@ -53,12 +48,12 @@ const maxFilesInTouchSummary = 50
 // ErrNoSession is returned when no usable Semantica capture session
 // resolves for the current repo. Callers translate this into a
 // non-zero exit with a clear user message.
-var ErrNoSession = errors.New("no claude-code session found for this repo")
+var ErrNoSession = errors.New("no agent session found for this repo")
 
 // ErrAmbiguousSession is returned when more than one parent capture
 // state matches the resolver's filters. The user must close one of
 // the sessions before retrying; the resolver never silently picks.
-var ErrAmbiguousSession = errors.New("multiple claude-code sessions active for this repo")
+var ErrAmbiguousSession = errors.New("multiple agent sessions active for this repo")
 
 // Input narrows the surface the caller has to provide. RepoPath is
 // the only required field; the service derives everything else from
@@ -84,8 +79,7 @@ type Result struct {
 	// captures. Surfaced for diagnostics and tests.
 	SessionID string
 
-	// Provider is always "claude-code" in v1; reserved for when more
-	// providers are supported.
+	// Provider is the capture provider for the resolved session.
 	Provider string
 
 	// Bytes is the raw markdown body that was written. Returned for
@@ -148,11 +142,13 @@ func (s *Service) Write(ctx context.Context, in Input) (*Result, error) {
 	}, nil
 }
 
-// resolveSession picks the single Claude Code capture state for the
-// current repo. Filters: provider, CWD under repo root, parent
-// session (StateKey unset or equal to SessionID), recent timestamp.
-// Errors when zero or more than one state matches; never silently
-// picks among multiple actives.
+// resolveSession picks the single capture state to hand off from.
+// Filters: CWD under repo root, parent session (StateKey unset or
+// equal to SessionID), recent timestamp. The resolver is provider-
+// agnostic: any agent that runs through Semantica's capture
+// pipeline (claude-code, cursor, gemini-cli, kiro-cli, etc.) is
+// eligible. Errors when zero or more than one state matches;
+// never silently picks among multiple actives.
 func resolveSession(repoPath string, now time.Time) (*hooks.CaptureState, error) {
 	all, err := hooks.LoadActiveCaptureStates()
 	if err != nil {
@@ -168,9 +164,6 @@ func resolveSession(repoPath string, now time.Time) (*hooks.CaptureState, error)
 
 	var matches []*hooks.CaptureState
 	for _, st := range all {
-		if st.Provider != supportedProvider {
-			continue
-		}
 		if st.Timestamp <= 0 || st.Timestamp < since {
 			continue
 		}
@@ -271,18 +264,31 @@ func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureSt
 		view.Note = noteSessionUnknown
 		return renderBundle(view), nil
 	}
-	sessionRow, err := h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
-		RepositoryID:      repoRow.RepositoryID,
-		Provider:          storageProviderName(state.Provider),
-		ProviderSessionID: state.SessionID,
-	})
-	if err != nil {
+	// Resolve the local agent_session for this capture. The query
+	// filters by provider_session_id only because hook-form provider
+	// names ("claude-code", "kiro-cli") and DB-form names
+	// ("claude_code", "kiro-cli") drift across providers. We then
+	// disambiguate using a small alias map so two providers that
+	// happen to share a provider_session_id in this repo cannot pull
+	// each other's events into the bundle.
+	sessionRows, err := h.Queries.ListAgentSessionsByProviderSessionID(ctx,
+		sqldb.ListAgentSessionsByProviderSessionIDParams{
+			RepositoryID:      repoRow.RepositoryID,
+			ProviderSessionID: state.SessionID,
+		})
+	if err != nil || len(sessionRows) == 0 {
+		view.Note = noteSessionUnknown
+		return renderBundle(view), nil
+	}
+
+	matched, ok := matchSessionByProvider(sessionRows, state.Provider)
+	if !ok {
 		view.Note = noteSessionUnknown
 		return renderBundle(view), nil
 	}
 
 	events, err := h.Queries.ListAgentEventsBySession(ctx, sqldb.ListAgentEventsBySessionParams{
-		SessionID: sessionRow.SessionID,
+		SessionID: matched.SessionID,
 		Limit:     500,
 	})
 	if err != nil {
@@ -297,19 +303,62 @@ func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureSt
 	return renderBundle(view), nil
 }
 
-// storageProviderName translates a hook-registry provider name
-// (with dashes, e.g. "claude-code") into the form
-// agent_sessions.provider stores (with underscores or "_cli"
-// suffixes). v1 only resolves Claude Code; the table-driven shape
-// is here so adding more providers is mechanical.
-func storageProviderName(hookName string) string {
+// matchSessionByProvider picks the agent_sessions row whose provider
+// matches the capture state's provider via the alias set. Returns
+// (row, true) on a single unambiguous match. Multiple matches
+// shouldn't occur under the (repository_id, provider,
+// provider_session_id) unique index; if they ever do, refuse rather
+// than silently picking. Zero matches means the capture state's
+// provider doesn't align with anything stored in this repo, which
+// is treated as session-unknown so the bundle degrades cleanly
+// instead of pulling another provider's events.
+func matchSessionByProvider(rows []sqldb.AgentSession, captureProvider string) (sqldb.AgentSession, bool) {
+	aliases := providerAliases(captureProvider)
+	aliasSet := make(map[string]struct{}, len(aliases))
+	for _, a := range aliases {
+		aliasSet[a] = struct{}{}
+	}
+	var matches []sqldb.AgentSession
+	for _, row := range rows {
+		if _, ok := aliasSet[row.Provider]; ok {
+			matches = append(matches, row)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return sqldb.AgentSession{}, false
+}
+
+// providerAliases returns the agent_sessions.provider values that
+// could correspond to a hook-form provider name. The hook registry
+// uses dashes ("claude-code", "gemini-cli") while
+// agent_sessions.provider varies by agent: claude_code, gemini_cli,
+// cursor, copilot, kiro-cli, kiro-ide. Each branch enumerates the
+// known mappings; the default falls back to the hook name itself
+// plus its dash-to-underscore variant so a previously-unknown
+// provider has a reasonable chance of matching without a code
+// change.
+func providerAliases(hookName string) []string {
 	switch hookName {
 	case "claude-code":
-		return "claude_code"
-	case "gemini":
-		return "gemini_cli"
+		return []string{"claude_code", "claude-code"}
+	case "gemini-cli", "gemini":
+		return []string{"gemini_cli", "gemini-cli", "gemini"}
+	case "cursor":
+		return []string{"cursor"}
+	case "copilot":
+		return []string{"copilot"}
+	case "kiro-cli":
+		return []string{"kiro-cli", "kiro_cli"}
+	case "kiro-ide":
+		return []string{"kiro-ide", "kiro_ide"}
 	default:
-		return strings.ReplaceAll(hookName, "-", "_")
+		under := strings.ReplaceAll(hookName, "-", "_")
+		if under == hookName {
+			return []string{hookName}
+		}
+		return []string{hookName, under}
 	}
 }
 
