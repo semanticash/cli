@@ -3,17 +3,19 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
+	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/service/handoff"
 	"github.com/spf13/cobra"
 )
 
-// NewHandoffCmd builds the `semantica handoff` command. The
-// initial release ships `--write`, which assembles the bundle on
-// disk. A subsequent release will add a `continue` subcommand that
-// launches the user's preferred agent against the bundle directly;
-// until then users start a fresh session manually.
+// NewHandoffCmd builds the `semantica handoff` command tree.
+// `--write` assembles the bundle on disk; the `continue`
+// subcommand launches a fresh agent session preloaded with the
+// bundle path so the user can pick up where they left off without
+// retyping the original prompt.
 func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 	var write bool
 
@@ -25,7 +27,8 @@ func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 			"`.semantica/handoff.md`. The bundle is file-first by design: it " +
 			"is never echoed back into the originating session.\n\n" +
 			"Usage: `semantica handoff --write`. Bare `semantica handoff` " +
-			"prints this help.",
+			"prints this help. After writing, `semantica handoff continue` " +
+			"launches a fresh agent session preloaded with the bundle.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -38,7 +41,83 @@ func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&write, "write", false, "Write a handoff bundle to .semantica/handoff.md")
+	cmd.AddCommand(newHandoffContinueCmd(rootOpts))
 	return cmd
+}
+
+// newHandoffContinueCmd wires `semantica handoff continue`. It
+// reads `.semantica/handoff.md`, picks an agent (the original
+// session's provider by default, --agent override otherwise),
+// and either execs the agent's CLI with a fixed starter prompt
+// or prints the command for the user to run manually.
+func newHandoffContinueCmd(rootOpts *RootOptions) *cobra.Command {
+	var agent string
+	var printOnly bool
+	cmd := &cobra.Command{
+		Use:   "continue",
+		Short: "Launch a fresh agent session preloaded with the handoff bundle",
+		Long: "Read the handoff bundle written by `semantica handoff --write` " +
+			"and either spawn the matching agent's CLI with a starter prompt " +
+			"or print the equivalent command for manual launch.\n\n" +
+			"Defaults to the agent that produced the bundle. Override with " +
+			"--agent <name> to switch agents during handoff. Pass --print to " +
+			"see the command without spawning anything.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHandoffContinue(cmd, rootOpts.RepoPath, agent, printOnly)
+		},
+	}
+	cmd.Flags().StringVar(&agent, "agent", "", "agent to launch (default: same as the original session's provider)")
+	cmd.Flags().BoolVar(&printOnly, "print", false, "print the launch command instead of spawning the agent")
+	return cmd
+}
+
+// continueExecutor is the test seam for launching the agent binary.
+// Unix replaces the current process with the agent. Windows returns a
+// clear error if this path is reached; users can still use --print.
+var continueExecutor = defaultExecutor
+
+func runHandoffContinue(cmd *cobra.Command, repoPath, agentOverride string, printOnly bool) error {
+	repo, err := git.OpenRepo(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repo: %w", err)
+	}
+	repoRoot := repo.Root()
+
+	bundlePath := filepath.Join(repoRoot, ".semantica", handoff.HandoffFilename)
+	body, err := os.ReadFile(bundlePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w at %s; run `semantica handoff --write` first",
+			handoff.ErrBundleMissing, bundlePath)
+	}
+	if err != nil {
+		return fmt.Errorf("read handoff bundle: %w", err)
+	}
+
+	provider := agentOverride
+	if provider == "" {
+		provider = handoff.ProviderFromBundle(body)
+	}
+	if provider == "" {
+		return fmt.Errorf("could not determine which agent to launch from %s; pass --agent <name>",
+			bundlePath)
+	}
+
+	spec, err := handoff.BuildLaunchSpec(provider, bundlePath, printOnly)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	if !spec.Spawn {
+		_, _ = fmt.Fprintln(out, spec.Message)
+		return nil
+	}
+
+	_, _ = fmt.Fprintln(out, spec.Message)
+	return continueExecutor(repoRoot, spec)
 }
 
 // runHandoffWrite is the shared implementation behind both

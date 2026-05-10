@@ -211,15 +211,16 @@ The command resolves the active Semantica-tracked agent session for the current 
 
 ```bash
 semantica handoff --write
+semantica handoff continue
 ```
 
-The command prints the saved path and asks you to start a fresh session in the same repo. It does not echo the handoff bundle into the originating chat.
+The writer prints the saved path and does not echo the handoff bundle into the originating chat. `semantica handoff continue` reads that bundle and either launches the matching agent or prints a command or manual instruction with the absolute bundle path.
 
 ### Caveats
 
 - The handoff writer supports Semantica-tracked provider sessions.
 - If lineage data is missing or the session is not yet registered locally, Semantica writes a minimal bundle with a generic note instead of exposing raw database errors.
-- The `continue` launcher is not part of the initial writer; start the fresh agent session manually and ask it to read `.semantica/handoff.md`.
+- Auto-launch is currently verified for Claude Code on Unix. Other supported providers receive a manual-launch hint, and `--print` always prints a copyable command instead of spawning.
 
 ---
 
