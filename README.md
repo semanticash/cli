@@ -254,7 +254,7 @@ Prepare a fresh-agent handoff from the active Semantica-tracked agent session:
 semantica handoff --write
 ```
 
-The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat.
+The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat. Use `--from <provider>` to hand off from a specific recent provider session, for example `semantica handoff --write --from claude-code`.
 
 ### Playbooks
 

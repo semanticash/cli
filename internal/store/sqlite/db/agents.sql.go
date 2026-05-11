@@ -207,6 +207,49 @@ func (q *Queries) GetMostRecentParentSessionWithEvents(ctx context.Context, arg 
 	return i, err
 }
 
+const getMostRecentSessionByProviderWithEvents = `-- name: GetMostRecentSessionByProviderWithEvents :one
+select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions s
+where s.repository_id = ?1
+  and s.provider = ?2
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= ?3
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1
+`
+
+type GetMostRecentSessionByProviderWithEventsParams struct {
+	RepositoryID string `json:"repository_id"`
+	Provider     string `json:"provider"`
+	SinceTs      int64  `json:"since_ts"`
+}
+
+// Used by handoff's --from override to source the bundle from a
+// specific provider's most-recent parent session in the repo,
+// regardless of whether a different agent currently holds the
+// active capture state. Same recency and parent-only filters as
+// the lineage fallback; the extra provider filter is what makes
+// cross-agent handoff explicit: "I worked with Claude, now I'm in
+// Gemini, hand me off from claude_code."
+func (q *Queries) GetMostRecentSessionByProviderWithEvents(ctx context.Context, arg GetMostRecentSessionByProviderWithEventsParams) (AgentSession, error) {
+	row := q.queryRow(ctx, q.getMostRecentSessionByProviderWithEventsStmt, getMostRecentSessionByProviderWithEvents, arg.RepositoryID, arg.Provider, arg.SinceTs)
+	var i AgentSession
+	err := row.Scan(
+		&i.SessionID,
+		&i.ProviderSessionID,
+		&i.ParentSessionID,
+		&i.RepositoryID,
+		&i.Provider,
+		&i.SourceID,
+		&i.StartedAt,
+		&i.LastSeenAt,
+		&i.MetadataJson,
+		&i.SourceRepoPath,
+		&i.Model,
+	)
+	return i, err
+}
+
 const getNextToolResultAfter = `-- name: GetNextToolResultAfter :one
 select event_id, payload_hash, summary, role, kind, ts
 from agent_events

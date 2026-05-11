@@ -787,7 +787,7 @@ func writeCaptureState(t *testing.T, baseDir string, f captureFixture) {
 //   - the session resolver picks the right capture state
 //   - the bundle includes the redacted user prompt
 //   - the bundle includes the file-touch summary
-//   - the bundle does NOT carry raw error strings or the lineage.db
+//   - the bundle does not carry raw error strings or the lineage.db
 //     absolute path
 func TestWrite_EndToEnd_PopulatesBundleFromLineageDB(t *testing.T) {
 	ctx := context.Background()
@@ -1069,10 +1069,9 @@ func TestWrite_EndToEnd_PopulatesBundleFromCursorSession(t *testing.T) {
 // providers, so the matcher must use the capture state's provider
 // aliases before reading events.
 //
-// Setup plants two complete agent_session rows + distinct events
-// per provider. The capture state declares the cursor provider;
-// the bundle must contain the cursor event text and never the
-// claude_code event text.
+// The fixture plants complete rows and distinct events for each
+// provider. The capture state declares cursor, so the bundle must
+// contain the cursor event text and never the claude_code text.
 func TestWrite_DuplicateProviderSessionID_PicksByProvider(t *testing.T) {
 	ctx := context.Background()
 	repoPath := initGitRepo(t)
@@ -1336,7 +1335,7 @@ func TestWrite_LineageFallback_NoCaptureState(t *testing.T) {
 		t.Errorf("bundle header should use hook-form provider name; got:\n%s", body)
 	}
 	if strings.Contains(body, "(claude_code)") {
-		t.Errorf("bundle should NOT use DB-form provider name; got:\n%s", body)
+		t.Errorf("bundle should not use DB-form provider name; got:\n%s", body)
 	}
 	for _, note := range []string{
 		noteLineageMissing, noteLineageUnavail, noteSessionUnknown, noteEventsUnavail,
@@ -1505,7 +1504,7 @@ func TestWrite_LineageFallback_SkipsEventlessSessions(t *testing.T) {
 // state exists for an in-flight session that hasn't been
 // registered in agent_sessions yet (race between the
 // prompt-submit hook writing the capture state and the worker
-// upserting the lineage row), the resolver must NOT fall back to
+// upserting the lineage row), the resolver must not fall back to
 // the previous session via resolveFromLineage. Doing so would
 // silently swap a different session's content under the
 // in-flight session's provider/identity.
@@ -1514,7 +1513,7 @@ func TestWrite_LineageFallback_SkipsEventlessSessions(t *testing.T) {
 // an older lineage parent session with events sits in
 // agent_sessions, and lineage has no row for the new session
 // yet. Assertion: the bundle is rendered (degraded), names the
-// new session in the header, and does NOT carry the older
+// new session in the header, and does not carry the older
 // session's prompts.
 func TestWrite_LineageFallback_NotUsedWhenCaptureStateExists(t *testing.T) {
 	ctx := context.Background()
@@ -1538,7 +1537,7 @@ func TestWrite_LineageFallback_NotUsedWhenCaptureStateExists(t *testing.T) {
 		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
 	})
 	// Older session: this is the trap. If the resolver falls
-	// through to the lineage fallback, it picks up THIS session's
+	// through to the lineage fallback, it picks up this session's
 	// events and attributes them to the in-flight capture state.
 	older, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
 		SessionID: "older-uuid", ProviderSessionID: "older-provider-sess",
@@ -1556,7 +1555,7 @@ func TestWrite_LineageFallback_NotUsedWhenCaptureStateExists(t *testing.T) {
 	})
 
 	// Active capture state for a brand-new session that lineage
-	// has NOT registered yet. This is the "in-flight before worker
+	// has not registered yet. This is the "in-flight before worker
 	// catches up" race condition we're guarding against.
 	baseDir := setupCaptureDir(t)
 	writeCaptureState(t, baseDir, captureFixture{
@@ -1635,6 +1634,432 @@ func TestWrite_LineageFallback_StaleSessionIsSkipped(t *testing.T) {
 	_, err = NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
 	if !errors.Is(err, ErrNoSession) {
 		t.Errorf("expected ErrNoSession for stale-only session; got %v", err)
+	}
+}
+
+// --from override tests cover explicit source selection across
+// providers. The override must:
+//   - Pick the named provider's most-recent parent session with
+//     events, regardless of which agent currently holds the
+//     active capture state.
+//   - Translate hook-form names (claude-code, gemini-cli) to the
+//     underscore DB form for the agent_sessions.provider filter.
+//   - Refuse when no recent session matches, with a typed error
+//     the command layer can shape into a helpful message.
+//   - Honor the same recency window and parent-only filter the
+//     lineage fallback uses, so it doesn't surface stale or
+//     subagent rows.
+
+// fromOverrideFixture sets up a repo with a Claude parent session
+// that has events and a Gemini active capture state. Returns the
+// repo path, the lineage handle (caller closes), and the event text
+// used to verify source selection.
+type fromOverrideFixture struct {
+	repoPath   string
+	h          *sqlstore.Handle
+	claudeText string
+	geminiText string
+	now        time.Time
+}
+
+func setupFromOverrideFixture(t *testing.T) fromOverrideFixture {
+	t.Helper()
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlstore.Close(h) })
+
+	now := time.Now()
+	repoID := "repo-from-override"
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+
+	const claudeText = "CLAUDE WORK - the user did this with Claude and wants it in the bundle"
+	const geminiText = "GEMINI WORK - separate gemini session, not what --from claude-code asked for"
+
+	mkSession := func(label, dbProvider, eventText string, lastSeen time.Time) {
+		src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+			SourceID: "src-" + label, RepositoryID: repoID, Provider: dbProvider,
+			SourceKey: "key-" + label, LastSeenAt: lastSeen.UnixMilli(), CreatedAt: lastSeen.UnixMilli(),
+		})
+		sess, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+			SessionID: "sess-" + label, ProviderSessionID: "prov-" + label,
+			RepositoryID: repoID, Provider: dbProvider, SourceID: src.SourceID,
+			StartedAt:    lastSeen.Add(-5 * time.Minute).UnixMilli(),
+			LastSeenAt:   lastSeen.UnixMilli(),
+			MetadataJson: "{}",
+		})
+		_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+			EventID: "evt-" + label, SessionID: sess.SessionID, RepositoryID: repoID,
+			Ts:   lastSeen.Add(-1 * time.Minute).UnixMilli(),
+			Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+			Summary:     sql.NullString{Valid: true, String: eventText},
+			EventSource: "hook",
+		})
+	}
+
+	// Claude is older than the active Gemini session. The default
+	// lineage resolver would not pick this row, but --from
+	// claude-code should.
+	mkSession("claude", "claude_code", claudeText, now.Add(-15*time.Minute))
+	// Gemini session: the currently-active agent. We register a
+	// lineage row so the active-capture-state resolver would find
+	// it absent the override; this lets us assert the override
+	// actually moves past the captureState branch.
+	mkSession("gemini", "gemini_cli", geminiText, now.Add(-2*time.Minute))
+
+	// Active Gemini capture state: this is what the user's
+	// current session looks like from the resolver's perspective.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "prov-gemini",
+		Provider:  "gemini-cli",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+
+	return fromOverrideFixture{
+		repoPath:   repoPath,
+		h:          h,
+		claudeText: claudeText,
+		geminiText: geminiText,
+		now:        now,
+	}
+}
+
+// TestWrite_FromOverride_PicksClaudeOverActiveGemini verifies that
+// explicit provider selection wins over the active capture state.
+// The bundle should use Claude's header and events, not Gemini's.
+func TestWrite_FromOverride_PicksClaudeOverActiveGemini(t *testing.T) {
+	fx := setupFromOverrideFixture(t)
+
+	res, err := NewService().Write(context.Background(), Input{
+		RepoPath: fx.repoPath,
+		Now:      fx.now,
+		From:     "claude-code",
+	})
+	if err != nil {
+		t.Fatalf("Write with --from claude-code: %v", err)
+	}
+	body := string(res.Bytes)
+
+	if !strings.Contains(body, fx.claudeText) {
+		t.Errorf("bundle missing Claude work; --from did not pick the Claude session:\n%s", body)
+	}
+	if strings.Contains(body, fx.geminiText) {
+		t.Errorf("bundle leaked Gemini work; --from must bypass the active session:\n%s", body)
+	}
+	if res.Provider != "claude-code" {
+		t.Errorf("Result.Provider = %q, want claude-code (so `handoff continue` defaults to Claude)", res.Provider)
+	}
+	if res.SessionID != "prov-claude" {
+		t.Errorf("Result.SessionID = %q, want prov-claude", res.SessionID)
+	}
+}
+
+// TestWrite_FromOverride_TranslatesHookFormToDBForm pins that the
+// flag accepts hook-form provider names (the same shape `handoff
+// continue` uses and what users see in skill docs). Internally
+// the resolver must translate claude-code -> claude_code and
+// gemini-cli -> gemini_cli for the agent_sessions.provider filter.
+// Without the translation the SQL filter would never match.
+func TestWrite_FromOverride_TranslatesHookFormToDBForm(t *testing.T) {
+	fx := setupFromOverrideFixture(t)
+
+	for _, hookForm := range []string{"claude-code", "gemini-cli"} {
+		t.Run(hookForm, func(t *testing.T) {
+			res, err := NewService().Write(context.Background(), Input{
+				RepoPath: fx.repoPath,
+				Now:      fx.now,
+				From:     hookForm,
+			})
+			if err != nil {
+				t.Fatalf("Write with --from %s: %v", hookForm, err)
+			}
+			if res.Provider != hookForm {
+				t.Errorf("Result.Provider = %q, want %q", res.Provider, hookForm)
+			}
+		})
+	}
+}
+
+// TestWrite_FromOverride_NoMatchingProviderErrors pins the
+// error path: --from names a provider with no recent session in
+// the repo. Must return ErrNoFromMatch so the command layer can
+// say "no <provider> sessions found; check the name or drop --from."
+func TestWrite_FromOverride_NoMatchingProviderErrors(t *testing.T) {
+	fx := setupFromOverrideFixture(t)
+
+	// Repo has claude_code and gemini_cli sessions; ask for cursor.
+	_, err := NewService().Write(context.Background(), Input{
+		RepoPath: fx.repoPath,
+		Now:      fx.now,
+		From:     "cursor",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Errorf("expected ErrNoFromMatch when --from has no match; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_SkipsStaleSessions pins that --from
+// honors the same recency window the other resolvers use. A
+// session whose last_seen is outside the window must not be
+// returned, even if it's the only one matching the provider, or
+// otherwise a months-old Claude session could be silently
+// resurrected as a handoff source.
+func TestWrite_FromOverride_SkipsStaleSessions(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-stale"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+
+	stale := now.Add(-48 * time.Hour) // outside the 24h window
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src-stale", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "key", LastSeenAt: stale.UnixMilli(), CreatedAt: stale.UnixMilli(),
+	})
+	sess, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "stale-sess", ProviderSessionID: "stale-prov",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt: stale.UnixMilli(), LastSeenAt: stale.UnixMilli(),
+		MetadataJson: "{}",
+	})
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-stale", SessionID: sess.SessionID, RepositoryID: repoID,
+		Ts: stale.UnixMilli(), Kind: "user",
+		Role:        sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "stale claude work"},
+		EventSource: "hook",
+	})
+
+	setupCaptureDir(t) // no active state
+
+	_, err = NewService().Write(ctx, Input{
+		RepoPath: repoPath,
+		Now:      now,
+		From:     "claude-code",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Errorf("expected ErrNoFromMatch for stale-only session; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_SkipsSubagentSessions pins that --from
+// uses the same parent-only filter the lineage fallback uses.
+// Subagent sessions (parent_session_id set) are not standalone
+// conversations and must not be returned as the source.
+func TestWrite_FromOverride_SkipsSubagentSessions(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-subagent"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src-sub", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "key", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+	// Subagent row: parent_session_id set, would otherwise be the
+	// most-recent claude_code session in the repo.
+	sub, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "sub-sess", ProviderSessionID: "sub-prov",
+		ParentSessionID: sql.NullString{Valid: true, String: "parent-uuid"},
+		RepositoryID:    repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt: now.UnixMilli(), LastSeenAt: now.UnixMilli(),
+		MetadataJson: "{}",
+	})
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-sub", SessionID: sub.SessionID, RepositoryID: repoID,
+		Ts: now.UnixMilli(), Kind: "user",
+		Role:        sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "subagent work"},
+		EventSource: "hook",
+	})
+
+	setupCaptureDir(t)
+
+	_, err = NewService().Write(ctx, Input{
+		RepoPath: repoPath,
+		Now:      now,
+		From:     "claude-code",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Errorf("expected ErrNoFromMatch when only a subagent row exists; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_RefusesWhenLineageDBMissing verifies that
+// explicit provider selection requires lineage data. Without this,
+// the degraded path could write a bundle under the active provider's
+// identity instead of the requested source provider.
+func TestWrite_FromOverride_RefusesWhenLineageDBMissing(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+	// Deliberately do not create .semantica/lineage.db.
+
+	// The active Gemini state should not be used when --from asks
+	// for Claude.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "active-gemini-sess",
+		Provider:  "gemini-cli",
+		CWD:       repoPath,
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	_, err := NewService().Write(ctx, Input{
+		RepoPath: repoPath,
+		Now:      time.Now(),
+		From:     "claude-code",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Fatalf("expected ErrNoFromMatch when --from set and lineage.db missing; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "lineage.db not found") {
+		t.Errorf("error should surface the lineage-missing reason; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_RefusesWhenLineageDBUnreadable verifies
+// that unreadable lineage data cannot fall back to the active
+// provider when --from is set.
+func TestWrite_FromOverride_RefusesWhenLineageDBUnreadable(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	// Write a garbage file at the expected lineage.db path so
+	// sqlstore.Open fails. The exact failure cause is opaque to
+	// the test; only the refusal behavior matters.
+	semDir := filepath.Join(repoPath, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "lineage.db"),
+		[]byte("not a sqlite database\x00garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "active-gemini-sess",
+		Provider:  "gemini-cli",
+		CWD:       repoPath,
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	_, err := NewService().Write(ctx, Input{
+		RepoPath: repoPath,
+		Now:      time.Now(),
+		From:     "claude-code",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Fatalf("expected ErrNoFromMatch when --from set and lineage.db unreadable; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_RefusesWhenRepoRowMissing verifies that a
+// missing repository row does not fall back to the active provider
+// when --from is set.
+func TestWrite_FromOverride_RefusesWhenRepoRowMissing(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	// Open lineage.db so the file exists with valid schema, but do
+	// not insert the repository row.
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	_ = sqlstore.Close(h)
+
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "active-gemini-sess",
+		Provider:  "gemini-cli",
+		CWD:       repoPath,
+		Timestamp: time.Now().UnixMilli(),
+	})
+
+	_, err = NewService().Write(ctx, Input{
+		RepoPath: repoPath,
+		Now:      time.Now(),
+		From:     "claude-code",
+	})
+	if !errors.Is(err, ErrNoFromMatch) {
+		t.Fatalf("expected ErrNoFromMatch when --from set and repo row missing; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not registered") {
+		t.Errorf("error should surface the repo-not-registered reason; got %v", err)
+	}
+}
+
+// TestWrite_FromOverride_BypassesAmbiguousActiveSession pins the
+// safety-vs-explicitness tradeoff: when the user explicitly names
+// --from, an ambiguous active capture state is no longer a
+// blocker. The point of --from is to ignore the active state, so
+// requiring it to be unambiguous would defeat the purpose. The
+// default path (no --from) still refuses on ambiguity, covered by
+// existing tests.
+func TestWrite_FromOverride_BypassesAmbiguousActiveSession(t *testing.T) {
+	fx := setupFromOverrideFixture(t)
+
+	// Write a second active capture state. With no --from this is
+	// ErrAmbiguousSession; with --from it should be a no-op for
+	// the resolver.
+	baseDir := os.Getenv("SEMANTICA_HOME")
+	if baseDir == "" {
+		t.Fatal("setupFromOverrideFixture should have set SEMANTICA_HOME")
+	}
+	writeCaptureState(t, filepath.Join(baseDir, "capture"), captureFixture{
+		SessionID: "second-active-prov",
+		Provider:  "cursor",
+		CWD:       fx.repoPath,
+		Timestamp: fx.now.UnixMilli(),
+	})
+
+	res, err := NewService().Write(context.Background(), Input{
+		RepoPath: fx.repoPath,
+		Now:      fx.now,
+		From:     "claude-code",
+	})
+	if err != nil {
+		t.Fatalf("Write should succeed despite ambiguous active state when --from is set; got %v", err)
+	}
+	if !strings.Contains(string(res.Bytes), fx.claudeText) {
+		t.Errorf("bundle missing Claude work; --from did not override ambiguous capture state")
 	}
 }
 

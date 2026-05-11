@@ -55,6 +55,11 @@ var ErrNoSession = errors.New("no agent session found for this repo")
 // the sessions before retrying; the resolver never silently picks.
 var ErrAmbiguousSession = errors.New("multiple agent sessions active for this repo")
 
+// ErrNoFromMatch is returned when an explicit --from source cannot
+// be resolved. The wrapped error includes the specific reason, such
+// as missing lineage data or no recent session for that provider.
+var ErrNoFromMatch = errors.New("could not resolve --from source")
+
 // Input narrows the surface the caller has to provide. RepoPath is
 // the only required field; the service derives everything else from
 // the repo's lineage.db and the global capture-state directory.
@@ -67,6 +72,13 @@ type Input struct {
 	// Now is the wall-clock used for "is this session recent enough"
 	// checks. Tests inject a fixed time. Empty value means time.Now().
 	Now time.Time
+
+	// From, when non-empty, sources the bundle from the named
+	// provider's most-recent session in this repo. The value is the
+	// hook-form provider name (claude-code, cursor, gemini-cli,
+	// copilot, kiro-cli, kiro-ide). Empty uses the default resolution
+	// chain: active capture state, then lineage fallback.
+	From string
 }
 
 // Result describes what was written so the caller can render its
@@ -100,13 +112,17 @@ func NewService() *Service { return &Service{} }
 // `<repo>/.semantica/handoff.md`. Returns the resolved session and
 // the bytes written.
 //
-// Session resolution has two layers:
+// Session resolution has three layers, in priority order:
 //
-//  1. Active capture state, written by the agent's prompt-submit
+//  1. Explicit --from: when Input.From names a provider, source
+//     the bundle from that provider's most-recent session in the
+//     repo regardless of which agent currently holds the active
+//     capture state.
+//  2. Active capture state, written by the agent's prompt-submit
 //     hook and deleted by the stop hook at end of turn. Works
 //     in-turn (e.g., from the skill body's bash invocation while
 //     the agent is still mid-response).
-//  2. Lineage fallback: when no active capture state matches, look
+//  3. Lineage fallback: when no active capture state matches, look
 //     up the most-recent parent session for the repo in
 //     agent_sessions (within the same 24h recency window) that has
 //     at least one event. This is what makes `handoff --write`
@@ -128,7 +144,7 @@ func (s *Service) Write(ctx context.Context, in Input) (*Result, error) {
 		now = time.Now()
 	}
 
-	body, providerSessionID, providerHookName, err := assembleBundleForRepo(ctx, repoRoot, now)
+	body, providerSessionID, providerHookName, err := assembleBundleForRepo(ctx, repoRoot, now, strings.TrimSpace(in.From))
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +188,24 @@ func hookProviderName(dbName string) string {
 		return "gemini-cli"
 	default:
 		return dbName
+	}
+}
+
+// dbProviderName is the inverse of hookProviderName: hook-form
+// names (claude-code, gemini-cli) are translated back to DB-form
+// (claude_code, gemini_cli) for use in SQL filters. The other
+// providers (cursor, copilot, kiro-cli, kiro-ide) use the same
+// shape in both layers and pass through unchanged. Used by the
+// --from override to feed a user-supplied provider name into the
+// agent_sessions.provider column.
+func dbProviderName(hookName string) string {
+	switch hookName {
+	case "claude-code":
+		return "claude_code"
+	case "gemini-cli":
+		return "gemini_cli"
+	default:
+		return hookName
 	}
 }
 
@@ -266,7 +300,7 @@ const (
 //
 // Returned triple: body bytes, the provider-session-id for the
 // Result, and the hook-form provider name for the Result.
-func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) ([]byte, string, string, error) {
+func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, from string) ([]byte, string, string, error) {
 	branch := readGitBranch(ctx, repoPath)
 	view := bundleView{
 		Repo:        filepath.Base(repoPath),
@@ -274,8 +308,10 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 	}
 
+	// --from intentionally ignores active capture state and resolves
+	// only through lineage for the named provider.
 	captureState, captureErr := resolveSession(repoPath, now)
-	if captureErr != nil && !errors.Is(captureErr, ErrNoSession) {
+	if from == "" && captureErr != nil && !errors.Is(captureErr, ErrNoSession) {
 		// Ambiguous active capture state: keep refusing. The
 		// fallback would silently pick a winner among two real
 		// concurrent sessions, which is what the safety check is
@@ -286,10 +322,14 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
-	// lineage.db not present: only the capture-state metadata can
-	// salvage a degraded bundle. If we don't even have that,
-	// surface ErrNoSession.
+	// Without --from, capture-state metadata can still produce a
+	// degraded bundle when lineage data is missing. With --from,
+	// lineage is required so the bundle cannot be written under a
+	// different active provider's identity.
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		if from != "" {
+			return nil, "", "", fmt.Errorf("%w: lineage.db not found at %s", ErrNoFromMatch, dbPath)
+		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
 		}
@@ -304,6 +344,9 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 		Synchronous: "NORMAL",
 	})
 	if err != nil {
+		if from != "" {
+			return nil, "", "", fmt.Errorf("%w: lineage.db could not be opened: %v", ErrNoFromMatch, err)
+		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
 		}
@@ -316,6 +359,9 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 
 	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
 	if err != nil {
+		if from != "" {
+			return nil, "", "", fmt.Errorf("%w: repo not registered in lineage.db", ErrNoFromMatch)
+		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
 		}
@@ -327,6 +373,11 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 
 	// Resolution order:
 	//
+	//   - Explicit --from override (cross-agent handoff): pick the
+	//     named provider's most-recent session with events in this
+	//     repo. Bypasses both the capture state and the lineage
+	//     fallback so the user gets exactly the source they asked
+	//     for, not whatever happens to be active.
 	//   - Active capture state (in-turn): try resolveFromCaptureState
 	//     only. If the session is in-flight but hasn't been
 	//     registered in agent_sessions yet (race between the
@@ -341,9 +392,15 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) 
 	//     events is the user's last actual conversation, which is
 	//     what they want to hand off.
 	var resolved *resolvedSession
-	if captureState != nil {
+	switch {
+	case from != "":
+		resolved = resolveFromProvider(ctx, h, repoRow.RepositoryID, from, now)
+		if resolved == nil {
+			return nil, "", "", fmt.Errorf("%w: no recent %s session in this repo", ErrNoFromMatch, from)
+		}
+	case captureState != nil:
 		resolved = resolveFromCaptureState(ctx, h, repoRow.RepositoryID, captureState)
-	} else {
+	default:
 		resolved = resolveFromLineage(ctx, h, repoRow.RepositoryID, now)
 	}
 	if resolved == nil {
@@ -417,6 +474,34 @@ func resolveFromCaptureState(ctx context.Context, h *sqlstore.Handle, repoID str
 		LocalSessionID:    matched.SessionID,
 		ProviderSessionID: state.SessionID,
 		Provider:          state.Provider,
+	}
+}
+
+// resolveFromProvider picks the most-recent parent session for
+// the named provider in the repo, within the same recency window
+// the other resolvers use. The bundle's "Original session" line
+// then names this provider, so `handoff continue` defaults to
+// spawning the source agent. The user can still override with
+// --agent if they want to continue in a different one.
+//
+// hookProvider is the hook-form name (claude-code, gemini-cli,
+// etc.). It's translated to DB-form for the agent_sessions
+// filter before the query runs.
+func resolveFromProvider(ctx context.Context, h *sqlstore.Handle, repoID, hookProvider string, now time.Time) *resolvedSession {
+	since := now.Add(-recentSessionWindow).UnixMilli()
+	row, err := h.Queries.GetMostRecentSessionByProviderWithEvents(ctx,
+		sqldb.GetMostRecentSessionByProviderWithEventsParams{
+			RepositoryID: repoID,
+			Provider:     dbProviderName(hookProvider),
+			SinceTs:      since,
+		})
+	if err != nil {
+		return nil
+	}
+	return &resolvedSession{
+		LocalSessionID:    row.SessionID,
+		ProviderSessionID: row.ProviderSessionID,
+		Provider:          hookProviderName(row.Provider),
 	}
 }
 

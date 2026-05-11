@@ -85,6 +85,22 @@ where s.repository_id = sqlc.arg(repository_id)
 order by s.last_seen_at desc
 limit 1;
 
+-- name: GetMostRecentSessionByProviderWithEvents :one
+-- Used by handoff's --from override to source the bundle from a
+-- specific provider's most-recent parent session in the repo,
+-- regardless of whether a different agent currently holds the
+-- active capture state. Same recency and parent-only filters as
+-- the lineage fallback, plus a provider filter for explicit
+-- cross-agent handoff.
+select * from agent_sessions s
+where s.repository_id = sqlc.arg(repository_id)
+  and s.provider = sqlc.arg(provider)
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= sqlc.arg(since_ts)
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1;
+
 -- name: InsertSessionCheckpoint :exec
 insert or ignore into session_checkpoints (session_id, checkpoint_id) values (?, ?);
 

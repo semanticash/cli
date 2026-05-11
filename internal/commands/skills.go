@@ -188,7 +188,11 @@ func newSkillsExplainCmd(rootOpts *RootOptions) *cobra.Command {
 // same writer that `semantica handoff --write` runs, producing the
 // same two-line stdout. The SKILL.md body invokes this command
 // once, prints stdout verbatim, and stops.
+//
+// --from mirrors the user-facing flag so skill and terminal
+// invocations keep the same source-selection behavior.
 func newSkillsHandoffCmd(rootOpts *RootOptions) *cobra.Command {
+	var from string
 	cmd := &cobra.Command{
 		Use:           "handoff",
 		Short:         "Backing command for the semantica-handoff skill (hidden)",
@@ -197,8 +201,11 @@ func newSkillsHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHandoffWrite(cmd, rootOpts.RepoPath)
+			return runHandoffWrite(cmd, rootOpts.RepoPath, from)
 		},
 	}
+	cmd.Flags().StringVar(&from, "from", "",
+		"source provider for the bundle (claude-code, cursor, gemini-cli, "+
+			"copilot, kiro-cli, kiro-ide); bypasses the active session")
 	return cmd
 }

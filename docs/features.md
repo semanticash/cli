@@ -205,12 +205,13 @@ semantica explain HEAD --generate
 
 ### How it works
 
-The command first resolves an active Semantica-tracked agent session for the current repo. If the active turn state has already been cleaned up, it falls back to the most recent persisted parent session in `lineage.db`. It then reads recent captured prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context, then writes the result to `.semantica/handoff.md`. Captured prose and diff excerpts are redacted before they are written.
+The command first resolves an active Semantica-tracked agent session for the current repo. If the active turn state has already been cleaned up, it falls back to the most recent persisted parent session in `lineage.db`. Use `--from <provider>` to source the bundle from a specific recent provider session, such as `claude-code`, `cursor`, `gemini-cli`, `copilot`, `kiro-cli`, or `kiro-ide`, even when another agent is currently active. The writer then reads recent captured prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context, then writes the result to `.semantica/handoff.md`. Captured prose and diff excerpts are redacted before they are written.
 
 ### What you see
 
 ```bash
 semantica handoff --write
+semantica handoff --write --from claude-code
 semantica handoff continue
 ```
 

@@ -21,6 +21,7 @@ import (
 // retyping the original prompt.
 func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 	var write bool
+	var from string
 
 	cmd := &cobra.Command{
 		Use:   "handoff",
@@ -31,7 +32,13 @@ func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 			"is never echoed back into the originating session.\n\n" +
 			"Usage: `semantica handoff --write`. Bare `semantica handoff` " +
 			"prints this help. After writing, `semantica handoff continue` " +
-			"launches a fresh agent session preloaded with the bundle.",
+			"launches a fresh agent session preloaded with the bundle.\n\n" +
+			"Pass --from <provider> to source the bundle from a different " +
+			"agent's recent session in this repo. Example: when you've worked " +
+			"with Claude and now want to continue in Gemini, run " +
+			"`semantica handoff --write --from claude-code` from the Gemini " +
+			"session. Valid providers: claude-code, cursor, gemini-cli, " +
+			"copilot, kiro-cli, kiro-ide.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -39,11 +46,14 @@ func NewHandoffCmd(rootOpts *RootOptions) *cobra.Command {
 			if !write {
 				return cmd.Help()
 			}
-			return runHandoffWrite(cmd, rootOpts.RepoPath)
+			return runHandoffWrite(cmd, rootOpts.RepoPath, from)
 		},
 	}
 
 	cmd.Flags().BoolVar(&write, "write", false, "Write a handoff bundle to .semantica/handoff.md")
+	cmd.Flags().StringVar(&from, "from", "",
+		"source provider for the bundle (claude-code, cursor, gemini-cli, "+
+			"copilot, kiro-cli, kiro-ide); bypasses the active session")
 	cmd.AddCommand(newHandoffContinueCmd(rootOpts))
 	return cmd
 }
@@ -129,10 +139,11 @@ func runHandoffContinue(cmd *cobra.Command, repoPath, agentOverride string, prin
 // semantica-handoff SKILL.md body). Keeping the two surfaces on the
 // same helper ensures the skill backing command and terminal command
 // return identical output and errors.
-func runHandoffWrite(cmd *cobra.Command, repoPath string) error {
+func runHandoffWrite(cmd *cobra.Command, repoPath, fromProvider string) error {
 	svc := handoff.NewService()
 	res, err := svc.Write(cmd.Context(), handoff.Input{
 		RepoPath: repoPath,
+		From:     fromProvider,
 	})
 	switch {
 	case errors.Is(err, handoff.ErrNoSession):
@@ -141,6 +152,10 @@ func runHandoffWrite(cmd *cobra.Command, repoPath string) error {
 	case errors.Is(err, handoff.ErrAmbiguousSession):
 		return fmt.Errorf("multiple agent sessions active for this repo. " +
 			"close all but one and retry")
+	case errors.Is(err, handoff.ErrNoFromMatch):
+		// Keep the wrapped cause visible, then add the fallback that
+		// returns to the default active-session resolver.
+		return fmt.Errorf("%v; drop --from to use the active session", err)
 	case err != nil:
 		return err
 	}
