@@ -99,6 +99,19 @@ func NewService() *Service { return &Service{} }
 // redacted markdown bundle, and writes it to
 // `<repo>/.semantica/handoff.md`. Returns the resolved session and
 // the bytes written.
+//
+// Session resolution has two layers:
+//
+//  1. Active capture state, written by the agent's prompt-submit
+//     hook and deleted by the stop hook at end of turn. Works
+//     in-turn (e.g., from the skill body's bash invocation while
+//     the agent is still mid-response).
+//  2. Lineage fallback: when no active capture state matches, look
+//     up the most-recent parent session for the repo in
+//     agent_sessions (within the same 24h recency window) that has
+//     at least one event. This is what makes `handoff --write`
+//     work between turns, when capture state has been cleaned up
+//     but durable lineage data still exists.
 func (s *Service) Write(ctx context.Context, in Input) (*Result, error) {
 	// Normalize the repo root the same way enable/explain/status do.
 	// Running from a subdirectory must resolve scope to the repo root,
@@ -115,14 +128,9 @@ func (s *Service) Write(ctx context.Context, in Input) (*Result, error) {
 		now = time.Now()
 	}
 
-	state, err := resolveSession(repoRoot, now)
+	body, providerSessionID, providerHookName, err := assembleBundleForRepo(ctx, repoRoot, now)
 	if err != nil {
 		return nil, err
-	}
-
-	body, err := assembleBundle(ctx, repoRoot, state, now)
-	if err != nil {
-		return nil, fmt.Errorf("assemble handoff: %w", err)
 	}
 
 	semDir := filepath.Join(repoRoot, ".semantica")
@@ -136,10 +144,35 @@ func (s *Service) Write(ctx context.Context, in Input) (*Result, error) {
 
 	return &Result{
 		Path:      path,
-		SessionID: state.SessionID,
-		Provider:  state.Provider,
+		SessionID: providerSessionID,
+		Provider:  providerHookName,
 		Bytes:     body,
 	}, nil
+}
+
+// resolvedSession is the triple every downstream bundle step
+// needs, regardless of which resolver produced it.
+type resolvedSession struct {
+	LocalSessionID    string // agent_sessions.session_id, used for event lookup
+	ProviderSessionID string // shown in the bundle header
+	Provider          string // hook-form name (claude-code, gemini-cli, etc.)
+}
+
+// hookProviderName canonicalizes a DB-form provider value back to
+// the hook-registry name that bundle headers and `handoff continue`
+// expect. The lineage fallback reads from `agent_sessions.provider`
+// which stores `claude_code` / `gemini_cli` for those two agents;
+// `cursor`, `copilot`, `kiro-cli`, and `kiro-ide` are stored in the
+// same form the hook layer uses, so they pass through unchanged.
+func hookProviderName(dbName string) string {
+	switch dbName {
+	case "claude_code":
+		return "claude-code"
+	case "gemini_cli":
+		return "gemini-cli"
+	default:
+		return dbName
+	}
 }
 
 // resolveSession picks the single capture state to hand off from.
@@ -221,27 +254,49 @@ const (
 	noteEventsUnavail  = "session events could not be loaded"
 )
 
-// assembleBundle queries lineage.db for the resolved session's
-// content, redacts every prose field, and renders the markdown
-// template. Degraded paths surface a stable generic note (never the
-// raw error string) so a partial bundle is still safe to share.
-func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureState, now time.Time) ([]byte, error) {
-	semDir := filepath.Join(repoPath, ".semantica")
-	dbPath := filepath.Join(semDir, "lineage.db")
-
+// assembleBundleForRepo is the top-level bundle builder. It tries
+// the capture-state resolver first (works in-turn), falls back to
+// lineage data when no active capture state matches (works
+// between turns), and emits a degraded metadata-only bundle when
+// even lineage data is unavailable but a capture state was
+// recovered. Returns ErrNoSession when neither path produces any
+// session at all; ErrAmbiguousSession bubbles up unchanged so a
+// user with two genuinely concurrent agents in one repo still
+// sees the safety prompt.
+//
+// Returned triple: body bytes, the provider-session-id for the
+// Result, and the hook-form provider name for the Result.
+func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time) ([]byte, string, string, error) {
 	branch := readGitBranch(ctx, repoPath)
-
 	view := bundleView{
 		Repo:        filepath.Base(repoPath),
 		Branch:      branch,
-		Provider:    state.Provider,
-		SessionID:   state.SessionID,
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 	}
 
+	captureState, captureErr := resolveSession(repoPath, now)
+	if captureErr != nil && !errors.Is(captureErr, ErrNoSession) {
+		// Ambiguous active capture state: keep refusing. The
+		// fallback would silently pick a winner among two real
+		// concurrent sessions, which is what the safety check is
+		// there to prevent.
+		return nil, "", "", captureErr
+	}
+
+	semDir := filepath.Join(repoPath, ".semantica")
+	dbPath := filepath.Join(semDir, "lineage.db")
+
+	// lineage.db not present: only the capture-state metadata can
+	// salvage a degraded bundle. If we don't even have that,
+	// surface ErrNoSession.
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		if captureState == nil {
+			return nil, "", "", ErrNoSession
+		}
+		view.Provider = captureState.Provider
+		view.SessionID = captureState.SessionID
 		view.Note = noteLineageMissing
-		return renderBundle(view), nil
+		return renderBundle(view), captureState.SessionID, captureState.Provider, nil
 	}
 
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{
@@ -249,51 +304,74 @@ func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureSt
 		Synchronous: "NORMAL",
 	})
 	if err != nil {
+		if captureState == nil {
+			return nil, "", "", ErrNoSession
+		}
+		view.Provider = captureState.Provider
+		view.SessionID = captureState.SessionID
 		view.Note = noteLineageUnavail
-		return renderBundle(view), nil
+		return renderBundle(view), captureState.SessionID, captureState.Provider, nil
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 
-	// Capture state stores the provider's session ID, but
-	// agent_events.session_id is Semantica's local UUID. Resolve the
-	// local ID by chaining repo lookup + provider-session lookup
-	// before listing events. Without this step the event list is
-	// always empty.
 	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
 	if err != nil {
+		if captureState == nil {
+			return nil, "", "", ErrNoSession
+		}
+		view.Provider = captureState.Provider
+		view.SessionID = captureState.SessionID
 		view.Note = noteSessionUnknown
-		return renderBundle(view), nil
-	}
-	// Resolve the local agent_session for this capture. The query
-	// filters by provider_session_id only because hook-form provider
-	// names ("claude-code", "kiro-cli") and DB-form names
-	// ("claude_code", "kiro-cli") drift across providers. We then
-	// disambiguate using a small alias map so two providers that
-	// happen to share a provider_session_id in this repo cannot pull
-	// each other's events into the bundle.
-	sessionRows, err := h.Queries.ListAgentSessionsByProviderSessionID(ctx,
-		sqldb.ListAgentSessionsByProviderSessionIDParams{
-			RepositoryID:      repoRow.RepositoryID,
-			ProviderSessionID: state.SessionID,
-		})
-	if err != nil || len(sessionRows) == 0 {
-		view.Note = noteSessionUnknown
-		return renderBundle(view), nil
+		return renderBundle(view), captureState.SessionID, captureState.Provider, nil
 	}
 
-	matched, ok := matchSessionByProvider(sessionRows, state.Provider)
-	if !ok {
-		view.Note = noteSessionUnknown
-		return renderBundle(view), nil
+	// Resolution order:
+	//
+	//   - Active capture state (in-turn): try resolveFromCaptureState
+	//     only. If the session is in-flight but hasn't been
+	//     registered in agent_sessions yet (race between the
+	//     prompt-submit hook writing capture state and the worker
+	//     writing the lineage row), fall through to the header-only
+	//     degraded bundle below. Do not consult the lineage
+	//     fallback here. It would pick the previous session and
+	//     bundle that session's prompts and events under the
+	//     in-flight session's identity, which is the wrong content.
+	//   - No capture state (between turns): the lineage fallback
+	//     is the right answer. The most-recent parent session with
+	//     events is the user's last actual conversation, which is
+	//     what they want to hand off.
+	var resolved *resolvedSession
+	if captureState != nil {
+		resolved = resolveFromCaptureState(ctx, h, repoRow.RepositoryID, captureState)
+	} else {
+		resolved = resolveFromLineage(ctx, h, repoRow.RepositoryID, now)
 	}
+	if resolved == nil {
+		if captureState == nil {
+			return nil, "", "", ErrNoSession
+		}
+		// Capture state existed but nothing matched in lineage
+		// (e.g. a session that hasn't written any events yet).
+		// Render the header-only bundle so the user at least gets
+		// some output. Picking an older lineage session here would
+		// silently swap content for a session the user did not
+		// intend to hand off.
+		view.Provider = captureState.Provider
+		view.SessionID = captureState.SessionID
+		view.Note = noteSessionUnknown
+		return renderBundle(view), captureState.SessionID, captureState.Provider, nil
+	}
+
+	view.Provider = resolved.Provider
+	view.SessionID = resolved.ProviderSessionID
 
 	events, err := h.Queries.ListAgentEventsBySession(ctx, sqldb.ListAgentEventsBySessionParams{
-		SessionID: matched.SessionID,
+		SessionID: resolved.LocalSessionID,
 		Limit:     500,
 	})
 	if err != nil {
 		view.Note = noteEventsUnavail
-		return renderBundle(view), nil
+		return renderBundle(view), resolved.ProviderSessionID, resolved.Provider, nil
 	}
 
 	prompts := extractRecentUserPrompts(events, recentPromptsLimit)
@@ -314,7 +392,55 @@ func assembleBundle(ctx context.Context, repoPath string, state *hooks.CaptureSt
 	view.UncommittedList = statusList
 	view.UncommittedDiff = diffText
 
-	return renderBundle(view), nil
+	return renderBundle(view), resolved.ProviderSessionID, resolved.Provider, nil
+}
+
+// resolveFromCaptureState chains the capture state's
+// provider_session_id through agent_sessions to the local
+// session_id used as the event lookup key. Returns nil when the
+// chain doesn't find a matching session (capture state names a
+// provider session lineage.db has never seen).
+func resolveFromCaptureState(ctx context.Context, h *sqlstore.Handle, repoID string, state *hooks.CaptureState) *resolvedSession {
+	rows, err := h.Queries.ListAgentSessionsByProviderSessionID(ctx,
+		sqldb.ListAgentSessionsByProviderSessionIDParams{
+			RepositoryID:      repoID,
+			ProviderSessionID: state.SessionID,
+		})
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	matched, ok := matchSessionByProvider(rows, state.Provider)
+	if !ok {
+		return nil
+	}
+	return &resolvedSession{
+		LocalSessionID:    matched.SessionID,
+		ProviderSessionID: state.SessionID,
+		Provider:          state.Provider,
+	}
+}
+
+// resolveFromLineage picks the most-recent parent session with
+// events from agent_sessions, within the same recency window the
+// capture-state resolver uses. The session's stored provider name
+// is canonicalized back to hook form so the bundle header and
+// `handoff continue` see the same provider shape regardless of
+// which resolver produced the bundle.
+func resolveFromLineage(ctx context.Context, h *sqlstore.Handle, repoID string, now time.Time) *resolvedSession {
+	since := now.Add(-recentSessionWindow).UnixMilli()
+	row, err := h.Queries.GetMostRecentParentSessionWithEvents(ctx,
+		sqldb.GetMostRecentParentSessionWithEventsParams{
+			RepositoryID: repoID,
+			SinceTs:      since,
+		})
+	if err != nil {
+		return nil
+	}
+	return &resolvedSession{
+		LocalSessionID:    row.SessionID,
+		ProviderSessionID: row.ProviderSessionID,
+		Provider:          hookProviderName(row.Provider),
+	}
 }
 
 // recentPromptsLimit caps how many of the session's most-recent

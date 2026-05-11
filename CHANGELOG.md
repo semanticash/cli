@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-## [0.4.0] - 2026-05-10
+## [0.4.0] - 2026-05-11
 
 ### Added
 
-- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session, including recent user prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context for a fresh agent session.
+- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session, or the most recent persisted parent session when run between turns. Bundles include recent user prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context for a fresh agent session.
 - `semantica handoff continue` can launch a fresh Claude Code session with the saved handoff bundle, print a safe copyable command with `--print`, or show manual-launch instructions for other supported providers.
 - Hidden `semantica skills handoff` backing command now shares the same writer as `semantica handoff --write`, preparing the CLI side of the `semantica-handoff` skill.
 - `semantica skills install` fetches SKILL.md files from the `semanticash/skills` GitHub repo (release builds pull `refs/tags/<cli-version>`, dev builds pull `refs/heads/main`) and writes them into every detected agent skills directory (Claude Code, Cursor, Gemini CLI, Copilot CLI, Kiro). `--source <path>` overrides the network fetch with a local checkout for development and offline use. `semantica skills uninstall` removes Semantica-managed files from the same directories. Each installed file carries a versioned content hash; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed files.

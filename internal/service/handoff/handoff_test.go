@@ -1237,6 +1237,407 @@ func initGitRepo(t *testing.T) string {
 	return canonical
 }
 
+// --- Lineage-fallback tests ---
+//
+// These cover the between-turn path: when no active capture
+// state matches (because the Stop hook deleted it after the
+// agent's last response), the resolver falls back to the most-
+// recent parent session with events in agent_sessions. Without
+// this, `semantica handoff --write` invoked from a terminal
+// between turns would always error with "no agent session active"
+// even though all the durable session data is right there in
+// lineage.db.
+
+// TestWrite_LineageFallback_NoCaptureState covers the normal
+// between-turn case: no capture state file exists for the repo,
+// but lineage.db has a fresh parent session with events. The bundle
+// must assemble successfully and use the provider name shape that
+// `handoff continue` recognizes.
+func TestWrite_LineageFallback_NoCaptureState(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-fallback"
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID,
+		RootPath:     repoPath,
+		CreatedAt:    now.UnixMilli(),
+		EnabledAt:    now.UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID:     "source-fallback",
+		RepositoryID: repoID,
+		Provider:     "claude_code",
+		SourceKey:    "default",
+		LastSeenAt:   now.UnixMilli(),
+		CreatedAt:    now.UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID:         "local-uuid-fallback",
+		ProviderSessionID: "claude-provider-session",
+		RepositoryID:      repoID,
+		Provider:          "claude_code",
+		SourceID:          source.SourceID,
+		StartedAt:         now.Add(-10 * time.Minute).UnixMilli(),
+		LastSeenAt:        now.Add(-5 * time.Minute).UnixMilli(),
+		MetadataJson:      "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID:      "evt-user-1",
+		SessionID:    session.SessionID,
+		RepositoryID: repoID,
+		Ts:           now.Add(-2 * time.Minute).UnixMilli(),
+		Kind:         "user",
+		Role:         sql.NullString{Valid: true, String: "user"},
+		Summary:      sql.NullString{Valid: true, String: "Refactor the auth handler into a separate package."},
+		EventSource:  "hook",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture-state directory is set up but empty: zero active
+	// capture states. This is the between-turn condition.
+	setupCaptureDir(t)
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if res.Provider != "claude-code" {
+		t.Errorf("Result.Provider = %q, want hook-form %q", res.Provider, "claude-code")
+	}
+	if res.SessionID != "claude-provider-session" {
+		t.Errorf("Result.SessionID = %q, want provider-session-id %q",
+			res.SessionID, "claude-provider-session")
+	}
+	body := string(res.Bytes)
+	if !strings.Contains(body, "Refactor the auth handler into a separate package.") {
+		t.Errorf("fallback bundle missing user prompt:\n%s", body)
+	}
+	// Bundle header line must use the hook-form provider name so
+	// `handoff continue` recognizes the agent.
+	if !strings.Contains(body, "(claude-code)") {
+		t.Errorf("bundle header should use hook-form provider name; got:\n%s", body)
+	}
+	if strings.Contains(body, "(claude_code)") {
+		t.Errorf("bundle should NOT use DB-form provider name; got:\n%s", body)
+	}
+	for _, note := range []string{
+		noteLineageMissing, noteLineageUnavail, noteSessionUnknown, noteEventsUnavail,
+	} {
+		if strings.Contains(body, note) {
+			t.Errorf("lineage-fallback bundle contained degraded note %q:\n%s", note, body)
+		}
+	}
+}
+
+// TestWrite_LineageFallback_ProviderCanonicalization confirms the
+// hook-form translation for every provider whose DB and hook
+// names diverge. Without this, `handoff continue` would receive
+// `claude_code` / `gemini_cli` and fail provider matching.
+func TestWrite_LineageFallback_ProviderCanonicalization(t *testing.T) {
+	cases := []struct {
+		dbName       string
+		wantHookName string
+	}{
+		{"claude_code", "claude-code"},
+		{"gemini_cli", "gemini-cli"},
+		{"cursor", "cursor"},
+		{"copilot", "copilot"},
+		{"kiro-cli", "kiro-cli"},
+		{"kiro-ide", "kiro-ide"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.dbName, func(t *testing.T) {
+			if got := hookProviderName(tc.dbName); got != tc.wantHookName {
+				t.Errorf("hookProviderName(%q) = %q, want %q", tc.dbName, got, tc.wantHookName)
+			}
+		})
+	}
+}
+
+// TestWrite_LineageFallback_SkipsSubagentSessions confirms the
+// fallback query's parent-only filter: a child / subagent session
+// (parent_session_id set) must not be picked as the handoff
+// source even if it has more recent events than any parent. A
+// subagent transcript out of context would be misleading content
+// for a fresh top-level session.
+func TestWrite_LineageFallback_SkipsSubagentSessions(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-subagent"
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID,
+		RootPath:     repoPath,
+		CreatedAt:    now.UnixMilli(),
+		EnabledAt:    now.UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+
+	// Older parent session.
+	parent, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "parent-uuid", ProviderSessionID: "parent-provider-sess",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:    now.Add(-20 * time.Minute).UnixMilli(),
+		LastSeenAt:   now.Add(-15 * time.Minute).UnixMilli(),
+		MetadataJson: "{}",
+	})
+	// Newer subagent session (parent_session_id set).
+	_, _ = h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "subagent-uuid", ProviderSessionID: "subagent-provider-sess",
+		ParentSessionID: sql.NullString{Valid: true, String: parent.SessionID},
+		RepositoryID:    repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:    now.Add(-5 * time.Minute).UnixMilli(),
+		LastSeenAt:   now.Add(-1 * time.Minute).UnixMilli(),
+		MetadataJson: "{}",
+	})
+
+	// Events on BOTH: parent has the prompt we expect in the bundle;
+	// subagent's "search query" should be filtered out.
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-parent", SessionID: parent.SessionID, RepositoryID: repoID,
+		Ts:   now.Add(-10 * time.Minute).UnixMilli(),
+		Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "PARENT prompt that should appear"},
+		EventSource: "hook",
+	})
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-subagent", SessionID: "subagent-uuid", RepositoryID: repoID,
+		Ts:   now.Add(-2 * time.Minute).UnixMilli(),
+		Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "SUBAGENT prompt that must not appear"},
+		EventSource: "hook",
+	})
+
+	setupCaptureDir(t)
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if res.SessionID != "parent-provider-sess" {
+		t.Errorf("fallback picked %q, want parent-provider-sess (subagent should be skipped)", res.SessionID)
+	}
+	body := string(res.Bytes)
+	if !strings.Contains(body, "PARENT prompt that should appear") {
+		t.Errorf("bundle missing parent prompt:\n%s", body)
+	}
+	if strings.Contains(body, "SUBAGENT prompt that must not appear") {
+		t.Errorf("bundle leaked subagent prompt:\n%s", body)
+	}
+}
+
+// TestWrite_LineageFallback_SkipsEventlessSessions confirms the
+// fallback query's has-events filter: a session that exists in
+// agent_sessions but has no rows in agent_events shouldn't be
+// picked, even if it's the only candidate. An eventless session
+// produces an empty bundle which is worse than no bundle.
+func TestWrite_LineageFallback_SkipsEventlessSessions(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-eventless"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+	_, _ = h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "empty-uuid", ProviderSessionID: "empty-sess",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:    now.Add(-1 * time.Minute).UnixMilli(),
+		LastSeenAt:   now.Add(-1 * time.Minute).UnixMilli(),
+		MetadataJson: "{}",
+	})
+	// No events at all for this session.
+
+	setupCaptureDir(t)
+
+	_, err = NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if !errors.Is(err, ErrNoSession) {
+		t.Errorf("expected ErrNoSession when only candidate session has no events; got %v", err)
+	}
+}
+
+// TestWrite_LineageFallback_NotUsedWhenCaptureStateExists verifies
+// that an active capture state always takes precedence. When capture
+// state exists for an in-flight session that hasn't been
+// registered in agent_sessions yet (race between the
+// prompt-submit hook writing the capture state and the worker
+// upserting the lineage row), the resolver must NOT fall back to
+// the previous session via resolveFromLineage. Doing so would
+// silently swap a different session's content under the
+// in-flight session's provider/identity.
+//
+// Setup: active capture state names "new-session-not-yet-in-db",
+// an older lineage parent session with events sits in
+// agent_sessions, and lineage has no row for the new session
+// yet. Assertion: the bundle is rendered (degraded), names the
+// new session in the header, and does NOT carry the older
+// session's prompts.
+func TestWrite_LineageFallback_NotUsedWhenCaptureStateExists(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-race"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+	// Older session: this is the trap. If the resolver falls
+	// through to the lineage fallback, it picks up THIS session's
+	// events and attributes them to the in-flight capture state.
+	older, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "older-uuid", ProviderSessionID: "older-provider-sess",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:    now.Add(-30 * time.Minute).UnixMilli(),
+		LastSeenAt:   now.Add(-20 * time.Minute).UnixMilli(),
+		MetadataJson: "{}",
+	})
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-older", SessionID: older.SessionID, RepositoryID: repoID,
+		Ts:   now.Add(-25 * time.Minute).UnixMilli(),
+		Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "OLDER-SESSION PROMPT - must not appear in the bundle"},
+		EventSource: "hook",
+	})
+
+	// Active capture state for a brand-new session that lineage
+	// has NOT registered yet. This is the "in-flight before worker
+	// catches up" race condition we're guarding against.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "new-session-not-yet-in-db",
+		Provider:  "claude-code",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	body := string(res.Bytes)
+
+	// Bundle must name the in-flight session, not the older one.
+	if res.SessionID != "new-session-not-yet-in-db" {
+		t.Errorf("Result.SessionID = %q, want the in-flight capture state's id", res.SessionID)
+	}
+	if !strings.Contains(body, "new-session-not-yet-in-db") {
+		t.Errorf("bundle header should name the in-flight session:\n%s", body)
+	}
+	// The older session's prompt must not appear anywhere in the bundle.
+	if strings.Contains(body, "OLDER-SESSION PROMPT") {
+		t.Errorf("bundle leaked content from an unrelated older session:\n%s", body)
+	}
+	// We expect the degraded header-only path here, with the
+	// session-unknown note explaining the missing lineage row.
+	if !strings.Contains(body, noteSessionUnknown) {
+		t.Errorf("expected the session-unknown degraded note when in-flight session has no lineage row:\n%s", body)
+	}
+}
+
+// TestWrite_LineageFallback_StaleSessionIsSkipped guards the
+// recency filter: a parent session whose last_seen_at is older
+// than 24h must not be picked, matching the capture-state
+// resolver's freshness threshold.
+func TestWrite_LineageFallback_StaleSessionIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-stale"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+	stale, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "stale-uuid", ProviderSessionID: "stale-sess",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:    now.Add(-72 * time.Hour).UnixMilli(),
+		LastSeenAt:   now.Add(-48 * time.Hour).UnixMilli(),
+		MetadataJson: "{}",
+	})
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-stale", SessionID: stale.SessionID, RepositoryID: repoID,
+		Ts:   now.Add(-48 * time.Hour).UnixMilli(),
+		Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: "stale prompt"},
+		EventSource: "hook",
+	})
+
+	setupCaptureDir(t)
+
+	_, err = NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if !errors.Is(err, ErrNoSession) {
+		t.Errorf("expected ErrNoSession for stale-only session; got %v", err)
+	}
+}
+
 func itoaInt64(n int64) string {
 	if n == 0 {
 		return "0"

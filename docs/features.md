@@ -205,7 +205,7 @@ semantica explain HEAD --generate
 
 ### How it works
 
-The command resolves the active Semantica-tracked agent session for the current repo, reads recent captured prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context, then writes the result to `.semantica/handoff.md`. Captured prose and diff excerpts are redacted before they are written.
+The command first resolves an active Semantica-tracked agent session for the current repo. If the active turn state has already been cleaned up, it falls back to the most recent persisted parent session in `lineage.db`. It then reads recent captured prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context, then writes the result to `.semantica/handoff.md`. Captured prose and diff excerpts are redacted before they are written.
 
 ### What you see
 

@@ -84,6 +84,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getManifestCommitLinkStmt, err = db.PrepareContext(ctx, getManifestCommitLink); err != nil {
 		return nil, fmt.Errorf("error preparing query GetManifestCommitLink: %w", err)
 	}
+	if q.getMostRecentParentSessionWithEventsStmt, err = db.PrepareContext(ctx, getMostRecentParentSessionWithEvents); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMostRecentParentSessionWithEvents: %w", err)
+	}
 	if q.getNextToolResultAfterStmt, err = db.PrepareContext(ctx, getNextToolResultAfter); err != nil {
 		return nil, fmt.Errorf("error preparing query GetNextToolResultAfter: %w", err)
 	}
@@ -370,6 +373,11 @@ func (q *Queries) Close() error {
 	if q.getManifestCommitLinkStmt != nil {
 		if cerr := q.getManifestCommitLinkStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getManifestCommitLinkStmt: %w", cerr)
+		}
+	}
+	if q.getMostRecentParentSessionWithEventsStmt != nil {
+		if cerr := q.getMostRecentParentSessionWithEventsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMostRecentParentSessionWithEventsStmt: %w", cerr)
 		}
 	}
 	if q.getNextToolResultAfterStmt != nil {
@@ -736,6 +744,7 @@ type Queries struct {
 	getLatestCheckpointForRepoStmt           *sql.Stmt
 	getLatestCommitLinkStmt                  *sql.Stmt
 	getManifestCommitLinkStmt                *sql.Stmt
+	getMostRecentParentSessionWithEventsStmt *sql.Stmt
 	getNextToolResultAfterStmt               *sql.Stmt
 	getPreviousCommitLinkedCheckpointStmt    *sql.Stmt
 	getPreviousCompletedCheckpointStmt       *sql.Stmt
@@ -823,6 +832,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getLatestCheckpointForRepoStmt:           q.getLatestCheckpointForRepoStmt,
 		getLatestCommitLinkStmt:                  q.getLatestCommitLinkStmt,
 		getManifestCommitLinkStmt:                q.getManifestCommitLinkStmt,
+		getMostRecentParentSessionWithEventsStmt: q.getMostRecentParentSessionWithEventsStmt,
 		getNextToolResultAfterStmt:               q.getNextToolResultAfterStmt,
 		getPreviousCommitLinkedCheckpointStmt:    q.getPreviousCommitLinkedCheckpointStmt,
 		getPreviousCompletedCheckpointStmt:       q.getPreviousCompletedCheckpointStmt,
