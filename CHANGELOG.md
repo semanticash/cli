@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-## [0.4.0] - 2026-05-11
+## [0.4.0] - 2026-05-12
 
 ### Added
 
@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Handoff bundles now render recent prompts and assistant context in fenced blocks, prefer full prompt blobs over compact event summaries, include useful commit-message bodies, and hide Semantica metadata trailers from the commit list.
 - Handoff writes always resolve the Git repository root before reading lineage data or writing `.semantica/handoff.md`, so subdirectory invocations target the correct repo.
 
 ## [0.3.9] - 2026-05-07

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
@@ -25,8 +27,8 @@ func TestTruncateRunes(t *testing.T) {
 	}{
 		{"shorter than cap", "hello", 10, "hello"},
 		{"exactly cap", "hello", 5, "hello"},
-		{"longer than cap", "hello world", 5, "hello..."},
-		{"multibyte runes preserved", "héllo wörld", 6, "héllo ..."},
+		{"longer than cap", "hello world", 5, "hello [truncated]"},
+		{"multibyte runes preserved", "héllo wörld", 6, "héllo  [truncated]"},
 		{"empty string", "", 5, ""},
 	}
 	for _, tc := range cases {
@@ -149,11 +151,16 @@ func TestExtractLastPrompt_TruncatesAtCap(t *testing.T) {
 	long := strings.Repeat("x", maxPromptChars+50)
 	events := []sqldb.AgentEvent{userEvent(long)}
 	got := extractLastPrompt(events)
-	if len([]rune(got)) != maxPromptChars+3 { // cap + "..."
-		t.Errorf("expected truncation to %d runes plus ellipsis, got len %d", maxPromptChars, len([]rune(got)))
+	// truncateRunes returns the n-rune prefix plus " [truncated]"
+	// when the input exceeds the cap. The marker length is fixed
+	// at len(" [truncated]") = 12 runes.
+	const markerLen = len(" [truncated]")
+	if len([]rune(got)) != maxPromptChars+markerLen {
+		t.Errorf("expected truncation to %d runes plus %d-rune marker, got len %d",
+			maxPromptChars, markerLen, len([]rune(got)))
 	}
-	if !strings.HasSuffix(got, "...") {
-		t.Errorf("expected ellipsis suffix, got %q", got[len(got)-5:])
+	if !strings.HasSuffix(got, " [truncated]") {
+		t.Errorf("expected [truncated] suffix, got tail %q", got[len(got)-20:])
 	}
 }
 
@@ -253,8 +260,8 @@ func TestExtractRecentUserPrompts_TruncatesEachEntry(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d prompts, want 1", len(got))
 	}
-	if !strings.HasSuffix(got[0], "...") {
-		t.Errorf("expected ellipsis suffix on truncated prompt: %q", got[0])
+	if !strings.HasSuffix(got[0], " [truncated]") {
+		t.Errorf("expected [truncated] suffix on truncated prompt: %q", got[0])
 	}
 }
 
@@ -331,6 +338,345 @@ func TestRedactString_HappyPathPassesThrough(t *testing.T) {
 	}
 }
 
+// --- Rich prompt extraction (blob payload preferred) ---
+
+// putBlob writes a payload to a fresh blob store and returns the
+// store + the resulting content hash. Used by the rich-prompt
+// tests below to construct events with real PayloadHash values
+// that resolve to real bytes.
+func putBlob(t *testing.T, payload string) (*blobs.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	bs, err := blobs.NewStore(dir)
+	if err != nil {
+		t.Fatalf("blobs.NewStore: %v", err)
+	}
+	hash, _, err := bs.Put(context.Background(), []byte(payload))
+	if err != nil {
+		t.Fatalf("blobs.Put: %v", err)
+	}
+	return bs, hash
+}
+
+func TestExtractRecentUserPromptsRich_PrefersBlobOverSummary(t *testing.T) {
+	const (
+		fullPrompt  = "Please refactor the auth middleware to use the new session interface, and update the integration tests under integration/auth/."
+		summaryStub = "Please refactor the auth..." // ~broker-summary length
+	)
+	bs, hash := putBlob(t, fullPrompt)
+	events := []sqldb.AgentEvent{
+		{
+			Role:        sql.NullString{Valid: true, String: "user"},
+			Kind:        "user",
+			Summary:     sql.NullString{Valid: true, String: summaryStub},
+			PayloadHash: sql.NullString{Valid: true, String: hash},
+		},
+	}
+
+	got := extractRecentUserPromptsRich(context.Background(), events, bs, 5)
+	if len(got) != 1 {
+		t.Fatalf("got %d prompts, want 1", len(got))
+	}
+	if !strings.Contains(got[0], "integration/auth/") {
+		t.Errorf("expected full blob payload, not summary stub; got %q", got[0])
+	}
+	if got[0] == summaryStub {
+		t.Errorf("blob path took the summary fallback; got %q", got[0])
+	}
+}
+
+func TestExtractRecentUserPromptsRich_FallsBackToSummaryWhenBlobMissing(t *testing.T) {
+	// Build a store and then deliberately reference a hash it
+	// does not contain; Get will fail and the extractor must
+	// silently fall back to the summary.
+	dir := t.TempDir()
+	bs, err := blobs.NewStore(dir)
+	if err != nil {
+		t.Fatalf("blobs.NewStore: %v", err)
+	}
+	events := []sqldb.AgentEvent{
+		{
+			Role:        sql.NullString{Valid: true, String: "user"},
+			Kind:        "user",
+			Summary:     sql.NullString{Valid: true, String: "summary fallback content"},
+			PayloadHash: sql.NullString{Valid: true, String: "deadbeef-not-a-real-hash"},
+		},
+	}
+
+	got := extractRecentUserPromptsRich(context.Background(), events, bs, 5)
+	if len(got) != 1 {
+		t.Fatalf("got %d prompts, want 1", len(got))
+	}
+	if !strings.Contains(got[0], "summary fallback content") {
+		t.Errorf("expected summary fallback when blob missing; got %q", got[0])
+	}
+}
+
+func TestExtractRecentUserPromptsRich_FallsBackToSummaryWhenNoPayloadHash(t *testing.T) {
+	events := []sqldb.AgentEvent{
+		{
+			Role:    sql.NullString{Valid: true, String: "user"},
+			Kind:    "user",
+			Summary: sql.NullString{Valid: true, String: "no hash here"},
+			// PayloadHash deliberately unset.
+		},
+	}
+	got := extractRecentUserPromptsRich(context.Background(), events, nil, 5)
+	if len(got) != 1 || !strings.Contains(got[0], "no hash here") {
+		t.Errorf("expected summary path when no payload hash; got %v", got)
+	}
+}
+
+// TestExtractRecentUserPromptsRich_SkipsEmptyRedactionResult
+// checks the fail-closed contract: when the redactor returns ""
+// (its signal that redaction itself failed and the content
+// should not be emitted), the prompt is dropped rather than rendered
+// as an empty fenced block. Emitting empty would also waste one
+// of the n prompt slots, hiding a usable older prompt behind a
+// nothing-to-see-here block.
+//
+// The in-process redactor's error path is difficult to trigger
+// directly, so the test uses the redactStringFn seam to exercise
+// the fail-closed branch.
+func TestExtractRecentUserPromptsRich_SkipsEmptyRedactionResult(t *testing.T) {
+	// Single store so both hashes resolve; otherwise the second
+	// event would fall to the summary path and the redact stub
+	// wouldn't see the blob content it was matching on.
+	bs, err := blobs.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobs.NewStore: %v", err)
+	}
+	hashA, _, err := bs.Put(context.Background(), []byte("first prompt content"))
+	if err != nil {
+		t.Fatalf("blobs.Put A: %v", err)
+	}
+	hashB, _, err := bs.Put(context.Background(), []byte("second prompt content"))
+	if err != nil {
+		t.Fatalf("blobs.Put B: %v", err)
+	}
+
+	events := []sqldb.AgentEvent{
+		// Most-recent first (descending-ts) matches resolver order.
+		{
+			Role:        sql.NullString{Valid: true, String: "user"},
+			Kind:        "user",
+			Summary:     sql.NullString{Valid: true, String: "second"},
+			PayloadHash: sql.NullString{Valid: true, String: hashB},
+		},
+		{
+			Role:        sql.NullString{Valid: true, String: "user"},
+			Kind:        "user",
+			Summary:     sql.NullString{Valid: true, String: "first"},
+			PayloadHash: sql.NullString{Valid: true, String: hashA},
+		},
+	}
+
+	// Stub redactStringFn to fail-close on the most-recent prompt
+	// and pass the older one through. Restoring on cleanup.
+	orig := redactStringFn
+	redactStringFn = func(s string) string {
+		if strings.Contains(s, "second prompt content") {
+			return "" // simulate redactor fail-closed
+		}
+		return s
+	}
+	t.Cleanup(func() { redactStringFn = orig })
+
+	got := extractRecentUserPromptsRich(context.Background(), events, bs, 5)
+
+	// Must contain the older prompt and no empty string that would
+	// render as an empty fenced block.
+	if len(got) != 1 {
+		t.Fatalf("got %d prompts, want 1 (empty redaction must be skipped); got=%v", len(got), got)
+	}
+	if !strings.Contains(got[0], "first prompt content") {
+		t.Errorf("expected the older prompt to survive; got %q", got[0])
+	}
+	for _, p := range got {
+		if p == "" {
+			t.Errorf("empty prompt entry should have been skipped, not emitted")
+		}
+	}
+}
+
+// TestExtractRecentUserPromptsRich_RedactsBeforeTruncate checks
+// that a secret straddling the cap boundary does not leak a
+// recognizable prefix to the bundle.
+// Truncate-then-redact would split the secret partway and the
+// redactor (which matches whole patterns) would miss the
+// truncated prefix, leaving identifiable secret-shaped text in
+// the output. Redact-then-truncate scans the full body first,
+// replacing the secret with [REDACTED] before any truncation.
+//
+// Slack webhook URLs are the chosen fixture because the redactor
+// recognizes the full pattern reliably but does not match a
+// partial prefix, so the two orderings produce distinguishable
+// output.
+//
+// The literal is built via string concatenation rather than as a
+// single source-level constant so secret-scanners (GitHub Push
+// Protection, gitleaks) do not flag the test file as containing
+// a real webhook. Same technique the redact corpus_test uses for
+// this same URL shape.
+func TestExtractRecentUserPromptsRich_RedactsBeforeTruncate(t *testing.T) {
+	secret := "https://" + "hooks." + "slack." + "com/" +
+		"services/T01234567/B01234567/" + "xyzXYZ1234567890abcdefgh"
+	// Discriminator: appears verbatim under truncate-first;
+	// replaced by [REDACTED] under redact-first. Split the
+	// same way for the same scanner reason.
+	leakMarker := "hooks." + "slack." + "com"
+
+	// 30-char post-padding budget: under truncate-first, ~29
+	// chars of the URL would survive in the output. Under
+	// redact-first, the URL is replaced by [REDACTED] before any
+	// truncation, so the leakMarker substring cannot appear.
+	padding := strings.Repeat("a", maxPromptChars-30)
+	body := padding + " " + secret + " trailing prose"
+
+	bs, hash := putBlob(t, body)
+	events := []sqldb.AgentEvent{
+		{
+			Role:        sql.NullString{Valid: true, String: "user"},
+			Kind:        "user",
+			Summary:     sql.NullString{Valid: true, String: "irrelevant"},
+			PayloadHash: sql.NullString{Valid: true, String: hash},
+		},
+	}
+
+	got := extractRecentUserPromptsRich(context.Background(), events, bs, 5)
+	if len(got) != 1 {
+		t.Fatalf("got %d prompts, want 1", len(got))
+	}
+	if strings.Contains(got[0], leakMarker) {
+		t.Errorf("secret prefix leaked through truncate-before-redact ordering; got %q", got[0])
+	}
+}
+
+// --- Semantica trailer stripping ---
+
+func TestStripSemanticaTrailers(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty body unchanged",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "body without trailer unchanged",
+			in:   "Refactor the auth path.\n\nDetails about why.",
+			want: "Refactor the auth path.\n\nDetails about why.",
+		},
+		{
+			name: "trailing Semantica-Checkpoint stripped",
+			in:   "Real body content.\n\nSemantica-Checkpoint: 23843cbd-79a5-42a3-9a58-00a46123d82f",
+			want: "Real body content.",
+		},
+		{
+			name: "Co-Authored-By preserved, Semantica stripped",
+			in:   "Body.\n\nCo-Authored-By: Foo <foo@example.com>\nSemantica-Checkpoint: abc123",
+			want: "Body.\n\nCo-Authored-By: Foo <foo@example.com>",
+		},
+		{
+			name: "multiple Semantica trailers all stripped",
+			in:   "Body.\n\nSemantica-Checkpoint: abc\nSemantica-Other: def",
+			want: "Body.",
+		},
+		{
+			name: "Semantica mention in prose preserved",
+			in:   "We changed how Semantica-Checkpoint behaves in the post-commit hook.\n\nMore detail.",
+			want: "We changed how Semantica-Checkpoint behaves in the post-commit hook.\n\nMore detail.",
+		},
+		{
+			name: "Semantica without colon not treated as trailer",
+			in:   "Body.\n\nSemantica-Foo without colon",
+			want: "Body.\n\nSemantica-Foo without colon",
+		},
+		{
+			name: "trailing blank lines after trailer cleaned up",
+			in:   "Body.\n\nSemantica-Checkpoint: abc\n\n",
+			want: "Body.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripSemanticaTrailers(tc.in)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderBundle_PromptsFencedAndSafeAgainstNestedFences checks
+// two related rendering contracts:
+//
+//   - Prompts render inside markdown code fences (not bullets),
+//     so multi-line prompts preserve their structure and the
+//     prompt cap doesn't produce unreadable bullets.
+//   - The chosen fence is longer than any backtick run in the
+//     body, so a prompt containing ``` cannot escape the fence
+//     and bleed into the rest of the bundle.
+func TestRenderBundle_PromptsFencedAndSafeAgainstNestedFences(t *testing.T) {
+	promptWithFence := "before\n```bash\nrm -rf /tmp/x\n```\nafter"
+	body := renderBundle(bundleView{
+		Repo: "r", Branch: "b", Provider: "claude-code",
+		SessionID: "s", GeneratedAt: "t",
+		RecentPrompts: []string{promptWithFence},
+	})
+	out := string(body)
+
+	// The opening fence must be at least four backticks because
+	// the body contains a three-backtick run. Three would be
+	// terminated by the inner ```.
+	if !strings.Contains(out, "````\n") {
+		t.Errorf("expected outer fence to be longer than inner ```; got\n%s", out)
+	}
+	// Inner content survives verbatim.
+	if !strings.Contains(out, "rm -rf /tmp/x") {
+		t.Errorf("prompt content should appear inside the fence; got\n%s", out)
+	}
+}
+
+// TestRenderBundle_CommitBodyRendersUnderBullet checks the
+// subject+body rendering rule: a commit with a body shows the
+// body indented under its bullet, while a commit with no body
+// shows only the subject.
+func TestRenderBundle_CommitBodyRendersUnderBullet(t *testing.T) {
+	body := renderBundle(bundleView{
+		Repo: "r", Branch: "b", Provider: "claude-code",
+		SessionID: "s", GeneratedAt: "t",
+		RecentCommits: []git.Commit{
+			{
+				ShortHash: "deadbee",
+				Subject:   "fix: rate limit",
+				Body:      "Buckets refill at 10/s,\nnot 100/s as before.",
+			},
+			{ShortHash: "feedcaf", Subject: "docs: typo"},
+		},
+	})
+	out := string(body)
+
+	// Subject line as bullet.
+	if !strings.Contains(out, "- **deadbee** fix: rate limit") {
+		t.Errorf("commit-with-body must render subject as a bullet:\n%s", out)
+	}
+	// Body lines indented two spaces (list continuation).
+	if !strings.Contains(out, "  Buckets refill at 10/s,") {
+		t.Errorf("commit body must be indented under bullet:\n%s", out)
+	}
+	if !strings.Contains(out, "  not 100/s as before.") {
+		t.Errorf("commit body second line must also be indented:\n%s", out)
+	}
+	// No-body commit gets subject alone, no trailing empty indent.
+	if !strings.Contains(out, "- **feedcaf** docs: typo") {
+		t.Errorf("commit-without-body must render subject as a bullet:\n%s", out)
+	}
+}
+
 func TestRenderBundle_Headline(t *testing.T) {
 	body := renderBundle(bundleView{
 		Repo:          "myrepo",
@@ -353,12 +699,20 @@ func TestRenderBundle_Headline(t *testing.T) {
 		"src/auth.go (Edit x2)",
 		"## Where I left off",
 		"Recent user prompts",
-		"- first ask",
-		"- fix the auth bug",
+		// Prompts now render as fenced blocks rather than bullets.
+		// Asserting on the content inside the fence is what matters;
+		// the surrounding ``` is covered by a dedicated fence test.
+		"first ask",
+		"fix the auth bug",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered bundle missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+	// Prompts should not appear as the old "- " bullet form; that
+	// would indicate the fenced rendering regressed.
+	if strings.Contains(out, "- first ask") || strings.Contains(out, "- fix the auth bug") {
+		t.Errorf("prompts should render as fenced blocks, not bullets:\n%s", out)
 	}
 }
 
@@ -371,9 +725,15 @@ func TestRenderBundle_RecentCommitsAndUncommittedSections(t *testing.T) {
 		Provider:    "claude-code",
 		SessionID:   "sess-x",
 		GeneratedAt: "2026-05-10T08:30:00Z",
-		RecentCommits: []string{
-			"abcd123 feat: add handler",
-			"abce456 chore: lint fixes",
+		RecentCommits: []git.Commit{
+			{ShortHash: "abcd123", Subject: "feat: add handler"},
+			{
+				ShortHash: "abce456",
+				Subject:   "chore: lint fixes",
+				// Body present: must render under the bullet,
+				// indented for CommonMark list continuation.
+				Body: "Resolved govet shadow warnings and a few\nstaticcheck nags.",
+			},
 		},
 		UncommittedList: " M src/auth.go\n?? src/auth_test.go",
 		UncommittedDiff: "@@ -1 +1,2 @@\n-old\n+new\n+more",
@@ -382,8 +742,12 @@ func TestRenderBundle_RecentCommitsAndUncommittedSections(t *testing.T) {
 
 	for _, want := range []string{
 		"## Recent commits during this session",
-		"- abcd123 feat: add handler",
-		"- abce456 chore: lint fixes",
+		"- **abcd123** feat: add handler",
+		"- **abce456** chore: lint fixes",
+		// Body must appear, indented under its bullet so a
+		// markdown renderer treats it as list-item content.
+		"  Resolved govet shadow warnings",
+		"  staticcheck nags.",
 		"## Working tree changes (uncommitted)",
 		"Files:",
 		" M src/auth.go",
@@ -1766,7 +2130,7 @@ func TestWrite_FromOverride_PicksClaudeOverActiveGemini(t *testing.T) {
 	}
 }
 
-// TestWrite_FromOverride_TranslatesHookFormToDBForm pins that the
+// TestWrite_FromOverride_TranslatesHookFormToDBForm checks that the
 // flag accepts hook-form provider names (the same shape `handoff
 // continue` uses and what users see in skill docs). Internally
 // the resolver must translate claude-code -> claude_code and
@@ -1792,7 +2156,7 @@ func TestWrite_FromOverride_TranslatesHookFormToDBForm(t *testing.T) {
 	}
 }
 
-// TestWrite_FromOverride_NoMatchingProviderErrors pins the
+// TestWrite_FromOverride_NoMatchingProviderErrors checks the
 // error path: --from names a provider with no recent session in
 // the repo. Must return ErrNoFromMatch so the command layer can
 // say "no <provider> sessions found; check the name or drop --from."
@@ -1810,7 +2174,7 @@ func TestWrite_FromOverride_NoMatchingProviderErrors(t *testing.T) {
 	}
 }
 
-// TestWrite_FromOverride_SkipsStaleSessions pins that --from
+// TestWrite_FromOverride_SkipsStaleSessions checks that --from
 // honors the same recency window the other resolvers use. A
 // session whose last_seen is outside the window must not be
 // returned, even if it's the only one matching the provider, or
@@ -1865,7 +2229,7 @@ func TestWrite_FromOverride_SkipsStaleSessions(t *testing.T) {
 	}
 }
 
-// TestWrite_FromOverride_SkipsSubagentSessions pins that --from
+// TestWrite_FromOverride_SkipsSubagentSessions checks that --from
 // uses the same parent-only filter the lineage fallback uses.
 // Subagent sessions (parent_session_id set) are not standalone
 // conversations and must not be returned as the source.
@@ -2026,7 +2390,7 @@ func TestWrite_FromOverride_RefusesWhenRepoRowMissing(t *testing.T) {
 	}
 }
 
-// TestWrite_FromOverride_BypassesAmbiguousActiveSession pins the
+// TestWrite_FromOverride_BypassesAmbiguousActiveSession checks the
 // safety-vs-explicitness tradeoff: when the user explicitly names
 // --from, an ambiguous active capture state is no longer a
 // blocker. The point of --from is to ignore the active state, so
@@ -2069,7 +2433,7 @@ func TestWrite_FromOverride_BypassesAmbiguousActiveSession(t *testing.T) {
 //   - 2+ distinct providers: bubble AmbiguousActiveSessionError
 //     with the candidate list so the command layer can pick.
 
-// TestWrite_MultipleSameProviderSessions_AutoRoutes pins the
+// TestWrite_MultipleSameProviderSessions_AutoRoutes checks the
 // "duplicates collapse to one provider" rule. Two Claude capture
 // states are active; one Claude lineage row with events exists.
 // Write must succeed and produce a Claude bundle without
@@ -2218,7 +2582,7 @@ func TestWrite_AutoCollapse_LineageDBMissingReturnsAutoSelectFailed(t *testing.T
 	}
 }
 
-// TestWrite_MultipleDistinctProviders_ReturnsTypedError pins the
+// TestWrite_MultipleDistinctProviders_ReturnsTypedError checks the
 // other half of the contract: 2+ distinct providers must surface
 // an AmbiguousActiveSessionError carrying the candidate list. The
 // errors.Is(err, ErrAmbiguousSession) check must still pass so
@@ -2286,7 +2650,7 @@ func TestWrite_MultipleDistinctProviders_ReturnsTypedError(t *testing.T) {
 	}
 }
 
-// TestListActiveProviders_FiltersByRepoAndRecency pins the helper
+// TestListActiveProviders_FiltersByRepoAndRecency checks the helper
 // in isolation: only states matching the repo and inside the
 // recency window count. Sort order (most-recent first) is also
 // asserted because it drives the picker's default-highlight.

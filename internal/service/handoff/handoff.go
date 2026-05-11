@@ -23,6 +23,7 @@ import (
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
@@ -37,9 +38,11 @@ const HandoffFilename = "handoff.md"
 // off.
 const recentSessionWindow = 24 * time.Hour
 
-// maxPromptChars is the redaction-friendly cap on prompt and
-// assistant-message text included in the bundle.
-const maxPromptChars = 500
+// maxPromptChars caps each prompt and assistant-message rendered
+// in the bundle. The cap keeps bundles bounded while preserving
+// substantive prompts; redaction runs first, so the cap operates
+// on already-sanitized text.
+const maxPromptChars = 1500
 
 // maxFilesInTouchSummary caps how many file-touch entries appear in
 // the bundle so a noisy session doesn't blow the output budget.
@@ -626,11 +629,14 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 		return renderBundle(view), resolved.ProviderSessionID, resolved.Provider, nil
 	}
 
-	prompts := extractRecentUserPrompts(events, recentPromptsLimit)
-	for i, p := range prompts {
-		prompts[i] = redactString(p)
-	}
-	view.RecentPrompts = prompts
+	// Prefer raw prompt blobs over the broker-stored summary for
+	// the handoff bundle. The summary is intentionally short
+	// (~200 chars) because it feeds compact UI surfaces; handoff
+	// benefits from the fuller prompt when the blob is available.
+	// If blob-store setup fails, the extractor falls back to the
+	// stored summary.
+	bs, _ := blobs.NewStore(filepath.Join(semDir, "objects"))
+	view.RecentPrompts = extractRecentUserPromptsRich(ctx, events, bs, recentPromptsLimit)
 	view.LastAssistant = redactString(extractLastAssistant(events))
 	view.FileTouches = aggregateFileTouches(events)
 
@@ -736,8 +742,9 @@ const recentCommitsLimit = 10
 // readRecentCommits returns commits landed since the session
 // started, capped at recentCommitsLimit. Returns nil on any error
 // (broken git, no HEAD, no commits in window) so the bundle still
-// renders without the section.
-func readRecentCommits(ctx context.Context, repoPath string, sessionStart time.Time) ([]string, error) {
+// renders without the section. Semantica-* trailers are stripped
+// from commit bodies before rendering.
+func readRecentCommits(ctx context.Context, repoPath string, sessionStart time.Time) ([]git.Commit, error) {
 	if sessionStart.IsZero() {
 		return nil, nil
 	}
@@ -745,7 +752,70 @@ func readRecentCommits(ctx context.Context, repoPath string, sessionStart time.T
 	if err != nil {
 		return nil, err
 	}
-	return repo.LogSince(ctx, sessionStart, recentCommitsLimit)
+	commits, err := repo.LogSince(ctx, sessionStart, recentCommitsLimit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range commits {
+		commits[i].Body = stripSemanticaTrailers(commits[i].Body)
+	}
+	return commits, nil
+}
+
+// stripSemanticaTrailers removes any trailing Semantica-* trailer
+// lines (e.g. "Semantica-Checkpoint: <uuid>" written by the
+// post-commit hook) from a commit body. Filters contiguous
+// Semantica-trailer lines at the bottom only, plus any blank
+// separator lines they leave behind; non-Semantica trailers
+// (Co-Authored-By, Signed-off-by, etc.) are preserved. The first
+// non-Semantica, non-blank line stops the walk, so prose that
+// happens to mention "Semantica-Checkpoint" mid-body is
+// untouched.
+func stripSemanticaTrailers(body string) string {
+	if body == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	end := len(lines)
+	for end > 0 {
+		line := strings.TrimRight(lines[end-1], " \t")
+		if line == "" {
+			end--
+			continue
+		}
+		if !isSemanticaTrailer(line) {
+			break
+		}
+		end--
+	}
+	return strings.TrimRight(strings.Join(lines[:end], "\n"), "\n")
+}
+
+// isSemanticaTrailer reports whether a line matches the
+// "Semantica-<Token>: <value>" trailer shape. The token must be
+// non-empty and contain only alnum or hyphen; the colon must
+// appear immediately after the token. Defensive about prefix
+// collisions (e.g. "Semantica-suggested-prose:" would match by
+// design, but free-form "Semantica is great" would not because
+// there is no token-then-colon).
+func isSemanticaTrailer(line string) bool {
+	const prefix = "Semantica-"
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	rest := line[len(prefix):]
+	colon := strings.IndexByte(rest, ':')
+	if colon <= 0 {
+		return false
+	}
+	token := rest[:colon]
+	for _, r := range token {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // readUncommittedWork returns the `git status --short` file list and
@@ -866,6 +936,72 @@ func extractLastPrompt(events []sqldb.AgentEvent) string {
 		if e.Role.Valid && e.Role.String == "user" && e.Summary.Valid {
 			return truncateRunes(e.Summary.String, maxPromptChars)
 		}
+	}
+	return ""
+}
+
+// extractRecentUserPromptsRich is the handoff-bundle entry point
+// for prompt extraction. It prefers the raw prompt payload stored
+// in the blob store over agent_events.summary, falling back to
+// summary when the blob is missing/unreadable or the event has no
+// payload_hash. This is a handoff-specific enrichment: the
+// broker keeps summaries short for compact UI surfaces, but the
+// bundle wants the full prompt where it's available.
+//
+// Redaction runs on whichever source was chosen before truncation
+// so a secret that straddles the maxPromptChars boundary cannot
+// slip past the redactor.
+//
+// Tool-result events also carry role="user" because the Claude
+// transcript model treats them that way; they are filtered out so
+// the bundle surfaces what the human typed, not the bash/edit
+// outputs the agent received back.
+func extractRecentUserPromptsRich(ctx context.Context, events []sqldb.AgentEvent, bs *blobs.Store, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]string, 0, n)
+	for _, e := range events {
+		if !e.Role.Valid || e.Role.String != "user" || e.Kind == "tool_result" {
+			continue
+		}
+		text := loadPromptText(ctx, e, bs)
+		if text == "" {
+			continue
+		}
+		// Redact-then-truncate: a secret straddling the cap
+		// boundary must not slip past the redactor. When the
+		// redactor fail-closes (returns "" on error), skip the
+		// event entirely rather than emit an empty fenced block
+		// that would still consume one of the prompt slots.
+		redacted := redactString(text)
+		if redacted == "" {
+			continue
+		}
+		out = append(out, truncateRunes(redacted, maxPromptChars))
+		if len(out) >= n {
+			break
+		}
+	}
+	// Reverse so the rendered list reads chronologically.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// loadPromptText returns the best available text for a prompt
+// event. Tries the blob store first (raw, full-length payload),
+// falls back to the event summary (already-trimmed). Returns an
+// empty string when neither source has usable text.
+func loadPromptText(ctx context.Context, e sqldb.AgentEvent, bs *blobs.Store) string {
+	if bs != nil && e.PayloadHash.Valid && e.PayloadHash.String != "" {
+		if raw, err := bs.Get(ctx, e.PayloadHash.String); err == nil && len(raw) > 0 {
+			return string(raw)
+		}
+	}
+	if e.Summary.Valid {
+		return e.Summary.String
 	}
 	return ""
 }
@@ -1025,7 +1161,14 @@ func aggregateFileTouches(events []sqldb.AgentEvent) []fileTouch {
 // redactString runs prose through the existing redactor and returns
 // the redacted result. On redactor failure the result is the empty
 // string (fail-closed for outbound content).
-func redactString(s string) string {
+//
+// Indirected through redactStringFn so tests can exercise the
+// fail-closed redaction branch.
+var redactStringFn = defaultRedactString
+
+func redactString(s string) string { return redactStringFn(s) }
+
+func defaultRedactString(s string) string {
 	if s == "" {
 		return s
 	}
@@ -1036,14 +1179,57 @@ func redactString(s string) string {
 	return r
 }
 
-// truncateRunes truncates a string to at most n runes, appending a
-// trailing ellipsis when truncation actually fired.
+// truncateRunes truncates a string to at most n runes, appending
+// an explicit " [truncated]" marker when truncation fired. The
+// marker is preferred over an ellipsis because the bundle is
+// rendered in fenced code blocks where a trailing "..." is
+// ambiguous (was that the user's text or the truncation?). The
+// marker is added outside the n-rune budget so callers asking
+// for a 1500-rune cap still get 1500 runes of content.
 func truncateRunes(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
 		return s
 	}
-	return string(runes[:n]) + "..."
+	return string(runes[:n]) + " [truncated]"
+}
+
+// writeFenced renders body inside a markdown code fence and writes
+// it to b. Chooses a fence length one greater than the longest
+// run of backticks anywhere in the body so prompts that themselves
+// contain ``` (e.g. a user pasting markdown) cannot terminate the
+// outer fence early.
+func writeFenced(b *strings.Builder, body string) {
+	fence := strings.Repeat("`", longestBacktickRun(body)+1)
+	if len(fence) < 3 {
+		fence = "```"
+	}
+	b.WriteString(fence)
+	b.WriteString("\n")
+	b.WriteString(body)
+	if !strings.HasSuffix(body, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString(fence)
+	b.WriteString("\n\n")
+}
+
+// longestBacktickRun returns the length of the longest consecutive
+// backtick run in s. Used by writeFenced to pick a fence that
+// cannot be terminated by anything in the body.
+func longestBacktickRun(s string) int {
+	longest, current := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			current++
+			if current > longest {
+				longest = current
+			}
+		} else {
+			current = 0
+		}
+	}
+	return longest
 }
 
 // fileTouch is one row in the "Files touched this session" section.
@@ -1064,10 +1250,10 @@ type bundleView struct {
 	RecentPrompts   []string // oldest-first list of user prompts
 	LastAssistant   string
 	FileTouches     []fileTouch
-	RecentCommits   []string // "<short-hash> <subject>" lines
-	UncommittedList string   // `git status --short` output
-	UncommittedDiff string   // bounded, redacted `git diff HEAD` output
-	Note            string   // optional caveat shown when assembly degraded
+	RecentCommits   []git.Commit // hash + subject + (optional) body
+	UncommittedList string       // `git status --short` output
+	UncommittedDiff string       // bounded, redacted `git diff HEAD` output
+	Note            string       // optional caveat shown when assembly degraded
 }
 
 func renderBundle(v bundleView) []byte {
@@ -1099,16 +1285,14 @@ func renderBundle(v bundleView) []byte {
 
 	b.WriteString("## Where I left off\n\n")
 	if len(v.RecentPrompts) > 0 {
-		b.WriteString("**Recent user prompts (oldest first, truncated, redacted):**\n\n")
+		b.WriteString("**Recent user prompts (oldest first, redacted):**\n\n")
 		for _, p := range v.RecentPrompts {
-			fmt.Fprintf(&b, "- %s\n", p)
+			writeFenced(&b, p)
 		}
-		b.WriteString("\n")
 	}
 	if v.LastAssistant != "" {
-		b.WriteString("**Last assistant message (truncated, redacted):**\n\n")
-		b.WriteString(v.LastAssistant)
-		b.WriteString("\n\n")
+		b.WriteString("**Last assistant message (redacted):**\n\n")
+		writeFenced(&b, v.LastAssistant)
 	}
 	if len(v.RecentPrompts) == 0 && v.LastAssistant == "" {
 		b.WriteString("_No prompt or assistant message available for this session yet._\n\n")
@@ -1116,8 +1300,21 @@ func renderBundle(v bundleView) []byte {
 
 	if len(v.RecentCommits) > 0 {
 		b.WriteString("## Recent commits during this session\n\n")
-		for _, line := range v.RecentCommits {
-			fmt.Fprintf(&b, "- %s\n", line)
+		for _, c := range v.RecentCommits {
+			fmt.Fprintf(&b, "- **%s** %s\n", c.ShortHash, c.Subject)
+			if c.Body != "" {
+				// Indent body lines so markdown renders them as
+				// part of the same list item.
+				for _, line := range strings.Split(c.Body, "\n") {
+					if line == "" {
+						b.WriteString("\n")
+						continue
+					}
+					b.WriteString("  ")
+					b.WriteString(line)
+					b.WriteString("\n")
+				}
+			}
 		}
 		b.WriteString("\n")
 	}
