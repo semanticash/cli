@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/service/handoff"
@@ -148,6 +151,68 @@ func runHandoffWrite(cmd *cobra.Command, repoPath string) error {
 		displayPath = rel
 	}
 	_, _ = fmt.Fprintf(out, "Handoff saved to %s.\n", displayPath)
-	_, _ = fmt.Fprintln(out, "Exit this session, start a fresh one in this repo, and ask the agent to read the file above.")
+
+	// Interactive path: ask whether to launch a fresh agent right now.
+	// Pressing Enter (or typing y/yes) chains directly into `handoff
+	// continue`, which on success replaces this process with the
+	// agent CLI. Non-interactive callers (skill body, pipes, CI) skip
+	// the prompt and get the manual hint below.
+	if confirmContinueNow(cmd) {
+		return runHandoffContinue(cmd, repoPath, "", false)
+	}
+
+	_, _ = fmt.Fprintln(out, "Run `semantica handoff continue` when you're ready.")
 	return nil
+}
+
+// isTerminalWriterFn is the stdout-TTY gate, exposed as a package
+// var so tests can simulate a TTY-like stdout without owning a
+// real pty. The stdin gate intentionally stays in-line: it has to
+// observe the actual reader the test passes, since the whole point
+// of the stdin gate is to refuse to prompt against non-TTY
+// readers (pipes, bytes.Buffer) that would never deliver input.
+var isTerminalWriterFn = isTerminalWriter
+
+// confirmContinueNow prompts the user to chain directly into
+// `handoff continue`. Returns true only when both stdout and stdin
+// are TTYs (so we don't block on a piped stdin) and the user
+// accepts. Treats Enter alone as accept since the prompt's default
+// is Y; Ctrl-D is treated as decline by readContinueAnswer.
+func confirmContinueNow(cmd *cobra.Command) bool {
+	out := cmd.OutOrStdout()
+	in := cmd.InOrStdin()
+	if !isTerminalWriterFn(out) {
+		return false
+	}
+	inFile, ok := in.(*os.File)
+	if !ok || !isInteractiveTerminal(inFile) {
+		return false
+	}
+
+	_, _ = fmt.Fprint(out, "Continue in a new session now? [Y/n] ")
+	return readContinueAnswer(in)
+}
+
+// readContinueAnswer reads one line from r and reports whether it
+// is an accept. A bare newline (the user pressed Enter) counts as
+// accept so the prompt's [Y/n] default holds. Ctrl-D with nothing
+// typed (empty result + EOF) is treated as decline. Ctrl-D is the
+// universal terminal cancel and must not silently launch the
+// follow-on agent. Non-EOF read errors also decline. Exposed at
+// package scope so tests can pin the parsing rules without needing
+// a real TTY.
+func readContinueAnswer(r io.Reader) bool {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	// Ctrl-D with no input yields line == "". Anything the user
+	// actually typed, including a bare Enter ("\n"), gives a
+	// non-empty line. Only the latter should be treated as the
+	// [Y/n] default-accept.
+	if line == "" {
+		return false
+	}
+	answer := strings.TrimSpace(strings.ToLower(line))
+	return answer == "" || answer == "y" || answer == "yes"
 }

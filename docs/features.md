@@ -214,7 +214,7 @@ semantica handoff --write
 semantica handoff continue
 ```
 
-The writer prints the saved path and does not echo the handoff bundle into the originating chat. `semantica handoff continue` reads that bundle and either launches the matching agent or prints a command or manual instruction with the absolute bundle path.
+The writer prints the saved path and does not echo the handoff bundle into the originating chat. In an interactive terminal, it asks whether to continue in a fresh session immediately. Accepting the prompt chains into `semantica handoff continue`; non-interactive callers and declined prompts receive a manual `semantica handoff continue` hint instead. `semantica handoff continue` reads the bundle and either launches the matching agent or prints a command or manual instruction with the absolute bundle path.
 
 ### Caveats
 
