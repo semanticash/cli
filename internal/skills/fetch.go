@@ -241,7 +241,10 @@ func safeExtractTarGz(r io.Reader, destRoot string) error {
 			continue
 		}
 
-		if filepath.IsAbs(hdr.Name) {
+		// Tar paths use forward slashes. Reject both native
+		// absolute paths and Unix-style leading slash paths so
+		// archives cannot escape destRoot on any platform.
+		if filepath.IsAbs(hdr.Name) || strings.HasPrefix(hdr.Name, "/") {
 			return fmt.Errorf("archive entry has absolute path: %q", hdr.Name)
 		}
 		cleaned := filepath.Clean(hdr.Name)

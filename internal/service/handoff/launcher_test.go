@@ -3,9 +3,19 @@ package handoff
 import (
 	"errors"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// skipIfWindowsSpawn skips tests that require the Unix-only spawn
+// path. Windows always falls back to a printed command.
+func skipIfWindowsSpawn(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("spawn path is Unix-only; spawnLaunch routes to print on Windows")
+	}
+}
 
 // --- ProviderFromBundle ---
 
@@ -66,6 +76,7 @@ func withLookPath(t *testing.T, available map[string]bool) {
 const testBundlePath = "/abs/path/to/repo/.semantica/handoff.md"
 
 func TestBuildLaunchSpec_ClaudeSpawnsWhenBinaryPresent(t *testing.T) {
+	skipIfWindowsSpawn(t)
 	withLookPath(t, map[string]bool{"claude": true})
 	spec, err := BuildLaunchSpec("claude-code", testBundlePath, false)
 	if err != nil {
@@ -164,6 +175,7 @@ var spawnableProviderCases = []struct {
 // of staying interactive, `cursor-agent -p` would do the same,
 // etc. The cases come from spawnableProviderCases.
 func TestBuildLaunchSpec_SpawnableProvidersWhenBinaryPresent(t *testing.T) {
+	skipIfWindowsSpawn(t)
 	for _, tc := range spawnableProviderCases {
 		t.Run(tc.provider, func(t *testing.T) {
 			withLookPath(t, map[string]bool{tc.binary: true})
@@ -213,6 +225,30 @@ func TestBuildLaunchSpec_SpawnableProvidersFallBackToPrintWhenMissing(t *testing
 			}
 			if !strings.Contains(spec.Message, testBundlePath) {
 				t.Errorf("print message should embed the absolute bundle path:\n%s", spec.Message)
+			}
+		})
+	}
+}
+
+// TestBuildLaunchSpec_WindowsAlwaysFallsBackToPrint verifies that
+// Windows uses the printed-command path even when the agent binary
+// is available.
+func TestBuildLaunchSpec_WindowsAlwaysFallsBackToPrint(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific assertion; spawn path is correct on Unix")
+	}
+	for _, tc := range spawnableProviderCases {
+		t.Run(tc.provider, func(t *testing.T) {
+			withLookPath(t, map[string]bool{tc.binary: true}) // binary IS present
+			spec, err := BuildLaunchSpec(tc.provider, testBundlePath, false)
+			if err != nil {
+				t.Fatalf("BuildLaunchSpec: %v", err)
+			}
+			if spec.Spawn {
+				t.Errorf("Windows must not Spawn even with binary on PATH; got %+v", spec)
+			}
+			if !strings.Contains(spec.Message, tc.binary) {
+				t.Errorf("Windows print message should still name the binary; got:\n%s", spec.Message)
 			}
 		})
 	}

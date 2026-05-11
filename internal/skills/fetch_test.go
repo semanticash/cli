@@ -171,7 +171,7 @@ func TestSafeExtract_SkipsSymlinkAndHardlink(t *testing.T) {
 	if err := safeExtractTarGz(bytes.NewReader(tgz), dest); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	// Regular file extracted, links did NOT.
+	// Regular files are extracted; links are not.
 	if _, err := os.Lstat(filepath.Join(dest, "skills-main", "regular")); err != nil {
 		t.Errorf("regular file should be extracted: %v", err)
 	}

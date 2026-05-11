@@ -228,9 +228,8 @@ type GetMostRecentSessionByProviderWithEventsParams struct {
 // specific provider's most-recent parent session in the repo,
 // regardless of whether a different agent currently holds the
 // active capture state. Same recency and parent-only filters as
-// the lineage fallback; the extra provider filter is what makes
-// cross-agent handoff explicit: "I worked with Claude, now I'm in
-// Gemini, hand me off from claude_code."
+// the lineage fallback, plus a provider filter for explicit
+// cross-agent handoff.
 func (q *Queries) GetMostRecentSessionByProviderWithEvents(ctx context.Context, arg GetMostRecentSessionByProviderWithEventsParams) (AgentSession, error) {
 	row := q.queryRow(ctx, q.getMostRecentSessionByProviderWithEventsStmt, getMostRecentSessionByProviderWithEvents, arg.RepositoryID, arg.Provider, arg.SinceTs)
 	var i AgentSession

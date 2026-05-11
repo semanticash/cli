@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -107,6 +108,11 @@ func TestHandoffContinue_MissingBundleErrorsClearly(t *testing.T) {
 }
 
 func TestHandoffContinue_ClaudeSpawnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows uses the print path because syscall.Exec is
+		// Unix-only. The service-level tests cover that branch.
+		t.Skip("spawn path is Unix-only; Windows takes the print branch")
+	}
 	withClaudeOnPath(t, true)
 	stub := withStubExecutor(t)
 	dir := initRepoWithBundle(t, "claude-code")
