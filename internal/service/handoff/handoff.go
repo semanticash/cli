@@ -810,8 +810,11 @@ func isSemanticaTrailer(line string) bool {
 	}
 	token := rest[:colon]
 	for _, r := range token {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
-			!(r >= '0' && r <= '9') && r != '-' {
+		alnumOrHyphen := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-'
+		if !alnumOrHyphen {
 			return false
 		}
 	}
