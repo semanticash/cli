@@ -2063,6 +2063,274 @@ func TestWrite_FromOverride_BypassesAmbiguousActiveSession(t *testing.T) {
 	}
 }
 
+// Ambiguous active sessions are grouped by provider before the
+// writer decides whether it needs a caller choice:
+//   - 1 distinct provider: auto-route via --from <that provider>
+//   - 2+ distinct providers: bubble AmbiguousActiveSessionError
+//     with the candidate list so the command layer can pick.
+
+// TestWrite_MultipleSameProviderSessions_AutoRoutes pins the
+// "duplicates collapse to one provider" rule. Two Claude capture
+// states are active; one Claude lineage row with events exists.
+// Write must succeed and produce a Claude bundle without
+// surfacing ErrAmbiguousSession.
+func TestWrite_MultipleSameProviderSessions_AutoRoutes(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	now := time.Now()
+	repoID := "repo-same-provider-dup"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+	src, _ := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src", RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "default", LastSeenAt: now.UnixMilli(), CreatedAt: now.UnixMilli(),
+	})
+	sess, _ := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "claude-uuid", ProviderSessionID: "claude-prov",
+		RepositoryID: repoID, Provider: "claude_code", SourceID: src.SourceID,
+		StartedAt:  now.Add(-5 * time.Minute).UnixMilli(),
+		LastSeenAt: now.UnixMilli(), MetadataJson: "{}",
+	})
+	const claudeText = "CLAUDE PROMPT - should appear when duplicates collapse"
+	_ = h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: "evt-claude", SessionID: sess.SessionID, RepositoryID: repoID,
+		Ts:   now.Add(-1 * time.Minute).UnixMilli(),
+		Kind: "user", Role: sql.NullString{Valid: true, String: "user"},
+		Summary:     sql.NullString{Valid: true, String: claudeText},
+		EventSource: "hook",
+	})
+
+	// Two Claude capture states in the same repo collapse to one
+	// source provider.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "active-claude-1",
+		Provider:  "claude-code",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "active-claude-2",
+		Provider:  "claude-code",
+		CWD:       repoPath,
+		Timestamp: now.UnixMilli(),
+	})
+
+	res, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err != nil {
+		t.Fatalf("Write should succeed when duplicates collapse to one provider; got %v", err)
+	}
+	body := string(res.Bytes)
+	if !strings.Contains(body, claudeText) {
+		t.Errorf("bundle missing claude content; auto-route did not resolve via --from:\n%s", body)
+	}
+	if res.Provider != "claude-code" {
+		t.Errorf("Result.Provider = %q, want claude-code", res.Provider)
+	}
+}
+
+// TestWrite_AutoCollapse_LineageMissingReturnsAutoSelectFailed
+// verifies that auto-selected providers use ErrAutoSelectFailed
+// when the selected provider has no recent lineage row.
+func TestWrite_AutoCollapse_LineageMissingReturnsAutoSelectFailed(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	// Set up lineage.db with a registered repo row, but no
+	// claude_code sessions. The two active capture states will
+	// collapse to claude-code; the from-resolver will then find
+	// no lineage row.
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	now := time.Now()
+	repoID := "repo-auto-no-lineage"
+	_ = h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath,
+		CreatedAt: now.UnixMilli(), EnabledAt: now.UnixMilli(),
+	})
+
+	// Two active claude-code capture states collapse to one
+	// provider and route through --from internally. No claude_code
+	// lineage row exists, so the from-resolver fails.
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "claude-1", Provider: "claude-code",
+		CWD: repoPath, Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "claude-2", Provider: "claude-code",
+		CWD: repoPath, Timestamp: now.UnixMilli(),
+	})
+
+	_, err = NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err == nil {
+		t.Fatal("expected an error when auto-collapsed provider has no lineage row")
+	}
+	if !errors.Is(err, ErrAutoSelectFailed) {
+		t.Errorf("expected ErrAutoSelectFailed; got %v", err)
+	}
+	// Keep the explicit --from sentinel separate so the command
+	// layer can render the right hint for auto-selected providers.
+	if errors.Is(err, ErrNoFromMatch) {
+		t.Errorf("auto-collapse failure must not match ErrNoFromMatch (it would "+
+			"trigger the wrong command-layer surface message); got %v", err)
+	}
+}
+
+// TestWrite_AutoCollapse_LineageDBMissingReturnsAutoSelectFailed
+// verifies the same sentinel choice when lineage.db is missing.
+func TestWrite_AutoCollapse_LineageDBMissingReturnsAutoSelectFailed(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+	// Deliberately do not create .semantica/lineage.db.
+
+	now := time.Now()
+	baseDir := setupCaptureDir(t)
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "claude-1", Provider: "claude-code",
+		CWD: repoPath, Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "claude-2", Provider: "claude-code",
+		CWD: repoPath, Timestamp: now.UnixMilli(),
+	})
+
+	_, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if !errors.Is(err, ErrAutoSelectFailed) {
+		t.Fatalf("expected ErrAutoSelectFailed when auto-collapsed + lineage.db missing; got %v", err)
+	}
+	if errors.Is(err, ErrNoFromMatch) {
+		t.Errorf("auto-collapse failure must not match ErrNoFromMatch; got %v", err)
+	}
+}
+
+// TestWrite_MultipleDistinctProviders_ReturnsTypedError pins the
+// other half of the contract: 2+ distinct providers must surface
+// an AmbiguousActiveSessionError carrying the candidate list. The
+// errors.Is(err, ErrAmbiguousSession) check must still pass so
+// existing callers don't break.
+func TestWrite_MultipleDistinctProviders_ReturnsTypedError(t *testing.T) {
+	ctx := context.Background()
+	repoPath := initGitRepo(t)
+
+	now := time.Now()
+	baseDir := setupCaptureDir(t)
+	// One Claude, two Gemini, one Cursor. After dedup we expect
+	// three providers in the error payload.
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "c1", Provider: "claude-code",
+		CWD: repoPath, Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "g1", Provider: "gemini-cli",
+		CWD: repoPath, Timestamp: now.Add(-1 * time.Second).UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "g2", Provider: "gemini-cli",
+		CWD: repoPath, Timestamp: now.Add(-2 * time.Second).UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "cur1", Provider: "cursor",
+		CWD: repoPath, Timestamp: now.Add(-3 * time.Second).UnixMilli(),
+	})
+
+	_, err := NewService().Write(ctx, Input{RepoPath: repoPath, Now: now})
+	if err == nil {
+		t.Fatal("expected an error when multiple distinct providers are active")
+	}
+
+	// Sentinel check still works for downstream callers.
+	if !errors.Is(err, ErrAmbiguousSession) {
+		t.Errorf("errors.Is(err, ErrAmbiguousSession) = false; want true. err = %v", err)
+	}
+
+	// Typed unwrap exposes the candidate list.
+	var amb *AmbiguousActiveSessionError
+	if !errors.As(err, &amb) {
+		t.Fatalf("errors.As to AmbiguousActiveSessionError failed; err = %v", err)
+	}
+	if len(amb.Providers) != 3 {
+		t.Errorf("Providers length = %d, want 3; got %+v", len(amb.Providers), amb.Providers)
+	}
+
+	// Sort: most-recent first. The Claude state has the latest
+	// timestamp, so it should head the list.
+	if amb.Providers[0].Provider != "claude-code" {
+		t.Errorf("Providers[0] = %q, want claude-code (most recent)", amb.Providers[0].Provider)
+	}
+
+	// Gemini has two active states; the count must reflect that.
+	var geminiCount int
+	for _, p := range amb.Providers {
+		if p.Provider == "gemini-cli" {
+			geminiCount = p.Count
+			break
+		}
+	}
+	if geminiCount != 2 {
+		t.Errorf("gemini-cli count = %d, want 2", geminiCount)
+	}
+}
+
+// TestListActiveProviders_FiltersByRepoAndRecency pins the helper
+// in isolation: only states matching the repo and inside the
+// recency window count. Sort order (most-recent first) is also
+// asserted because it drives the picker's default-highlight.
+func TestListActiveProviders_FiltersByRepoAndRecency(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	now := time.Now()
+
+	baseDir := setupCaptureDir(t)
+	// Match: in repoA, recent.
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "a-claude", Provider: "claude-code",
+		CWD: repoA, Timestamp: now.UnixMilli(),
+	})
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "a-gemini", Provider: "gemini-cli",
+		CWD: repoA, Timestamp: now.Add(-5 * time.Minute).UnixMilli(),
+	})
+	// Filtered out: in repoB.
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "b-cursor", Provider: "cursor",
+		CWD: repoB, Timestamp: now.UnixMilli(),
+	})
+	// Filtered out: stale (older than 24h window).
+	writeCaptureState(t, baseDir, captureFixture{
+		SessionID: "a-stale", Provider: "copilot",
+		CWD: repoA, Timestamp: now.Add(-48 * time.Hour).UnixMilli(),
+	})
+
+	providers, err := listActiveProviders(repoA, now)
+	if err != nil {
+		t.Fatalf("listActiveProviders: %v", err)
+	}
+	if len(providers) != 2 {
+		t.Fatalf("got %d providers, want 2; providers=%+v", len(providers), providers)
+	}
+	if providers[0].Provider != "claude-code" {
+		t.Errorf("providers[0] = %q, want claude-code (most recent)", providers[0].Provider)
+	}
+	if providers[1].Provider != "gemini-cli" {
+		t.Errorf("providers[1] = %q, want gemini-cli", providers[1].Provider)
+	}
+}
+
 func itoaInt64(n int64) string {
 	if n == 0 {
 		return "0"

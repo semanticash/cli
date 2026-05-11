@@ -150,12 +150,49 @@ func runHandoffWrite(cmd *cobra.Command, repoPath, fromProvider string) error {
 		return fmt.Errorf("no agent session active for this repo. " +
 			"open your agent here, work for a turn, then retry")
 	case errors.Is(err, handoff.ErrAmbiguousSession):
-		return fmt.Errorf("multiple agent sessions active for this repo. " +
-			"close all but one and retry")
+		// Multiple active providers need a source choice. TTY
+		// callers get a picker; non-interactive callers get the
+		// provider list and a --from hint.
+		var amb *handoff.AmbiguousActiveSessionError
+		if !errors.As(err, &amb) || len(amb.Providers) == 0 {
+			// Defensive: surface a usable fallback if the sentinel
+			// is returned without its provider payload.
+			return fmt.Errorf("multiple agent sessions active for this repo; rerun with --from <provider>")
+		}
+		if isInteractiveCmd(cmd) {
+			picked, perr := pickActiveProvider(cmd, amb.Providers)
+			if perr != nil {
+				return perr
+			}
+			// Re-invoke with the picked provider as --from. The
+			// service refuses degraded active-session fallbacks on
+			// this path, so the bundle either resolves from the
+			// selected provider or returns a clear error.
+			rerr := runHandoffWrite(cmd, repoPath, picked)
+			if errors.Is(rerr, handoff.ErrNoFromMatch) {
+				// The user picked from a prompt, so the normal
+				// "drop --from" hint would point at a flag they
+				// did not type.
+				return fmt.Errorf(
+					"could not resolve selected provider %s; "+
+						"choose another provider or retry after capture finishes",
+					picked)
+			}
+			return rerr
+		}
+		return fmt.Errorf("%v; rerun with --from <provider>", amb)
+	case errors.Is(err, handoff.ErrAutoSelectFailed):
+		// Same-provider active sessions were auto-selected by the
+		// service. The user did not type --from, so advise waiting
+		// for capture rather than dropping a flag.
+		return fmt.Errorf("%w; retry after capture finishes", err)
 	case errors.Is(err, handoff.ErrNoFromMatch):
-		// Keep the wrapped cause visible, then add the fallback that
-		// returns to the default active-session resolver.
-		return fmt.Errorf("%v; drop --from to use the active session", err)
+		// Keep the wrapped cause visible, then add the fallback
+		// that returns to the default active-session resolver.
+		// %w preserves the error chain so callers (and tests)
+		// can still detect ErrNoFromMatch after the message has
+		// been augmented.
+		return fmt.Errorf("%w; drop --from to use the active session", err)
 	case err != nil:
 		return err
 	}

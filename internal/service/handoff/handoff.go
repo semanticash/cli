@@ -50,15 +50,90 @@ const maxFilesInTouchSummary = 50
 // non-zero exit with a clear user message.
 var ErrNoSession = errors.New("no agent session found for this repo")
 
-// ErrAmbiguousSession is returned when more than one parent capture
-// state matches the resolver's filters. The user must close one of
-// the sessions before retrying; the resolver never silently picks.
+// ErrAmbiguousSession is returned when more than one distinct
+// provider has active capture state in the repo. Multiple sessions
+// for the same provider auto-resolve through that provider's latest
+// lineage row; distinct providers require a caller choice. Callers
+// can use errors.As to unwrap an AmbiguousActiveSessionError.
 var ErrAmbiguousSession = errors.New("multiple agent sessions active for this repo")
+
+// ActiveProvider describes one distinct provider with active
+// capture states in the repo. Used by the ambiguity resolution
+// flow to populate the picker (interactive) or the error message
+// (non-interactive).
+type ActiveProvider struct {
+	// Provider is the hook-form provider name (claude-code,
+	// gemini-cli, etc.) the command layer surfaces to the user and
+	// passes back as --from.
+	Provider string
+
+	// Count is the number of active capture states for this
+	// provider. Surfaced in the picker label so the user can spot
+	// stale-orphan clusters at a glance.
+	Count int
+
+	// LatestTimestamp is the most-recent capture-state timestamp
+	// among this provider's active states. Used to sort the picker
+	// (most-recent first) and to render the "latest Xm ago" hint.
+	LatestTimestamp time.Time
+}
+
+// AmbiguousActiveSessionError carries the candidate provider list
+// alongside the ErrAmbiguousSession sentinel so the command layer
+// can either show a picker (TTY) or print the list in a clear
+// non-interactive error. Implements Is(target) so existing
+// errors.Is(err, ErrAmbiguousSession) checks keep working.
+type AmbiguousActiveSessionError struct {
+	Providers []ActiveProvider
+}
+
+func (e *AmbiguousActiveSessionError) Error() string {
+	names := make([]string, len(e.Providers))
+	for i, p := range e.Providers {
+		names[i] = p.Provider
+	}
+	return fmt.Sprintf("multiple active providers: %s", strings.Join(names, ", "))
+}
+
+// Is wires errors.Is(err, ErrAmbiguousSession) back to true so
+// existing call sites that test the sentinel keep working without
+// knowing about the typed wrapper.
+func (e *AmbiguousActiveSessionError) Is(target error) bool {
+	return target == ErrAmbiguousSession
+}
 
 // ErrNoFromMatch is returned when an explicit --from source cannot
 // be resolved. The wrapped error includes the specific reason, such
 // as missing lineage data or no recent session for that provider.
+//
+// Only used when the user typed --from. When the service auto-routes
+// through the from path (same-provider collapse), failures wrap
+// ErrAutoSelectFailed instead so the command layer does not advise
+// the user to "drop --from" they never typed.
 var ErrNoFromMatch = errors.New("could not resolve --from source")
+
+// ErrAutoSelectFailed is the auto-collapse sibling of ErrNoFromMatch.
+// When multiple capture states for one provider are active and the
+// service silently routes through the from path for that provider,
+// a downstream lineage miss surfaces as this error, not
+// ErrNoFromMatch. Wraps the same specific reasons ("no recent X
+// session", "lineage.db not found", etc.); only the surface
+// shaping differs at the command layer.
+var ErrAutoSelectFailed = errors.New("could not resolve auto-selected provider")
+
+// fromFailureSentinel picks between ErrNoFromMatch and
+// ErrAutoSelectFailed based on whether the from path was entered
+// because the user typed --from (explicit) or because the
+// same-provider-collapse path set it internally (auto-selected).
+// Centralizing the choice keeps every from-path wrap site in
+// sync; adding a third path in the future is one branch instead
+// of four edits.
+func fromFailureSentinel(autoSelected bool) error {
+	if autoSelected {
+		return ErrAutoSelectFailed
+	}
+	return ErrNoFromMatch
+}
 
 // Input narrows the surface the caller has to provide. RepoPath is
 // the only required field; the service derives everything else from
@@ -209,6 +284,90 @@ func dbProviderName(hookName string) string {
 	}
 }
 
+// listActiveProviders returns the distinct providers with active
+// capture states in the repo, sorted by most-recent timestamp
+// descending. Same filters as resolveSession (CWD under repo
+// root, parent session, recent timestamp). Used by the ambiguity
+// resolution flow:
+//
+//   - 0 providers: no active sessions; caller falls through to
+//     lineage or ErrNoSession.
+//   - 1 provider: caller auto-routes to that provider via the
+//     --from path (multiple same-provider capture states are
+//     treated as one logical "active provider").
+//   - 2+ providers: caller surfaces AmbiguousActiveSessionError
+//     with this list attached so the command layer can pick or
+//     enumerate.
+//
+// Returning the empty list (not an error) for "no matches" keeps
+// the call sites simple; an actual capture-state directory error
+// is surfaced.
+func listActiveProviders(repoPath string, now time.Time) ([]ActiveProvider, error) {
+	all, err := hooks.LoadActiveCaptureStates()
+	if err != nil {
+		return nil, fmt.Errorf("load capture states: %w", err)
+	}
+
+	canonicalRepo, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		canonicalRepo = filepath.Clean(repoPath)
+	}
+	since := now.Add(-recentSessionWindow).UnixMilli()
+
+	// Group by provider as we scan, tracking count and latest ts.
+	// Using a map keeps the dedup linear; we sort at the end.
+	type agg struct {
+		count  int
+		latest int64
+	}
+	groups := map[string]*agg{}
+	for _, st := range all {
+		if st.Timestamp <= 0 || st.Timestamp < since {
+			continue
+		}
+		if st.StateKey != "" && st.StateKey != st.SessionID {
+			continue
+		}
+		if st.CWD == "" {
+			continue
+		}
+		stateCanonical, err := filepath.EvalSymlinks(st.CWD)
+		if err != nil {
+			stateCanonical = filepath.Clean(st.CWD)
+		}
+		if !sameRepo(canonicalRepo, stateCanonical) {
+			continue
+		}
+		g, ok := groups[st.Provider]
+		if !ok {
+			g = &agg{}
+			groups[st.Provider] = g
+		}
+		g.count++
+		if st.Timestamp > g.latest {
+			g.latest = st.Timestamp
+		}
+	}
+
+	out := make([]ActiveProvider, 0, len(groups))
+	for provider, g := range groups {
+		out = append(out, ActiveProvider{
+			Provider:        provider,
+			Count:           g.count,
+			LatestTimestamp: time.UnixMilli(g.latest),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		// Most-recent first; stable secondary sort by provider
+		// name to keep test output deterministic.
+		if !out[i].LatestTimestamp.Equal(out[j].LatestTimestamp) {
+			return out[i].LatestTimestamp.After(out[j].LatestTimestamp)
+		}
+		return out[i].Provider < out[j].Provider
+	})
+	return out, nil
+}
+
 // resolveSession picks the single capture state to hand off from.
 // Filters: CWD under repo root, parent session (StateKey unset or
 // equal to SessionID), recent timestamp. The resolver is provider-
@@ -310,12 +469,48 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 
 	// --from intentionally ignores active capture state and resolves
 	// only through lineage for the named provider.
+	//
+	// autoSelected flips to true when same-provider capture states set
+	// `from` internally. Downstream failures then wrap ErrAutoSelectFailed
+	// instead of ErrNoFromMatch so the command layer can avoid --from
+	// advice the user did not ask for.
+	autoSelected := false
 	captureState, captureErr := resolveSession(repoPath, now)
+	if from == "" && captureErr != nil && errors.Is(captureErr, ErrAmbiguousSession) {
+		// Multiple active capture states are grouped by provider:
+		//   - 1 distinct provider: silently route through the
+		//     --from path for that provider (no picker needed).
+		//   - 2+ distinct providers: bubble an
+		//     AmbiguousActiveSessionError with the candidate list
+		//     so the command layer can show a picker (TTY) or
+		//     enumerate them in the error message (CI/skill).
+		providers, listErr := listActiveProviders(repoPath, now)
+		if listErr != nil {
+			return nil, "", "", listErr
+		}
+		switch len(providers) {
+		case 0:
+			// Race: ErrAmbiguousSession said >1 match, but the
+			// states are now gone (Stop hook fired between calls).
+			// Fall through to the no-session path.
+			captureState = nil
+			captureErr = ErrNoSession
+		case 1:
+			// Same-provider duplicates collapse to one active
+			// provider. Mark the route as auto-selected so
+			// downstream errors avoid --from advice.
+			from = providers[0].Provider
+			autoSelected = true
+			captureState = nil
+			captureErr = nil
+		default:
+			return nil, "", "", &AmbiguousActiveSessionError{Providers: providers}
+		}
+	}
 	if from == "" && captureErr != nil && !errors.Is(captureErr, ErrNoSession) {
-		// Ambiguous active capture state: keep refusing. The
-		// fallback would silently pick a winner among two real
-		// concurrent sessions, which is what the safety check is
-		// there to prevent.
+		// Defensive: any other capture-state error bubbles
+		// unchanged. None defined today, but the explicit guard
+		// keeps a future error class from being swallowed.
 		return nil, "", "", captureErr
 	}
 
@@ -328,7 +523,7 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 	// different active provider's identity.
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		if from != "" {
-			return nil, "", "", fmt.Errorf("%w: lineage.db not found at %s", ErrNoFromMatch, dbPath)
+			return nil, "", "", fmt.Errorf("%w: lineage.db not found at %s", fromFailureSentinel(autoSelected), dbPath)
 		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
@@ -345,7 +540,7 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 	})
 	if err != nil {
 		if from != "" {
-			return nil, "", "", fmt.Errorf("%w: lineage.db could not be opened: %v", ErrNoFromMatch, err)
+			return nil, "", "", fmt.Errorf("%w: lineage.db could not be opened: %v", fromFailureSentinel(autoSelected), err)
 		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
@@ -360,7 +555,7 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
 	if err != nil {
 		if from != "" {
-			return nil, "", "", fmt.Errorf("%w: repo not registered in lineage.db", ErrNoFromMatch)
+			return nil, "", "", fmt.Errorf("%w: repo not registered in lineage.db", fromFailureSentinel(autoSelected))
 		}
 		if captureState == nil {
 			return nil, "", "", ErrNoSession
@@ -396,7 +591,7 @@ func assembleBundleForRepo(ctx context.Context, repoPath string, now time.Time, 
 	case from != "":
 		resolved = resolveFromProvider(ctx, h, repoRow.RepositoryID, from, now)
 		if resolved == nil {
-			return nil, "", "", fmt.Errorf("%w: no recent %s session in this repo", ErrNoFromMatch, from)
+			return nil, "", "", fmt.Errorf("%w: no recent %s session in this repo", fromFailureSentinel(autoSelected), from)
 		}
 	case captureState != nil:
 		resolved = resolveFromCaptureState(ctx, h, repoRow.RepositoryID, captureState)
