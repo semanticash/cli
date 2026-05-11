@@ -146,20 +146,27 @@ func TestHandoffContinue_PrintFlagSuppressesSpawn(t *testing.T) {
 	}
 }
 
-func TestHandoffContinue_AgentOverrideForcesPrintPathForUnsupported(t *testing.T) {
+// TestHandoffContinue_AgentOverrideForcesPrintPathForKiroIDE
+// pins that --agent override targeting a provider with no CLI
+// (kiro-ide is the IDE surface, not a binary) routes to the
+// print path rather than erroring. cursor used to be the test
+// fixture here, but cursor now has a verified spawn path; the
+// only remaining no-CLI provider in the launcher's known set is
+// kiro-ide.
+func TestHandoffContinue_AgentOverrideForcesPrintPathForKiroIDE(t *testing.T) {
 	withClaudeOnPath(t, true)
 	stub := withStubExecutor(t)
 	dir := initRepoWithBundle(t, "claude-code")
 
-	out, err := runRoot(t, []string{"--repo", dir, "handoff", "continue", "--agent", "cursor"})
+	out, err := runRoot(t, []string{"--repo", dir, "handoff", "continue", "--agent", "kiro-ide"})
 	if err != nil {
-		t.Fatalf("continue --agent cursor: %v", err)
+		t.Fatalf("continue --agent kiro-ide: %v", err)
 	}
 	if stub.called {
-		t.Errorf("cursor should fall to print path, but executor was called: %+v", stub.spec)
+		t.Errorf("kiro-ide should fall to print path, but executor was called: %+v", stub.spec)
 	}
-	if !strings.Contains(out, "cursor") {
-		t.Errorf("print message should mention cursor:\n%s", out)
+	if !strings.Contains(out, "kiro-ide") {
+		t.Errorf("print message should mention kiro-ide:\n%s", out)
 	}
 }
 

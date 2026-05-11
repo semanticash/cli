@@ -220,7 +220,7 @@ The writer prints the saved path and does not echo the handoff bundle into the o
 
 - The handoff writer supports Semantica-tracked provider sessions.
 - If lineage data is missing or the session is not yet registered locally, Semantica writes a minimal bundle with a generic note instead of exposing raw database errors.
-- Auto-launch is currently verified for Claude Code on Unix. Other supported providers receive a manual-launch hint, and `--print` always prints a copyable command instead of spawning.
+- Auto-launch is available on Unix when the matching CLI binary is installed for Claude Code, Cursor, Gemini CLI, Copilot CLI, or Kiro CLI. Kiro IDE receives a manual-launch hint because it has no CLI surface for this flow. `--print` always prints a copyable command instead of spawning.
 
 ---
 

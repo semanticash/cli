@@ -114,31 +114,143 @@ func TestBuildLaunchSpec_ClaudeFallsBackToPrintWhenBinaryMissing(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchSpec_OtherProvidersAreManualLaunch covers all
-// the providers Semantica's capture pipeline emits but the
-// launcher hasn't verified spawn arguments for. kiro-ide is
-// included because Semantica captures Kiro IDE sessions too. A
-// kiro-ide bundle must produce a graceful manual hint, not an
-// unknown-provider error.
-func TestBuildLaunchSpec_OtherProvidersAreManualLaunch(t *testing.T) {
-	withLookPath(t, map[string]bool{}) // doesn't matter; manual path
-	for _, provider := range []string{"cursor", "copilot", "gemini-cli", "kiro-cli", "kiro-ide"} {
-		spec, err := BuildLaunchSpec(provider, testBundlePath, false)
-		if err != nil {
-			t.Errorf("provider %q: BuildLaunchSpec: %v", provider, err)
-			continue
-		}
-		if spec.Spawn {
-			t.Errorf("provider %q should not auto-spawn yet; got spec=%+v", provider, spec)
-		}
-		if !strings.Contains(spec.Message, provider) {
-			t.Errorf("provider %q manual hint should mention provider name:\n%s", provider, spec.Message)
-		}
-		if !strings.Contains(spec.Message, testBundlePath) {
-			t.Errorf("provider %q manual hint should embed the absolute bundle path %q:\n%s",
-				provider, testBundlePath, spec.Message)
+// spawnableProviderCases lists every agent we expect to spawn
+// into REPL-with-seed mode and the exact argv shape we wire for
+// each. The shapes here mirror what each agent's official CLI
+// docs document for "seed a prompt, stay interactive afterward."
+// Keeping the expectations in one table makes argv drift in
+// providerLaunches loud at test time.
+var spawnableProviderCases = []struct {
+	provider string
+	binary   string
+	// argsForBundle returns the argv (minus binary) the launcher
+	// must produce for the given bundle path. The test fixture
+	// passes a fixed absolute path so we can pin both the
+	// argument order AND that the absolute path round-trips
+	// through to the spawn args without truncation or rewriting.
+	argsForBundle func(bundlePath string) []string
+}{
+	{
+		provider:      "claude-code",
+		binary:        "claude",
+		argsForBundle: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
+	{
+		provider:      "cursor",
+		binary:        "cursor-agent",
+		argsForBundle: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
+	{
+		provider:      "gemini-cli",
+		binary:        "gemini",
+		argsForBundle: func(p string) []string { return []string{"-i", ContinuePromptFor(p)} },
+	},
+	{
+		provider:      "copilot",
+		binary:        "copilot",
+		argsForBundle: func(p string) []string { return []string{"--prompt", ContinuePromptFor(p)} },
+	},
+	{
+		provider:      "kiro-cli",
+		binary:        "kiro-cli",
+		argsForBundle: func(p string) []string { return []string{"chat", ContinuePromptFor(p)} },
+	},
+}
+
+// TestBuildLaunchSpec_SpawnableProvidersWhenBinaryPresent pins
+// the argv shape for every agent the launcher claims to spawn.
+// Drift here means we're feeding the wrong flag to a real agent
+// binary at production time. `-p` to gemini would exit instead
+// of staying interactive, `cursor-agent -p` would do the same,
+// etc. The cases come from spawnableProviderCases.
+func TestBuildLaunchSpec_SpawnableProvidersWhenBinaryPresent(t *testing.T) {
+	for _, tc := range spawnableProviderCases {
+		t.Run(tc.provider, func(t *testing.T) {
+			withLookPath(t, map[string]bool{tc.binary: true})
+			spec, err := BuildLaunchSpec(tc.provider, testBundlePath, false)
+			if err != nil {
+				t.Fatalf("BuildLaunchSpec: %v", err)
+			}
+			if !spec.Spawn {
+				t.Errorf("expected Spawn=true; got spec=%+v", spec)
+			}
+			if spec.Binary != tc.binary {
+				t.Errorf("Binary = %q, want %q", spec.Binary, tc.binary)
+			}
+			want := tc.argsForBundle(testBundlePath)
+			if !stringSlicesEqual(spec.Args, want) {
+				t.Errorf("Args = %v, want %v", spec.Args, want)
+			}
+			// Final positional must carry the absolute bundle
+			// path so the spawned agent can resolve the file
+			// regardless of cwd.
+			last := spec.Args[len(spec.Args)-1]
+			if !strings.Contains(last, testBundlePath) {
+				t.Errorf("starter prompt should embed absolute bundle path; got %q", last)
+			}
+		})
+	}
+}
+
+// TestBuildLaunchSpec_SpawnableProvidersFallBackToPrintWhenMissing
+// pins the print-fallback for every spawnable agent: when the
+// binary is not on PATH, the launcher must not claim Spawn=true.
+// Tests the symmetric Claude case lives separately above; this
+// one keeps the new providers honest.
+func TestBuildLaunchSpec_SpawnableProvidersFallBackToPrintWhenMissing(t *testing.T) {
+	for _, tc := range spawnableProviderCases {
+		t.Run(tc.provider, func(t *testing.T) {
+			withLookPath(t, map[string]bool{}) // empty PATH
+			spec, err := BuildLaunchSpec(tc.provider, testBundlePath, false)
+			if err != nil {
+				t.Fatalf("BuildLaunchSpec: %v", err)
+			}
+			if spec.Spawn {
+				t.Errorf("expected Spawn=false when %s binary absent; got spec=%+v", tc.binary, spec)
+			}
+			if !strings.Contains(spec.Message, tc.binary) {
+				t.Errorf("print message should mention the missing binary %q:\n%s", tc.binary, spec.Message)
+			}
+			if !strings.Contains(spec.Message, testBundlePath) {
+				t.Errorf("print message should embed the absolute bundle path:\n%s", spec.Message)
+			}
+		})
+	}
+}
+
+// TestBuildLaunchSpec_KiroIDEStaysManual pins the one provider
+// that intentionally has no spawn path: kiro-ide is the IDE
+// surface, not a CLI. A kiro-ide bundle must produce a graceful
+// manual hint, not an unknown-provider error, since Semantica
+// captures Kiro IDE sessions and may resolve the bundle to that
+// provider.
+func TestBuildLaunchSpec_KiroIDEStaysManual(t *testing.T) {
+	withLookPath(t, map[string]bool{}) // no binaries
+	spec, err := BuildLaunchSpec("kiro-ide", testBundlePath, false)
+	if err != nil {
+		t.Fatalf("BuildLaunchSpec: %v", err)
+	}
+	if spec.Spawn {
+		t.Errorf("kiro-ide must not auto-spawn (no CLI); got spec=%+v", spec)
+	}
+	if !strings.Contains(spec.Message, "kiro-ide") {
+		t.Errorf("manual hint should mention provider name:\n%s", spec.Message)
+	}
+	if !strings.Contains(spec.Message, testBundlePath) {
+		t.Errorf("manual hint should embed the absolute bundle path:\n%s", spec.Message)
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
+	return true
 }
 
 func TestBuildLaunchSpec_UnknownProviderErrors(t *testing.T) {
@@ -205,9 +317,8 @@ func TestQuoteForShell_PreservesSafeArgsAndQuotesUnsafeOnes(t *testing.T) {
 // that contains $HOME, backticks, or command substitution must
 // appear verbatim in the manual-launch hint, not as the
 // expansion of those tokens. Single-quote-bearing paths are
-// covered by the unit test above (they fragment across quoted
-// segments via the POSIX `'\”` pattern, so a literal-substring
-// assertion doesn't apply).
+// covered by the unit test above. They split across quoted
+// segments, so a literal-substring assertion does not apply.
 func TestFormatManualMessage_DangerousPathStaysLiteral(t *testing.T) {
 	cases := []string{
 		`/tmp/repo $HOME/handoff.md`,

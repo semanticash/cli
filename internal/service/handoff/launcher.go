@@ -82,13 +82,68 @@ func ProviderFromBundle(body []byte) string {
 	return string(m[1])
 }
 
+// providerLaunch is the per-agent recipe for turning a bundle
+// path into a launch command. Each entry encodes the binary name
+// on PATH and how that agent's CLI accepts a starter prompt that
+// lands the user in an interactive REPL afterward. Adding a new
+// agent is a one-line table change; the spawn/print-fallback
+// plumbing in spawnLaunch is shared.
+type providerLaunch struct {
+	// binary is the executable name looked up via exec.LookPath.
+	binary string
+
+	// argsFor builds the argv (excluding binary) for a bundle
+	// path. Keep the starter prompt the last element so manual-
+	// launch hints render the human-readable text at the tail.
+	argsFor func(bundlePath string) []string
+}
+
+// providerLaunches lists every agent we know how to spawn into
+// REPL-with-seed mode. kiro-ide is intentionally absent because
+// it is the IDE surface, not a CLI. No equivalent spawn path
+// exists, so kiro-ide bundles fall through to manualLaunch.
+var providerLaunches = map[string]providerLaunch{
+	// Claude Code: positional starter prompt. The REPL takes over
+	// after the first answer.
+	"claude-code": {
+		binary:  "claude",
+		argsFor: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
+	// Cursor: `cursor-agent "<prompt>"` is positional and stays interactive.
+	// `-p` / `--print` is the *non-interactive* mode and would be
+	// wrong here.
+	"cursor": {
+		binary:  "cursor-agent",
+		argsFor: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
+	// Gemini CLI: `gemini -i "<prompt>"` is the REPL-with-seed
+	// flag (`--prompt-interactive`). `-p` exits after answering.
+	"gemini-cli": {
+		binary:  "gemini",
+		argsFor: func(p string) []string { return []string{"-i", ContinuePromptFor(p)} },
+	},
+	// GitHub Copilot CLI: `copilot --prompt "<prompt>"` is the
+	// documented starter-prompt flag; the REPL stays after the
+	// answer. Note: --prompt is a flag, not a positional.
+	"copilot": {
+		binary:  "copilot",
+		argsFor: func(p string) []string { return []string{"--prompt", ContinuePromptFor(p)} },
+	},
+	// Kiro CLI: `kiro-cli chat "<prompt>"` uses the chat subcommand with
+	// positional prompt. Omitting --no-interactive keeps the REPL.
+	"kiro-cli": {
+		binary:  "kiro-cli",
+		argsFor: func(p string) []string { return []string{"chat", ContinuePromptFor(p)} },
+	},
+}
+
 // BuildLaunchSpec resolves a launch plan for the given provider.
 // The returned spec carries enough information for the command
 // layer to either exec the agent's binary (Spawn=true) or print a
 // manual-launch hint (Spawn=false). printOnly forces the
 // print-the-command branch even for providers we know how to
-// spawn, which lets users copy
-// the invocation rather than land in a new agent shell.
+// spawn, which lets users copy the invocation rather than land in
+// a new agent shell.
 //
 // bundlePath must be absolute. The starter prompt and any manual-
 // launch hint embed it directly so the resulting commands are
@@ -99,36 +154,28 @@ func BuildLaunchSpec(provider, bundlePath string, printOnly bool) (*LaunchSpec, 
 		return nil, ErrUnknownProvider
 	}
 
-	switch provider {
-	case "claude-code":
-		// Claude Code accepts a positional initial prompt. The
-		// REPL takes over after it answers, so exec is the right
-		// hand-off mechanic on Unix; on Windows we fall back to
-		// the print path (see below).
-		return claudeCodeLaunch(bundlePath, printOnly), nil
-
-	case "cursor", "copilot", "gemini-cli", "kiro-cli", "kiro-ide":
-		// These agents either run as GUI editors or do not yet
-		// have verified initial-prompt launch arguments. Return a
-		// manual hint rather than guessing at flags that might open
-		// the wrong UI or route the prompt incorrectly.
-		return manualLaunch(provider, bundlePath), nil
-
-	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
+	if cfg, ok := providerLaunches[provider]; ok {
+		return spawnLaunch(provider, cfg.binary, cfg.argsFor(bundlePath), printOnly), nil
 	}
+
+	// kiro-ide is the IDE, not a CLI: no spawn path exists. We
+	// still need to handle the provider so the bundle resolves to
+	// a useful manual hint instead of "unknown provider".
+	if provider == "kiro-ide" {
+		return manualLaunch(provider, bundlePath), nil
+	}
+
+	return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 }
 
-// claudeCodeLaunch returns the spawn spec for Claude Code, or a
-// print-only spec when printOnly is true / the binary is missing
-// from PATH / the platform is one we haven't validated for exec.
-func claudeCodeLaunch(bundlePath string, printOnly bool) *LaunchSpec {
-	const bin = "claude"
-	args := []string{ContinuePromptFor(bundlePath)}
-
+// spawnLaunch is the shared spawn-or-print plumbing every entry
+// in providerLaunches routes through. Falls back to the print
+// path when --print is set, the platform is Windows (Unix-only
+// exec mechanic), or the agent's binary is not installed.
+func spawnLaunch(provider, bin string, args []string, printOnly bool) *LaunchSpec {
 	if printOnly || runtime.GOOS == "windows" || !binaryOnPath(bin) {
 		return &LaunchSpec{
-			Provider: "claude-code",
+			Provider: provider,
 			Binary:   bin,
 			Args:     args,
 			Spawn:    false,
@@ -136,7 +183,7 @@ func claudeCodeLaunch(bundlePath string, printOnly bool) *LaunchSpec {
 		}
 	}
 	return &LaunchSpec{
-		Provider: "claude-code",
+		Provider: provider,
 		Binary:   bin,
 		Args:     args,
 		Spawn:    true,
@@ -144,13 +191,14 @@ func claudeCodeLaunch(bundlePath string, printOnly bool) *LaunchSpec {
 	}
 }
 
-// manualLaunch describes the print-only path for providers we
-// haven't verified spawn arguments for yet. The hint embeds the
+// manualLaunch is the print-only path for providers that have no
+// CLI we can spawn (currently just kiro-ide). The hint embeds the
 // absolute bundle path so the user can copy-paste the file
 // reference from any terminal.
 func manualLaunch(provider, bundlePath string) *LaunchSpec {
 	hint := fmt.Sprintf(
-		"Auto-launch for %s is not wired yet. Open the agent yourself and ask it to read %s.",
+		"Auto-launch for %s is not wired (no CLI for this surface). "+
+			"Open the agent yourself and ask it to read %s.",
 		provider, bundlePath,
 	)
 	return &LaunchSpec{
@@ -189,10 +237,9 @@ func formatManualMessage(bin string, args []string) string {
 // might otherwise trigger when the path or prompt contains a
 // dollar sign, backtick, command substitution, or backslash.
 //
-// Embedded single quotes are escaped using the standard POSIX
-// pattern `'\”` (close the quote, write a literal quote with a
-// backslash, reopen the quote) so the result remains a single
-// shell token.
+// Embedded single quotes are escaped by closing the quote, writing
+// an escaped literal quote, and reopening the quote, so the result
+// remains a single shell token.
 func quoteForShell(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
