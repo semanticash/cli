@@ -73,9 +73,8 @@ func TestPrintLauncherStatus_LinuxDaemonErrorRoutesToSystemdHint(t *testing.T) {
 // Symmetric coverage on windows: schtasks errors must route to
 // the Task Scheduler hint rather than fall through to the
 // "no backend on this OS" message that lists only macOS and Linux.
-// Regression test for the bug where the Phase 3 Windows backend
-// shipped but the user-facing launcher copy still implied Windows
-// was unsupported.
+// Regression test for Windows launcher support: schtasks-backed
+// installs should not fall through to unsupported-OS copy.
 func TestPrintLauncherStatus_WindowsDaemonErrorRoutesToTaskSchedulerHint(t *testing.T) {
 	var buf bytes.Buffer
 	printLauncherStatus(&buf, launcher.StatusResult{

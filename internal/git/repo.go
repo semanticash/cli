@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/platform"
 )
@@ -167,6 +168,123 @@ func (r *Repo) IsDirty(ctx context.Context) (bool, error) {
 	return len(bytes.TrimSpace(out)) > 0, nil
 }
 
+// StatusShort returns `git status --short` output (one line per
+// file, e.g. " M path/to/file"). Used by the handoff bundle to
+// summarize uncommitted changes a fresh agent session needs to
+// know about.
+func (r *Repo) StatusShort(ctx context.Context) (string, error) {
+	cmd := r.gitCmd(ctx, "status", "--short", "--no-renames")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return "", fmt.Errorf("git status --short failed: %w: %s", err, string(ee.Stderr))
+		}
+		return "", fmt.Errorf("git status --short failed: %w", err)
+	}
+	return cleanGitOutput(out), nil
+}
+
+// Commit is one entry in the result of LogSince. Used by the
+// handoff bundle to render each commit's subject and (when
+// non-empty) body separately, so a session-summary commit with
+// substantive details doesn't get truncated to its first line.
+type Commit struct {
+	// ShortHash is git's abbreviated hash (typically 7 chars).
+	ShortHash string
+
+	// Subject is the first line of the commit message.
+	Subject string
+
+	// Body is the trimmed remainder of the commit message; empty
+	// when the commit has no body. Already newline-normalized.
+	Body string
+}
+
+// recordSep and fieldSep separate git-log records and per-record
+// fields. The byte values are deliberately non-printable and
+// outside what commit messages legitimately contain, so a commit
+// whose subject or body includes a literal "\n" or "|" cannot
+// confuse the parser. ASCII Record-Separator (0x1e) and
+// Unit-Separator (0x1f) are the standard control-byte choice for
+// this pattern.
+const (
+	recordSep = "\x1e"
+	fieldSep  = "\x1f"
+)
+
+// LogSince returns commits whose author-date is at or after the
+// given time, capped at limit entries (default 20 when limit<=0).
+// Each Commit carries the short hash, subject, and body so the
+// handoff bundle can render them with their full context rather
+// than collapsing each commit to a single line.
+func (r *Repo) LogSince(ctx context.Context, since time.Time, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	// Format: <short-hash> US <subject> US <body> RS.
+	// Delimit records and fields with control bytes so
+	// commit messages containing newlines, pipes, or anything else
+	// printable cannot break parsing.
+	format := fmt.Sprintf("%%h%s%%s%s%%b%s", fieldSep, fieldSep, recordSep)
+	args := []string{
+		"log",
+		fmt.Sprintf("--since=%d", since.Unix()),
+		"--max-count", fmt.Sprintf("%d", limit),
+		"--pretty=format:" + format,
+		"--no-color",
+	}
+	cmd := r.gitCmd(ctx, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, fmt.Errorf("git log failed: %w: %s", err, string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git log failed: %w", err)
+	}
+	raw := strings.TrimRight(string(out), "\n")
+	if raw == "" {
+		return nil, nil
+	}
+	// Split on the record separator. Each record is then
+	// further split on the field separator (3 fields).
+	records := strings.Split(raw, recordSep)
+	commits := make([]Commit, 0, len(records))
+	for _, rec := range records {
+		rec = strings.TrimLeft(rec, "\n") // git adds a leading \n between records
+		if rec == "" {
+			continue
+		}
+		parts := strings.SplitN(rec, fieldSep, 3)
+		if len(parts) < 3 {
+			// Defensive: a malformed record skips silently
+			// rather than failing the whole bundle assembly.
+			continue
+		}
+		commits = append(commits, Commit{
+			ShortHash: parts[0],
+			Subject:   parts[1],
+			Body:      strings.TrimSpace(parts[2]),
+		})
+	}
+	return commits, nil
+}
+
+// DiffWorkingTree returns the combined unstaged + staged diff
+// against HEAD. Used by the handoff bundle to surface uncommitted
+// changes; callers redact the result before including it in any
+// agent-visible payload.
+func (r *Repo) DiffWorkingTree(ctx context.Context) ([]byte, error) {
+	cmd := r.gitCmd(ctx, "diff", "--no-color", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, fmt.Errorf("git diff HEAD failed: %w: %s", err, string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git diff HEAD failed: %w", err)
+	}
+	return out, nil
+}
+
 // ResolveRef resolves a git ref (HEAD, branch name, tag, commit prefix) to a
 // full commit hash. Returns an error if the ref is not valid.
 func (r *Repo) ResolveRef(ctx context.Context, ref string) (string, error) {
@@ -204,6 +322,26 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 		return "", fmt.Errorf("commit hash is empty")
 	}
 	cmd := r.gitCmd(ctx, "show", "-s", "--format=%s", commitHash)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return cleanGitOutput(out), nil
+}
+
+// CommitFormat runs `git show -s --format=<format> <commitHash>` and
+// returns the trimmed output. Callers compose multi-field formats
+// (e.g. "%H%n%an%n%ai%n%s") and parse the result by line. This is
+// the single git-show entry point for callers that need more than
+// just the subject.
+func (r *Repo) CommitFormat(ctx context.Context, commitHash, format string) (string, error) {
+	if strings.TrimSpace(commitHash) == "" {
+		return "", fmt.Errorf("commit hash is empty")
+	}
+	if format == "" {
+		return "", fmt.Errorf("format is empty")
+	}
+	cmd := r.gitCmd(ctx, "show", "-s", "--format="+format, commitHash)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

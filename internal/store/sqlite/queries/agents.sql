@@ -69,6 +69,38 @@ limit sqlc.arg(page_limit);
 -- name: GetActiveAgentSessionForRepo :one
 select * from agent_sessions where repository_id = ? order by last_seen_at desc limit 1;
 
+-- name: GetMostRecentParentSessionWithEvents :one
+-- Used by handoff's lineage fallback when no active capture state
+-- exists for the repo (e.g. between agent turns). Returns the most
+-- recently active parent session (no parent_session_id) within the
+-- supplied last_seen_at window that has at least one event in
+-- agent_events. The recency floor is the same 24h cutoff the
+-- capture-state resolver uses, applied here against the durable
+-- agent_sessions data.
+select * from agent_sessions s
+where s.repository_id = sqlc.arg(repository_id)
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= sqlc.arg(since_ts)
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1;
+
+-- name: GetMostRecentSessionByProviderWithEvents :one
+-- Used by handoff's --from override to source the bundle from a
+-- specific provider's most-recent parent session in the repo,
+-- regardless of whether a different agent currently holds the
+-- active capture state. Same recency and parent-only filters as
+-- the lineage fallback, plus a provider filter for explicit
+-- cross-agent handoff.
+select * from agent_sessions s
+where s.repository_id = sqlc.arg(repository_id)
+  and s.provider = sqlc.arg(provider)
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= sqlc.arg(since_ts)
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1;
+
 -- name: InsertSessionCheckpoint :exec
 insert or ignore into session_checkpoints (session_id, checkpoint_id) values (?, ?);
 

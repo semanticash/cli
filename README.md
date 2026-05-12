@@ -236,6 +236,7 @@ semantica suggest pr # generates a pull request title and description from your 
 semantica suggest implementations # suggests titles and merge candidates for implementation stories.
 semantica status # shows repo status, workspace tier, monitored providers, and sync state.
 semantica doctor # diagnoses local binary, hook, launcher, capture, and auth health.
+semantica handoff --write # writes a redacted handoff bundle for a fresh agent session.
 ```
 
 ### Agent sessions
@@ -246,6 +247,14 @@ View tracked AI sessions and their transcripts:
 semantica sessions
 semantica sessions <session_id> --transcript
 ```
+
+Prepare a fresh-agent handoff from the active Semantica-tracked agent session:
+
+```bash
+semantica handoff --write
+```
+
+The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat. The bundle includes redacted prompt context, the last assistant response, touched files, recent commits, and working-tree context when available. If multiple providers are active in an interactive terminal, Semantica asks which provider to hand off from. Use `--from <provider>` to hand off from a specific recent provider session, for example `semantica handoff --write --from claude-code`.
 
 ### Playbooks
 

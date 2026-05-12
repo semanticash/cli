@@ -166,6 +166,89 @@ func (q *Queries) GetManifestCommitLink(ctx context.Context, arg GetManifestComm
 	return i, err
 }
 
+const getMostRecentParentSessionWithEvents = `-- name: GetMostRecentParentSessionWithEvents :one
+select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions s
+where s.repository_id = ?1
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= ?2
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1
+`
+
+type GetMostRecentParentSessionWithEventsParams struct {
+	RepositoryID string `json:"repository_id"`
+	SinceTs      int64  `json:"since_ts"`
+}
+
+// Used by handoff's lineage fallback when no active capture state
+// exists for the repo (e.g. between agent turns). Returns the most
+// recently active parent session (no parent_session_id) within the
+// supplied last_seen_at window that has at least one event in
+// agent_events. The recency floor is the same 24h cutoff the
+// capture-state resolver uses, applied here against the durable
+// agent_sessions data.
+func (q *Queries) GetMostRecentParentSessionWithEvents(ctx context.Context, arg GetMostRecentParentSessionWithEventsParams) (AgentSession, error) {
+	row := q.queryRow(ctx, q.getMostRecentParentSessionWithEventsStmt, getMostRecentParentSessionWithEvents, arg.RepositoryID, arg.SinceTs)
+	var i AgentSession
+	err := row.Scan(
+		&i.SessionID,
+		&i.ProviderSessionID,
+		&i.ParentSessionID,
+		&i.RepositoryID,
+		&i.Provider,
+		&i.SourceID,
+		&i.StartedAt,
+		&i.LastSeenAt,
+		&i.MetadataJson,
+		&i.SourceRepoPath,
+		&i.Model,
+	)
+	return i, err
+}
+
+const getMostRecentSessionByProviderWithEvents = `-- name: GetMostRecentSessionByProviderWithEvents :one
+select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions s
+where s.repository_id = ?1
+  and s.provider = ?2
+  and (s.parent_session_id is null or s.parent_session_id = '')
+  and s.last_seen_at >= ?3
+  and exists (select 1 from agent_events e where e.session_id = s.session_id limit 1)
+order by s.last_seen_at desc
+limit 1
+`
+
+type GetMostRecentSessionByProviderWithEventsParams struct {
+	RepositoryID string `json:"repository_id"`
+	Provider     string `json:"provider"`
+	SinceTs      int64  `json:"since_ts"`
+}
+
+// Used by handoff's --from override to source the bundle from a
+// specific provider's most-recent parent session in the repo,
+// regardless of whether a different agent currently holds the
+// active capture state. Same recency and parent-only filters as
+// the lineage fallback, plus a provider filter for explicit
+// cross-agent handoff.
+func (q *Queries) GetMostRecentSessionByProviderWithEvents(ctx context.Context, arg GetMostRecentSessionByProviderWithEventsParams) (AgentSession, error) {
+	row := q.queryRow(ctx, q.getMostRecentSessionByProviderWithEventsStmt, getMostRecentSessionByProviderWithEvents, arg.RepositoryID, arg.Provider, arg.SinceTs)
+	var i AgentSession
+	err := row.Scan(
+		&i.SessionID,
+		&i.ProviderSessionID,
+		&i.ParentSessionID,
+		&i.RepositoryID,
+		&i.Provider,
+		&i.SourceID,
+		&i.StartedAt,
+		&i.LastSeenAt,
+		&i.MetadataJson,
+		&i.SourceRepoPath,
+		&i.Model,
+	)
+	return i, err
+}
+
 const getNextToolResultAfter = `-- name: GetNextToolResultAfter :one
 select event_id, payload_hash, summary, role, kind, ts
 from agent_events

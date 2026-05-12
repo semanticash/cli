@@ -29,3 +29,6 @@ GEMINI.md
 .gemini/settings.json
 .kiro/agents/semantica.json
 .kiro/hooks/
+
+# Semantica
+.claude/settings.local.json

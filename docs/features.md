@@ -199,6 +199,32 @@ semantica explain HEAD --generate
 
 ---
 
+## Session Handoff
+
+`semantica handoff --write` prepares a redacted markdown bundle for continuing work in a fresh agent session.
+
+### How it works
+
+The command first resolves an active Semantica-tracked agent session for the current repo. If the active turn state has already been cleaned up, it falls back to the most recent persisted parent session in `lineage.db`. When multiple providers are active in an interactive terminal, Semantica shows a provider picker. Non-interactive callers get the active provider list and a `--from <provider>` hint instead. Use `--from <provider>` to source the bundle from a specific recent provider session, such as `claude-code`, `cursor`, `gemini-cli`, `copilot`, `kiro-cli`, or `kiro-ide`, even when another agent is currently active. The writer then reads recent captured prompts, the last assistant message, file-touch context, recent commits with useful commit-message bodies, and uncommitted working-tree context, then writes the result to `.semantica/handoff.md`. Captured prose and diff excerpts are redacted before they are written, and prompt text is rendered in fenced blocks so multi-line prompts stay readable.
+
+### What you see
+
+```bash
+semantica handoff --write
+semantica handoff --write --from claude-code
+semantica handoff continue
+```
+
+The writer prints the saved path and does not echo the handoff bundle into the originating chat. In an interactive terminal, it asks whether to continue in a fresh session immediately. Accepting the prompt chains into `semantica handoff continue`; non-interactive callers and declined prompts receive a manual `semantica handoff continue` hint instead. `semantica handoff continue` reads the bundle and either launches the matching agent or prints a command or manual instruction with the absolute bundle path.
+
+### Caveats
+
+- The handoff writer supports Semantica-tracked provider sessions.
+- If lineage data is missing or the session is not yet registered locally, Semantica writes a minimal bundle with a generic note instead of exposing raw database errors.
+- Auto-launch is available on Unix when the matching CLI binary is installed for Claude Code, Cursor, Gemini CLI, Copilot CLI, or Kiro CLI. Kiro IDE receives a manual-launch hint because it has no CLI surface for this flow. `--print` always prints a copyable command instead of spawning.
+
+---
+
 ## Commit and PR Suggestions
 
 Semantica can generate commit messages and pull request descriptions from the

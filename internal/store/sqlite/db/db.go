@@ -84,6 +84,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getManifestCommitLinkStmt, err = db.PrepareContext(ctx, getManifestCommitLink); err != nil {
 		return nil, fmt.Errorf("error preparing query GetManifestCommitLink: %w", err)
 	}
+	if q.getMostRecentParentSessionWithEventsStmt, err = db.PrepareContext(ctx, getMostRecentParentSessionWithEvents); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMostRecentParentSessionWithEvents: %w", err)
+	}
+	if q.getMostRecentSessionByProviderWithEventsStmt, err = db.PrepareContext(ctx, getMostRecentSessionByProviderWithEvents); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMostRecentSessionByProviderWithEvents: %w", err)
+	}
 	if q.getNextToolResultAfterStmt, err = db.PrepareContext(ctx, getNextToolResultAfter); err != nil {
 		return nil, fmt.Errorf("error preparing query GetNextToolResultAfter: %w", err)
 	}
@@ -370,6 +376,16 @@ func (q *Queries) Close() error {
 	if q.getManifestCommitLinkStmt != nil {
 		if cerr := q.getManifestCommitLinkStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getManifestCommitLinkStmt: %w", cerr)
+		}
+	}
+	if q.getMostRecentParentSessionWithEventsStmt != nil {
+		if cerr := q.getMostRecentParentSessionWithEventsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMostRecentParentSessionWithEventsStmt: %w", cerr)
+		}
+	}
+	if q.getMostRecentSessionByProviderWithEventsStmt != nil {
+		if cerr := q.getMostRecentSessionByProviderWithEventsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMostRecentSessionByProviderWithEventsStmt: %w", cerr)
 		}
 	}
 	if q.getNextToolResultAfterStmt != nil {
@@ -714,175 +730,179 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                                       DBTX
-	tx                                       *sql.Tx
-	advanceBackfillCursorStmt                *sql.Stmt
-	completeBackfillStmt                     *sql.Stmt
-	completeCheckpointStmt                   *sql.Stmt
-	countCheckpointsWithSummaryStmt          *sql.Stmt
-	countManifestsByStatusStmt               *sql.Stmt
-	countSessionsForCheckpointStmt           *sql.Stmt
-	deleteCheckpointByIDStmt                 *sql.Stmt
-	failCheckpointStmt                       *sql.Stmt
-	getActiveAgentSessionForRepoStmt         *sql.Stmt
-	getAgentSessionByIDStmt                  *sql.Stmt
-	getAgentSessionByProviderIDStmt          *sql.Stmt
-	getAttributionBackfillStmt               *sql.Stmt
-	getCheckpointByIDStmt                    *sql.Stmt
-	getCheckpointStatsStmt                   *sql.Stmt
-	getCheckpointSummaryStmt                 *sql.Stmt
-	getCommitLinkByCommitHashStmt            *sql.Stmt
-	getCommitLinksByCheckpointStmt           *sql.Stmt
-	getLatestCheckpointForRepoStmt           *sql.Stmt
-	getLatestCommitLinkStmt                  *sql.Stmt
-	getManifestCommitLinkStmt                *sql.Stmt
-	getNextToolResultAfterStmt               *sql.Stmt
-	getPreviousCommitLinkedCheckpointStmt    *sql.Stmt
-	getPreviousCompletedCheckpointStmt       *sql.Stmt
-	getPromptEventForTurnStmt                *sql.Stmt
-	getRepositoryByIDStmt                    *sql.Stmt
-	getRepositoryByRootPathStmt              *sql.Stmt
-	getSessionWithStatsStmt                  *sql.Stmt
-	insertAgentEventStmt                     *sql.Stmt
-	insertCheckpointStmt                     *sql.Stmt
-	insertCommitLinkStmt                     *sql.Stmt
-	insertRepositoryStmt                     *sql.Stmt
-	insertSessionCheckpointStmt              *sql.Stmt
-	listAgentEventsBySessionStmt             *sql.Stmt
-	listAgentEventsBySessionPagedStmt        *sql.Stmt
-	listAgentSessionsByProviderSessionIDStmt *sql.Stmt
-	listBackfillReplayCandidatesStmt         *sql.Stmt
-	listCheckpointsByRepositoryStmt          *sql.Stmt
-	listCheckpointsWithCommitStmt            *sql.Stmt
-	listCommitLinksByRepositoryStmt          *sql.Stmt
-	listCrossRepoSessionsStmt                *sql.Stmt
-	listDistinctProvidersStmt                *sql.Stmt
-	listEventsByProviderInWindowStmt         *sql.Stmt
-	listEventsBySessionASCStmt               *sql.Stmt
-	listEventsInWindowStmt                   *sql.Stmt
-	listFailedManifestReasonsStmt            *sql.Stmt
-	listPackagedManifestsStmt                *sql.Stmt
-	listPendingManifestsStmt                 *sql.Stmt
-	listProvidersByCheckpointStmt            *sql.Stmt
-	listRecentAIPercentagesStmt              *sql.Stmt
-	listRecentSessionsWithStatsStmt          *sql.Stmt
-	listRepositoriesStmt                     *sql.Stmt
-	listSessionsForCheckpointStmt            *sql.Stmt
-	listSessionsForRepositoryStmt            *sql.Stmt
-	listSessionsWithEventsInWindowStmt       *sql.Stmt
-	listSessionsWithStatsStmt                *sql.Stmt
-	listSessionsWithStatsAllStmt             *sql.Stmt
-	listStalePendingCheckpointsStmt          *sql.Stmt
-	listStepCompanionResultsStmt             *sql.Stmt
-	listStepEventsForTurnStmt                *sql.Stmt
-	listStepProvenanceForTurnStmt            *sql.Stmt
-	listTranscriptEventsStmt                 *sql.Stmt
-	markManifestFailedStmt                   *sql.Stmt
-	markManifestUploadedStmt                 *sql.Stmt
-	markManifestUploadingStmt                *sql.Stmt
-	promptEventExistsStmt                    *sql.Stmt
-	recordBackfillFailureStmt                *sql.Stmt
-	recoverStaleUploadingStmt                *sql.Stmt
-	resetManifestForRetryStmt                *sql.Stmt
-	resetManifestToPackagedStmt              *sql.Stmt
-	resolveCheckpointByPrefixStmt            *sql.Stmt
-	resolveCommitLinkByPrefixStmt            *sql.Stmt
-	resolveSessionByPrefixStmt               *sql.Stmt
-	saveCheckpointSummaryStmt                *sql.Stmt
-	stepEventExistsStmt                      *sql.Stmt
-	updateCheckpointAIPercentageStmt         *sql.Stmt
-	updateRepositoryEnabledAtStmt            *sql.Stmt
-	upsertAgentSessionStmt                   *sql.Stmt
-	upsertAgentSourceStmt                    *sql.Stmt
-	upsertAttributionBackfillStmt            *sql.Stmt
-	upsertCheckpointStatsStmt                *sql.Stmt
-	upsertProvenanceManifestStmt             *sql.Stmt
+	db                                           DBTX
+	tx                                           *sql.Tx
+	advanceBackfillCursorStmt                    *sql.Stmt
+	completeBackfillStmt                         *sql.Stmt
+	completeCheckpointStmt                       *sql.Stmt
+	countCheckpointsWithSummaryStmt              *sql.Stmt
+	countManifestsByStatusStmt                   *sql.Stmt
+	countSessionsForCheckpointStmt               *sql.Stmt
+	deleteCheckpointByIDStmt                     *sql.Stmt
+	failCheckpointStmt                           *sql.Stmt
+	getActiveAgentSessionForRepoStmt             *sql.Stmt
+	getAgentSessionByIDStmt                      *sql.Stmt
+	getAgentSessionByProviderIDStmt              *sql.Stmt
+	getAttributionBackfillStmt                   *sql.Stmt
+	getCheckpointByIDStmt                        *sql.Stmt
+	getCheckpointStatsStmt                       *sql.Stmt
+	getCheckpointSummaryStmt                     *sql.Stmt
+	getCommitLinkByCommitHashStmt                *sql.Stmt
+	getCommitLinksByCheckpointStmt               *sql.Stmt
+	getLatestCheckpointForRepoStmt               *sql.Stmt
+	getLatestCommitLinkStmt                      *sql.Stmt
+	getManifestCommitLinkStmt                    *sql.Stmt
+	getMostRecentParentSessionWithEventsStmt     *sql.Stmt
+	getMostRecentSessionByProviderWithEventsStmt *sql.Stmt
+	getNextToolResultAfterStmt                   *sql.Stmt
+	getPreviousCommitLinkedCheckpointStmt        *sql.Stmt
+	getPreviousCompletedCheckpointStmt           *sql.Stmt
+	getPromptEventForTurnStmt                    *sql.Stmt
+	getRepositoryByIDStmt                        *sql.Stmt
+	getRepositoryByRootPathStmt                  *sql.Stmt
+	getSessionWithStatsStmt                      *sql.Stmt
+	insertAgentEventStmt                         *sql.Stmt
+	insertCheckpointStmt                         *sql.Stmt
+	insertCommitLinkStmt                         *sql.Stmt
+	insertRepositoryStmt                         *sql.Stmt
+	insertSessionCheckpointStmt                  *sql.Stmt
+	listAgentEventsBySessionStmt                 *sql.Stmt
+	listAgentEventsBySessionPagedStmt            *sql.Stmt
+	listAgentSessionsByProviderSessionIDStmt     *sql.Stmt
+	listBackfillReplayCandidatesStmt             *sql.Stmt
+	listCheckpointsByRepositoryStmt              *sql.Stmt
+	listCheckpointsWithCommitStmt                *sql.Stmt
+	listCommitLinksByRepositoryStmt              *sql.Stmt
+	listCrossRepoSessionsStmt                    *sql.Stmt
+	listDistinctProvidersStmt                    *sql.Stmt
+	listEventsByProviderInWindowStmt             *sql.Stmt
+	listEventsBySessionASCStmt                   *sql.Stmt
+	listEventsInWindowStmt                       *sql.Stmt
+	listFailedManifestReasonsStmt                *sql.Stmt
+	listPackagedManifestsStmt                    *sql.Stmt
+	listPendingManifestsStmt                     *sql.Stmt
+	listProvidersByCheckpointStmt                *sql.Stmt
+	listRecentAIPercentagesStmt                  *sql.Stmt
+	listRecentSessionsWithStatsStmt              *sql.Stmt
+	listRepositoriesStmt                         *sql.Stmt
+	listSessionsForCheckpointStmt                *sql.Stmt
+	listSessionsForRepositoryStmt                *sql.Stmt
+	listSessionsWithEventsInWindowStmt           *sql.Stmt
+	listSessionsWithStatsStmt                    *sql.Stmt
+	listSessionsWithStatsAllStmt                 *sql.Stmt
+	listStalePendingCheckpointsStmt              *sql.Stmt
+	listStepCompanionResultsStmt                 *sql.Stmt
+	listStepEventsForTurnStmt                    *sql.Stmt
+	listStepProvenanceForTurnStmt                *sql.Stmt
+	listTranscriptEventsStmt                     *sql.Stmt
+	markManifestFailedStmt                       *sql.Stmt
+	markManifestUploadedStmt                     *sql.Stmt
+	markManifestUploadingStmt                    *sql.Stmt
+	promptEventExistsStmt                        *sql.Stmt
+	recordBackfillFailureStmt                    *sql.Stmt
+	recoverStaleUploadingStmt                    *sql.Stmt
+	resetManifestForRetryStmt                    *sql.Stmt
+	resetManifestToPackagedStmt                  *sql.Stmt
+	resolveCheckpointByPrefixStmt                *sql.Stmt
+	resolveCommitLinkByPrefixStmt                *sql.Stmt
+	resolveSessionByPrefixStmt                   *sql.Stmt
+	saveCheckpointSummaryStmt                    *sql.Stmt
+	stepEventExistsStmt                          *sql.Stmt
+	updateCheckpointAIPercentageStmt             *sql.Stmt
+	updateRepositoryEnabledAtStmt                *sql.Stmt
+	upsertAgentSessionStmt                       *sql.Stmt
+	upsertAgentSourceStmt                        *sql.Stmt
+	upsertAttributionBackfillStmt                *sql.Stmt
+	upsertCheckpointStatsStmt                    *sql.Stmt
+	upsertProvenanceManifestStmt                 *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                                       tx,
-		tx:                                       tx,
-		advanceBackfillCursorStmt:                q.advanceBackfillCursorStmt,
-		completeBackfillStmt:                     q.completeBackfillStmt,
-		completeCheckpointStmt:                   q.completeCheckpointStmt,
-		countCheckpointsWithSummaryStmt:          q.countCheckpointsWithSummaryStmt,
-		countManifestsByStatusStmt:               q.countManifestsByStatusStmt,
-		countSessionsForCheckpointStmt:           q.countSessionsForCheckpointStmt,
-		deleteCheckpointByIDStmt:                 q.deleteCheckpointByIDStmt,
-		failCheckpointStmt:                       q.failCheckpointStmt,
-		getActiveAgentSessionForRepoStmt:         q.getActiveAgentSessionForRepoStmt,
-		getAgentSessionByIDStmt:                  q.getAgentSessionByIDStmt,
-		getAgentSessionByProviderIDStmt:          q.getAgentSessionByProviderIDStmt,
-		getAttributionBackfillStmt:               q.getAttributionBackfillStmt,
-		getCheckpointByIDStmt:                    q.getCheckpointByIDStmt,
-		getCheckpointStatsStmt:                   q.getCheckpointStatsStmt,
-		getCheckpointSummaryStmt:                 q.getCheckpointSummaryStmt,
-		getCommitLinkByCommitHashStmt:            q.getCommitLinkByCommitHashStmt,
-		getCommitLinksByCheckpointStmt:           q.getCommitLinksByCheckpointStmt,
-		getLatestCheckpointForRepoStmt:           q.getLatestCheckpointForRepoStmt,
-		getLatestCommitLinkStmt:                  q.getLatestCommitLinkStmt,
-		getManifestCommitLinkStmt:                q.getManifestCommitLinkStmt,
-		getNextToolResultAfterStmt:               q.getNextToolResultAfterStmt,
-		getPreviousCommitLinkedCheckpointStmt:    q.getPreviousCommitLinkedCheckpointStmt,
-		getPreviousCompletedCheckpointStmt:       q.getPreviousCompletedCheckpointStmt,
-		getPromptEventForTurnStmt:                q.getPromptEventForTurnStmt,
-		getRepositoryByIDStmt:                    q.getRepositoryByIDStmt,
-		getRepositoryByRootPathStmt:              q.getRepositoryByRootPathStmt,
-		getSessionWithStatsStmt:                  q.getSessionWithStatsStmt,
-		insertAgentEventStmt:                     q.insertAgentEventStmt,
-		insertCheckpointStmt:                     q.insertCheckpointStmt,
-		insertCommitLinkStmt:                     q.insertCommitLinkStmt,
-		insertRepositoryStmt:                     q.insertRepositoryStmt,
-		insertSessionCheckpointStmt:              q.insertSessionCheckpointStmt,
-		listAgentEventsBySessionStmt:             q.listAgentEventsBySessionStmt,
-		listAgentEventsBySessionPagedStmt:        q.listAgentEventsBySessionPagedStmt,
-		listAgentSessionsByProviderSessionIDStmt: q.listAgentSessionsByProviderSessionIDStmt,
-		listBackfillReplayCandidatesStmt:         q.listBackfillReplayCandidatesStmt,
-		listCheckpointsByRepositoryStmt:          q.listCheckpointsByRepositoryStmt,
-		listCheckpointsWithCommitStmt:            q.listCheckpointsWithCommitStmt,
-		listCommitLinksByRepositoryStmt:          q.listCommitLinksByRepositoryStmt,
-		listCrossRepoSessionsStmt:                q.listCrossRepoSessionsStmt,
-		listDistinctProvidersStmt:                q.listDistinctProvidersStmt,
-		listEventsByProviderInWindowStmt:         q.listEventsByProviderInWindowStmt,
-		listEventsBySessionASCStmt:               q.listEventsBySessionASCStmt,
-		listEventsInWindowStmt:                   q.listEventsInWindowStmt,
-		listFailedManifestReasonsStmt:            q.listFailedManifestReasonsStmt,
-		listPackagedManifestsStmt:                q.listPackagedManifestsStmt,
-		listPendingManifestsStmt:                 q.listPendingManifestsStmt,
-		listProvidersByCheckpointStmt:            q.listProvidersByCheckpointStmt,
-		listRecentAIPercentagesStmt:              q.listRecentAIPercentagesStmt,
-		listRecentSessionsWithStatsStmt:          q.listRecentSessionsWithStatsStmt,
-		listRepositoriesStmt:                     q.listRepositoriesStmt,
-		listSessionsForCheckpointStmt:            q.listSessionsForCheckpointStmt,
-		listSessionsForRepositoryStmt:            q.listSessionsForRepositoryStmt,
-		listSessionsWithEventsInWindowStmt:       q.listSessionsWithEventsInWindowStmt,
-		listSessionsWithStatsStmt:                q.listSessionsWithStatsStmt,
-		listSessionsWithStatsAllStmt:             q.listSessionsWithStatsAllStmt,
-		listStalePendingCheckpointsStmt:          q.listStalePendingCheckpointsStmt,
-		listStepCompanionResultsStmt:             q.listStepCompanionResultsStmt,
-		listStepEventsForTurnStmt:                q.listStepEventsForTurnStmt,
-		listStepProvenanceForTurnStmt:            q.listStepProvenanceForTurnStmt,
-		listTranscriptEventsStmt:                 q.listTranscriptEventsStmt,
-		markManifestFailedStmt:                   q.markManifestFailedStmt,
-		markManifestUploadedStmt:                 q.markManifestUploadedStmt,
-		markManifestUploadingStmt:                q.markManifestUploadingStmt,
-		promptEventExistsStmt:                    q.promptEventExistsStmt,
-		recordBackfillFailureStmt:                q.recordBackfillFailureStmt,
-		recoverStaleUploadingStmt:                q.recoverStaleUploadingStmt,
-		resetManifestForRetryStmt:                q.resetManifestForRetryStmt,
-		resetManifestToPackagedStmt:              q.resetManifestToPackagedStmt,
-		resolveCheckpointByPrefixStmt:            q.resolveCheckpointByPrefixStmt,
-		resolveCommitLinkByPrefixStmt:            q.resolveCommitLinkByPrefixStmt,
-		resolveSessionByPrefixStmt:               q.resolveSessionByPrefixStmt,
-		saveCheckpointSummaryStmt:                q.saveCheckpointSummaryStmt,
-		stepEventExistsStmt:                      q.stepEventExistsStmt,
-		updateCheckpointAIPercentageStmt:         q.updateCheckpointAIPercentageStmt,
-		updateRepositoryEnabledAtStmt:            q.updateRepositoryEnabledAtStmt,
-		upsertAgentSessionStmt:                   q.upsertAgentSessionStmt,
-		upsertAgentSourceStmt:                    q.upsertAgentSourceStmt,
-		upsertAttributionBackfillStmt:            q.upsertAttributionBackfillStmt,
-		upsertCheckpointStatsStmt:                q.upsertCheckpointStatsStmt,
-		upsertProvenanceManifestStmt:             q.upsertProvenanceManifestStmt,
+		db:                                           tx,
+		tx:                                           tx,
+		advanceBackfillCursorStmt:                    q.advanceBackfillCursorStmt,
+		completeBackfillStmt:                         q.completeBackfillStmt,
+		completeCheckpointStmt:                       q.completeCheckpointStmt,
+		countCheckpointsWithSummaryStmt:              q.countCheckpointsWithSummaryStmt,
+		countManifestsByStatusStmt:                   q.countManifestsByStatusStmt,
+		countSessionsForCheckpointStmt:               q.countSessionsForCheckpointStmt,
+		deleteCheckpointByIDStmt:                     q.deleteCheckpointByIDStmt,
+		failCheckpointStmt:                           q.failCheckpointStmt,
+		getActiveAgentSessionForRepoStmt:             q.getActiveAgentSessionForRepoStmt,
+		getAgentSessionByIDStmt:                      q.getAgentSessionByIDStmt,
+		getAgentSessionByProviderIDStmt:              q.getAgentSessionByProviderIDStmt,
+		getAttributionBackfillStmt:                   q.getAttributionBackfillStmt,
+		getCheckpointByIDStmt:                        q.getCheckpointByIDStmt,
+		getCheckpointStatsStmt:                       q.getCheckpointStatsStmt,
+		getCheckpointSummaryStmt:                     q.getCheckpointSummaryStmt,
+		getCommitLinkByCommitHashStmt:                q.getCommitLinkByCommitHashStmt,
+		getCommitLinksByCheckpointStmt:               q.getCommitLinksByCheckpointStmt,
+		getLatestCheckpointForRepoStmt:               q.getLatestCheckpointForRepoStmt,
+		getLatestCommitLinkStmt:                      q.getLatestCommitLinkStmt,
+		getManifestCommitLinkStmt:                    q.getManifestCommitLinkStmt,
+		getMostRecentParentSessionWithEventsStmt:     q.getMostRecentParentSessionWithEventsStmt,
+		getMostRecentSessionByProviderWithEventsStmt: q.getMostRecentSessionByProviderWithEventsStmt,
+		getNextToolResultAfterStmt:                   q.getNextToolResultAfterStmt,
+		getPreviousCommitLinkedCheckpointStmt:        q.getPreviousCommitLinkedCheckpointStmt,
+		getPreviousCompletedCheckpointStmt:           q.getPreviousCompletedCheckpointStmt,
+		getPromptEventForTurnStmt:                    q.getPromptEventForTurnStmt,
+		getRepositoryByIDStmt:                        q.getRepositoryByIDStmt,
+		getRepositoryByRootPathStmt:                  q.getRepositoryByRootPathStmt,
+		getSessionWithStatsStmt:                      q.getSessionWithStatsStmt,
+		insertAgentEventStmt:                         q.insertAgentEventStmt,
+		insertCheckpointStmt:                         q.insertCheckpointStmt,
+		insertCommitLinkStmt:                         q.insertCommitLinkStmt,
+		insertRepositoryStmt:                         q.insertRepositoryStmt,
+		insertSessionCheckpointStmt:                  q.insertSessionCheckpointStmt,
+		listAgentEventsBySessionStmt:                 q.listAgentEventsBySessionStmt,
+		listAgentEventsBySessionPagedStmt:            q.listAgentEventsBySessionPagedStmt,
+		listAgentSessionsByProviderSessionIDStmt:     q.listAgentSessionsByProviderSessionIDStmt,
+		listBackfillReplayCandidatesStmt:             q.listBackfillReplayCandidatesStmt,
+		listCheckpointsByRepositoryStmt:              q.listCheckpointsByRepositoryStmt,
+		listCheckpointsWithCommitStmt:                q.listCheckpointsWithCommitStmt,
+		listCommitLinksByRepositoryStmt:              q.listCommitLinksByRepositoryStmt,
+		listCrossRepoSessionsStmt:                    q.listCrossRepoSessionsStmt,
+		listDistinctProvidersStmt:                    q.listDistinctProvidersStmt,
+		listEventsByProviderInWindowStmt:             q.listEventsByProviderInWindowStmt,
+		listEventsBySessionASCStmt:                   q.listEventsBySessionASCStmt,
+		listEventsInWindowStmt:                       q.listEventsInWindowStmt,
+		listFailedManifestReasonsStmt:                q.listFailedManifestReasonsStmt,
+		listPackagedManifestsStmt:                    q.listPackagedManifestsStmt,
+		listPendingManifestsStmt:                     q.listPendingManifestsStmt,
+		listProvidersByCheckpointStmt:                q.listProvidersByCheckpointStmt,
+		listRecentAIPercentagesStmt:                  q.listRecentAIPercentagesStmt,
+		listRecentSessionsWithStatsStmt:              q.listRecentSessionsWithStatsStmt,
+		listRepositoriesStmt:                         q.listRepositoriesStmt,
+		listSessionsForCheckpointStmt:                q.listSessionsForCheckpointStmt,
+		listSessionsForRepositoryStmt:                q.listSessionsForRepositoryStmt,
+		listSessionsWithEventsInWindowStmt:           q.listSessionsWithEventsInWindowStmt,
+		listSessionsWithStatsStmt:                    q.listSessionsWithStatsStmt,
+		listSessionsWithStatsAllStmt:                 q.listSessionsWithStatsAllStmt,
+		listStalePendingCheckpointsStmt:              q.listStalePendingCheckpointsStmt,
+		listStepCompanionResultsStmt:                 q.listStepCompanionResultsStmt,
+		listStepEventsForTurnStmt:                    q.listStepEventsForTurnStmt,
+		listStepProvenanceForTurnStmt:                q.listStepProvenanceForTurnStmt,
+		listTranscriptEventsStmt:                     q.listTranscriptEventsStmt,
+		markManifestFailedStmt:                       q.markManifestFailedStmt,
+		markManifestUploadedStmt:                     q.markManifestUploadedStmt,
+		markManifestUploadingStmt:                    q.markManifestUploadingStmt,
+		promptEventExistsStmt:                        q.promptEventExistsStmt,
+		recordBackfillFailureStmt:                    q.recordBackfillFailureStmt,
+		recoverStaleUploadingStmt:                    q.recoverStaleUploadingStmt,
+		resetManifestForRetryStmt:                    q.resetManifestForRetryStmt,
+		resetManifestToPackagedStmt:                  q.resetManifestToPackagedStmt,
+		resolveCheckpointByPrefixStmt:                q.resolveCheckpointByPrefixStmt,
+		resolveCommitLinkByPrefixStmt:                q.resolveCommitLinkByPrefixStmt,
+		resolveSessionByPrefixStmt:                   q.resolveSessionByPrefixStmt,
+		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
+		stepEventExistsStmt:                          q.stepEventExistsStmt,
+		updateCheckpointAIPercentageStmt:             q.updateCheckpointAIPercentageStmt,
+		updateRepositoryEnabledAtStmt:                q.updateRepositoryEnabledAtStmt,
+		upsertAgentSessionStmt:                       q.upsertAgentSessionStmt,
+		upsertAgentSourceStmt:                        q.upsertAgentSourceStmt,
+		upsertAttributionBackfillStmt:                q.upsertAttributionBackfillStmt,
+		upsertCheckpointStatsStmt:                    q.upsertCheckpointStatsStmt,
+		upsertProvenanceManifestStmt:                 q.upsertProvenanceManifestStmt,
 	}
 }

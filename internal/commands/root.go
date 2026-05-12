@@ -58,6 +58,8 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewImplementationsCmd(opts))
 	cmd.AddCommand(NewLauncherCmd(opts))
 	cmd.AddCommand(NewDoctorCmd(opts))
+	cmd.AddCommand(NewHandoffCmd(opts))
+	cmd.AddCommand(NewSkillsCmd(opts))
 	cmd.AddCommand(newVersionCmd())
 
 	return cmd

@@ -13,6 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.4.0] - 2026-05-12
+
+### Added
+
+- `semantica handoff --write` creates a redacted `.semantica/handoff.md` bundle from the active Semantica-tracked agent session, the most recent persisted parent session when run between turns, or an explicitly named provider via `--from <provider>` for cross-agent handoff. When multiple providers are active, interactive terminals show a provider picker and non-interactive callers receive an enumerated `--from` hint. Bundles include recent user prompts, the last assistant message, file-touch context, recent commits, and uncommitted working-tree context for a fresh agent session. Interactive terminals can chain directly into `semantica handoff continue`; non-interactive callers receive a manual continue hint.
+- `semantica handoff continue` can launch a fresh agent session with the saved handoff bundle for Claude Code, Cursor, Gemini CLI, Copilot CLI, and Kiro CLI when the matching binary is installed. `--print` emits a safe copyable command, and Kiro IDE receives a manual-launch hint because it has no CLI surface for this flow.
+- Hidden `semantica skills handoff` backing command now shares the same writer as `semantica handoff --write`, preparing the CLI side of the `semantica-handoff` skill.
+- `semantica skills install` fetches SKILL.md files from the protected `main` branch of the `semanticash/skills` GitHub repo and writes them into every detected agent skills directory (Claude Code, Cursor, Gemini CLI, Copilot CLI, Kiro). `--source <path>` overrides the network fetch with a local checkout for development and offline use. `semantica skills uninstall` removes Semantica-managed files from the same directories. Each installed file carries a versioned content hash; install `--force` overwrites destination conflicts, while uninstall `--force` only removes edited Semantica-managed files.
+- Hidden `semantica skills explain <ref>` backing command now emits structured JSON for skill integrations, using local provenance when available, workspace API playbooks for connected repos, and a redacted git diff fallback otherwise.
+
+### Fixed
+
+- Handoff bundle assembly resolves provider session IDs to Semantica's local session IDs before reading `agent_events`, so real bundles include the captured prompt, assistant summary, and file-touch evidence.
+- Handoff degraded-state notes now avoid raw database errors and absolute local paths in the generated markdown.
+
+### Changed
+
+- Handoff bundles now render recent prompts and assistant context in fenced blocks, prefer full prompt blobs over compact event summaries, include useful commit-message bodies, and hide Semantica metadata trailers from the commit list.
+- Handoff writes always resolve the Git repository root before reading lineage data or writing `.semantica/handoff.md`, so subdirectory invocations target the correct repo.
+
 ## [0.3.9] - 2026-05-07
 
 ### Added

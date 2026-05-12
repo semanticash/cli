@@ -77,14 +77,30 @@ scoop install semantica
 
 Write release notes as user-facing bullets grouped under `Added`, `Changed`, and `Fixed`. Do not paste raw commit hashes or a commit-by-commit dump.
 
-3. Tag the release:
+3. Confirm the Semantica skills repo is ready. `semantica skills
+   install` fetches `semanticash/skills` from the protected `main`
+   branch, so any SKILL.md content expected by the release should be
+   merged there before the CLI release ships.
+
+```bash
+cd ../skills
+git status --short
+git log --oneline -5
+cd ../cli
+```
+
+Keep the skills repo `main` branch protected. If skills gain a
+compatibility surface later, revisit per-version pinning or signed
+archives as part of the release process.
+
+4. Tag the CLI release:
 
 ```bash
 git tag -a v0.1.1 -m "v0.1.1"
 git push origin v0.1.1
 ```
 
-4. GoReleaser runs via GitHub Actions on tag push. It:
+5. GoReleaser runs via GitHub Actions on tag push. It:
    - Builds binaries for all targets
    - Creates the GitHub Release with archives and checksums
    - Updates the Homebrew tap cask
