@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -28,57 +27,22 @@ const (
 	fetchTimeout          = 30 * time.Second
 )
 
+// skillsArchiveURL is the tarball endpoint for the protected main
+// branch of semanticash/skills. Skills are prose assets; branch
+// protection is the publish gate, and installed metadata handles
+// ownership and version checks. If skills gain a compatibility
+// surface, this resolver can switch to per-version pinning.
+const skillsArchiveURL = "https://codeload.github.com/semanticash/skills/tar.gz/refs/heads/main"
+
 // archiveURLResolver returns the URL to fetch the skills archive
-// from. Production builds use defaultArchiveURL; tests swap it for
-// an httptest.Server URL. The variable seam is intentionally
+// from. Production resolves to skillsArchiveURL; tests swap it
+// for an httptest.Server URL. The variable seam is intentionally
 // package-private: there is no documented public way to override
 // the URL because we don't want users to point the installer at
 // arbitrary tarballs.
 var archiveURLResolver = defaultArchiveURL
 
-// defaultArchiveURL chooses the tarball URL to fetch based on the
-// CLI version stamped at build time. Extracts the version read so
-// archiveURLForVersion is a pure function tests can drive directly.
-func defaultArchiveURL() string {
-	return archiveURLForVersion(version.Version)
-}
-
-// archiveURLForVersion is the pure resolver:
-//
-//   - Clean release tags (vX.Y.Z) fetch refs/tags/<version>. A
-//     released CLI pulls the skills payload at the matching
-//     versioned tag ref. The release process must tag the skills
-//     repo with the CLI's version before the CLI ships.
-//   - Anything else (dev builds, dirty builds, "dev", arbitrary
-//     ldflags overrides) falls back to refs/heads/main so
-//     contributors and CI pull the in-progress authoring branch.
-//
-// Note on integrity: this URL identifies *what to download*, not
-// whether the download is authentic or stable. Git tags are
-// mutable by default: `git push --force` to a tag overwrites
-// it. Reproducibility of the release-tag path therefore depends
-// on the maintainer enforcing tag protection in the
-// `semanticash/skills` repo settings (or moving to a SHA pin /
-// signed-tarball flow later). Install-time trust beyond that
-// rests on TLS for transport. The x-semantica-content-hash inside
-// each installed SKILL.md is a separate ownership / tamper marker
-// for uninstall and update; it does not prove the bytes that
-// arrived from GitHub were authored by anyone in particular.
-func archiveURLForVersion(v string) string {
-	v = strings.TrimSpace(v)
-	if isCleanReleaseTag(v) {
-		return fmt.Sprintf("https://codeload.github.com/semanticash/skills/tar.gz/refs/tags/%s", v)
-	}
-	return "https://codeload.github.com/semanticash/skills/tar.gz/refs/heads/main"
-}
-
-// releaseTagPattern matches a clean semver release tag with a
-// leading `v`. Dev builds carry suffixes like `-dirty`, `-rc1`,
-// or commit-count info that this regex deliberately rejects so
-// they fall through to the main-branch URL.
-var releaseTagPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
-
-func isCleanReleaseTag(v string) bool { return releaseTagPattern.MatchString(v) }
+func defaultArchiveURL() string { return skillsArchiveURL }
 
 // ErrSkillsFetchFailed wraps any failure from the network or
 // archive-extraction path so the install command can surface a

@@ -55,9 +55,9 @@ const SemanticaSkillNamePrefix = "semantica-"
 // safeSkillName matches the on-disk identifier shape: a leading
 // letter, lowercase alnum and hyphens after, length capped. Anchored
 // so any path separator, traversal, or whitespace fails before any
-// write. Combined with SemanticaSkillNamePrefix, it pins the two
-// conditions we want at every install/uninstall boundary: the
-// directory name is filesystem-safe and unambiguously ours.
+// write. Combined with SemanticaSkillNamePrefix, it enforces the
+// install/uninstall boundary: the directory name is filesystem-safe
+// and unambiguously Semantica-managed.
 var safeSkillName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
 // ErrFileEdited indicates an installed SKILL.md is Semantica-managed
@@ -157,10 +157,9 @@ var ErrNoAgentsDetected = errors.New("no supported agent skills directory found"
 // the returned report.
 //
 // When opts.Source is empty, Install fetches the skills archive
-// from GitHub at install time (see fetch.go). The release CLI
-// pulls a tagged tarball matching its own version; dev / dirty
-// builds pull refs/heads/main. opts.Source overrides the network
-// path entirely so developers can install from a local checkout.
+// from the protected main branch of semanticash/skills. opts.Source
+// overrides the network path entirely so developers and offline
+// users can install from a local checkout.
 func Install(ctx context.Context, opts InstallOptions) (*Report, error) {
 	if opts.CLIVersion == "" {
 		return nil, ErrCLIVersionEmpty

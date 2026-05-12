@@ -77,20 +77,21 @@ scoop install semantica
 
 Write release notes as user-facing bullets grouped under `Added`, `Changed`, and `Fixed`. Do not paste raw commit hashes or a commit-by-commit dump.
 
-3. Tag the matching Semantica skills repo revision. Release builds of
-   `semantica skills install` fetch `semanticash/skills` at
-   `refs/tags/<cli-version>`, so this tag must exist before the CLI
-   release ships.
+3. Confirm the Semantica skills repo is ready. `semantica skills
+   install` fetches `semanticash/skills` from the protected `main`
+   branch, so any SKILL.md content expected by the release should be
+   merged there before the CLI release ships.
 
 ```bash
 cd ../skills
-git tag -a v0.1.1 -m "v0.1.1"
-git push origin v0.1.1
+git status --short
+git log --oneline -5
 cd ../cli
 ```
 
-Protect release tags in the skills repo settings, or use another
-maintainer-controlled process that prevents accidental tag rewrites.
+Keep the skills repo `main` branch protected. If skills gain a
+compatibility surface later, revisit per-version pinning or signed
+archives as part of the release process.
 
 4. Tag the CLI release:
 

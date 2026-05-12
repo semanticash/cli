@@ -17,30 +17,15 @@ import (
 
 // --- URL resolution ---
 
-// TestArchiveURLForVersion_PinnedReleaseAndDevFallback covers the
-// release-pinning contract: clean release tags resolve to
-// refs/tags/<version>, anything else falls back to refs/heads/main
-// so a release CLI cannot accidentally pull skills authored after
-// it shipped.
-func TestArchiveURLForVersion_PinnedReleaseAndDevFallback(t *testing.T) {
-	cases := []struct {
-		version    string
-		wantSuffix string
-	}{
-		{"v0.4.0", "/refs/tags/v0.4.0"},
-		{"v1.10.7", "/refs/tags/v1.10.7"},
-		{"v0.3.9-8-g41e8a11-dirty", "/refs/heads/main"},
-		{"v0.3.9-rc1", "/refs/heads/main"},
-		{"dev", "/refs/heads/main"},
-		{"", "/refs/heads/main"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.version, func(t *testing.T) {
-			got := archiveURLForVersion(tc.version)
-			if !strings.HasSuffix(got, tc.wantSuffix) {
-				t.Errorf("version %q -> URL %q, want suffix %q", tc.version, got, tc.wantSuffix)
-			}
-		})
+// TestDefaultArchiveURL_PointsAtProtectedMain checks the publish
+// channel: installs fetch semanticash/skills from main. Branch
+// protection gates published skill content; per-version pinning
+// can be added here if skills gain a compatibility surface.
+func TestDefaultArchiveURL_PointsAtProtectedMain(t *testing.T) {
+	got := defaultArchiveURL()
+	const wantSuffix = "/semanticash/skills/tar.gz/refs/heads/main"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("defaultArchiveURL() = %q, want suffix %q", got, wantSuffix)
 	}
 }
 
