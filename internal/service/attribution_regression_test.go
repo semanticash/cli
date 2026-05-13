@@ -440,17 +440,21 @@ func TestRegression_ComputeAIPercent_CursorFileTouchOnly(t *testing.T) {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
 	}
 
+	// Provider-touch-only files no longer inflate the headline.
+	// ProviderOnlyLines counts the 3 touched lines but AILines
+	// (exact + formatted + modified) is 0, so Percent is 0.
+	// The provider breakdown still records cursor's involvement.
 	if result.TotalLines != 3 {
 		t.Errorf("TotalLines = %d, want 3", result.TotalLines)
 	}
-	if result.AILines != 3 {
-		t.Errorf("AILines = %d, want 3", result.AILines)
+	if result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (provider-only excluded from headline)", result.AILines)
 	}
-	if result.Percent != 100 {
-		t.Errorf("Percent = %.1f, want 100", result.Percent)
+	if result.Percent != 0 {
+		t.Errorf("Percent = %.1f, want 0 (provider-only excluded from headline)", result.Percent)
 	}
 	if len(result.Providers) != 1 || result.Providers[0].Provider != "cursor" {
-		t.Errorf("Providers = %v, want [cursor]", result.Providers)
+		t.Errorf("Providers = %v, want [cursor] (breakdown still tracks the file-touch)", result.Providers)
 	}
 }
 
@@ -647,14 +651,19 @@ func TestRegression_ComputeAIPercent_MixedProviders(t *testing.T) {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
 	}
 
+	// Claude contributes 2 line-level exact matches; cursor
+	// file-touches 2 lines without line-level evidence. After the
+	// headline carve-out, AILines = 2 (Claude only) and Percent =
+	// 50% (2 / 4). Cursor's lines still appear in the provider
+	// breakdown and in result.ProviderOnlyLines.
 	if result.TotalLines != 4 {
 		t.Errorf("TotalLines = %d, want 4", result.TotalLines)
 	}
-	if result.AILines != 4 {
-		t.Errorf("AILines = %d, want 4", result.AILines)
+	if result.AILines != 2 {
+		t.Errorf("AILines = %d, want 2 (claude exact only)", result.AILines)
 	}
-	if result.Percent != 100 {
-		t.Errorf("Percent = %.1f, want 100", result.Percent)
+	if result.Percent != 50 {
+		t.Errorf("Percent = %.1f, want 50 (provider-only excluded)", result.Percent)
 	}
 	if len(result.Providers) != 2 {
 		t.Fatalf("Providers count = %d, want 2", len(result.Providers))
@@ -663,16 +672,22 @@ func TestRegression_ComputeAIPercent_MixedProviders(t *testing.T) {
 		t.Errorf("provider order: got [%s, %s]", result.Providers[0].Provider, result.Providers[1].Provider)
 	}
 	if result.Providers[0].AILines != 2 {
-		t.Errorf("claude AILines = %d, want 2", result.Providers[0].AILines)
+		t.Errorf("claude AILines = %d, want 2 (line-level)", result.Providers[0].AILines)
 	}
-	if result.Providers[1].AILines != 2 {
-		t.Errorf("cursor AILines = %d, want 2", result.Providers[1].AILines)
+	if result.Providers[0].ProviderOnlyLines != 0 {
+		t.Errorf("claude ProviderOnlyLines = %d, want 0", result.Providers[0].ProviderOnlyLines)
+	}
+	if result.Providers[1].AILines != 0 {
+		t.Errorf("cursor AILines = %d, want 0 (line-level evidence only)", result.Providers[1].AILines)
+	}
+	if result.Providers[1].ProviderOnlyLines != 2 {
+		t.Errorf("cursor ProviderOnlyLines = %d, want 2 (provider-only sidecar)", result.Providers[1].ProviderOnlyLines)
 	}
 	if result.ExactLines != 2 {
 		t.Errorf("ExactLines = %d, want 2", result.ExactLines)
 	}
-	if result.ModifiedLines != 2 {
-		t.Errorf("ModifiedLines = %d, want 2", result.ModifiedLines)
+	if result.ModifiedLines != 0 {
+		t.Errorf("ModifiedLines = %d, want 0 (cursor's lines moved to ProviderOnlyLines)", result.ModifiedLines)
 	}
 }
 
@@ -1111,7 +1126,8 @@ func TestRegression_FileChangeAI_ProviderTouchNoLineLevelEvidence(t *testing.T) 
 
 	// The file has no exact/formatted/modified scored lines (no payload),
 	// but it should be marked AI=true in FilesCreated because of the
-	// provider file-touch event.
+	// provider file-touch event. The AI flag is driven by provider-touch
+	// evidence; the headline AI% is separate.
 	foundInCreated := false
 	for _, fc := range result.FilesCreated {
 		if fc.Path == "touched.go" {
@@ -1125,9 +1141,11 @@ func TestRegression_FileChangeAI_ProviderTouchNoLineLevelEvidence(t *testing.T) 
 		t.Error("touched.go not found in FilesCreated")
 	}
 
-	// AI percentage is 100% because all lines are AI-Modified via provider touch.
-	if result.AIPercentage != 100 {
-		t.Errorf("AIPercentage = %.1f, want 100", result.AIPercentage)
+	// AIPercentage is 0 because the file has no line-level evidence.
+	// ProviderOnlyLines count the touched lines separately; they no
+	// longer inflate the headline.
+	if result.AIPercentage != 0 {
+		t.Errorf("AIPercentage = %.1f, want 0 (provider-only excluded from headline)", result.AIPercentage)
 	}
 }
 

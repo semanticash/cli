@@ -27,7 +27,7 @@ semantica blame HEAD          # aggregate AI percentage
 semantica blame HEAD --json   # per-file breakdown with exact/formatted/modified counts
 ```
 
-The JSON output includes per-file `ai_percentage`, per-provider breakdown (provider name, model, AI lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
+The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-provider breakdown (provider name, model, line-level AI lines, provider-only lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
 
 ### Prerequisites
 
@@ -40,7 +40,7 @@ The JSON output includes per-file `ai_percentage`, per-provider breakdown (provi
 - Attribution is anchored to the delta window between commit-linked checkpoints. Deferred created files can still pick up AI attribution from earlier history when they were present in the previous commit-linked manifest but committed later.
 - Lines that a developer manually edits after AI generation may count as "modified" rather than "exact."
 - Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
-- Provider-level attribution (file touched by AI) is available for all providers; line-level payload analysis requires providers that report Edit/Write tool call content.
+- Provider-level attribution (file touched by AI) is available for all providers. When a provider reports only file-touch metadata, those lines are reported as `ai_provider_only_lines` and excluded from the headline AI percentage.
 - When weaker evidence contributes to a file that also has line-level matches, Semantica keeps the strongest class as `evidence_class` and preserves the weaker signals in `evidence_classes`.
 
 ### Provenance packaging
@@ -109,8 +109,8 @@ Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 ```
 
 - **Checkpoint** - links the commit to its checkpoint ID
-- **Attribution** - per-provider AI percentage with line counts (one trailer per provider if multiple contributed). If no AI matches the commit, this becomes `0% AI detected (0/N lines)`.
-- **Diagnostics** - aggregate match statistics. If no AI matches the commit, this explains whether no AI events existed in the checkpoint window or whether AI events existed but did not match the committed files.
+- **Attribution** - per-provider AI percentage with line-level counts (one trailer per provider if multiple contributed). Provider-touch-only evidence is shown as `provider-touched N lines` instead of being mixed into the headline percentage. If no AI evidence matches the commit, this becomes `0% AI detected (0/N lines)`.
+- **Diagnostics** - aggregate match statistics. If no AI matches the commit, this explains whether no AI events existed in the checkpoint window, whether AI events existed but did not match the committed files, or whether only provider-touch evidence was available.
 
 When trailer emission is disabled:
 
@@ -132,6 +132,14 @@ When AI sessions exist but do not modify the committed files:
 Semantica-Checkpoint: chk_abc123
 Semantica-Attribution: 0% AI detected (0/141 lines)
 Semantica-Diagnostics: AI session events found, but no file-modifying changes matched this commit
+```
+
+When a provider reports file-touch evidence without line-level payloads:
+
+```text
+Semantica-Checkpoint: chk_abc123
+Semantica-Attribution: cursor provider-touched 12 lines
+Semantica-Diagnostics: 1 files, 12 provider-touched lines (no line-level evidence)
 ```
 
 ### Prerequisites

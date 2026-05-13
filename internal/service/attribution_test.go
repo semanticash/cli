@@ -426,18 +426,21 @@ func TestComputeAIPercent_CursorFileLevel(t *testing.T) {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
 	}
 
-	// 3 non-blank lines (package main, func handler() {, }) all from Cursor = 100%.
-	if result.Percent != 100 {
-		t.Errorf("AI%% = %.1f, want 100 (all lines from Cursor-touched file)", result.Percent)
+	// 3 non-blank lines, all from a Cursor-touched file with no
+	// line-level payload. After the headline carve-out, AILines
+	// is 0 and Percent is 0; the 3 lines live in ProviderOnlyLines
+	// and the provider breakdown still credits cursor.
+	if result.Percent != 0 {
+		t.Errorf("AI%% = %.1f, want 0 (provider-only excluded from headline)", result.Percent)
 	}
 	if result.TotalLines != 3 {
 		t.Errorf("TotalLines = %d, want 3", result.TotalLines)
 	}
-	if result.AILines != 3 {
-		t.Errorf("AILines = %d, want 3", result.AILines)
+	if result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (provider-only excluded)", result.AILines)
 	}
 	if len(result.Providers) != 1 || result.Providers[0].Provider != "cursor" {
-		t.Errorf("Providers = %+v, want [{cursor 3}]", result.Providers)
+		t.Errorf("Providers = %+v, want [{cursor 3}] (breakdown still tracks the file-touch)", result.Providers)
 	}
 }
 
@@ -507,39 +510,47 @@ func TestComputeAIPercent_MixedClaudeAndCursor(t *testing.T) {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
 	}
 
-	// All lines from both files should be AI-attributed.
-	// main.go: 4 non-blank lines (Claude exact), handler.go: 2 non-blank lines (Cursor file-level).
-	// Total: 6 non-blank lines, all AI -> 100%.
-	if result.Percent != 100 {
-		t.Errorf("AI%% = %.1f, want 100 (mixed Claude+Cursor, all AI)", result.Percent)
+	// main.go: 4 non-blank lines from Claude (exact). handler.go:
+	// 2 non-blank lines from Cursor (provider-only, no
+	// line-level evidence). With the headline carve-out, AILines
+	// = 4 (Claude exact only) over 6 total = ~66.67%. Tolerance
+	// comparison because the production path's float arithmetic
+	// may round at a different precision than 4.0/6.0*100.
+	wantPercent := 4.0 / 6.0 * 100
+	if diff := result.Percent - wantPercent; diff < -0.01 || diff > 0.01 {
+		t.Errorf("AI%% = %.4f, want %.4f (Claude exact / total, Cursor excluded)",
+			result.Percent, wantPercent)
 	}
 
-	// Verify per-provider breakdown.
+	// Verify per-provider breakdown. Cursor's 2 lines still
+	// appear in the breakdown so readers can see who touched what,
+	// even though they don't contribute to the headline.
 	if len(result.Providers) != 2 {
 		t.Fatalf("Providers count = %d, want 2", len(result.Providers))
 	}
-	// Providers sorted by AILines desc: Claude (4) > Cursor (2).
 	if result.Providers[0].Provider != "claude_code" {
 		t.Errorf("Providers[0].Provider = %q, want claude_code", result.Providers[0].Provider)
 	}
 	if result.Providers[0].AILines != 4 {
-		t.Errorf("Providers[0].AILines = %d, want 4", result.Providers[0].AILines)
+		t.Errorf("Providers[0].AILines = %d, want 4 (line-level)", result.Providers[0].AILines)
 	}
 	if result.Providers[1].Provider != "cursor" {
 		t.Errorf("Providers[1].Provider = %q, want cursor", result.Providers[1].Provider)
 	}
-	if result.Providers[1].AILines != 2 {
-		t.Errorf("Providers[1].AILines = %d, want 2", result.Providers[1].AILines)
+	if result.Providers[1].AILines != 0 {
+		t.Errorf("Providers[1].AILines = %d, want 0 (no line-level evidence)", result.Providers[1].AILines)
+	}
+	if result.Providers[1].ProviderOnlyLines != 2 {
+		t.Errorf("Providers[1].ProviderOnlyLines = %d, want 2 (provider-only sidecar)", result.Providers[1].ProviderOnlyLines)
 	}
 
-	// Verify tier breakdown.
-	// Claude: 4 exact lines (content-matched). Cursor: 2 modified lines
-	// (file-level touch, no content to exact-match).
+	// Tier breakdown: Claude 4 exact, Cursor 0 modified (moved
+	// to ProviderOnlyLines).
 	if result.ExactLines != 4 {
 		t.Errorf("ExactLines = %d, want 4 (Claude content-matched only)", result.ExactLines)
 	}
-	if result.ModifiedLines != 2 {
-		t.Errorf("ModifiedLines = %d, want 2 (Cursor file-level)", result.ModifiedLines)
+	if result.ModifiedLines != 0 {
+		t.Errorf("ModifiedLines = %d, want 0 (Cursor's lines are provider-only now)", result.ModifiedLines)
 	}
 	if result.FilesTouched != 2 {
 		t.Errorf("FilesTouched = %d, want 2", result.FilesTouched)
@@ -621,6 +632,162 @@ func TestFormatAttributionTrailers_NoProviders(t *testing.T) {
 	want := "Semantica-Attribution: 50% (50/100 lines)"
 	if trailers[0] != want {
 		t.Errorf("trailer = %q, want %q", trailers[0], want)
+	}
+}
+
+func TestFormatAttributionTrailers_NoProvidersMixedEvidence(t *testing.T) {
+	r := &AIPercentResult{
+		Percent:           50,
+		TotalLines:        100,
+		AILines:           50,
+		ProviderOnlyLines: 7,
+	}
+	trailers := formatAttributionTrailers(r, 100)
+	if len(trailers) != 1 {
+		t.Fatalf("got %d trailers, want 1", len(trailers))
+	}
+	want := "Semantica-Attribution: 50% (50/100 lines), +7 provider-touched"
+	if trailers[0] != want {
+		t.Errorf("trailer = %q, want %q", trailers[0], want)
+	}
+}
+
+// TestFormatAttributionTrailers_ProviderOnlyCommit verifies that
+// commits with only provider-touch evidence surface that evidence
+// instead of rendering as "0% AI detected".
+func TestFormatAttributionTrailers_ProviderOnlyCommit(t *testing.T) {
+	r := &AIPercentResult{
+		Percent:           0,
+		TotalLines:        3,
+		AILines:           0,
+		ProviderOnlyLines: 3,
+		Providers: []ProviderAttribution{
+			{Provider: "cursor", AILines: 0, ProviderOnlyLines: 3},
+		},
+	}
+	trailers := formatAttributionTrailers(r, 3)
+	if len(trailers) != 1 {
+		t.Fatalf("got %d trailers, want 1", len(trailers))
+	}
+	got := trailers[0]
+	// "0% AI detected" would misrepresent provider-touch evidence.
+	if strings.Contains(got, "0% AI detected") {
+		t.Errorf("trailer must not say '0%% AI detected' when provider-only evidence exists; got %q", got)
+	}
+	// Must name the provider and the count.
+	if !strings.Contains(got, "cursor") {
+		t.Errorf("trailer should name the provider; got %q", got)
+	}
+	if !strings.Contains(got, "3") {
+		t.Errorf("trailer should mention the 3 provider-touched lines; got %q", got)
+	}
+}
+
+// TestFormatAttributionTrailers_MixedLineAndProviderOnly verifies
+// the mixed case: one provider with line-level evidence, another
+// with only provider-touch evidence. Each gets its own trailer.
+func TestFormatAttributionTrailers_MixedLineAndProviderOnly(t *testing.T) {
+	r := &AIPercentResult{
+		Percent:           50,
+		TotalLines:        8,
+		AILines:           4,
+		ProviderOnlyLines: 2,
+		Providers: []ProviderAttribution{
+			{Provider: "claude_code", AILines: 4, ProviderOnlyLines: 0},
+			{Provider: "cursor", AILines: 0, ProviderOnlyLines: 2},
+		},
+	}
+	trailers := formatAttributionTrailers(r, 8)
+	if len(trailers) != 2 {
+		t.Fatalf("got %d trailers, want 2 (one per provider)", len(trailers))
+	}
+	if !strings.Contains(trailers[0], "claude_code") || !strings.Contains(trailers[0], "4/8") {
+		t.Errorf("first trailer should be claude_code line-level form; got %q", trailers[0])
+	}
+	if !strings.Contains(trailers[1], "cursor") || !strings.Contains(trailers[1], "provider-touched") {
+		t.Errorf("second trailer should be cursor provider-touch form; got %q", trailers[1])
+	}
+}
+
+// TestFormatAttributionTrailers_SameProviderMixedEvidence verifies
+// the case where a single provider contributes both line-level
+// and provider-only evidence (e.g. one Cursor/Gemini turn lands
+// a payload, another doesn't). The trailer for that provider
+// must surface both counts.
+func TestFormatAttributionTrailers_SameProviderMixedEvidence(t *testing.T) {
+	r := &AIPercentResult{
+		Percent:           40,
+		TotalLines:        10,
+		AILines:           4,
+		ProviderOnlyLines: 3,
+		Providers: []ProviderAttribution{
+			{Provider: "cursor", AILines: 4, ProviderOnlyLines: 3},
+		},
+	}
+	trailers := formatAttributionTrailers(r, 10)
+	if len(trailers) != 1 {
+		t.Fatalf("got %d trailers, want 1 (one provider, one trailer)", len(trailers))
+	}
+	got := trailers[0]
+	if !strings.Contains(got, "cursor") {
+		t.Errorf("trailer should name the provider; got %q", got)
+	}
+	if !strings.Contains(got, "4/10") {
+		t.Errorf("trailer should carry the line-level count; got %q", got)
+	}
+	if !strings.Contains(got, "3 provider-touched") {
+		t.Errorf("trailer must also carry the 3 provider-touched lines; got %q", got)
+	}
+}
+
+// TestFormatAttributionTrailers_SameProviderMixedEvidence_WithModel
+// verifies the same contract when the provider has a model name.
+func TestFormatAttributionTrailers_SameProviderMixedEvidence_WithModel(t *testing.T) {
+	r := &AIPercentResult{
+		Percent:           50,
+		TotalLines:        8,
+		AILines:           4,
+		ProviderOnlyLines: 2,
+		Providers: []ProviderAttribution{
+			{Provider: "cursor", Model: "claude 4.7", AILines: 4, ProviderOnlyLines: 2},
+		},
+	}
+	trailers := formatAttributionTrailers(r, 8)
+	if len(trailers) != 1 {
+		t.Fatalf("got %d trailers, want 1", len(trailers))
+	}
+	got := trailers[0]
+	if !strings.Contains(got, "claude 4.7") {
+		t.Errorf("trailer should include model; got %q", got)
+	}
+	if !strings.Contains(got, "2 provider-touched") {
+		t.Errorf("trailer must carry the 2 provider-touched lines; got %q", got)
+	}
+}
+
+// TestFormatDiagnosticsTrailer_ProviderOnly verifies that the
+// diagnostics trailer mentions provider-touched lines instead of
+// claiming "no file-modifying changes matched" when Semantica
+// has provider-touch evidence.
+func TestFormatDiagnosticsTrailer_ProviderOnly(t *testing.T) {
+	cr := &commitAttrResult{
+		result: &AIPercentResult{
+			FilesTouched:      1,
+			ExactLines:        0,
+			ModifiedLines:     0,
+			FormattedLines:    0,
+			ProviderOnlyLines: 3,
+			TotalLines:        3,
+			AILines:           0,
+		},
+		totalLines: 3,
+	}
+	got := formatDiagnosticsTrailer(cr)
+	if strings.Contains(got, "no file-modifying changes matched") {
+		t.Errorf("diagnostics must not claim no AI matches when provider-touch exists; got %q", got)
+	}
+	if !strings.Contains(got, "3 provider-touched") {
+		t.Errorf("diagnostics should name the provider-touched count; got %q", got)
 	}
 }
 
@@ -1377,15 +1544,20 @@ func TestCarryForward_ProviderMerge(t *testing.T) {
 		t.Errorf("Providers count = %d, want >= 2 (claude_code + cursor)", len(cfr.result.Providers))
 	}
 
-	provMap := map[string]int{}
+	// Track both line-level AILines and ProviderOnlyLines so the
+	// carry-forward path's per-provider split is checked
+	// honestly: claude contributes line-level, cursor contributes
+	// provider-only via carry-forward.
+	type pcounts struct{ ll, po int }
+	provMap := map[string]pcounts{}
 	for _, p := range cfr.result.Providers {
-		provMap[p.Provider] = p.AILines
+		provMap[p.Provider] = pcounts{ll: p.AILines, po: p.ProviderOnlyLines}
 	}
-	if provMap["claude_code"] == 0 {
-		t.Error("expected claude_code provider with AILines > 0")
+	if provMap["claude_code"].ll == 0 {
+		t.Error("expected claude_code provider with line-level AILines > 0")
 	}
-	if provMap["cursor"] == 0 {
-		t.Error("expected cursor provider with AILines > 0")
+	if provMap["cursor"].po == 0 {
+		t.Errorf("expected cursor provider with ProviderOnlyLines > 0 (carry-forward), got %+v", provMap["cursor"])
 	}
 }
 
@@ -1819,4 +1991,3 @@ func TestAttributeCommit_CarryForward(t *testing.T) {
 		t.Error("create.go should appear in FilesCreated")
 	}
 }
-

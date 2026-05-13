@@ -5,6 +5,13 @@ import "fmt"
 // ResolveFileEvidence determines the primary evidence class for a file
 // based on its scored lines, touch origin, and carry-forward status.
 // Returns the highest-quality evidence class that applies.
+//
+// Line-level evidence (exact / formatted / modified) wins when
+// present. Otherwise the function falls through to touch-based
+// classes; ProviderOnlyLines > 0 with a TouchOriginProviderEdit
+// resolves to EvidenceProviderTouch, which is the canonical
+// shape for Cursor / Copilot / Gemini / Kiro that report file
+// edits without line-level payload.
 func ResolveFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bool) EvidenceClass {
 	aiLines := fs.ExactLines + fs.FormattedLines + fs.ModifiedLines
 
@@ -36,6 +43,15 @@ func ResolveFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	// (line-level extraction should produce scored lines), but treat it as
 	// provider-touch if it does.
 	if aiLines == 0 && touch == TouchOriginLineLevel {
+		return EvidenceProviderTouch
+	}
+	// Last-resort: provider-only lines without an explicit touch
+	// origin still indicate provider-touch attribution. This
+	// shouldn't happen in production (touch origin is always
+	// populated for provider-only files) but guards against
+	// silent EvidenceNone for callers that forget to forward the
+	// origin.
+	if aiLines == 0 && fs.ProviderOnlyLines > 0 {
 		return EvidenceProviderTouch
 	}
 

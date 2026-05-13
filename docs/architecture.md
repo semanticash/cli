@@ -136,7 +136,7 @@ Both paths end up in the same `WorkerService.Run` pipeline for each checkpoint.
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
-   Computes per-file and aggregate AI percentage and stores it on the checkpoint. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
+   Computes per-file and aggregate AI percentage and stores it on the checkpoint. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
 7. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 

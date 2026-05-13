@@ -24,20 +24,39 @@ type AddedGroup struct {
 }
 
 // FileScore holds per-file attribution scores.
+//
+// ProviderOnlyLines counts lines attributed via provider-touch
+// signals alone (the AI session edited the file but no line-level
+// payload is available, e.g. Cursor / Copilot / Gemini / Kiro).
+// Tracked separately from ModifiedLines so the headline AI% is
+// computed from line-overlap evidence only; provider-only lines
+// are surfaced in the per-file output but excluded from the
+// commit-level percentage to avoid inflating the headline on
+// thin evidence.
+//
+// ProviderLines and ProviderOnlyLinesByProvider mirror that
+// split at the per-provider level: a cursor file-touch increments
+// only ProviderOnlyLinesByProvider["cursor"], while a claude
+// line-level match increments only ProviderLines["claude_code"].
+// Aggregating both maps separately keeps the per-provider
+// breakdown consistent with the headline split.
 type FileScore struct {
-	Path           string
-	TotalLines     int
-	ExactLines     int
-	FormattedLines int
-	ModifiedLines  int
-	HumanLines     int
-	ProviderLines  map[string]int // provider -> AI lines for this file
+	Path                        string
+	TotalLines                  int
+	ExactLines                  int
+	FormattedLines              int
+	ModifiedLines               int
+	ProviderOnlyLines           int
+	HumanLines                  int
+	ProviderLines               map[string]int // provider -> line-level AI lines
+	ProviderOnlyLinesByProvider map[string]int // provider -> provider-only lines
 }
 
 // MatchStats collects match counters from scoring.
 // Callers combine these with EventStats from the events package.
 type MatchStats struct {
-	ExactMatches      int
-	NormalizedMatches int
-	ModifiedMatches   int
+	ExactMatches        int
+	NormalizedMatches   int
+	ModifiedMatches     int
+	ProviderOnlyMatches int
 }

@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Provider-touch-only attribution is now reported as a separate provider-only sidecar instead of inflating headline AI line percentages. JSON, push payloads, commit trailers, and diagnostics expose the sidecar while keeping `ai_lines` and `ai_percentage` limited to exact, formatted, and modified line evidence.
+
 ## [0.4.0] - 2026-05-12
 
 ### Added
