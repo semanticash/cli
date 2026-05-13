@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/semanticash/cli/internal/agents/api"
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/util"
 )
 
 // fakeProvider implements HookProvider for testing.
@@ -1252,5 +1254,69 @@ func TestBuildTurnContext_PopulatesFields(t *testing.T) {
 	}
 	if ctx.CWD != "/repo" {
 		t.Fatalf("cwd: got %q", ctx.CWD)
+	}
+}
+
+// TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors
+// verifies that broker write failures are recorded in the global
+// hook-errors.log for doctor diagnostics. The fixture routes to a
+// repo path without .semantica/lineage.db so sqlstore.Open fails.
+func TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors(t *testing.T) {
+	// Isolate the global config dir so the test writes to a
+	// temp hook-errors.log rather than the developer's real one.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// Repo path exists on disk but has no .semantica/lineage.db,
+	// so the broker's sqlstore.Open will fail.
+	repoDir := t.TempDir()
+	canonical := repoDir
+	if resolved, err := filepath.EvalSymlinks(repoDir); err == nil {
+		canonical = resolved
+	}
+
+	ev := broker.RawEvent{
+		EventID:   "evt-1",
+		SourceKey: "default",
+		Provider:  "claude-code",
+		Timestamp: time.Now().UnixMilli(),
+		Kind:      "user",
+		Role:      "user",
+		FilePaths: []string{filepath.Join(canonical, "src", "foo.go")},
+	}
+	repos := []broker.RegisteredRepo{
+		{
+			RepoID:        "test-repo",
+			Path:          canonical,
+			CanonicalPath: canonical,
+			Active:        true,
+		},
+	}
+
+	err := routeAndWriteEventsToRepos(context.Background(), []broker.RawEvent{ev}, repos, nil)
+	if err == nil {
+		t.Fatal("expected write failure to surface as error; got nil")
+	}
+
+	entries, readErr := util.ReadHookErrorTail(10)
+	if readErr != nil {
+		t.Fatalf("read hook-errors.log: %v", readErr)
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Hook != "broker-write" {
+			continue
+		}
+		if e.Provider != "claude-code" {
+			continue
+		}
+		if !strings.Contains(e.Message, canonical) {
+			continue
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Errorf("expected hook-errors.log entry hook=broker-write provider=claude-code "+
+			"referencing %q; got entries: %+v", canonical, entries)
 	}
 }

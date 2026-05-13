@@ -14,6 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/doctor"
 	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/store/blobs"
+	"github.com/semanticash/cli/internal/util"
 )
 
 type captureTimestampKeyType struct{}
@@ -744,6 +745,16 @@ func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, r
 		if _, err := broker.WriteEventsToRepo(ctx, match.Repo.Path, match.Events, blobStore); err != nil {
 			slog.Warn("write events to repo failed",
 				"repo", match.Repo.Path, "events", len(match.Events), "err", err)
+			// Also write broker failures to hook-errors.log so
+			// semantica doctor can surface capture losses that
+			// would otherwise only appear in developer logs.
+			provider := ""
+			if len(match.Events) > 0 {
+				provider = match.Events[0].Provider
+			}
+			util.AppendHookError(provider, "broker-write",
+				fmt.Sprintf("write events to repo %s failed (%d events): %v",
+					match.Repo.Path, len(match.Events), err))
 			writeFailed = true
 		}
 	}
