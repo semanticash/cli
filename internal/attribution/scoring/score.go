@@ -24,13 +24,20 @@ func ScoreFiles(
 
 	for _, fd := range diff.Files {
 		fs := FileScore{
-			Path:          fd.Path,
-			ProviderLines: make(map[string]int),
+			Path:                       fd.Path,
+			ProviderLines:              make(map[string]int),
+			ProviderOnlyLinesByProvider: make(map[string]int),
 		}
 
 		provider, isProviderFile := providerTouchedFiles[fd.Path]
 		isProviderOnly := isProviderFile && aiLines[fd.Path] == nil
 		if isProviderOnly {
+			// Provider-only: the AI session touched the file but we
+			// have no line-level payload to match against. Counted
+			// in ProviderOnlyLines so the headline AI% (which sums
+			// exact + formatted + modified) does not inflate on
+			// thin evidence. The file still carries a provider
+			// attribution for the breakdown.
 			for _, group := range fd.Groups {
 				for _, line := range group.Lines {
 					trimmed := strings.TrimSpace(line)
@@ -38,9 +45,13 @@ func ScoreFiles(
 						continue
 					}
 					fs.TotalLines++
-					fs.ModifiedLines++
-					fs.ProviderLines[provider]++
-					stats.ModifiedMatches++
+					fs.ProviderOnlyLines++
+					// Per-provider sidecar: kept separate from
+					// ProviderLines so consumers can render the
+					// breakdown as "claude: 4 line-level, cursor:
+					// 2 provider-only" without conflating the two.
+					fs.ProviderOnlyLinesByProvider[provider]++
+					stats.ProviderOnlyMatches++
 				}
 			}
 			scores = append(scores, fs)

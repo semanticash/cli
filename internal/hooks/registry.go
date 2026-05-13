@@ -5,12 +5,16 @@ import (
 	"sync"
 )
 
-// providerOrder defines the canonical display order for providers.
+// providerOrder defines the canonical display order. Names must
+// match the provider Name() exactly; unknown providers fall to
+// weight 100 and sort alphabetically among themselves.
 var providerOrder = map[string]int{
 	"claude-code": 0,
 	"cursor":      1,
 	"copilot":     2,
-	"gemini":      3,
+	"gemini-cli":  3,
+	"kiro-cli":    4,
+	"kiro-ide":    5,
 }
 
 var (
@@ -68,6 +72,10 @@ func sortProviders(ps []HookProvider) {
 		if !okj {
 			oj = 100
 		}
-		return oi < oj
+		if oi != oj {
+			return oi < oj
+		}
+		// Stable order among same-weight entries (the unknowns).
+		return ps[i].Name() < ps[j].Name()
 	})
 }

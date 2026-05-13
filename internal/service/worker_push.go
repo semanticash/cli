@@ -18,10 +18,13 @@ import (
 )
 
 // providerDetail is the per-provider breakdown in the push payload.
+// AILines is line-level evidence; ProviderOnlyLines is the
+// provider-touch sidecar carried over from the in-process result.
 type providerDetail struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model,omitempty"`
-	AILines  int    `json:"ai_lines"`
+	Provider          string `json:"provider"`
+	Model             string `json:"model,omitempty"`
+	AILines           int    `json:"ai_lines"`
+	ProviderOnlyLines int    `json:"ai_provider_only_lines,omitempty"`
 }
 
 // remotePushPayload is the JSON body POSTed to the remote attribution endpoint.
@@ -29,31 +32,32 @@ type providerDetail struct {
 // HTTPS. The backend must canonicalize this (e.g., normalize SSH and HTTPS,
 // strip/add .git suffix) before using it as a repository identity key.
 type remotePushPayload struct {
-	RemoteURL        string                 `json:"remote_url"`
-	RepoProvider     string                 `json:"repo_provider,omitempty"`
-	Branch           string                 `json:"branch,omitempty"`
-	CommitHash       string                 `json:"commit_hash"`
-	CommitSubject    string                 `json:"commit_subject,omitempty"`
-	CheckpointID     string                 `json:"checkpoint_id,omitempty"`
-	AIExactLines     int                    `json:"ai_exact_lines"`
-	AIFormattedLines int                    `json:"ai_formatted_lines"`
-	AIModifiedLines  int                    `json:"ai_modified_lines"`
-	AILines          int                    `json:"ai_lines"`
-	HumanLines       int                    `json:"human_lines"`
-	TotalLines       int                    `json:"total_lines"`
-	FilesTotal       int                    `json:"files_total"`
-	FilesAITouched   int                    `json:"files_ai_touched"`
-	Files            []FileAttribution      `json:"files"`
-	Diagnostics      AttributionDiagnostics `json:"diagnostics"`
-	SessionCount     int                    `json:"session_count,omitempty"`
-	Providers        []string               `json:"providers,omitempty"`
-	ProviderDetails  []providerDetail       `json:"provider_details,omitempty"`
-	PlaybookJSON     json.RawMessage        `json:"playbook_json,omitempty"`
-	Evidence         string                 `json:"evidence,omitempty"`
-	FallbackCount    int                    `json:"fallback_count,omitempty"`
-	CLIVersion       string                 `json:"cli_version,omitempty"`
-	AttrVersion      string                 `json:"attribution_version"`
-	PushedAt         int64                  `json:"pushed_at"`
+	RemoteURL           string                 `json:"remote_url"`
+	RepoProvider        string                 `json:"repo_provider,omitempty"`
+	Branch              string                 `json:"branch,omitempty"`
+	CommitHash          string                 `json:"commit_hash"`
+	CommitSubject       string                 `json:"commit_subject,omitempty"`
+	CheckpointID        string                 `json:"checkpoint_id,omitempty"`
+	AIExactLines        int                    `json:"ai_exact_lines"`
+	AIFormattedLines    int                    `json:"ai_formatted_lines"`
+	AIModifiedLines     int                    `json:"ai_modified_lines"`
+	AIProviderOnlyLines int                    `json:"ai_provider_only_lines,omitempty"`
+	AILines             int                    `json:"ai_lines"`
+	HumanLines          int                    `json:"human_lines"`
+	TotalLines          int                    `json:"total_lines"`
+	FilesTotal          int                    `json:"files_total"`
+	FilesAITouched      int                    `json:"files_ai_touched"`
+	Files               []FileAttribution      `json:"files"`
+	Diagnostics         AttributionDiagnostics `json:"diagnostics"`
+	SessionCount        int                    `json:"session_count,omitempty"`
+	Providers           []string               `json:"providers,omitempty"`
+	ProviderDetails     []providerDetail       `json:"provider_details,omitempty"`
+	PlaybookJSON        json.RawMessage        `json:"playbook_json,omitempty"`
+	Evidence            string                 `json:"evidence,omitempty"`
+	FallbackCount       int                    `json:"fallback_count,omitempty"`
+	CLIVersion          string                 `json:"cli_version,omitempty"`
+	AttrVersion         string                 `json:"attribution_version"`
+	PushedAt            int64                  `json:"pushed_at"`
 }
 
 // PushAction classifies the outcome of a push attempt.
@@ -101,31 +105,32 @@ func buildPushPayload(ctx context.Context, h *sqlstore.Handle, result *Attributi
 	}
 
 	return remotePushPayload{
-		RemoteURL:        remoteURL,
-		RepoProvider:     git.ProviderFromRemoteURL(remoteURL),
-		Branch:           branch,
-		CommitHash:       commitHash,
-		CommitSubject:    subject,
-		CheckpointID:     checkpointID,
-		AIExactLines:     result.AIExactLines,
-		AIFormattedLines: result.AIFormattedLines,
-		AIModifiedLines:  result.AIModifiedLines,
-		AILines:          result.AILines,
-		HumanLines:       result.HumanLines,
-		TotalLines:       result.TotalLines,
-		FilesTotal:       result.FilesTotal,
-		FilesAITouched:   result.FilesAITouched,
-		Files:            result.Files,
-		Diagnostics:      result.Diagnostics,
-		SessionCount:     sessionCount,
-		Providers:        providers,
-		ProviderDetails:  details,
-		PlaybookJSON:     playbookJSON,
-		Evidence:         result.Evidence,
-		FallbackCount:    result.FallbackCount,
-		CLIVersion:       version.Version,
-		AttrVersion:      "v1",
-		PushedAt:         time.Now().UnixMilli(),
+		RemoteURL:           remoteURL,
+		RepoProvider:        git.ProviderFromRemoteURL(remoteURL),
+		Branch:              branch,
+		CommitHash:          commitHash,
+		CommitSubject:       subject,
+		CheckpointID:        checkpointID,
+		AIExactLines:        result.AIExactLines,
+		AIFormattedLines:    result.AIFormattedLines,
+		AIModifiedLines:     result.AIModifiedLines,
+		AIProviderOnlyLines: result.AIProviderOnlyLines,
+		AILines:             result.AILines,
+		HumanLines:          result.HumanLines,
+		TotalLines:          result.TotalLines,
+		FilesTotal:          result.FilesTotal,
+		FilesAITouched:      result.FilesAITouched,
+		Files:               result.Files,
+		Diagnostics:         result.Diagnostics,
+		SessionCount:        sessionCount,
+		Providers:           providers,
+		ProviderDetails:     details,
+		PlaybookJSON:        playbookJSON,
+		Evidence:            result.Evidence,
+		FallbackCount:       result.FallbackCount,
+		CLIVersion:          version.Version,
+		AttrVersion:         "v1",
+		PushedAt:            time.Now().UnixMilli(),
 	}
 }
 

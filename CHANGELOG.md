@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.4.1] - 2026-05-13
+
+### Added
+
+### Fixed
+
+- Re-enabling Semantica now preserves previously wrapped user Git hooks and keeps user hooks blocking, while Semantica's own capture hook remains non-blocking.
+- `semantica enable --providers` now rejects unknown provider names before creating local state or installing Git hooks.
+- Git hook installation now writes through a temp file and platform-aware replacement to reduce partial-hook risk on interruption.
+- Broker write failures are now mirrored to `hook-errors.log` so `semantica doctor` can report capture losses that previously only appeared in developer logs.
+
+### Changed
+
+- Provider-touch-only attribution is now reported as a separate provider-only sidecar instead of inflating headline AI line percentages. JSON, push payloads, commit trailers, and diagnostics expose the sidecar while keeping `ai_lines` and `ai_percentage` limited to exact, formatted, and modified line evidence.
+
 ## [0.4.0] - 2026-05-12
 
 ### Added

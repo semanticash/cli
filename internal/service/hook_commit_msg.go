@@ -282,14 +282,18 @@ func countDiffAddedLines(diffBytes []byte) int {
 }
 
 // formatAttributionTrailers builds one Semantica-Attribution trailer per
-// provider. Format: "Semantica-Attribution: 40% claude_code (100/250 lines)"
-// or with model: "Semantica-Attribution: 40% claude_code (opus 4.6) (100/250 lines)"
+// provider. Format depends on the evidence shape:
 //
-// When r is nil (no events or no AI match), emits a single zero-percent trailer
-// using totalLines from the diff.
+//   - Line-level evidence:        "40% claude_code (100/250 lines)"
+//   - Line-level with model:      "40% claude_code (opus 4.6) (100/250 lines)"
+//   - Provider-touch only:        "cursor provider-touched 5 lines"
+//
+// When r is nil and there are no diff lines either, no trailer is
+// emitted. When the commit only has provider-touch evidence, the
+// trailer reflects that; emitting a "0% AI detected" line when
+// Semantica has provider-touch data would misrepresent the state.
 func formatAttributionTrailers(r *AIPercentResult, totalLines int) []string {
-	// No events or zero AI lines: emit a single "0% AI detected" trailer.
-	if r == nil || r.AILines == 0 {
+	if r == nil || (r.AILines == 0 && r.ProviderOnlyLines == 0) {
 		if totalLines == 0 {
 			return nil
 		}
@@ -301,24 +305,49 @@ func formatAttributionTrailers(r *AIPercentResult, totalLines int) []string {
 		tl = totalLines
 	}
 
-	// If no per-provider breakdown, emit a single aggregate trailer.
+	// No per-provider breakdown: emit a single aggregate trailer
+	// covering whichever evidence shape exists.
 	if len(r.Providers) == 0 {
-		return []string{fmt.Sprintf("Semantica-Attribution: %.0f%% (%d/%d lines)",
-			r.Percent, r.AILines, tl)}
+		if r.AILines > 0 {
+			line := fmt.Sprintf("Semantica-Attribution: %.0f%% (%d/%d lines)",
+				r.Percent, r.AILines, tl)
+			if r.ProviderOnlyLines > 0 {
+				line += fmt.Sprintf(", +%d provider-touched", r.ProviderOnlyLines)
+			}
+			return []string{line}
+		}
+		return []string{fmt.Sprintf("Semantica-Attribution: provider-touched %d lines (no line-level evidence)",
+			r.ProviderOnlyLines)}
 	}
 
 	var trailers []string
 	for _, p := range r.Providers {
-		pct := float64(p.AILines) / float64(tl) * 100
-		if p.Model != "" {
-			trailers = append(trailers, fmt.Sprintf(
-				"Semantica-Attribution: %.0f%% %s (%s) (%d/%d lines)",
-				pct, p.Provider, p.Model, p.AILines, tl))
+		// Build the per-provider line-level segment, then append
+		// the provider-only sidecar to the same trailer when both
+		// exist. One provider = one trailer, regardless of which
+		// evidence shapes it carries.
+		var line string
+		if p.AILines > 0 {
+			pct := float64(p.AILines) / float64(tl) * 100
+			if p.Model != "" {
+				line = fmt.Sprintf("Semantica-Attribution: %.0f%% %s (%s) (%d/%d lines)",
+					pct, p.Provider, p.Model, p.AILines, tl)
+			} else {
+				line = fmt.Sprintf("Semantica-Attribution: %.0f%% %s (%d/%d lines)",
+					pct, p.Provider, p.AILines, tl)
+			}
+			if p.ProviderOnlyLines > 0 {
+				// Same-provider mixed evidence keeps the
+				// provider-touch count on this provider's trailer.
+				line += fmt.Sprintf(", +%d provider-touched", p.ProviderOnlyLines)
+			}
+		} else if p.ProviderOnlyLines > 0 {
+			line = fmt.Sprintf("Semantica-Attribution: %s provider-touched %d lines",
+				p.Provider, p.ProviderOnlyLines)
 		} else {
-			trailers = append(trailers, fmt.Sprintf(
-				"Semantica-Attribution: %.0f%% %s (%d/%d lines)",
-				pct, p.Provider, p.AILines, tl))
+			continue
 		}
+		trailers = append(trailers, line)
 	}
 	return trailers
 }
@@ -336,8 +365,21 @@ func formatDiagnosticsTrailer(cr *commitAttrResult) string {
 		return "Semantica-Diagnostics: AI session events found, but no file-modifying changes matched this commit"
 	}
 	r := cr.result
-	if r.AILines == 0 {
+	if r.AILines == 0 && r.ProviderOnlyLines == 0 {
 		return "Semantica-Diagnostics: AI session events found, but no file-modifying changes matched this commit"
+	}
+	// Surface provider-only lines in the diagnostics so the user
+	// can see them when the line-level counts are zero. Without
+	// this, a Cursor-only commit shows "0 exact, 0 modified, 0
+	// formatted" with no hint that provider-touch evidence was
+	// recorded.
+	if r.AILines == 0 {
+		return fmt.Sprintf("Semantica-Diagnostics: %d files, %d provider-touched lines (no line-level evidence)",
+			r.FilesTouched, r.ProviderOnlyLines)
+	}
+	if r.ProviderOnlyLines > 0 {
+		return fmt.Sprintf("Semantica-Diagnostics: %d files, lines: %d exact, %d modified, %d formatted, %d provider-touched",
+			r.FilesTouched, r.ExactLines, r.ModifiedLines, r.FormattedLines, r.ProviderOnlyLines)
 	}
 	return fmt.Sprintf("Semantica-Diagnostics: %d files, lines: %d exact, %d modified, %d formatted",
 		r.FilesTouched, r.ExactLines, r.ModifiedLines, r.FormattedLines)

@@ -165,13 +165,15 @@ func RunCase(tc EvalCase) CaseResult {
 	fsInputs := make([]reporting.FileScoreInput, len(scores))
 	for i, s := range scores {
 		fsInputs[i] = reporting.FileScoreInput{
-			Path:           s.Path,
-			TotalLines:     s.TotalLines,
-			ExactLines:     s.ExactLines,
-			FormattedLines: s.FormattedLines,
-			ModifiedLines:  s.ModifiedLines,
-			HumanLines:     s.HumanLines,
-			ProviderLines:  s.ProviderLines,
+			Path:                       s.Path,
+			TotalLines:                 s.TotalLines,
+			ExactLines:                 s.ExactLines,
+			FormattedLines:             s.FormattedLines,
+			ModifiedLines:              s.ModifiedLines,
+			ProviderOnlyLines:          s.ProviderOnlyLines,
+			HumanLines:                 s.HumanLines,
+			ProviderLines:              s.ProviderLines,
+			ProviderOnlyLinesByProvider: s.ProviderOnlyLinesByProvider,
 		}
 	}
 

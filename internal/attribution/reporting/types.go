@@ -3,36 +3,63 @@
 package reporting
 
 // FileScoreInput is the narrow input shape for a single file's score data.
+//
+// ProviderOnlyLines counts lines from provider-only files (the AI
+// session touched the file but no line-level payload exists).
+// Excluded from the headline AI% sum on purpose; surfaced
+// separately so callers can render it as a sidecar metric.
+//
+// ProviderLines and ProviderOnlyLinesByProvider are the
+// per-provider counterparts of ExactLines+FormattedLines+
+// ModifiedLines and ProviderOnlyLines respectively. They split
+// cleanly so a consumer rendering the per-provider breakdown
+// can say "claude: N line-level, cursor: M provider-only"
+// instead of conflating the two.
 type FileScoreInput struct {
-	Path            string
-	TotalLines      int
-	ExactLines      int
-	FormattedLines  int
-	ModifiedLines   int
-	HumanLines      int
-	ProviderLines   map[string]int // provider -> AI lines for this file
-	DeletedNonBlank int            // deleted non-blank lines (display only, not attributed)
+	Path                        string
+	TotalLines                  int
+	ExactLines                  int
+	FormattedLines              int
+	ModifiedLines               int
+	ProviderOnlyLines           int
+	HumanLines                  int
+	ProviderLines               map[string]int // provider -> line-level AI lines
+	ProviderOnlyLinesByProvider map[string]int // provider -> provider-only lines
+	DeletedNonBlank             int            // deleted non-blank lines (display only, not attributed)
 }
 
 // ProviderAttribution holds per-provider AI line counts.
+//
+// AILines covers line-level evidence only (exact + formatted +
+// modified) to stay consistent with the commit-level headline
+// AILines / Percent. ProviderOnlyLines holds the provider-touch-
+// only sidecar so consumers can render "N AI lines (M more
+// provider-touched)" per agent without conflating the two
+// evidence strengths.
 type ProviderAttribution struct {
-	Provider string
-	Model    string // empty if unknown
-	AILines  int
+	Provider          string
+	Model             string // empty if unknown
+	AILines           int    // line-level evidence: exact + formatted + modified
+	ProviderOnlyLines int    // provider-touch only; excluded from headline
 }
 
 // AggregateResult contains the full attribution breakdown produced by
 // AggregatePercent. The Percent field is the headline number; the remaining
 // fields support richer commit trailers and diagnostics.
+//
+// ProviderOnlyLines is the count of lines attributed by provider-touch
+// alone (no line-level evidence). Reported here for sidecar rendering;
+// deliberately not included in AILines or Percent.
 type AggregateResult struct {
-	Percent        float64
-	TotalLines     int
-	AILines        int
-	ExactLines     int // tier 1: exact trimmed match
-	ModifiedLines  int // tier 0 with hunk overlap
-	FormattedLines int // tier 2: whitespace-normalized match
-	FilesTouched   int // unique files in the diff
-	Providers      []ProviderAttribution
+	Percent           float64
+	TotalLines        int
+	AILines           int
+	ExactLines        int // tier 1: exact trimmed match
+	ModifiedLines     int // tier 0 with hunk overlap
+	FormattedLines    int // tier 2: whitespace-normalized match
+	ProviderOnlyLines int // provider-touch only, excluded from headline
+	FilesTouched      int // unique files in the diff
+	Providers         []ProviderAttribution
 }
 
 // EvidenceClass describes how a file's AI attribution was determined.
@@ -65,48 +92,59 @@ const (
 // CommitResultInput holds the narrow inputs needed to assemble a full
 // commit attribution result from scored data and diff metadata.
 type CommitResultInput struct {
-	FileScores       []FileScoreInput         // one per diff file, in diff order
-	FilesCreated     []string                 // paths created (from /dev/null)
-	FilesDeleted     []string                 // paths deleted (to /dev/null)
-	TouchedFiles     map[string]bool          // AI-touched file paths (for AI flag on file changes)
-	ProviderModels   map[string]string        // provider -> model
-	FileTouchOrigins map[string]TouchOrigin   // per-file touch provenance (for evidence classification)
-	CarryForwardFiles map[string]bool         // files attributed via carry-forward
+	FileScores        []FileScoreInput       // one per diff file, in diff order
+	FilesCreated      []string               // paths created (from /dev/null)
+	FilesDeleted      []string               // paths deleted (to /dev/null)
+	TouchedFiles      map[string]bool        // AI-touched file paths (for AI flag on file changes)
+	ProviderModels    map[string]string      // provider -> model
+	FileTouchOrigins  map[string]TouchOrigin // per-file touch provenance (for evidence classification)
+	CarryForwardFiles map[string]bool        // files attributed via carry-forward
 }
 
 // CommitResult is the full attribution breakdown for a single commit,
 // produced by BuildCommitResult.
+//
+// AIProviderOnlyLines is reported separately and not summed into
+// AILines or AIPercentage. Callers that want a "files touched by AI
+// but without line-level evidence" sidecar read from here.
 type CommitResult struct {
-	AIExactLines     int
-	AIFormattedLines int
-	AIModifiedLines  int
-	AILines          int     // exact + formatted + modified
-	HumanLines       int
-	TotalLines       int
-	AIPercentage     float64 // (exact + formatted + modified) / total * 100
-	FilesAITouched   int
-	FilesTotal       int // created + edited (excludes deleted)
-	FilesCreated     []FileChangeOutput
-	FilesEdited      []FileChangeOutput
-	FilesDeleted     []FileChangeOutput
-	Files            []FileAttributionOutput
-	ProviderDetails  []ProviderAttribution
-	Evidence         string // evidence-strength level: "High", "Medium", "Low"
-	FallbackCount    int    // number of AI-attributed files with provider-touch or weaker evidence
+	AIExactLines        int
+	AIFormattedLines    int
+	AIModifiedLines     int
+	AIProviderOnlyLines int // provider-touch only, excluded from headline
+	AILines             int // exact + formatted + modified
+	HumanLines          int
+	TotalLines          int
+	AIPercentage        float64 // (exact + formatted + modified) / total * 100
+	FilesAITouched      int
+	FilesTotal          int // created + edited (excludes deleted)
+	FilesCreated        []FileChangeOutput
+	FilesEdited         []FileChangeOutput
+	FilesDeleted        []FileChangeOutput
+	Files               []FileAttributionOutput
+	ProviderDetails     []ProviderAttribution
+	Evidence            string // evidence-strength level: "High", "Medium", "Low"
+	FallbackCount       int    // number of AI-attributed files with provider-touch or weaker evidence
 }
 
 // FileAttributionOutput holds per-file attribution scores in the commit result.
+//
+// AIProviderOnlyLines is rendered alongside the line-level counts
+// but is excluded from AIPercent. PrimaryEvidence will be
+// EvidenceProviderTouch (or EvidenceProviderCoarse) for files
+// whose only AI evidence is provider-only.
 type FileAttributionOutput struct {
-	Path             string
-	AIExactLines     int
-	AIFormattedLines int
-	AIModifiedLines  int
-	HumanLines       int
-	TotalLines       int
-	DeletedNonBlank  int
-	AIPercent        float64       // (exact + formatted + modified) / total * 100
-	PrimaryEvidence  EvidenceClass // highest-quality evidence for display
-	AllEvidence      []EvidenceClass // all contributing evidence classes (for evaluation)
+	Path                string
+	AIExactLines        int
+	AIFormattedLines    int
+	AIModifiedLines     int
+	AIProviderOnlyLines int
+	HumanLines          int
+	TotalLines          int
+	DeletedNonBlank     int
+	AIPercent           float64         // (exact + formatted + modified) / total * 100
+	PrimaryEvidence     EvidenceClass   // highest-quality evidence for display
+	AllEvidence         []EvidenceClass // all contributing evidence classes (for evaluation)
 }
 
 // FileChangeOutput records whether a file change was performed by AI.
@@ -117,9 +155,10 @@ type FileChangeOutput struct {
 
 // MatchStatsInput carries match counters from scoring into reporting.
 type MatchStatsInput struct {
-	ExactMatches      int
-	NormalizedMatches int
-	ModifiedMatches   int
+	ExactMatches        int
+	NormalizedMatches   int
+	ModifiedMatches     int
+	ProviderOnlyMatches int
 }
 
 // DiagnosticsInput combines event stats, match stats, and the computed
@@ -133,9 +172,9 @@ type DiagnosticsInput struct {
 // CheckpointResultInput holds the narrow inputs for assembling a
 // checkpoint-only attribution result (no diff, no line-level scoring).
 type CheckpointResultInput struct {
-	CheckpointID   string
-	TouchedFiles   map[string]bool // AI-touched file paths
-	EventStats     EventStatsInput // for diagnostics
+	CheckpointID string
+	TouchedFiles map[string]bool // AI-touched file paths
+	EventStats   EventStatsInput // for diagnostics
 }
 
 // EventStatsInput carries event-processing counters into reporting.

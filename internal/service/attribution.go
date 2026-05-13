@@ -53,19 +53,20 @@ type AttributionInput struct {
 // Classification is the coarse AI-touched flag from the attribution
 // pipeline, not a majority-authorship verdict.
 type FileAttribution struct {
-	Path             string   `json:"path"`
-	Operation        string   `json:"operation,omitempty"`      // created, edited, deleted
-	Classification   string   `json:"classification,omitempty"` // ai, human (coarse pipeline flag)
-	AIExactLines     int      `json:"ai_exact_lines"`
-	AIFormattedLines int      `json:"ai_formatted_lines"`
-	AIModifiedLines  int      `json:"ai_modified_lines"`
-	AILines          int      `json:"ai_lines,omitempty"` // exact + formatted + modified
-	HumanLines       int      `json:"human_lines"`
-	TotalLines       int      `json:"total_lines"`
-	DeletedNonBlank  int      `json:"deleted_non_blank"`         // deleted non-blank lines (not attributed, display only)
-	AIPercent        float64  `json:"ai_percentage"`             // (exact + formatted + modified) / total * 100
-	EvidenceClass    string   `json:"evidence_class,omitempty"`  // primary (strongest) evidence class for this file
-	EvidenceClasses  []string `json:"evidence_classes,omitempty"` // every contributing evidence class, strongest first
+	Path                string   `json:"path"`
+	Operation           string   `json:"operation,omitempty"`      // created, edited, deleted
+	Classification      string   `json:"classification,omitempty"` // ai, human (coarse pipeline flag)
+	AIExactLines        int      `json:"ai_exact_lines"`
+	AIFormattedLines    int      `json:"ai_formatted_lines"`
+	AIModifiedLines     int      `json:"ai_modified_lines"`
+	AIProviderOnlyLines int      `json:"ai_provider_only_lines,omitempty"` // provider-touch only; excluded from AILines/AIPercent
+	AILines             int      `json:"ai_lines,omitempty"`               // exact + formatted + modified
+	HumanLines          int      `json:"human_lines"`
+	TotalLines          int      `json:"total_lines"`
+	DeletedNonBlank     int      `json:"deleted_non_blank"`          // deleted non-blank lines (not attributed, display only)
+	AIPercent           float64  `json:"ai_percentage"`              // (exact + formatted + modified) / total * 100
+	EvidenceClass       string   `json:"evidence_class,omitempty"`   // primary (strongest) evidence class for this file
+	EvidenceClasses     []string `json:"evidence_classes,omitempty"` // every contributing evidence class, strongest first
 }
 
 // FileChange records a file that was created, edited, or deleted in a commit,
@@ -97,25 +98,26 @@ type AttributionDiagnostics struct {
 
 // AttributionResult is the full attribution breakdown for a single commit.
 type AttributionResult struct {
-	CommitHash       string                 `json:"commit_hash"`
-	CheckpointID     string                 `json:"checkpoint_id"`
-	AIExactLines     int                    `json:"ai_exact_lines"`
-	AIFormattedLines int                    `json:"ai_formatted_lines"`
-	AIModifiedLines  int                    `json:"ai_modified_lines"`
-	AILines          int                    `json:"ai_lines"` // exact + formatted + modified (headline number)
-	HumanLines       int                    `json:"human_lines"`
-	TotalLines       int                    `json:"total_lines"`
-	AIPercentage     float64                `json:"ai_percentage"` // (exact + formatted + modified) / total * 100
-	FilesAITouched   int                    `json:"files_ai_touched"`
-	FilesTotal       int                    `json:"files_total"`
-	FilesCreated     []FileChange           `json:"files_created,omitempty"`
-	FilesEdited      []FileChange           `json:"files_edited,omitempty"`
-	FilesDeleted     []FileChange           `json:"files_deleted,omitempty"`
-	Files            []FileAttribution      `json:"files,omitempty"`
-	ProviderDetails  []ProviderAttribution  `json:"provider_details,omitempty"`
-	Diagnostics      AttributionDiagnostics `json:"diagnostics"`
-	Evidence         string                 `json:"evidence,omitempty"`       // "High", "Medium", "Low"
-	FallbackCount    int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
+	CommitHash          string                 `json:"commit_hash"`
+	CheckpointID        string                 `json:"checkpoint_id"`
+	AIExactLines        int                    `json:"ai_exact_lines"`
+	AIFormattedLines    int                    `json:"ai_formatted_lines"`
+	AIModifiedLines     int                    `json:"ai_modified_lines"`
+	AIProviderOnlyLines int                    `json:"ai_provider_only_lines,omitempty"` // provider-touch only; excluded from AILines/AIPercentage
+	AILines             int                    `json:"ai_lines"`                         // exact + formatted + modified (headline number)
+	HumanLines          int                    `json:"human_lines"`
+	TotalLines          int                    `json:"total_lines"`
+	AIPercentage        float64                `json:"ai_percentage"` // (exact + formatted + modified) / total * 100
+	FilesAITouched      int                    `json:"files_ai_touched"`
+	FilesTotal          int                    `json:"files_total"`
+	FilesCreated        []FileChange           `json:"files_created,omitempty"`
+	FilesEdited         []FileChange           `json:"files_edited,omitempty"`
+	FilesDeleted        []FileChange           `json:"files_deleted,omitempty"`
+	Files               []FileAttribution      `json:"files,omitempty"`
+	ProviderDetails     []ProviderAttribution  `json:"provider_details,omitempty"`
+	Diagnostics         AttributionDiagnostics `json:"diagnostics"`
+	Evidence            string                 `json:"evidence,omitempty"`       // "High", "Medium", "Low"
+	FallbackCount       int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
 }
 
 // AttributeCommit computes the AI attribution breakdown for a single commit.
@@ -446,25 +448,30 @@ func (s *AttributionService) Blame(ctx context.Context, in BlameInput) (*Attribu
 // to attempt an inline ingest before retrying.
 var ErrNoEventsInWindow = fmt.Errorf("no agent events in delta window")
 
-// ProviderAttribution holds per-provider AI line counts for trailer output.
+// ProviderAttribution is the per-provider counterpart to the
+// headline counts. AILines is line-level evidence only (exact,
+// formatted, modified). ProviderOnlyLines is the provider-touch
+// sidecar and is excluded from the headline AILines / Percent.
 type ProviderAttribution struct {
-	Provider string
-	Model    string // empty if unknown
-	AILines  int
+	Provider          string
+	Model             string // empty if unknown
+	AILines           int    // line-level evidence
+	ProviderOnlyLines int    // provider-touch only, excluded from headline
 }
 
 // AIPercentResult contains the full attribution breakdown returned by
 // ComputeAIPercentFromDiff. The Percent field is the headline number;
 // the remaining fields support richer commit trailers and diagnostics.
 type AIPercentResult struct {
-	Percent        float64
-	TotalLines     int
-	AILines        int
-	ExactLines     int // tier 1: exact trimmed match
-	ModifiedLines  int // tier 0 with hunk overlap
-	FormattedLines int // tier 2: whitespace-normalized match
-	FilesTouched   int // unique files in the diff
-	Providers      []ProviderAttribution
+	Percent           float64
+	TotalLines        int
+	AILines           int
+	ExactLines        int // tier 1: exact trimmed match
+	ModifiedLines     int // tier 0 with hunk overlap
+	FormattedLines    int // tier 2: whitespace-normalized match
+	ProviderOnlyLines int // provider-touch only, excluded from headline
+	FilesTouched      int // unique files in the diff
+	Providers         []ProviderAttribution
 }
 
 // ComputeAIPercentInput holds parameters for the lightweight AI% computation.
@@ -477,13 +484,15 @@ type ComputeAIPercentInput struct {
 
 // fileScore stores internal per-file attribution counts.
 type fileScore struct {
-	path           string
-	totalLines     int
-	exactLines     int
-	formattedLines int
-	modifiedLines  int
-	humanLines     int
-	providerLines  map[string]int // provider -> AI lines for this file
+	path                        string
+	totalLines                  int
+	exactLines                  int
+	formattedLines              int
+	modifiedLines               int
+	providerOnlyLines           int // provider-touch only; excluded from headline AI%
+	humanLines                  int
+	providerLines               map[string]int // provider -> line-level AI lines
+	providerOnlyLinesByProvider map[string]int // provider -> provider-only lines
 }
 
 // aiCandidates holds the AI line sets and provider metadata extracted from events.
@@ -618,13 +627,15 @@ func scoreDiffPerFile(dr diffResult, cands aiCandidates) ([]fileScore, attrscori
 	out := make([]fileScore, len(newScores))
 	for i, s := range newScores {
 		out[i] = fileScore{
-			path:           s.Path,
-			totalLines:     s.TotalLines,
-			exactLines:     s.ExactLines,
-			formattedLines: s.FormattedLines,
-			modifiedLines:  s.ModifiedLines,
-			humanLines:     s.HumanLines,
-			providerLines:  s.ProviderLines,
+			path:                        s.Path,
+			totalLines:                  s.TotalLines,
+			exactLines:                  s.ExactLines,
+			formattedLines:              s.FormattedLines,
+			modifiedLines:               s.ModifiedLines,
+			providerOnlyLines:           s.ProviderOnlyLines,
+			humanLines:                  s.HumanLines,
+			providerLines:               s.ProviderLines,
+			providerOnlyLinesByProvider: s.ProviderOnlyLinesByProvider,
 		}
 	}
 	return out, stats
@@ -657,33 +668,37 @@ func aggregateFileScores(scores []fileScore, providerModel map[string]string, fi
 	inputs := make([]attrreporting.FileScoreInput, len(scores))
 	for i, fs := range scores {
 		inputs[i] = attrreporting.FileScoreInput{
-			Path:           fs.path,
-			TotalLines:     fs.totalLines,
-			ExactLines:     fs.exactLines,
-			FormattedLines: fs.formattedLines,
-			ModifiedLines:  fs.modifiedLines,
-			HumanLines:     fs.humanLines,
-			ProviderLines:  fs.providerLines,
+			Path:                        fs.path,
+			TotalLines:                  fs.totalLines,
+			ExactLines:                  fs.exactLines,
+			FormattedLines:              fs.formattedLines,
+			ModifiedLines:               fs.modifiedLines,
+			ProviderOnlyLines:           fs.providerOnlyLines,
+			HumanLines:                  fs.humanLines,
+			ProviderLines:               fs.providerLines,
+			ProviderOnlyLinesByProvider: fs.providerOnlyLinesByProvider,
 		}
 	}
 	r := attrreporting.AggregatePercent(inputs, providerModel, filesTouched)
 	providers := make([]ProviderAttribution, len(r.Providers))
 	for i, p := range r.Providers {
 		providers[i] = ProviderAttribution{
-			Provider: p.Provider,
-			Model:    p.Model,
-			AILines:  p.AILines,
+			Provider:          p.Provider,
+			Model:             p.Model,
+			AILines:           p.AILines,
+			ProviderOnlyLines: p.ProviderOnlyLines,
 		}
 	}
 	return AIPercentResult{
-		Percent:        r.Percent,
-		TotalLines:     r.TotalLines,
-		AILines:        r.AILines,
-		ExactLines:     r.ExactLines,
-		ModifiedLines:  r.ModifiedLines,
-		FormattedLines: r.FormattedLines,
-		FilesTouched:   r.FilesTouched,
-		Providers:      providers,
+		Percent:           r.Percent,
+		TotalLines:        r.TotalLines,
+		AILines:           r.AILines,
+		ExactLines:        r.ExactLines,
+		ModifiedLines:     r.ModifiedLines,
+		FormattedLines:    r.FormattedLines,
+		ProviderOnlyLines: r.ProviderOnlyLines,
+		FilesTouched:      r.FilesTouched,
+		Providers:         providers,
 	}
 }
 
@@ -719,6 +734,9 @@ func loadManifestForCheckpoint(ctx context.Context, bs *blobs.Store, manifestHas
 }
 
 // fileScoreAILines delegates to attrreporting.AILines.
+// Returns the line-level AI count (exact + formatted + modified);
+// excludes provider-only lines on purpose so the headline math
+// stays a line-overlap number.
 func fileScoreAILines(fs *fileScore) int {
 	input := attrreporting.FileScoreInput{
 		ExactLines:     fs.exactLines,
@@ -726,6 +744,19 @@ func fileScoreAILines(fs *fileScore) int {
 		ModifiedLines:  fs.modifiedLines,
 	}
 	return attrreporting.AILines(&input)
+}
+
+// fileScoreHasAttribution reports whether a file has any AI
+// evidence at all, line-level or provider-only. Used by the
+// carry-forward merge gate, where a historical provider-only
+// touch is still a valid signal worth carrying into the current
+// commit's attribution even though it does not contribute to
+// the headline AI%.
+func fileScoreHasAttribution(fs *fileScore) bool {
+	return fs.exactLines > 0 ||
+		fs.formattedLines > 0 ||
+		fs.modifiedLines > 0 ||
+		fs.providerOnlyLines > 0
 }
 
 // buildCommitResultInput converts local types to the reporting package's
@@ -788,14 +819,16 @@ func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultC
 	fsInputs := make([]attrreporting.FileScoreInput, len(scores))
 	for i, fs := range scores {
 		fsInputs[i] = attrreporting.FileScoreInput{
-			Path:            fs.path,
-			TotalLines:      fs.totalLines,
-			ExactLines:      fs.exactLines,
-			FormattedLines:  fs.formattedLines,
-			ModifiedLines:   fs.modifiedLines,
-			HumanLines:      fs.humanLines,
-			ProviderLines:   fs.providerLines,
-			DeletedNonBlank: deletedNonBlank[fs.path],
+			Path:                        fs.path,
+			TotalLines:                  fs.totalLines,
+			ExactLines:                  fs.exactLines,
+			FormattedLines:              fs.formattedLines,
+			ModifiedLines:               fs.modifiedLines,
+			ProviderOnlyLines:           fs.providerOnlyLines,
+			HumanLines:                  fs.humanLines,
+			ProviderLines:               fs.providerLines,
+			ProviderOnlyLinesByProvider: fs.providerOnlyLinesByProvider,
+			DeletedNonBlank:             deletedNonBlank[fs.path],
 		}
 	}
 	return attrreporting.CommitResultInput{
@@ -813,19 +846,20 @@ func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultC
 // AttributionResult, adding commit hash and checkpoint ID.
 func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID string) *AttributionResult {
 	result := &AttributionResult{
-		CommitHash:       commitHash,
-		CheckpointID:     checkpointID,
-		AIExactLines:     cr.AIExactLines,
-		AIFormattedLines: cr.AIFormattedLines,
-		AIModifiedLines:  cr.AIModifiedLines,
-		AILines:          cr.AILines,
-		HumanLines:       cr.HumanLines,
-		TotalLines:       cr.TotalLines,
-		AIPercentage:     cr.AIPercentage,
-		FilesAITouched:   cr.FilesAITouched,
-		FilesTotal:       cr.FilesTotal,
-		Evidence:         cr.Evidence,
-		FallbackCount:    cr.FallbackCount,
+		CommitHash:          commitHash,
+		CheckpointID:        checkpointID,
+		AIExactLines:        cr.AIExactLines,
+		AIFormattedLines:    cr.AIFormattedLines,
+		AIModifiedLines:     cr.AIModifiedLines,
+		AIProviderOnlyLines: cr.AIProviderOnlyLines,
+		AILines:             cr.AILines,
+		HumanLines:          cr.HumanLines,
+		TotalLines:          cr.TotalLines,
+		AIPercentage:        cr.AIPercentage,
+		FilesAITouched:      cr.FilesAITouched,
+		FilesTotal:          cr.FilesTotal,
+		Evidence:            cr.Evidence,
+		FallbackCount:       cr.FallbackCount,
 	}
 	// Build path-keyed maps for operation + classification lookup. The
 	// three *Files arrays carry the change kind; per-file scoring in
@@ -853,26 +887,28 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 		// get empty Operation and Classification if scoring produced
 		// a file row that was not present in the diff metadata.
 		result.Files = append(result.Files, FileAttribution{
-			Path:             f.Path,
-			Operation:        ops[f.Path],
-			Classification:   cls[f.Path],
-			AIExactLines:     f.AIExactLines,
-			AIFormattedLines: f.AIFormattedLines,
-			AIModifiedLines:  f.AIModifiedLines,
-			AILines:          f.AIExactLines + f.AIFormattedLines + f.AIModifiedLines,
-			HumanLines:       f.HumanLines,
-			TotalLines:       f.TotalLines,
-			DeletedNonBlank:  f.DeletedNonBlank,
-			AIPercent:        f.AIPercent,
-			EvidenceClass:    string(f.PrimaryEvidence),
-			EvidenceClasses:  evidenceClassesAsStrings(f.AllEvidence),
+			Path:                f.Path,
+			Operation:           ops[f.Path],
+			Classification:      cls[f.Path],
+			AIExactLines:        f.AIExactLines,
+			AIFormattedLines:    f.AIFormattedLines,
+			AIModifiedLines:     f.AIModifiedLines,
+			AIProviderOnlyLines: f.AIProviderOnlyLines,
+			AILines:             f.AIExactLines + f.AIFormattedLines + f.AIModifiedLines,
+			HumanLines:          f.HumanLines,
+			TotalLines:          f.TotalLines,
+			DeletedNonBlank:     f.DeletedNonBlank,
+			AIPercent:           f.AIPercent,
+			EvidenceClass:       string(f.PrimaryEvidence),
+			EvidenceClasses:     evidenceClassesAsStrings(f.AllEvidence),
 		})
 	}
 	for _, p := range cr.ProviderDetails {
 		result.ProviderDetails = append(result.ProviderDetails, ProviderAttribution{
-			Provider: p.Provider,
-			Model:    p.Model,
-			AILines:  p.AILines,
+			Provider:          p.Provider,
+			Model:             p.Model,
+			AILines:           p.AILines,
+			ProviderOnlyLines: p.ProviderOnlyLines,
 		})
 	}
 	return result
@@ -1041,13 +1077,18 @@ func attributeWithCarryForward(
 
 	merged := currentScores
 	for i := range merged {
-		if hs, ok := historicalByPath[merged[i].path]; ok && fileScoreAILines(hs) > 0 {
+		// Historical attribution wins when it has any evidence,
+		// including provider-only. Without this, a provider-touch
+		// carry-forward (e.g. cursor touched a file in the prior
+		// window) would silently drop because its
+		// fileScoreAILines is zero.
+		if hs, ok := historicalByPath[merged[i].path]; ok && fileScoreHasAttribution(hs) {
 			merged[i] = *hs
 		}
 	}
 	// Add files that only appear in the historical result.
 	for _, hs := range historicalScores {
-		if _, inCurrent := currentByPath[hs.path]; !inCurrent && fileScoreAILines(&hs) > 0 {
+		if _, inCurrent := currentByPath[hs.path]; !inCurrent && fileScoreHasAttribution(&hs) {
 			merged = append(merged, hs)
 		}
 	}

@@ -36,6 +36,9 @@ func TestScoreFiles_ExactMatch(t *testing.T) {
 	}
 }
 
+// TestScoreFiles_ProviderTouchOnly verifies the headline-exclusion
+// contract for provider-touch-only files: non-blank added lines
+// are counted in ProviderOnlyLines, not ModifiedLines.
 func TestScoreFiles_ProviderTouchOnly(t *testing.T) {
 	diff := ParseDiff([]byte(strings.Join([]string{
 		"diff --git a/handler.go b/handler.go",
@@ -53,14 +56,32 @@ func TestScoreFiles_ProviderTouchOnly(t *testing.T) {
 	if len(scores) != 1 {
 		t.Fatalf("scores = %d, want 1", len(scores))
 	}
-	if scores[0].ModifiedLines != 2 {
-		t.Errorf("ModifiedLines = %d, want 2", scores[0].ModifiedLines)
+	if scores[0].ProviderOnlyLines != 2 {
+		t.Errorf("ProviderOnlyLines = %d, want 2", scores[0].ProviderOnlyLines)
+	}
+	if scores[0].ModifiedLines != 0 {
+		t.Errorf("ModifiedLines = %d, want 0 (provider-only lines must not become ModifiedLines)",
+			scores[0].ModifiedLines)
 	}
 	if scores[0].ExactLines != 0 {
 		t.Errorf("ExactLines = %d, want 0", scores[0].ExactLines)
 	}
-	if stats.ModifiedMatches != 2 {
-		t.Errorf("ModifiedMatches = %d, want 2", stats.ModifiedMatches)
+	if stats.ProviderOnlyMatches != 2 {
+		t.Errorf("ProviderOnlyMatches = %d, want 2", stats.ProviderOnlyMatches)
+	}
+	if stats.ModifiedMatches != 0 {
+		t.Errorf("ModifiedMatches = %d, want 0", stats.ModifiedMatches)
+	}
+	// Provider attribution is still recorded for the file, but
+	// in the provider-only sidecar map so consumers can split
+	// line-level vs provider-only per agent.
+	if scores[0].ProviderOnlyLinesByProvider["cursor"] != 2 {
+		t.Errorf("ProviderOnlyLinesByProvider[cursor] = %d, want 2",
+			scores[0].ProviderOnlyLinesByProvider["cursor"])
+	}
+	if scores[0].ProviderLines["cursor"] != 0 {
+		t.Errorf("ProviderLines[cursor] = %d, want 0 (provider-only kept out of line-level map)",
+			scores[0].ProviderLines["cursor"])
 	}
 }
 

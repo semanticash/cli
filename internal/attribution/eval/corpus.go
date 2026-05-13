@@ -275,22 +275,25 @@ var Corpus = []EvalCase{
 			},
 		},
 		Expected: ExpectedResult{
-			AIPercentage:  100,
+			// Provider-touch-only files no longer inflate the
+			// headline. Their lines live in ProviderOnlyLines and
+			// are excluded from the AIPercentage sum. The file is
+			// still classified as AI-touched via PrimaryEvidence;
+			// only the headline number changes.
+			AIPercentage:  0,
 			Evidence:      "Low",
 			FallbackCount: 1,
 			Files: []ExpectedFile{
 				{
-					Path: "config.go", AILines: 3, HumanLines: 0,
-					PrimaryEvidence: reporting.EvidenceModified,
+					Path: "config.go", AILines: 0, HumanLines: 0,
+					PrimaryEvidence: reporting.EvidenceProviderTouch,
 					ContributingEvidence: []reporting.EvidenceClass{
-						reporting.EvidenceModified,
 						reporting.EvidenceProviderTouch,
 					},
-					Notes: "All lines become ModifiedLines via the provider-touch-only path in ScoreFiles, " +
-						"so PrimaryEvidence is 'modified'. AllEvidence also carries 'provider_touch' " +
-						"because the touch origin had no line-level payload. CommitEvidence walks " +
-						"AllEvidence and counts the file as a fallback, pulling the strength label " +
-						"from Medium to Low.",
+					Notes: "Provider-touch-only files: lines go into ProviderOnlyLines, not " +
+						"ModifiedLines. AILines (exact+formatted+modified) is 0, AIPercentage is 0. " +
+						"PrimaryEvidence is 'provider_touch' because there is no line-level " +
+						"evidence. The file still counts toward FilesAITouched in the change list.",
 				},
 			},
 		},
@@ -567,6 +570,69 @@ var Corpus = []EvalCase{
 					Path: "util.go", AILines: 1, HumanLines: 0,
 					PrimaryEvidence:      reporting.EvidenceExact,
 					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+			},
+		},
+	},
+
+	// Case: duplicate-common-lines. The scorer stores AI candidate
+	// lines as a set keyed by trimmed text, so any identical
+	// trimmed line in the diff matches as exact even when only one
+	// instance came from the AI. Common one-liners ("return nil",
+	// "}", "if err != nil {") inflate the headline; the
+	// modified-with-overlap rule then promotes the remaining
+	// non-matching lines in the same hunk to "modified", which
+	// can attribute an entire human-authored function to the AI.
+	//
+	// Expected values reflect today's behavior so future work can
+	// verify occurrence accounting against this fixture.
+	{
+		Name: "duplicate-common-lines-overcount",
+		Description: "AI writes function A; human adds function B with a duplicate `return nil` line. " +
+			"Current scorer counts B's `return nil` and `}` as exact, then promotes B's func " +
+			"signature to modified via the overlap rule, attributing all of B to the AI.",
+		RepoRoot: "/repo",
+		Diff: "diff --git a/handler.go b/handler.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/handler.go\n" +
+			"@@ -0,0 +1,6 @@\n" +
+			"+func A() error {\n" +
+			"+\treturn nil\n" +
+			"+}\n" +
+			"+func B() error {\n" +
+			"+\treturn nil\n" +
+			"+}\n",
+		Events: []events.EventRow{
+			// AI's Write payload contains only function A.
+			claudeEvent("Write", "handler.go", "func A() error {\n\treturn nil\n}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			// Ground truth: 3 AI lines + 3 human lines = 50%.
+			// Current scorer: 5 exact (3 real + 2 overcount on
+			// `return nil` and `}`) plus 1 modified (B's func
+			// signature, promoted via the same-hunk overlap
+			// rule) = 6 AI lines out of 6 total = 100%.
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path:            "handler.go",
+					AILines:         6,
+					HumanLines:      0,
+					PrimaryEvidence: reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{
+						reporting.EvidenceExact,
+						reporting.EvidenceModified,
+					},
+					Notes: "Known overcount: AI set holds {func A() error {, return nil, }}. " +
+						"B's `return nil` and `}` match by trimmed text (exact overcount). " +
+						"B's `func B() error {` does not match but the hunk has overlap, so " +
+						"it counts as 'modified' under the current same-hunk-overlap rule. " +
+						"Ground truth would be 3 AI lines + 3 human lines (50% headline). " +
+						"Fixing needs occurrence accounting or positional tracking in the " +
+						"scorer; this case documents current behavior so a future change can " +
+						"confirm the headline drops to ~50%.",
 				},
 			},
 		},
