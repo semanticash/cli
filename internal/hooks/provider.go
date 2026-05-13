@@ -114,3 +114,37 @@ type DirectHookEmitter interface {
 	// writing.
 	BuildHookEvents(ctx context.Context, event *Event, bs api.BlobPutter) ([]broker.RawEvent, error)
 }
+
+// CwdGatedProvider is an optional interface for providers whose hook
+// configuration may fire on sessions outside the user's registered repos.
+// When implemented, the capture entrypoint inspects the raw stdin payload
+// before parsing or dispatching and exits cleanly when the session's cwd
+// does not resolve to an enabled repo - no transcript reading, no broker
+// writes, no error logging.
+//
+// Providers that prefer the default behavior (any registered repo gates
+// capture, regardless of the session's cwd) simply do not implement this
+// interface.
+type CwdGatedProvider interface {
+	// ShouldCapture inspects the raw hook stdin payload and returns true
+	// when the session originates from a repo that should be captured.
+	// The payload is the unmodified bytes that ParseHookEvent would
+	// otherwise consume; implementations must not retain it. Returning
+	// false suppresses every downstream side effect for this invocation.
+	//
+	// activeRepos is the broker's current set of registered, active
+	// repos. Implementations match the payload's working directory
+	// against this set using whatever canonicalization rules fit the
+	// provider (typically resolving the cwd to a git repo root).
+	//
+	// Errors are treated as "do not capture" by the capture entrypoint;
+	// because that entrypoint suppresses every downstream side effect
+	// when the gate denies, errors do NOT reach the hook-error log
+	// either (logging a parse failure here would itself leak that a
+	// hook fired outside any registered repo, defeating the privacy
+	// boundary). Implementations should still return errors for genuine
+	// malformed input so callers writing structured tests can
+	// distinguish "deny" from "broken". Routine misses (cwd outside
+	// any registered repo) return false with a nil error.
+	ShouldCapture(ctx context.Context, payload []byte, activeRepos []broker.RegisteredRepo) (bool, error)
+}

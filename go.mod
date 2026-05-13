@@ -11,6 +11,7 @@ require (
 	github.com/klauspost/compress v1.18.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/mattn/go-isatty v0.0.20
+	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.7
 	github.com/zricethezav/gitleaks/v8 v8.30.1
@@ -75,7 +76,6 @@ require (
 	github.com/muesli/termenv v0.15.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.0 // indirect
-	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect

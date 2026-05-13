@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.5.0] - 2026-05-16
+
+### Added
+
+- Added Codex provider installation groundwork: `semantica enable --providers codex` writes user-global Codex hooks under `$CODEX_HOME`, enables `[features] hooks = true`, stamps trusted hook hashes, preserves unrelated Codex hook entries and config values, and gates capture by the session's enabled repo before any broker/blob side effects.
+- Registered Codex in provider discovery and ordering. The provider install surface is ready, while Codex event parsing remains inert until payload capture is enabled.
+
 ## [0.4.1] - 2026-05-13
 
 ### Added

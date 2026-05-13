@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -13,6 +15,7 @@ import (
 
 	// Register hook providers via init().
 	_ "github.com/semanticash/cli/internal/hooks/claude"
+	_ "github.com/semanticash/cli/internal/hooks/codex"
 	_ "github.com/semanticash/cli/internal/hooks/copilot"
 	_ "github.com/semanticash/cli/internal/hooks/cursor"
 	_ "github.com/semanticash/cli/internal/hooks/gemini"
@@ -62,8 +65,30 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 
-			// Parse event from stdin.
-			event, err := provider.ParseHookEvent(ctx, hookName, os.Stdin)
+			// Read stdin once so providers implementing CwdGatedProvider
+			// can inspect the payload before any side effects, and so we
+			// can replay the same bytes into ParseHookEvent afterward.
+			payload, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				logCaptureError(providerName, hookName, "read stdin (%s/%s): %v", providerName, hookName, err)
+				return nil
+			}
+
+			// Optional cwd preflight. Used by providers whose hook
+			// configuration is user-global (and therefore fires on every
+			// session on the machine) to suppress side effects when the
+			// session originates from a repo that is not registered with
+			// Semantica. Suppression is silent: no parsing, no blob
+			// store, no broker writes, no hook-error entry.
+			if gated, ok := provider.(hooks.CwdGatedProvider); ok {
+				allow, gerr := gated.ShouldCapture(ctx, payload, repos)
+				if gerr != nil || !allow {
+					return nil
+				}
+			}
+
+			// Parse event from the buffered payload.
+			event, err := provider.ParseHookEvent(ctx, hookName, bytes.NewReader(payload))
 			if err != nil {
 				logCaptureError(providerName, hookName, "parse hook event (%s/%s): %v", providerName, hookName, err)
 				return nil
