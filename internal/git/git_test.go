@@ -643,8 +643,61 @@ func TestInstallSemanticaHook_DamagedWrapperRefusesInstall(t *testing.T) {
 	}
 }
 
-// TestParsePreservedUserHook covers the three relevant inputs to
-// the wrapper-detection logic that drives the reinstall fix.
+// TestInstallSemanticaHook_AtomicWriteAndExecutableMode checks
+// the temp-file-plus-replace install path: after a successful
+// install the hook is executable and no .semantica-hook-* temp
+// file leaks in the hooks directory. Atomic replacement is
+// delegated to the platform layer where the OS supports it.
+func TestInstallSemanticaHook_AtomicWriteAndExecutableMode(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", dir)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	repo, err := OpenRepo(dir)
+	if err != nil {
+		t.Fatalf("OpenRepo: %v", err)
+	}
+	ctx := context.Background()
+	hooksDir, err := repo.HooksDir(ctx)
+	if err != nil {
+		t.Fatalf("HooksDir: %v", err)
+	}
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.InstallSemanticaHook(ctx, HookInstallOptions{
+		Name: "pre-commit", Subcommand: "pre-commit", PassArgs: false,
+	}); err != nil {
+		t.Fatalf("InstallSemanticaHook: %v", err)
+	}
+
+	entries, err := os.ReadDir(hooksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".semantica-hook-") {
+			t.Errorf("temp file leaked after install: %s", e.Name())
+		}
+	}
+
+	// Hook must be executable. Windows ignores permission bits.
+	if runtime.GOOS != "windows" {
+		info, statErr := os.Stat(filepath.Join(hooksDir, "pre-commit"))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Errorf("hook is not executable: mode=%o", info.Mode().Perm())
+		}
+	}
+}
+
+// TestParsePreservedUserHook covers the inputs that drive
+// wrapper detection during hook reinstall.
 func TestParsePreservedUserHook(t *testing.T) {
 	cases := []struct {
 		name string

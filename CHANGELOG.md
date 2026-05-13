@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.4.1]
+
+### Added
+
+### Fixed
+
+- Re-enabling Semantica now preserves previously wrapped user Git hooks and keeps user hooks blocking, while Semantica's own capture hook remains non-blocking.
+- `semantica enable --providers` now rejects unknown provider names before creating local state or installing Git hooks.
+- Git hook installation now writes through a temp file and platform-aware replacement to reduce partial-hook risk on interruption.
+
+### Changed
+
 ## [0.4.0] - 2026-05-12
 
 ### Added

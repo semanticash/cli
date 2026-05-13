@@ -403,3 +403,70 @@ func TestDisableReEnable_PreservesSettings(t *testing.T) {
 	}
 }
 
+// TestEnable_UnknownProviderName_ErrorsLoudly verifies that a
+// typo in --providers fails with a message that names the
+// unknown value and lists valid providers.
+func TestEnable_UnknownProviderName_ErrorsLoudly(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Typo: "calude-code" instead of "claude-code".
+	_, err = svc.Enable(ctx, EnableOptions{Providers: []string{"calude-code"}})
+	if err == nil {
+		t.Fatal("expected error for unknown provider name; got nil")
+	}
+	if !strings.Contains(err.Error(), "calude-code") {
+		t.Errorf("error should name the unknown provider; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude-code") {
+		t.Errorf("error should list claude-code among valid providers; got %v", err)
+	}
+
+	// Mixed valid + invalid: same error class so the user does
+	// not get a partial install masquerading as success.
+	_, err = svc.Enable(ctx, EnableOptions{Providers: []string{"claude-code", "calude-code"}})
+	if err == nil {
+		t.Fatal("expected error for mixed valid/invalid provider list; got nil")
+	}
+	if !strings.Contains(err.Error(), "calude-code") {
+		t.Errorf("mixed-list error should name the unknown provider; got %v", err)
+	}
+}
+
+// TestEnable_UnknownProviderName_NoPartialInstall verifies that
+// provider validation runs before creating local state or
+// installing Git hooks.
+func TestEnable_UnknownProviderName_NoPartialInstall(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Enable(ctx, EnableOptions{Providers: []string{"calude-code"}})
+	if err == nil {
+		t.Fatal("expected error for unknown provider name; got nil")
+	}
+
+	// .semantica/lineage.db must not exist because validation
+	// should run before initLocalState creates it.
+	if _, statErr := os.Stat(filepath.Join(dir, ".semantica", "lineage.db")); statErr == nil {
+		t.Errorf(".semantica/lineage.db should not exist after a rejected fresh enable")
+	}
+
+	// Git hooks must not have been written.
+	for _, hookName := range []string{"pre-commit", "post-commit", "commit-msg"} {
+		hookPath := filepath.Join(dir, ".git", "hooks", hookName)
+		if data, statErr := os.ReadFile(hookPath); statErr == nil {
+			if strings.Contains(string(data), "Semantica git hook") {
+				t.Errorf("hook %s should not be installed after a rejected fresh enable", hookName)
+			}
+		}
+	}
+}

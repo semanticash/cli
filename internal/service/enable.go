@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +63,14 @@ type EnableResult struct {
 func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*EnableResult, error) {
 	repo, err := git.OpenRepo(s.repoPath)
 	if err != nil {
+		return nil, err
+	}
+
+	// Validate --providers before any state mutation so a typo
+	// surfaces an error without leaving a partial .semantica/ on
+	// disk, partially-installed Git hooks, or a half-built
+	// lineage.db.
+	if err := validateProviderNames(opts.Providers); err != nil {
 		return nil, err
 	}
 
@@ -373,29 +383,66 @@ func registerInBroker(ctx context.Context, repoRoot string) error {
 	return nil
 }
 
+// validateProviderNames rejects the whole list if any name does
+// not match a registered provider. Installing the valid subset
+// would still leave the user's typo silently uncaptured. Pure
+// check; safe to call before any state mutation so a fresh
+// enable that hits a typo does not leave partial install state.
+func validateProviderNames(selectedNames []string) error {
+	if len(selectedNames) == 0 {
+		return nil
+	}
+	registered := hooks.ListProviders()
+	byName := make(map[string]struct{}, len(registered))
+	for _, p := range registered {
+		byName[p.Name()] = struct{}{}
+	}
+	var unknown []string
+	for _, n := range selectedNames {
+		if _, ok := byName[n]; !ok {
+			unknown = append(unknown, n)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	valid := make([]string, 0, len(registered))
+	for _, p := range registered {
+		valid = append(valid, p.Name())
+	}
+	sort.Strings(valid)
+	return fmt.Errorf("unknown provider(s): %s; valid providers: %s",
+		strings.Join(unknown, ", "), strings.Join(valid, ", "))
+}
+
 // installProviderHooks installs capture hooks into each selected provider's
-// repo-local config and returns the providers that succeeded.
+// repo-local config and returns the providers that succeeded. Callers
+// should run validateProviderNames first if --providers is user-supplied;
+// this function calls it again defensively so direct uses cannot drift.
 func installProviderHooks(ctx context.Context, repoRoot string, selectedNames []string) ([]string, error) {
 	if selectedNames != nil && len(selectedNames) == 0 {
 		return nil, nil
+	}
+	if err := validateProviderNames(selectedNames); err != nil {
+		return nil, err
 	}
 
 	// Use the shared bare command so provider hooks survive install-path changes.
 	binPath := hooks.ManagedCommand
 
+	registered := hooks.ListProviders()
+
 	var toInstall []hooks.HookProvider
 	if len(selectedNames) > 0 {
-		selected := make(map[string]bool, len(selectedNames))
-		for _, n := range selectedNames {
-			selected[n] = true
+		byName := make(map[string]hooks.HookProvider, len(registered))
+		for _, p := range registered {
+			byName[p.Name()] = p
 		}
-		for _, p := range hooks.ListProviders() {
-			if selected[p.Name()] {
-				toInstall = append(toInstall, p)
-			}
+		for _, n := range selectedNames {
+			toInstall = append(toInstall, byName[n])
 		}
 	} else {
-		toInstall = hooks.ListProviders()
+		toInstall = registered
 	}
 
 	var installed []string

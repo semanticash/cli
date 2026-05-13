@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 const semanticaHookMarker = "Semantica git hook"
@@ -215,9 +217,40 @@ func hookOutputRedirect(hookName, subcommand string) string {
 	return " >/dev/null 2>&1"
 }
 
+// writeExecutableFile writes through a temp file in the hooks
+// directory, then replaces the target with platform.SafeRename.
+// This avoids in-place truncation and partial writes if the
+// process is interrupted. On Windows, replacement is best-effort
+// because the platform cannot atomically rename over an existing
+// file.
 func writeExecutableFile(path string, content []byte) error {
-	if err := os.WriteFile(path, content, 0o755); err != nil {
-		return fmt.Errorf("write hook %s: %w", path, err)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".semantica-hook-*")
+	if err != nil {
+		return fmt.Errorf("create temp hook %s: %w", path, err)
 	}
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp hook %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp hook %s: %w", path, err)
+	}
+	// os.CreateTemp creates with mode 0o600; hooks need 0o755.
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return fmt.Errorf("chmod temp hook %s: %w", path, err)
+	}
+	if err := platform.SafeRename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename hook %s: %w", path, err)
+	}
+	renamed = true
 	return nil
 }
