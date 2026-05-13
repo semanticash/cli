@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -71,9 +72,26 @@ func (r *Repo) InstallSemanticaHook(ctx context.Context, opts HookInstallOptions
 		return fmt.Errorf("read existing hook %s: %w", opts.Name, err)
 	}
 
-	// If it's already ours, overwrite (update).
+	// If the current hook is Semantica-managed, regenerate it. A
+	// wrapper must stay a wrapper so any preserved user hook remains
+	// in the execution chain across re-enable or upgrade.
 	if bytes.Contains(existing, []byte(semanticaHookMarker)) {
-		return writeExecutableFile(hookPath, desired)
+		userHookFile := parsePreservedUserHook(existing)
+		if userHookFile == "" {
+			// Plain Semantica hook (no preserved wrapper). Safe to
+			// regenerate as the plain form.
+			return writeExecutableFile(hookPath, desired)
+		}
+		// The parsed filename is written back into the wrapper
+		// script. Only accept the generated backup filename shape;
+		// damaged or hand-edited wrappers are left untouched.
+		if !isValidPreservedHookName(userHookFile, opts.Name) {
+			return fmt.Errorf("hook %s appears to be a damaged or hand-edited Semantica wrapper "+
+				"(preserved-hook reference %q does not match the generated shape <hook>.user.<unix-ms>); "+
+				"inspect %s manually before retrying", opts.Name, userHookFile, hookPath)
+		}
+		wrapper := buildSemanticaHookWrapperScript(opts.Name, userHookFile, opts.Subcommand, opts.PassArgs)
+		return writeExecutableFile(hookPath, wrapper)
 	}
 
 	// Otherwise, preserve existing hook and install wrapper.
@@ -121,6 +139,9 @@ func buildSemanticaHookWrapperScript(hookName, userHookFile, subcommand string, 
 	}
 	redirect := hookOutputRedirect(hookName, subcommand)
 
+	// Preserve Git semantics for user hooks: a non-zero user hook
+	// exit blocks the commit. Semantica's own hook stays
+	// non-blocking because capture failures should not block Git.
 	return []byte(fmt.Sprintf(`#!/bin/sh
 # %s (wrapper): %s
 # Preserved user hook: %s
@@ -128,7 +149,11 @@ func buildSemanticaHookWrapperScript(hookName, userHookFile, subcommand string, 
 HOOK_DIR="$(dirname "$0")"
 
 if [ -x "$HOOK_DIR/%s" ]; then
-  "$HOOK_DIR/%s" "$@" || true
+  "$HOOK_DIR/%s" "$@"
+  user_rc=$?
+  if [ $user_rc -ne 0 ]; then
+    exit $user_rc
+  fi
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
@@ -137,6 +162,50 @@ if command -v semantica >/dev/null 2>&1; then
   semantica hook %s%s%s || true
 fi
 `, semanticaHookMarker, hookName, userHookFile, userHookFile, userHookFile, subcommand, args, redirect))
+}
+
+// preservedHookNamePattern matches the backup filename shape
+// generated for preserved user hooks: <hook-name>.user.<unix-ms>.
+// The restricted character set excludes path separators,
+// whitespace, quotes, and shell metacharacters.
+var preservedHookNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*\.user\.[0-9]+$`)
+
+// isValidPreservedHookName reports whether a parsed preserved-hook
+// reference can be safely reused in the wrapper script. The name
+// must match the generated shape and belong to the hook currently
+// being installed.
+func isValidPreservedHookName(name, hookName string) bool {
+	if !preservedHookNamePattern.MatchString(name) {
+		return false
+	}
+	return strings.HasPrefix(name, hookName+".user.")
+}
+
+// parsePreservedUserHook returns the filename of the user hook
+// preserved by a Semantica wrapper, or "" if the existing hook
+// is the plain (non-wrapper) Semantica form or any other shape.
+// The "# Preserved user hook: <filename>" comment line written by
+// buildSemanticaHookWrapperScript is both human-readable metadata
+// and the reinstall marker that keeps wrappers from being replaced
+// by plain Semantica hooks.
+//
+// The returned value is not yet validated for shape; callers
+// that feed it back into the wrapper script must run it through
+// isValidPreservedHookName first.
+func parsePreservedUserHook(content []byte) string {
+	const marker = "# Preserved user hook:"
+	for _, line := range bytes.Split(content, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte(marker)) {
+			continue
+		}
+		name := string(bytes.TrimSpace(trimmed[len(marker):]))
+		if name == "" {
+			return ""
+		}
+		return name
+	}
+	return ""
 }
 
 func hookOutputRedirect(hookName, subcommand string) string {
