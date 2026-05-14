@@ -15,8 +15,10 @@ func HasEditOrWrite(toolUses string) bool {
 }
 
 // HasProviderFileEdit returns true if the tool_uses JSON indicates a provider
-// file edit event. Matches tool names from Cursor, Copilot, Kiro, and Gemini
-// that represent file modifications without line-level payload content.
+// file edit event. Matches tool names from providers that report file
+// modifications without an accompanying line-level payload: Cursor, Copilot,
+// Kiro, Gemini, and Codex apply_patch operations whose envelope produced no
+// new content (deletions, empty-file adds, the source half of a rename).
 func HasProviderFileEdit(toolUses string) bool {
 	if toolUses == "" {
 		return false
@@ -25,6 +27,7 @@ func HasProviderFileEdit(toolUses string) bool {
 		strings.Contains(toolUses, `"cursor_edit"`) ||
 		strings.Contains(toolUses, `"copilot_file_edit"`) ||
 		strings.Contains(toolUses, `"kiro_file_edit"`) ||
+		strings.Contains(toolUses, `"codex_file_edit"`) ||
 		strings.Contains(toolUses, `"editFile"`) ||
 		strings.Contains(toolUses, `"createFile"`) ||
 		strings.Contains(toolUses, `"write_file"`) ||

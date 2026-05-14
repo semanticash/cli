@@ -10,9 +10,11 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/semanticash/cli/internal/agents/api"
 	"github.com/semanticash/cli/internal/broker"
@@ -71,11 +73,89 @@ func (p *Provider) IsAvailable() bool {
 // removed at every AgentCompleted (turn end), matching how Claude Code's
 // Stop is handled.
 func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*hooks.Event, error) {
-	// Event parsing is intentionally inert until Codex payload capture is
-	// enabled. Returning nil keeps installed hooks non-disruptive.
-	_ = stdin
-	_ = hookName
-	return nil, nil
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return nil, fmt.Errorf("read codex hook stdin: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var payload codexHookPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("parse codex hook payload: %w", err)
+	}
+
+	event := &hooks.Event{
+		SessionID:     payload.SessionID,
+		TranscriptRef: payload.TranscriptPath,
+		Prompt:        payload.Prompt,
+		Model:         payload.Model,
+		Timestamp:     time.Now().UnixMilli(),
+		CWD:           payload.CWD,
+		ToolName:      payload.ToolName,
+		ToolInput:     payload.ToolInput,
+		ToolResponse:  payload.ToolResponse,
+		ToolUseID:     payload.ToolUseID,
+		TurnID:        payload.TurnID,
+	}
+
+	// Hook names arrive in the kebab-case form the installer registers
+	// (`semantica capture codex <name>`). Map each to the dispatcher's
+	// event taxonomy.
+	switch hookName {
+	case "session-start":
+		event.Type = hooks.SessionOpened
+	case "user-prompt-submit":
+		event.Type = hooks.PromptSubmitted
+	case "post-tool-use":
+		// Filter to the tools the direct emitter knows how to shape.
+		// PostToolUse fires for every tool name our matcher regex
+		// accepts, but only the four below carry data the scorer can
+		// turn into attribution evidence: apply_patch and Bash from
+		// the standalone CLI and desktop runtime, plus Write/Edit
+		// from any future Codex release that emits them in the
+		// Claude tool_input shape.
+		if !isCapturableTool(payload.ToolName) {
+			return nil, nil
+		}
+		event.Type = hooks.ToolStepCompleted
+	case "stop":
+		event.Type = hooks.AgentCompleted
+	default:
+		return nil, nil
+	}
+	return event, nil
+}
+
+// codexHookPayload is the union of fields Codex's six hook events can
+// send. Decoding via a single struct keeps the per-event branches in
+// ParseHookEvent thin; unknown fields are ignored.
+type codexHookPayload struct {
+	SessionID            string          `json:"session_id"`
+	TurnID               string          `json:"turn_id"`
+	TranscriptPath       string          `json:"transcript_path"`
+	CWD                  string          `json:"cwd"`
+	Model                string          `json:"model"`
+	Source               string          `json:"source"`
+	Prompt               string          `json:"prompt"`
+	ToolName             string          `json:"tool_name"`
+	ToolUseID            string          `json:"tool_use_id"`
+	ToolInput            json.RawMessage `json:"tool_input"`
+	ToolResponse         json.RawMessage `json:"tool_response"`
+	LastAssistantMessage string          `json:"last_assistant_message"`
+}
+
+// isCapturableTool reports whether a tool fired through PostToolUse
+// carries data the attribution pipeline can attribute. Codex's
+// PostToolUse matcher is best-effort; the runtime may invoke us for
+// tools that match the regex syntactically but contribute no
+// per-line evidence.
+func isCapturableTool(name string) bool {
+	switch name {
+	case "apply_patch", "Bash", "Write", "Edit":
+		return true
+	}
+	return false
 }
 
 // TranscriptOffset returns 0 unconditionally. Codex's rollout files are
