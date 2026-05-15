@@ -1,14 +1,39 @@
 package codex
 
 import (
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+// abs builds an absolute path for the test binary's target OS. That
+// keeps normalizePatchPath tests on the absolute-path branch on every
+// platform.
+func abs(parts ...string) string {
+	joined := filepath.Join(parts...)
+	if filepath.IsAbs(joined) {
+		return joined
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join("C:\\", joined)
+	}
+	return string(filepath.Separator) + joined
+}
+
+// Shared fixture paths. Computed once via abs() so every test sees
+// the same absolute repo root for the target OS.
+var (
+	fixtureRepo          = abs("tmp", "codex-fixture", "repo")
+	fixtureTranscript    = abs("tmp", "codex-fixture", "sessions", "2026", "05", "13", "rollout-test.jsonl")
+	fixtureTranscriptAlt = abs("tmp", "codex-fixture", "sessions", "rollout-test.jsonl")
+)
+
 func TestParseApplyPatchEnvelope_AddFileEmitsAllLines(t *testing.T) {
+	repoRoot := abs("tmp", "repo")
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Add File: /tmp/repo/main.go",
+		"*** Add File: " + abs("tmp", "repo", "main.go"),
 		"+package main",
 		"+",
 		"+func main() {",
@@ -17,7 +42,7 @@ func TestParseApplyPatchEnvelope_AddFileEmitsAllLines(t *testing.T) {
 		"*** End Patch",
 	}, "\n")
 
-	files := parseApplyPatchEnvelope(envelope, "/tmp/repo")
+	files := parseApplyPatchEnvelope(envelope, repoRoot)
 	if len(files) != 1 {
 		t.Fatalf("got %d files, want 1", len(files))
 	}
@@ -84,13 +109,14 @@ func TestParseApplyPatchEnvelope_UpdateSkipsRemovedAndContextLines(t *testing.T)
 }
 
 func TestParseApplyPatchEnvelope_DeleteEmitsNoContent(t *testing.T) {
+	repoRoot := abs("tmp", "repo")
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Delete File: /tmp/repo/legacy.go",
+		"*** Delete File: " + abs("tmp", "repo", "legacy.go"),
 		"*** End Patch",
 	}, "\n")
 
-	files := parseApplyPatchEnvelope(envelope, "/tmp/repo")
+	files := parseApplyPatchEnvelope(envelope, repoRoot)
 	if len(files) != 1 {
 		t.Fatalf("got %d files, want 1", len(files))
 	}
@@ -160,6 +186,7 @@ func TestParseApplyPatchEnvelope_MultipleFilesInOneEnvelope(t *testing.T) {
 }
 
 func TestNormalizePatchPath_RelativizesAbsoluteUnderRepo(t *testing.T) {
+	repoRoot := abs("tmp", "repo")
 	cases := []struct {
 		name     string
 		raw      string
@@ -168,32 +195,34 @@ func TestNormalizePatchPath_RelativizesAbsoluteUnderRepo(t *testing.T) {
 	}{
 		{
 			name:     "absolute inside repo",
-			raw:      "/tmp/repo/pkg/main.go",
-			repoRoot: "/tmp/repo",
+			raw:      abs("tmp", "repo", "pkg", "main.go"),
+			repoRoot: repoRoot,
 			want:     "pkg/main.go",
 		},
 		{
 			name:     "relative passes through unchanged",
 			raw:      "pkg/main.go",
-			repoRoot: "/tmp/repo",
+			repoRoot: repoRoot,
 			want:     "pkg/main.go",
 		},
 		{
 			name:     "absolute outside repo retained as-is",
-			raw:      "/etc/passwd",
-			repoRoot: "/tmp/repo",
-			want:     "/etc/passwd",
+			raw:      abs("etc", "passwd"),
+			repoRoot: repoRoot,
+			// filepath.Clean canonicalizes path separators per OS;
+			// ToSlash then renders forward slashes on every OS.
+			want: filepath.ToSlash(abs("etc", "passwd")),
 		},
 		{
 			name:     "no repoRoot leaves absolute path",
-			raw:      "/tmp/repo/main.go",
+			raw:      abs("tmp", "repo", "main.go"),
 			repoRoot: "",
-			want:     "/tmp/repo/main.go",
+			want:     filepath.ToSlash(abs("tmp", "repo", "main.go")),
 		},
 		{
 			name:     "trailing whitespace stripped",
 			raw:      "  pkg/main.go  ",
-			repoRoot: "/tmp/repo",
+			repoRoot: repoRoot,
 			want:     "pkg/main.go",
 		},
 		{
@@ -202,14 +231,14 @@ func TestNormalizePatchPath_RelativizesAbsoluteUnderRepo(t *testing.T) {
 			// escapes the repo.
 			name:     "name starting with dotdot stays inside repo",
 			raw:      "..generated/file.go",
-			repoRoot: "/tmp/repo",
+			repoRoot: repoRoot,
 			want:     "..generated/file.go",
 		},
 		{
 			name:     "actual parent-escape returns absolute fallback",
-			raw:      "/etc/hosts",
-			repoRoot: "/tmp/repo",
-			want:     "/etc/hosts",
+			raw:      abs("etc", "hosts"),
+			repoRoot: repoRoot,
+			want:     filepath.ToSlash(abs("etc", "hosts")),
 		},
 	}
 	for _, tc := range cases {

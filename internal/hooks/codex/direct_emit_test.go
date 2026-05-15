@@ -54,7 +54,7 @@ func applyPatchEvent(envelope, cwd string) *hooks.Event {
 	return &hooks.Event{
 		Type:          hooks.ToolStepCompleted,
 		SessionID:     "session-xyz",
-		TranscriptRef: "/tmp/codex-fixture/sessions/2026/05/13/rollout-test.jsonl",
+		TranscriptRef: fixtureTranscript,
 		Model:         "gpt-5.4",
 		Timestamp:     1700000000000,
 		CWD:           cwd,
@@ -69,7 +69,7 @@ func applyPatchEvent(envelope, cwd string) *hooks.Event {
 func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Add File: /tmp/codex-fixture/repo/main.go",
+		"*** Add File: " + abs("tmp", "codex-fixture", "repo", "main.go"),
 		"+package main",
 		"+",
 		"+func main() {",
@@ -77,7 +77,7 @@ func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 		"+}",
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	p := &Provider{}
@@ -110,7 +110,7 @@ func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("blob %q not found in test store", ev.PayloadHash)
 	}
-	fileLines, _ := events.ExtractClaudeActions(blob, "/tmp/codex-fixture/repo")
+	fileLines, _ := events.ExtractClaudeActions(blob, fixtureRepo)
 	lines, ok := fileLines["main.go"]
 	if !ok {
 		t.Fatalf("extractor did not surface main.go; got keys %v", keysOf(fileLines))
@@ -136,7 +136,7 @@ func TestBuildHookEvents_ApplyPatchUpdateOnlyAddsPlusLines(t *testing.T) {
 		"+\tprintln(\"new\")",
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
@@ -147,7 +147,7 @@ func TestBuildHookEvents_ApplyPatchUpdateOnlyAddsPlusLines(t *testing.T) {
 		t.Fatalf("got %d events, want 1", len(out))
 	}
 	blob, _ := bs.Get(out[0].PayloadHash)
-	fileLines, _ := events.ExtractClaudeActions(blob, "/tmp/codex-fixture/repo")
+	fileLines, _ := events.ExtractClaudeActions(blob, fixtureRepo)
 	lines := fileLines["main.go"]
 	if _, ok := lines["println(\"new\")"]; !ok {
 		t.Errorf("added line missing: %v", keysOf2(lines))
@@ -163,10 +163,10 @@ func TestBuildHookEvents_ApplyPatchUpdateOnlyAddsPlusLines(t *testing.T) {
 func TestBuildHookEvents_ApplyPatchDeleteEmitsFileTouchWithoutPayload(t *testing.T) {
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Delete File: /tmp/codex-fixture/repo/legacy.go",
+		"*** Delete File: " + abs("tmp", "codex-fixture", "repo", "legacy.go"),
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
@@ -196,7 +196,7 @@ func TestBuildHookEvents_ApplyPatchMoveYieldsDistinctEventIDs(t *testing.T) {
 		"+package newpath",
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
@@ -223,7 +223,7 @@ func TestBuildHookEvents_ApplyPatchMoveSplitsIntoDeleteAndAdd(t *testing.T) {
 		"+package newpath",
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
@@ -253,7 +253,7 @@ func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing
 		"*** Delete File: legacy.go",
 		"*** End Patch",
 	}, "\n")
-	hookEvent := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	hookEvent := applyPatchEvent(envelope, fixtureRepo)
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), hookEvent, newMemBlobStore())
 	if err != nil {
 		t.Fatalf("BuildHookEvents: %v", err)
@@ -275,7 +275,7 @@ func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing
 		Model:       out[0].Model,
 	}}
 
-	cands, _ := events.BuildCandidatesFromRows(rows, "/tmp/codex-fixture/repo", nil)
+	cands, _ := events.BuildCandidatesFromRows(rows, fixtureRepo, nil)
 	if got, ok := cands.ProviderTouchedFiles["legacy.go"]; !ok || got != "codex" {
 		t.Errorf("legacy.go missing or wrong provider in ProviderTouchedFiles: got %q (present=%v); want %q", got, ok, "codex")
 	}
@@ -317,7 +317,7 @@ func TestBuildHookEvents_ApplyPatchEmptyContentStillEmitsTouchEvent(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			event := applyPatchEvent(tc.envelope, "/tmp/codex-fixture/repo")
+			event := applyPatchEvent(tc.envelope, fixtureRepo)
 			bs := newMemBlobStore()
 			out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
 			if err != nil {
@@ -346,7 +346,7 @@ func TestBuildHookEvents_ApplyPatchMultiFileYieldsDistinctEventIDs(t *testing.T)
 		"+package b",
 		"*** End Patch",
 	}, "\n")
-	event := applyPatchEvent(envelope, "/tmp/codex-fixture/repo")
+	event := applyPatchEvent(envelope, fixtureRepo)
 	bs := newMemBlobStore()
 
 	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
@@ -369,10 +369,10 @@ func TestBuildHookEvents_BashStoresRedactedCommand(t *testing.T) {
 	event := &hooks.Event{
 		Type:          hooks.ToolStepCompleted,
 		SessionID:     "session-xyz",
-		TranscriptRef: "/tmp/codex-fixture/sessions/rollout-test.jsonl",
+		TranscriptRef: fixtureTranscriptAlt,
 		Model:         "gpt-5.4",
 		Timestamp:     1700000000000,
-		CWD:           "/tmp/codex-fixture/repo",
+		CWD:           fixtureRepo,
 		TurnID:        "turn-abc",
 		ToolName:      "Bash",
 		ToolInput:     input,
@@ -399,7 +399,7 @@ func TestBuildHookEvents_BashStoresRedactedCommand(t *testing.T) {
 		t.Error("Bash payload hash should be set for scorer recognition")
 	}
 	blob, _ := bs.Get(ev.PayloadHash)
-	_, bash := events.ExtractClaudeActions(blob, "/tmp/codex-fixture/repo")
+	_, bash := events.ExtractClaudeActions(blob, fixtureRepo)
 	if len(bash) != 1 || bash[0] != "rm legacy.go" {
 		t.Errorf("extracted bash commands = %v, want [rm legacy.go]", bash)
 	}
@@ -409,11 +409,11 @@ func TestBuildHookEvents_PromptSubmittedStoresPromptBlob(t *testing.T) {
 	event := &hooks.Event{
 		Type:          hooks.PromptSubmitted,
 		SessionID:     "session-xyz",
-		TranscriptRef: "/tmp/codex-fixture/sessions/rollout-test.jsonl",
+		TranscriptRef: fixtureTranscriptAlt,
 		Model:         "gpt-5.4",
 		Timestamp:     1700000000000,
 		Prompt:        "Refactor the scoring module",
-		CWD:           "/tmp/codex-fixture/repo",
+		CWD:           fixtureRepo,
 		TurnID:        "turn-abc",
 	}
 	bs := newMemBlobStore()
