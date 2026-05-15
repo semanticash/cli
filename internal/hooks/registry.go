@@ -10,11 +10,12 @@ import (
 // weight 100 and sort alphabetically among themselves.
 var providerOrder = map[string]int{
 	"claude-code": 0,
-	"cursor":      1,
-	"copilot":     2,
-	"gemini-cli":  3,
-	"kiro-cli":    4,
-	"kiro-ide":    5,
+	"codex":       1,
+	"cursor":      2,
+	"copilot":     3,
+	"gemini-cli":  4,
+	"kiro-cli":    5,
+	"kiro-ide":    6,
 }
 
 var (

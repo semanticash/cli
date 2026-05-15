@@ -40,6 +40,19 @@ const CopilotSkillsDirEnv = "SEMANTICA_COPILOT_SKILLS_DIR"
 // location. See kiro.dev/docs/cli/skills.
 const KiroSkillsDirEnv = "SEMANTICA_KIRO_SKILLS_DIR"
 
+// CodexSkillsDirEnv mirrors the same pattern for OpenAI Codex's
+// user-global skills directory (`~/.codex/skills`). One target
+// covers both the standalone CLI and the desktop app; their
+// embedded runtime shares this directory and both surfaces discover
+// installed skills via the same `skills/list` RPC.
+//
+// Codex also reads `~/.agents/skills` per the agentskills.io
+// standard. Semantica does not use that shared path here because
+// the rest of its install surface is provider-scoped
+// (uninstalling Codex must not affect skills another tool may
+// have installed under the standard path).
+const CodexSkillsDirEnv = "SEMANTICA_CODEX_SKILLS_DIR"
+
 // SkillFileName is the fixed name Anthropic Agent Skills loaders
 // expect inside each skill subdirectory.
 const SkillFileName = "SKILL.md"
@@ -481,6 +494,9 @@ func agentTargets() ([]agentTarget, error) {
 	}
 	if dir, ok := resolve(KiroSkillsDirEnv, ".kiro"); ok {
 		targets = append(targets, agentTarget{Name: "kiro", Dir: dir})
+	}
+	if dir, ok := resolve(CodexSkillsDirEnv, ".codex"); ok {
+		targets = append(targets, agentTarget{Name: "codex", Dir: dir})
 	}
 	return targets, nil
 }

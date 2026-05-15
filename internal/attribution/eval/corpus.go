@@ -153,6 +153,59 @@ func kiroIDEEvent(toolName, filePath, content, repoRoot string) events.EventRow 
 	}
 }
 
+// codexApplyPatchEvent builds the Codex EventRow shape produced by
+// PostToolUse[apply_patch] sections that carry new content (Add or
+// Update). The shape mirrors what internal/hooks/codex emits: a
+// Claude-shaped Write payload so ExtractClaudeActions credits the
+// content as line-level evidence, with Provider set to "codex".
+func codexApplyPatchEvent(filePath, content, repoRoot string) events.EventRow {
+	toolUses := `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"` + filePath + `","file_op":"write"}]}`
+	absPath := filePath
+	if repoRoot != "" && len(filePath) > 0 && filePath[0] != '/' {
+		absPath = repoRoot + "/" + filePath
+	}
+	return events.EventRow{
+		Provider:    "codex",
+		Role:        "assistant",
+		ToolUses:    toolUses,
+		PayloadHash: "eval-fixture",
+		Payload:     claudePayload("Write", absPath, content),
+		Model:       "gpt-5.4",
+	}
+}
+
+// codexFileTouchEvent builds the EventRow shape Codex emits for
+// apply_patch sections that produce no new content (Delete,
+// deletion-only Update, the source half of a Move). The tool_uses
+// JSON uses the codex_file_edit name so HasProviderFileEdit routes
+// the file to ProviderTouchedFiles without inflating line counts.
+func codexFileTouchEvent(filePath, fileOp string) events.EventRow {
+	toolUses := `{"content_types":["tool_use"],"tools":[{"name":"codex_file_edit","file_path":"` + filePath + `","file_op":"` + fileOp + `"}]}`
+	return events.EventRow{
+		Provider: "codex",
+		Role:     "assistant",
+		ToolUses: toolUses,
+		// PayloadHash intentionally empty - provider-touch events
+		// carry no line-level blob.
+		Model: "gpt-5.4",
+	}
+}
+
+// codexBashEvent builds the EventRow shape Codex emits for
+// PostToolUse[Bash]. The Bash payload reuses Claude's tool_use shape
+// so ExtractClaudeActions surfaces the command for deletion-path
+// extraction via ExtractDeletedPaths.
+func codexBashEvent(command string) events.EventRow {
+	return events.EventRow{
+		Provider:    "codex",
+		Role:        "assistant",
+		ToolUses:    `{"content_types":["tool_use"],"tools":[{"name":"Bash","file_op":"exec"}]}`,
+		PayloadHash: "eval-fixture",
+		Payload:     claudePayload("Bash", "", command),
+		Model:       "gpt-5.4",
+	}
+}
+
 func jsonEscape(s string) string {
 	// Simple JSON string escaping for test fixtures.
 	out := `"`
@@ -633,6 +686,145 @@ var Corpus = []EvalCase{
 						"Fixing needs occurrence accounting or positional tracking in the " +
 						"scorer; this case documents current behavior so a future change can " +
 						"confirm the headline drops to ~50%.",
+				},
+			},
+		},
+	},
+
+	// Codex apply_patch Add with full content. The direct emitter
+	// synthesizes a Claude-shaped Write blob so every line in the
+	// envelope contributes to ExtractClaudeActions output and the
+	// scorer credits the file at line-level exact evidence.
+	{
+		Name:        "codex-apply-patch-line-level",
+		Description: "Codex apply_patch Add produces line-level evidence via the synthesized Write blob",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/main.go b/main.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/main.go\n" +
+			"@@ -0,0 +1,3 @@\n" +
+			"+package main\n" +
+			"+\n" +
+			"+func main() {}\n",
+		Events: []events.EventRow{
+			codexApplyPatchEvent("main.go", "package main\n\nfunc main() {}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path: "main.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+			},
+		},
+	},
+
+	// Codex apply_patch Delete (and any other apply_patch section
+	// that produces no new content) emits a codex_file_edit
+	// tool-use shape. HasProviderFileEdit routes the file to
+	// ProviderTouchedFiles without inflating line counts; lines
+	// land in the provider-only sidecar instead of the headline.
+	{
+		Name:        "codex-file-touch-delete",
+		Description: "Codex apply_patch Delete records the file as provider-touch with no line-level evidence",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/legacy.go b/legacy.go\n" +
+			"--- a/legacy.go\n" +
+			"+++ /dev/null\n" +
+			"@@ -1,2 +0,0 @@\n" +
+			"-package legacy\n" +
+			"-func Old() {}\n",
+		Events: []events.EventRow{
+			codexFileTouchEvent("legacy.go", "delete"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  0,
+			Evidence:      "Low",
+			FallbackCount: 1,
+			Files: []ExpectedFile{
+				{
+					Path: "legacy.go", AILines: 0, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceProviderTouch,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceProviderTouch},
+					Notes:                "Lines land in ProviderOnlyLines (provider-touch sidecar); headline AI% excludes them.",
+				},
+			},
+		},
+	},
+
+	// Codex Bash with an `rm` command. The bash extractor
+	// recognizes the deletion and adds the path to
+	// ProviderTouchedFiles. No line-level evidence is produced
+	// because shell side effects are not synthesized into edits.
+	{
+		Name:        "codex-bash-rm-touches-file",
+		Description: "Codex Bash rm extracts the deleted file path into provider-touch",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/cleanup.go b/cleanup.go\n" +
+			"--- a/cleanup.go\n" +
+			"+++ /dev/null\n" +
+			"@@ -1,1 +0,0 @@\n" +
+			"-package cleanup\n",
+		Events: []events.EventRow{
+			codexBashEvent("rm cleanup.go"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  0,
+			Evidence:      "Low",
+			FallbackCount: 1,
+			Files: []ExpectedFile{
+				{
+					Path: "cleanup.go", AILines: 0, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceProviderTouch,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceProviderTouch},
+					Notes:                "Bash rm command extracted by ExtractDeletedPaths; provider-touch only.",
+				},
+			},
+		},
+	},
+
+	// Codex and Claude both produce line-level evidence on
+	// different files inside the same commit. Each file's
+	// attribution must carry its originating provider and the
+	// headline percentage must sum the two correctly.
+	{
+		Name:        "codex-cross-provider-mixed",
+		Description: "Codex writes one file, Claude writes another; per-provider attribution survives",
+		RepoRoot:    "/repo",
+		Diff: "diff --git a/codex_file.go b/codex_file.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/codex_file.go\n" +
+			"@@ -0,0 +1,2 @@\n" +
+			"+package codexfile\n" +
+			"+func FromCodex() {}\n" +
+			"diff --git a/claude_file.go b/claude_file.go\n" +
+			"--- /dev/null\n" +
+			"+++ b/claude_file.go\n" +
+			"@@ -0,0 +1,2 @@\n" +
+			"+package claudefile\n" +
+			"+func FromClaude() {}\n",
+		Events: []events.EventRow{
+			codexApplyPatchEvent("codex_file.go", "package codexfile\nfunc FromCodex() {}\n", "/repo"),
+			claudeEvent("Write", "claude_file.go", "package claudefile\nfunc FromClaude() {}\n", "/repo"),
+		},
+		Expected: ExpectedResult{
+			AIPercentage:  100,
+			Evidence:      "High",
+			FallbackCount: 0,
+			Files: []ExpectedFile{
+				{
+					Path: "codex_file.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
+				},
+				{
+					Path: "claude_file.go", AILines: 2, HumanLines: 0,
+					PrimaryEvidence:      reporting.EvidenceExact,
+					ContributingEvidence: []reporting.EvidenceClass{reporting.EvidenceExact},
 				},
 			},
 		},

@@ -24,6 +24,18 @@ func cleanGitOutput(out []byte) string {
 	return strings.ReplaceAll(strings.TrimSpace(string(out)), "\r\n", "\n")
 }
 
+// FindRoot resolves the given path to the enclosing git repository root,
+// returning the canonical (symlink-resolved) path. Worktrees backed by a
+// .git file are accepted. Returns an error if no .git is found up to the
+// filesystem root.
+//
+// Callers that need a full *Repo handle should use OpenRepo. FindRoot is
+// the lightweight option for code that only cares about whether a path
+// belongs to a repository and which one.
+func FindRoot(start string) (string, error) {
+	return findGitRoot(start)
+}
+
 func OpenRepo(repoPath string) (*Repo, error) {
 	start := repoPath
 	if start == "" {
