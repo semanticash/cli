@@ -25,6 +25,7 @@ func disableAllAgentTargets(t *testing.T) {
 		GeminiSkillsDirEnv,
 		CopilotSkillsDirEnv,
 		KiroSkillsDirEnv,
+		CodexSkillsDirEnv,
 	} {
 		t.Setenv(env, "")
 	}
@@ -195,6 +196,7 @@ func TestInstall_RejectsSourceWithDirNameMismatch(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	// Directory name does not match frontmatter `name`.
 	skillDir := filepath.Join(srcRoot, "wrong-dirname")
@@ -215,6 +217,7 @@ func TestInstall_RejectsUnsafeDirectoryName(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	// Path traversal attempt as the skill directory name.
 	skillDir := filepath.Join(srcRoot, "..bad")
@@ -237,6 +240,7 @@ func TestInstall_RejectsEmptySource(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSourceNoSkills) {
@@ -250,6 +254,7 @@ func TestInstall_RejectsMissingSource(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 	_, err := Install(context.Background(), InstallOptions{Source: "/nonexistent-skills-dir-12345", CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSourceMissing) {
 		t.Errorf("expected ErrSourceMissing, got %v", err)
@@ -329,6 +334,7 @@ func TestUninstall_PreservesUnmanagedFiles(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	// User-written SKILL.md inside a Semantica-shaped directory name.
 	dir := filepath.Join(dstRoot, "semantica-handoff")
@@ -361,6 +367,7 @@ func TestUninstall_ForceLeavesUnrelatedUserSkills(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	// Two user-authored skills that exist in the agent's
 	// user-global directory but have nothing to do with Semantica.
@@ -418,6 +425,7 @@ func TestUninstall_ForceLeavesUnmanagedFilesInPrefixScope(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	dir := filepath.Join(dstRoot, "semantica-foo")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -449,6 +457,7 @@ func TestInstall_RejectsNonPrefixedSkillName(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 
 	// SKILL.md whose frontmatter `name` does not carry the
 	// Semantica prefix. Both source dir name and frontmatter name
@@ -471,6 +480,7 @@ func TestUninstall_NoSkillsDirIsClean(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 	rep, err := Uninstall(false)
 	if err != nil {
 		t.Fatalf("Uninstall: %v", err)
@@ -562,11 +572,31 @@ func TestInstall_OnlyCursorDetected(t *testing.T) {
 	}
 }
 
+func TestInstall_OnlyCodexDetected(t *testing.T) {
+	srcRoot := filepath.Join(t.TempDir(), "src")
+	codexDst := filepath.Join(t.TempDir(), "codex-skills")
+	disableAllAgentTargets(t)
+	t.Setenv(CodexSkillsDirEnv, codexDst)
+	writeSampleSkill(t, srcRoot)
+
+	rep, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(rep.Actions) != 1 || rep.Actions[0].Target != "codex" {
+		t.Fatalf("expected single codex action, got %+v", rep.Actions)
+	}
+	dstFile := filepath.Join(codexDst, "semantica-handoff", SkillFileName)
+	if _, err := os.Stat(dstFile); err != nil {
+		t.Errorf("codex file not written: %v", err)
+	}
+}
+
 // TestInstall_NoAgentsDetectedErrors confirms the install command
-// surfaces a clear error when both agents are explicitly disabled
-// (no env override, no `~/.claude` or `~/.cursor` dirs reachable).
-// The user shouldn't end up with skill files written into a home
-// dir they don't actually use.
+// surfaces a clear error when every agent is explicitly disabled
+// (no env override, no `~/.claude`, `~/.cursor`, ... dirs reachable).
+// The user should not end up with skill files written into a home
+// dir they do not actually use.
 func TestInstall_NoAgentsDetectedErrors(t *testing.T) {
 	srcRoot := filepath.Join(t.TempDir(), "src")
 	t.Setenv(ClaudeSkillsDirEnv, "")
@@ -574,6 +604,7 @@ func TestInstall_NoAgentsDetectedErrors(t *testing.T) {
 	t.Setenv(CopilotSkillsDirEnv, "")
 	t.Setenv(KiroSkillsDirEnv, "")
 	t.Setenv(CursorSkillsDirEnv, "")
+	t.Setenv(CodexSkillsDirEnv, "")
 	writeSampleSkill(t, srcRoot)
 
 	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})

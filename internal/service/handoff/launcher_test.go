@@ -166,6 +166,11 @@ var spawnableProviderCases = []struct {
 		binary:        "kiro-cli",
 		argsForBundle: func(p string) []string { return []string{"chat", ContinuePromptFor(p)} },
 	},
+	{
+		provider:      "codex",
+		binary:        "codex",
+		argsForBundle: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
 }
 
 // TestBuildLaunchSpec_SpawnableProvidersWhenBinaryPresent pins

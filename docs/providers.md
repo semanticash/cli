@@ -1,6 +1,6 @@
 # AI Provider Integrations
 
-Semantica supports six AI coding providers. For each detected provider, Semantica installs repo-local hooks in the provider's configuration file. These hooks fire during agent activity and route captured events to the repo's lineage database via the broker.
+Semantica supports seven AI coding providers. Most providers use repo-local hooks in the provider's configuration file. Codex uses user-global hooks and gates capture by the session's enabled repo before any broker or blob side effects run. Captured events are routed to the repo's lineage database via the broker.
 
 Semantica reads session transcripts passively - it never modifies agent session logs or transcript files.
 
@@ -14,6 +14,45 @@ All providers share the same downstream packaging model:
 4. **Turn packaging** - Semantica packages a per-turn provenance bundle from the captured prompt and direct step events.
 
 The exact storage and offset model is provider-specific. Some providers read from transcript offsets, some use provider-managed markers, and Kiro IDE scans execution traces at stop time. The background worker runs a reconciliation pass (`reconcileActiveSessions`) to flush any sessions that still have pending capture state, but the worker is not the main capture mechanism.
+
+---
+
+## OpenAI Codex
+
+**Hook config**: `~/.codex/hooks.json` and `~/.codex/config.toml`
+
+Codex stores hook configuration in the user's global Codex home. Semantica installs hook entries for both the standalone `codex` CLI and the Codex desktop app, which share the same runtime and config directory.
+
+### Detection
+
+Detected by resolving the `codex` executable on `PATH`, by checking for `~/.codex`, or by checking for `/Applications/Codex.app` on macOS.
+
+### Hooks
+
+Semantica registers four Codex hooks:
+
+- **`SessionStart`** - Opens lifecycle tracking. The dispatcher treats this as metadata-only today.
+- **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
+- **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
+- **`Stop`** - Marks the turn complete and packages captured events.
+
+Codex hooks are user-global, so they can fire in any Codex session on the machine. Before parsing the payload or opening the blob store, Semantica resolves the payload `cwd` to a git repo root and checks it against active Semantica repos. Sessions outside enabled repos exit silently with no broker writes and no hook-error entry.
+
+### Attribution
+
+Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. `Bash` commands are captured as command provenance and currently contribute file-touch evidence only for recognized deletion commands such as `rm`.
+
+### Skills and Handoff
+
+`semantica skills install` writes Semantica skills for Codex to `~/.codex/skills`. Codex also reads `~/.agents/skills`, but Semantica intentionally uses the provider-scoped Codex path so install and uninstall affect only Codex-owned targets.
+
+`semantica handoff continue --agent codex` launches `codex` with the saved handoff bundle as a starter prompt when the binary is available. It starts a fresh Codex session rather than using `codex resume`, because the handoff launcher does not carry a Codex session UUID.
+
+### Limitations
+
+- Codex rollout/session files are not used for replay today. Hook payloads are the capture source.
+- Shell commands that write files indirectly, such as `echo > file`, `tee`, or `cp`, are captured as Bash provenance but do not synthesize file-touch or line-level attribution unless Codex also emits a file-edit hook for the affected file.
+- User-global hooks require the enabled-repo cwd gate. If Codex runs outside an enabled repo, Semantica exits silently and records nothing.
 
 ---
 
@@ -256,11 +295,11 @@ The `task` tool provides the delegated-work prompt at dispatch time. Copilot rep
 
 ## Provider detection
 
-When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`), and some check for provider-managed global storage (Kiro IDE). For Claude Code, the CLI also discovers the native binary bundled inside the VS Code extension (`~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude`) when the standalone CLI is not on PATH. Detected providers are recorded as a string array in `.semantica/settings.json`:
+When you run `semantica enable`, the CLI calls each provider's `IsAvailable()` method. Detection varies by provider: some check for an executable on `PATH` and common install locations (Claude Code, Gemini CLI, Kiro CLI, Codex), some check for a provider-specific data directory (Cursor checks `~/.cursor`, Copilot checks `~/.copilot`, Codex checks `~/.codex`), and some check for provider-managed global storage (Kiro IDE). For Claude Code, the CLI also discovers the native binary bundled inside the VS Code extension (`~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude`) when the standalone CLI is not on PATH. Detected providers are recorded as a string array in `.semantica/settings.json`:
 
 ```json
 {
-  "providers": ["claude-code", "cursor", "kiro-ide", "kiro-cli", "gemini", "copilot"]
+  "providers": ["claude-code", "codex", "cursor", "kiro-ide", "kiro-cli", "gemini-cli", "copilot"]
 }
 ```
 
@@ -279,6 +318,7 @@ If an agent is already running when you enable Semantica, restart or reload/resu
 | Provider | How to reload |
 |----------|---------------|
 | Claude Code | Type `/reload-plugins` in the active session, or start a new session |
+| Codex | Start a new session |
 | Cursor IDE | Reload the window (Ctrl+Shift+P > Reload Window) or restart Cursor |
 | Gemini CLI | Start a new session |
 | GitHub Copilot | Restart the IDE or CLI session |

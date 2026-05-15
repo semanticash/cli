@@ -135,6 +135,15 @@ var providerLaunches = map[string]providerLaunch{
 		binary:  "kiro-cli",
 		argsFor: func(p string) []string { return []string{"chat", ContinuePromptFor(p)} },
 	},
+	// OpenAI Codex: `codex "<prompt>"` accepts a positional starter
+	// prompt and drops the user into the interactive REPL. Codex
+	// has a `resume <SESSION_ID>` subcommand for picking up a prior
+	// session, but the launcher does not carry a provider session
+	// ID today, so the cold-start positional form is used.
+	"codex": {
+		binary:  "codex",
+		argsFor: func(p string) []string { return []string{ContinuePromptFor(p)} },
+	},
 }
 
 // BuildLaunchSpec resolves a launch plan for the given provider.
