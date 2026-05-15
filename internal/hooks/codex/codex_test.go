@@ -20,15 +20,8 @@ import (
 func withCodexHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	prev, had := os.LookupEnv("CODEX_HOME")
+	// t.Setenv handles save/restore around the test on its own.
 	t.Setenv("CODEX_HOME", dir)
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("CODEX_HOME", prev)
-		} else {
-			os.Unsetenv("CODEX_HOME")
-		}
-	})
 	return dir
 }
 

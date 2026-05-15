@@ -122,7 +122,7 @@ func codexHomeDir() (string, error) {
 //     [hooks.state.*] trusted_hash per installed hook, so Codex does not
 //     prompt for hook review on the next session. Trust keys reflect
 //     the actual (groupIndex, hookIndex) where Semantica's entries
-//     landed, which can be non-zero when the file already contained
+//     written, which can be non-zero when the file already contained
 //     unrelated hooks for the same event.
 //
 // User configuration in config.toml (model pins, plugin blocks,
@@ -520,12 +520,12 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	tmpPath := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpPath) }
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		cleanup()
 		return fmt.Errorf("write temp file for %s: %w", path, err)
 	}
 	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		cleanup()
 		return fmt.Errorf("chmod temp file for %s: %w", path, err)
 	}
