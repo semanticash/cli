@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Codex `apply_patch` events now route reliably when emitted with repo-relative paths, including subdirectory sessions and delete-only patch sections, while attribution keys remain repo-relative.
 
+### Changed
+
+- `semantica blame` now shows the attributing provider on AI file tags when known, and `semantica explain` now lists linked session providers in the AI involvement section.
+
 ## [0.4.1] - 2026-05-13
 
 ### Added

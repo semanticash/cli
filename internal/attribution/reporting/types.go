@@ -97,6 +97,7 @@ type CommitResultInput struct {
 	FilesDeleted      []string               // paths deleted (to /dev/null)
 	TouchedFiles      map[string]bool        // AI-touched file paths (for AI flag on file changes)
 	ProviderModels    map[string]string      // provider -> model
+	FileProviders     map[string]string      // file -> attributing provider
 	FileTouchOrigins  map[string]TouchOrigin // per-file touch provenance (for evidence classification)
 	CarryForwardFiles map[string]bool        // files attributed via carry-forward
 }
@@ -149,8 +150,9 @@ type FileAttributionOutput struct {
 
 // FileChangeOutput records whether a file change was performed by AI.
 type FileChangeOutput struct {
-	Path string
-	AI   bool
+	Path     string
+	AI       bool
+	Provider string // empty for human or unknown-provider files
 }
 
 // MatchStatsInput carries match counters from scoring into reporting.

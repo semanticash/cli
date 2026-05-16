@@ -72,8 +72,9 @@ type FileAttribution struct {
 // FileChange records a file that was created, edited, or deleted in a commit,
 // along with whether the change was performed by an AI agent.
 type FileChange struct {
-	Path string `json:"path"`
-	AI   bool   `json:"ai"`
+	Path     string `json:"path"`
+	AI       bool   `json:"ai"`
+	Provider string `json:"provider,omitempty"` // empty for human or unknown-provider files
 }
 
 // AttributionDiagnostics provides transparency into why a particular
@@ -319,10 +320,26 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		}
 	}
 
+	// Merge provider lookups for rendering. Line-level evidence wins;
+	// provider-touch entries fill gaps for delete-only or file-level
+	// signals.
+	fileProviders := make(map[string]string, len(fileProvider)+len(providerTouchedFiles))
+	for fp, prov := range providerTouchedFiles {
+		if prov != "" {
+			fileProviders[fp] = prov
+		}
+	}
+	for fp, prov := range fileProvider {
+		if prov != "" {
+			fileProviders[fp] = prov
+		}
+	}
+
 	// Assemble the commit result from the scored files and diff metadata.
 	commitInput := buildCommitResultInput(scores, dr, commitResultContext{
 		aiTouchedFiles:    aiTouchedFiles,
 		providerModel:     providerModel,
+		fileProviders:     fileProviders,
 		fileTouchOrigins:  touchOrigins,
 		carryForwardFiles: actualCF,
 	})
@@ -806,6 +823,7 @@ func deriveFileTouchOrigins(
 type commitResultContext struct {
 	aiTouchedFiles    map[string]bool
 	providerModel     map[string]string
+	fileProviders     map[string]string // file -> attributing provider
 	fileTouchOrigins  map[string]attrreporting.TouchOrigin
 	carryForwardFiles map[string]bool
 }
@@ -837,6 +855,7 @@ func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultC
 		FilesDeleted:      dr.filesDeleted,
 		TouchedFiles:      ctx.aiTouchedFiles,
 		ProviderModels:    ctx.providerModel,
+		FileProviders:     ctx.fileProviders,
 		FileTouchOrigins:  ctx.fileTouchOrigins,
 		CarryForwardFiles: ctx.carryForwardFiles,
 	}
@@ -870,17 +889,17 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 	for _, f := range cr.FilesCreated {
 		ops[f.Path] = "created"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI})
+		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
 	}
 	for _, f := range cr.FilesEdited {
 		ops[f.Path] = "edited"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI})
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
 	}
 	for _, f := range cr.FilesDeleted {
 		ops[f.Path] = "deleted"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI})
+		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
 	}
 	for _, f := range cr.Files {
 		// Fields without a matching entry in the three *Files arrays
