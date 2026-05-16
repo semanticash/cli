@@ -3,6 +3,8 @@ package codex
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // applyPatchOp identifies the kind of change one envelope section
@@ -177,7 +179,18 @@ func normalizePatchPath(raw, repoRoot string) string {
 	if p == "" {
 		return p
 	}
-	if !filepath.IsAbs(p) {
+	// LooksAbsolutePath (not filepath.IsAbs) covers native absolute
+	// paths on every host plus MSYS-form /c/... paths from agents
+	// that run under MSYS on Windows. NormalizePath downstream maps
+	// /c/... to C:/... so the scorer can relativize against a native
+	// repo root. A bare POSIX /repo/... path on a Windows host would
+	// also be recognized here as "absolute" and fall through to
+	// filepath.Rel; that call returns an error against a native repo
+	// root and the cleaned POSIX form is returned. Such paths would
+	// not route (broker.RouteEvents matches against the native
+	// canonical_path), but no Codex runtime is known to emit them on
+	// Windows; flagging the gap rather than papering over it.
+	if !platform.LooksAbsolutePath(p) {
 		return filepath.ToSlash(filepath.Clean(p))
 	}
 	if repoRoot == "" {

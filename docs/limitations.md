@@ -47,6 +47,12 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - If multiple Kiro chats exist for the same workspace, Semantica may still select the wrong one at prompt submission because the hook API does not identify the active chat directly.
 - Kiro IDE rename actions are file-touch attribution only because Kiro does not provide old/new content for `smartRelocate`.
 
+## OpenAI Codex
+
+- Codex hooks are user-global. Semantica captures only when the hook payload `cwd` resolves to a Semantica-enabled repo; sessions outside enabled repos exit silently and record nothing.
+- Codex rollout/session files are not replayed today. Hook payloads are the capture source.
+- Codex subagent capture is deferred until Codex exposes a stable child-agent feature and session-linking surface.
+
 ## Kiro CLI
 
 - Kiro CLI support currently uses a dedicated repo-local agent config at `.kiro/agents/semantica.json`. Semantica capture is active only when the current Kiro CLI session is using that config. You can select it with `kiro-cli chat --agent semantica`, or make it the repo default with `kiro-cli agent set-default semantica`.

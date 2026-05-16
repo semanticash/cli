@@ -28,7 +28,7 @@ func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map
 		// Provider file-touch events (Cursor, Copilot, Kiro, Gemini).
 		if HasProviderFileEdit(ev.ToolUses) {
 			stats.AIToolEvents++
-			for _, fp := range ExtractProviderFileTouches(ev.ToolUses) {
+			for _, fp := range ExtractProviderFileTouches(ev.ToolUses, repoRoot) {
 				if eligibleFiles != nil && !eligibleFiles[fp] {
 					continue
 				}

@@ -383,7 +383,7 @@ func TestAttribution_CursorFileLevelAttribution(t *testing.T) {
 	}
 
 	// Paths are stored as repo-relative by the ingest pipeline.
-	paths := attrevents.ExtractProviderFileTouches(ev.ToolUses.String)
+	paths := attrevents.ExtractProviderFileTouches(ev.ToolUses.String, "")
 	if len(paths) != 1 || paths[0] != "src/handler.go" {
 		t.Errorf("ExtractProviderFileTouches = %v, want [src/handler.go]", paths)
 	}
