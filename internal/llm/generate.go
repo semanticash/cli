@@ -27,7 +27,8 @@ const defaultModel = "sonnet"
 const llmShellTimeout = 120 * time.Second
 
 // redactPrompt removes detected secrets from prompt content before it is sent
-// to a provider.
+// to a provider. Used as the default redactor by WriterRegistry; the
+// registry exposes an unexported redactor field tests can override.
 func redactPrompt(prompt string) (string, error) {
 	return redact.String(prompt)
 }
@@ -51,144 +52,13 @@ type GenerateTextResult struct {
 	Model    string
 }
 
-// llmProvider describes a CLI that can generate text.
-type llmProvider struct {
-	name  string
-	model string
-	find  func() string
-	// runText sends a prompt and returns raw text.
-	runText func(ctx context.Context, binPath, prompt string) (string, error)
-}
-
-// providers is the ordered fallback chain. First match wins.
-var providers = []llmProvider{
-	{
-		name:    "claude_code",
-		model:   defaultModel,
-		find:    findClaude,
-		runText: runClaude,
-	},
-	{
-		name:    "cursor",
-		model:   "unknown",
-		find:    findCursorAgent,
-		runText: runCursor,
-	},
-	{
-		name:    "gemini_cli",
-		model:   "unknown",
-		find:    findGemini,
-		runText: runGemini,
-	},
-	{
-		name:    "copilot",
-		model:   "unknown",
-		find:    findCopilot,
-		runText: runCopilot,
-	},
-	{
-		name:    "kiro_cli",
-		model:   "unknown",
-		find:    findKiroCLI,
-		runText: runKiroCLI,
-	},
-}
-
-// GenerateText sends a redacted prompt to an available AI CLI and returns raw
-// text. Providers are tried in order until one succeeds.
-func GenerateText(ctx context.Context, prompt string) (*GenerateTextResult, error) {
-	redacted, err := redactPrompt(prompt)
-	if err != nil {
-		return nil, fmt.Errorf("egress redaction failed: %w", err)
-	}
-	prompt = redacted
-
-	var lastErr error
-	var tried int
-
-	for _, p := range providers {
-		binPath := p.find()
-		if binPath == "" {
-			continue
-		}
-		tried++
-
-		text, err := p.runText(ctx, binPath, prompt)
-		if err != nil {
-			if lastErr != nil {
-				lastErr = fmt.Errorf("%s: %w (after %v)", p.name, err, lastErr)
-			} else {
-				lastErr = fmt.Errorf("%s: %w", p.name, err)
-			}
-			continue
-		}
-
-		return &GenerateTextResult{
-			Text:     text,
-			Provider: p.name,
-			Model:    p.model,
-		}, nil
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("all providers failed: %w", lastErr)
-	}
-	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI")
-}
-
-// Generate sends a redacted prompt to an available AI CLI and returns a parsed
-// narrative. Providers are tried in order until one succeeds.
-func Generate(ctx context.Context, prompt string) (*GenerateResult, error) {
-	redacted, err := redactPrompt(prompt)
-	if err != nil {
-		return nil, fmt.Errorf("egress redaction failed: %w", err)
-	}
-	prompt = redacted
-
-	var lastErr error
-	var tried int
-
-	for _, p := range providers {
-		binPath := p.find()
-		if binPath == "" {
-			continue
-		}
-		tried++
-
-		text, err := p.runText(ctx, binPath, prompt)
-		if err != nil {
-			if lastErr != nil {
-				lastErr = fmt.Errorf("%s: %w (after %v)", p.name, err, lastErr)
-			} else {
-				lastErr = fmt.Errorf("%s: %w", p.name, err)
-			}
-			continue
-		}
-
-		narrative, err := parseNarrativeJSON(text)
-		if err != nil {
-			if lastErr != nil {
-				lastErr = fmt.Errorf("%s: %w (after %v)", p.name, err, lastErr)
-			} else {
-				lastErr = fmt.Errorf("%s: %w", p.name, err)
-			}
-			continue
-		}
-
-		return &GenerateResult{
-			Narrative: narrative,
-			Provider:  p.name,
-			Model:     p.model,
-		}, nil
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("all providers failed: %w", lastErr)
-	}
-	return nil, fmt.Errorf("no AI CLI found. Install Claude Code, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI")
-}
-
 // --- Provider runners ---
+//
+// Each runX is invoked by its corresponding Writer.Generate method
+// (see claude.go / cursor.go / etc). The runners are kept here as
+// package-private helpers so the per-writer files stay small and
+// the shared subprocess infrastructure (timeout, env scrubbing,
+// stderr formatting, window-hiding on Windows) lives in one place.
 
 // runClaude shells out to the Claude Code CLI.
 func runClaude(ctx context.Context, claudePath, prompt string) (string, error) {

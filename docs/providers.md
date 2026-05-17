@@ -200,7 +200,7 @@ AgentCrew subagent calls are captured at the parent boundary and, when discovery
 
 ### LLM-backed features
 
-Semantica can use Kiro CLI for playbook generation and other LLM-backed text features when `kiro-cli` is installed. The fallback chain tries Claude Code, Cursor, Gemini CLI, and Copilot first, then runs:
+Semantica can use Kiro CLI for playbook generation and other LLM-backed text features when `kiro-cli` is installed. The fallback chain tries Claude Code, Codex, Cursor, Gemini CLI, and GitHub Copilot CLI first, then runs:
 
 ```bash
 kiro-cli chat --no-interactive

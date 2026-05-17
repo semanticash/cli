@@ -11,15 +11,18 @@ import (
 	"github.com/semanticash/cli/internal/llm"
 )
 
-// GenerateTextFunc matches llm.GenerateText and can be replaced in tests.
-type GenerateTextFunc func(ctx context.Context, prompt string) (*llm.GenerateTextResult, error)
-
 type SuggestPRService struct {
-	GenerateText GenerateTextFunc
+	// writers is the writer-LLM registry used to generate the PR
+	// title and body. Injected at construction time so tests can
+	// substitute a stub registry; production callers pass
+	// providers.NewWriterRegistry().
+	writers *llm.WriterRegistry
 }
 
-func NewSuggestPRService() *SuggestPRService {
-	return &SuggestPRService{GenerateText: llm.GenerateText}
+// NewSuggestPRService constructs the PR-suggestion service. The
+// writer registry is a required dependency.
+func NewSuggestPRService(writers *llm.WriterRegistry) *SuggestPRService {
+	return &SuggestPRService{writers: writers}
 }
 
 type SuggestPRInput struct {
@@ -92,7 +95,7 @@ func (s *SuggestPRService) SuggestPR(ctx context.Context, in SuggestPRInput) (*S
 	// Build prompt and call LLM.
 	prompt := llm.BuildSuggestPRPrompt(string(diffBytes), subjectBlock, prTemplate)
 
-	res, err := s.GenerateText(ctx, prompt)
+	res, err := s.writers.GenerateText(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}

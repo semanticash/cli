@@ -257,7 +257,8 @@ semantica suggest pr --copy
   generates a title and body. If `.github/pull_request_template.md` exists,
   Semantica fills that structure instead of inventing a new one.
 - Suggestions use the first available supported LLM CLI in the current
-  selection order: Claude Code, Cursor CLI, Gemini CLI, then Copilot CLI.
+  selection order: Claude Code, Codex, Cursor CLI, Gemini CLI, GitHub
+  Copilot CLI, then Kiro CLI.
 
 ### Caveats
 

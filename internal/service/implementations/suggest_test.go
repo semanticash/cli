@@ -117,16 +117,12 @@ func TestSuggestForImplementation_WithMockLLM(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	// Mock LLM that returns a fixed JSON response.
-	mockLLM := func(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
-		return &llm.GenerateTextResult{
-			Text:     `{"title": "Add OAuth2 middleware", "summary": "Added OAuth2 support."}`,
-			Provider: "mock",
-			Model:    "test",
-		}, nil
-	}
-
-	svc := &SuggestService{GenerateText: mockLLM}
+	// Stub writer that returns a fixed JSON response. Provider name
+	// flows back through the registry into the SuggestResult.
+	stub := suggestStubWriter("mock", func(_ context.Context, _ string) (string, error) {
+		return `{"title": "Add OAuth2 middleware", "summary": "Added OAuth2 support."}`, nil
+	})
+	svc := NewSuggestService(llm.NewWriterRegistry(stub))
 	res, err := svc.SuggestForImplementation(ctx, id)
 	if err != nil {
 		t.Fatalf("suggest: %v", err)
@@ -183,13 +179,10 @@ func TestSuggestBatch_WithMockLLM(t *testing.T) {
 	})
 	_ = impldb.Close(h)
 
-	mockLLM := func(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
-		return &llm.GenerateTextResult{
-			Text: `{"titles": [{"implementation_id": "` + id1[:8] + `", "title": "Fix rate limiting"}], "merges": []}`,
-		}, nil
-	}
-
-	svc := &SuggestService{GenerateText: mockLLM}
+	stub := suggestStubWriter("mock", func(_ context.Context, _ string) (string, error) {
+		return `{"titles": [{"implementation_id": "` + id1[:8] + `", "title": "Fix rate limiting"}], "merges": []}`, nil
+	})
+	svc := NewSuggestService(llm.NewWriterRegistry(stub))
 	res, err := svc.SuggestBatch(ctx)
 	if err != nil {
 		t.Fatalf("suggest batch: %v", err)
@@ -209,12 +202,11 @@ func TestSuggestBatch_Empty(t *testing.T) {
 	h, _ := impldb.Open(ctx, dbPath, impldb.DefaultOpenOptions())
 	_ = impldb.Close(h)
 
-	mockLLM := func(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
+	stub := suggestStubWriter("mock", func(_ context.Context, _ string) (string, error) {
 		t.Fatal("LLM should not be called with no implementations")
-		return nil, nil
-	}
-
-	svc := &SuggestService{GenerateText: mockLLM}
+		return "", nil
+	})
+	svc := NewSuggestService(llm.NewWriterRegistry(stub))
 	res, err := svc.SuggestBatch(ctx)
 	if err != nil {
 		t.Fatalf("suggest batch: %v", err)
@@ -226,4 +218,24 @@ func TestSuggestBatch_Empty(t *testing.T) {
 
 func init() {
 	_ = os.Setenv("SEMANTICA_HOME", "/dev/null/nonexistent")
+}
+
+// suggestStubWriter returns an llm.Writer whose Generate is driven by
+// gen and whose Find() always reports "stub" (so the registry never
+// skips it). name flows back into SuggestResult.Provider so tests can
+// assert provider attribution end-to-end.
+func suggestStubWriter(name string, gen func(ctx context.Context, prompt string) (string, error)) llm.Writer {
+	return &stubSuggestWriter{name: name, gen: gen}
+}
+
+type stubSuggestWriter struct {
+	name string
+	gen  func(ctx context.Context, prompt string) (string, error)
+}
+
+func (s *stubSuggestWriter) Name() string  { return s.name }
+func (s *stubSuggestWriter) Model() string { return "test" }
+func (s *stubSuggestWriter) Find() string  { return "stub" }
+func (s *stubSuggestWriter) Generate(ctx context.Context, _ string, prompt string) (string, error) {
+	return s.gen(ctx, prompt)
 }

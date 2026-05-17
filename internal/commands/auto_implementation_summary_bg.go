@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/store/impldb"
 	"github.com/spf13/cobra"
@@ -52,7 +53,7 @@ func NewAutoImplementationSummaryCmd() *cobra.Command {
 			}
 
 			// Generate suggestions via LLM.
-			svc := implementations.NewSuggestService()
+			svc := implementations.NewSuggestService(providers.NewWriterRegistry())
 			res, err := svc.SuggestForImplementation(ctx, implID)
 			if err != nil {
 				return fmt.Errorf("auto-impl-summary: suggest: %w", err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/llm"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	"github.com/semanticash/cli/internal/util"
@@ -62,7 +63,8 @@ func NewAutoPlaybookCmd() *cobra.Command {
 				ectx, entries, string(diffBytes),
 			)
 
-			gen, err := llm.Generate(ctx, prompt)
+			writers := providers.NewWriterRegistry()
+			gen, err := writers.Generate(ctx, prompt)
 			if err != nil {
 				return fmt.Errorf("auto-playbook: llm: %w", err)
 			}

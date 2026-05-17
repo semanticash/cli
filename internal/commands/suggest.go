@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/service/implementations"
 	"github.com/semanticash/cli/internal/util"
@@ -37,10 +38,10 @@ a concise commit message. Most suggestions are a single sentence, but
 broader changes may use two short adjacent sentences on the same line. Copies it to the clipboard
 automatically.
 
-Requires at least one supported LLM CLI: Claude Code, Cursor, Gemini CLI, or Copilot.`,
+Requires at least one supported LLM CLI: Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc := service.NewSuggestService()
+			svc := service.NewSuggestService(providers.NewWriterRegistry())
 			var res *service.SuggestResult
 			var err error
 			out := cmd.OutOrStdout()
@@ -94,10 +95,10 @@ func newSuggestPRCmd(rootOpts *RootOptions) *cobra.Command {
 		Long: `Analyzes your branch diff against the base branch and generates
 a PR title and body. Aligns with .github/pull_request_template.md if present.
 
-Requires at least one supported LLM CLI: Claude Code, Cursor, Gemini CLI, or Copilot.`,
+Requires at least one supported LLM CLI: Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, or Kiro CLI.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc := service.NewSuggestPRService()
+			svc := service.NewSuggestPRService(providers.NewWriterRegistry())
 			var res *service.SuggestPRResult
 			var err error
 			out := cmd.OutOrStdout()
@@ -171,7 +172,7 @@ All suggestions are advisory. Use --apply to write the suggested title and summa
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			svc := implementations.NewSuggestService()
+			svc := implementations.NewSuggestService(providers.NewWriterRegistry())
 
 			if len(args) == 1 {
 				return suggestSingleImplementation(cmd, out, svc, args[0], asJSON, apply)
