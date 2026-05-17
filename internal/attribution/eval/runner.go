@@ -141,7 +141,7 @@ func RunCase(tc EvalCase) CaseResult {
 	// Build candidates from events.
 	cands, _ := events.BuildCandidatesFromRows(tc.Events, tc.RepoRoot, nil)
 
-	scores, _ := scoring.ScoreFiles(diff, cands.AILines, cands.ProviderTouchedFiles, cands.FileProvider)
+	scores, _ := scoring.ScoreFiles(diff, cands.AILines, cands.ProviderTouchedFiles, cands.FileProvider, cands.LineProviders)
 
 	// Build touch origins (mirrors deriveFileTouchOrigins in the service).
 	touchOrigins := make(map[string]reporting.TouchOrigin)

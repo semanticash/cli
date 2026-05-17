@@ -12,6 +12,7 @@ import "strings"
 func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map[string]bool) (Candidates, EventStats) {
 	c := Candidates{
 		AILines:              make(map[string]map[string]struct{}),
+		LineProviders:        make(map[string]map[string]map[string]struct{}),
 		ProviderTouchedFiles: make(map[string]string),
 		FileProvider:         make(map[string]string),
 		ProviderModel:        make(map[string]string),
@@ -67,8 +68,15 @@ func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map
 			if c.AILines[fp] == nil {
 				c.AILines[fp] = make(map[string]struct{})
 			}
+			if c.LineProviders[fp] == nil {
+				c.LineProviders[fp] = make(map[string]map[string]struct{})
+			}
 			for line := range lines {
 				c.AILines[fp][line] = struct{}{}
+				if c.LineProviders[fp][line] == nil {
+					c.LineProviders[fp][line] = make(map[string]struct{})
+				}
+				c.LineProviders[fp][line][ev.Provider] = struct{}{}
 			}
 		}
 

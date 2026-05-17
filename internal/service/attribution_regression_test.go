@@ -161,7 +161,7 @@ func assertFileChangesEqual(t *testing.T, label string, got, want []FileChange) 
 		return
 	}
 	for i := range got {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("%s[%d]: got %+v, want %+v", label, i, got[i], want[i])
 		}
 	}

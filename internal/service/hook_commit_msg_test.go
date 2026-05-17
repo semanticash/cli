@@ -48,11 +48,16 @@ func TestFormatAttributionTrailers_PerProvider(t *testing.T) {
 	if len(trailers) != 2 {
 		t.Fatalf("trailers: got %d, want 2", len(trailers))
 	}
-	want0 := "Semantica-Attribution: 40% claude_code (opus 4.6) (80/200 lines)"
+	// Per-provider trailers use the "involvement" wording so readers
+	// understand shared-line credit can push individual percentages
+	// above the headline AI%. Provider name leads, percentage names
+	// itself as involvement, and the line count + optional model
+	// move into the trailing parenthetical.
+	want0 := "Semantica-Attribution: claude_code 40% involvement (80/200 lines, opus 4.6)"
 	if trailers[0] != want0 {
 		t.Errorf("trailer[0]: got %q, want %q", trailers[0], want0)
 	}
-	want1 := "Semantica-Attribution: 20% cursor (40/200 lines)"
+	want1 := "Semantica-Attribution: cursor 20% involvement (40/200 lines)"
 	if trailers[1] != want1 {
 		t.Errorf("trailer[1]: got %q, want %q", trailers[1], want1)
 	}

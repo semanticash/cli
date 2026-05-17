@@ -151,3 +151,65 @@ func TestBuildCandidatesFromRows_NonAssistantSkipped(t *testing.T) {
 
 	if stats.EventsAssistant != 0 { t.Errorf("EventsAssistant = %d, want 0", stats.EventsAssistant) }
 }
+
+// TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile
+// covers the candidates-layer foundation of the per-line provider
+// attribution. Two providers each contribute different lines to the
+// same file: the AILines union holds both line sets while
+// LineProviders preserves which provider authored which line. Without
+// this, the scorer's per-line credit logic would have nothing to key
+// off and ProviderLines would collapse onto "last writer wins" again.
+func TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile(t *testing.T) {
+	repoRoot := "/test/repo"
+	rows := []EventRow{
+		{
+			Provider:    "claude_code",
+			Role:        "assistant",
+			ToolUses:    `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"main.go","file_op":"write"}]}`,
+			PayloadHash: "hash-claude",
+			Payload:     makePayload(repoRoot, "main.go", "package main\nfunc main() {}\n"),
+		},
+		{
+			Provider:    "codex",
+			Role:        "assistant",
+			ToolUses:    `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"main.go","file_op":"write"}]}`,
+			PayloadHash: "hash-codex",
+			Payload:     makePayload(repoRoot, "main.go", "// added by codex\n"),
+		},
+	}
+
+	cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
+
+	// AILines unions every line; FileProvider is last-writer-wins
+	// (kept intentionally as documented in types.go).
+	if len(cands.AILines["main.go"]) != 3 {
+		t.Errorf("AILines[main.go] = %d, want 3 (union of both providers)", len(cands.AILines["main.go"]))
+	}
+	if cands.FileProvider["main.go"] != "codex" {
+		t.Errorf("FileProvider[main.go] = %q, want %q (last-writer-wins by design)",
+			cands.FileProvider["main.go"], "codex")
+	}
+
+	// LineProviders is the new per-line breakdown. Each line maps to
+	// exactly the provider that emitted it.
+	perLine, ok := cands.LineProviders["main.go"]
+	if !ok {
+		t.Fatalf("LineProviders missing main.go entry; got %v", cands.LineProviders)
+	}
+	for _, line := range []string{"package main", "func main() {}"} {
+		provs := perLine[line]
+		if _, ok := provs["claude_code"]; !ok {
+			t.Errorf("LineProviders[main.go][%q] missing claude_code; got %v", line, provs)
+		}
+		if _, ok := provs["codex"]; ok {
+			t.Errorf("LineProviders[main.go][%q] should not include codex; got %v", line, provs)
+		}
+	}
+	codexLine := perLine["// added by codex"]
+	if _, ok := codexLine["codex"]; !ok {
+		t.Errorf("LineProviders[main.go][// added by codex] missing codex; got %v", codexLine)
+	}
+	if _, ok := codexLine["claude_code"]; ok {
+		t.Errorf("LineProviders[main.go][// added by codex] should not include claude_code; got %v", codexLine)
+	}
+}

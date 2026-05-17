@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
@@ -93,8 +94,8 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 				if !f.AI {
 					return "human"
 				}
-				if f.Provider != "" {
-					return "ai:" + f.Provider
+				if len(f.Providers) > 0 {
+					return "ai:" + strings.Join(f.Providers, ",")
 				}
 				return "ai"
 			}

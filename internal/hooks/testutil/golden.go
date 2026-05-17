@@ -96,14 +96,13 @@ func (c *CASBlobPutter) Put(_ context.Context, b []byte) (string, int64, error) 
 }
 
 // goldenDoc is the serialized shape of one golden file. The outer
-// envelope carries the fixture name and description so a reviewer
-// looking at the file alone can see what case it represents;
+// envelope carries the fixture name and description for context;
 // comparison only cares about Events and Blobs.
 type goldenDoc struct {
-	Name           string              `json:"name"`
-	Description    string              `json:"description,omitempty"`
-	ExpectedEvents []broker.RawEvent   `json:"expected_events"`
-	ExpectedBlobs  map[string]string   `json:"expected_blobs"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	ExpectedEvents []broker.RawEvent `json:"expected_events"`
+	ExpectedBlobs  map[string]string `json:"expected_blobs"`
 }
 
 // RunGolden iterates the cases against the provider, compares each
@@ -261,7 +260,6 @@ func marshalPretty(v any) string {
 	}
 	return string(data)
 }
-
 
 // diffFixtureSet returns the names of golden files that are declared
 // by cases but absent from dir (missing) and the names of golden

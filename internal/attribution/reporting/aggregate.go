@@ -150,14 +150,14 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		filesSeen[fa.Path] = true
 
 		isAI := filesWithAI[fs.Path] || in.TouchedFiles[fs.Path]
-		prov := ""
+		var provs []string
 		if isAI {
-			prov = in.FileProviders[fs.Path]
+			provs = in.FileProviders[fs.Path]
 		}
 		if createdSet[fs.Path] {
-			r.FilesCreated = append(r.FilesCreated, FileChangeOutput{Path: fs.Path, AI: isAI, Provider: prov})
+			r.FilesCreated = append(r.FilesCreated, FileChangeOutput{Path: fs.Path, AI: isAI, Providers: provs})
 		} else if fa.TotalLines > 0 {
-			r.FilesEdited = append(r.FilesEdited, FileChangeOutput{Path: fs.Path, AI: isAI, Provider: prov})
+			r.FilesEdited = append(r.FilesEdited, FileChangeOutput{Path: fs.Path, AI: isAI, Providers: provs})
 		}
 
 		for prov, lines := range fs.ProviderLines {
@@ -176,11 +176,11 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	// zero line counts and resolve evidence from the same touch metadata
 	// used by scored deletions.
 	for _, f := range in.FilesDeleted {
-		prov := ""
+		var provs []string
 		if in.TouchedFiles[f] {
-			prov = in.FileProviders[f]
+			provs = in.FileProviders[f]
 		}
-		r.FilesDeleted = append(r.FilesDeleted, FileChangeOutput{Path: f, AI: in.TouchedFiles[f], Provider: prov})
+		r.FilesDeleted = append(r.FilesDeleted, FileChangeOutput{Path: f, AI: in.TouchedFiles[f], Providers: provs})
 		if filesSeen[f] {
 			continue
 		}

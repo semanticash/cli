@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	attrcf "github.com/semanticash/cli/internal/attribution/carryforward"
@@ -72,9 +73,9 @@ type FileAttribution struct {
 // FileChange records a file that was created, edited, or deleted in a commit,
 // along with whether the change was performed by an AI agent.
 type FileChange struct {
-	Path     string `json:"path"`
-	AI       bool   `json:"ai"`
-	Provider string `json:"provider,omitempty"` // empty for human or unknown-provider files
+	Path      string   `json:"path"`
+	AI        bool     `json:"ai"`
+	Providers []string `json:"providers,omitempty"` // providers that contributed matched lines, sorted desc by count
 }
 
 // AttributionDiagnostics provides transparency into why a particular
@@ -195,6 +196,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 
 	// Use local names for the candidate sets used by scoring and reporting.
 	aiLines := cands.AILines
+	lineProviders := cands.LineProviders
 	providerTouchedFiles := cands.ProviderTouchedFiles
 	fileProvider := cands.FileProvider
 	providerModel := cands.ProviderModel
@@ -233,6 +235,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 			// matching the gate logic in attributeWithCarryForward.
 			currentCands := aiCandidates{
 				aiLines:              aiLines,
+				lineProviders:        lineProviders,
 				providerTouchedFiles: providerTouchedFiles,
 				fileProvider:         fileProvider,
 				providerModel:        providerModel,
@@ -277,6 +280,25 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 							cfLines++
 						}
 					}
+					// Union the per-line provider ownership too so the
+					// scorer can credit historical providers when their
+					// carried-forward lines match the diff.
+					for fp, perLine := range histNewCands.LineProviders {
+						if lineProviders == nil {
+							lineProviders = make(map[string]map[string]map[string]struct{})
+						}
+						if lineProviders[fp] == nil {
+							lineProviders[fp] = make(map[string]map[string]struct{}, len(perLine))
+						}
+						for line, provs := range perLine {
+							if lineProviders[fp][line] == nil {
+								lineProviders[fp][line] = make(map[string]struct{}, len(provs))
+							}
+							for p := range provs {
+								lineProviders[fp][line][p] = struct{}{}
+							}
+						}
+					}
 					for fp, prov := range histNewCands.ProviderTouchedFiles {
 						providerTouchedFiles[fp] = prov
 						aiTouchedFiles[fp] = true
@@ -298,6 +320,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	// Score the diff against the merged candidates.
 	finalCands := aiCandidates{
 		aiLines:              aiLines,
+		lineProviders:        lineProviders,
 		providerTouchedFiles: providerTouchedFiles,
 		fileProvider:         fileProvider,
 		providerModel:        providerModel,
@@ -320,18 +343,37 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		}
 	}
 
-	// Merge provider lookups for rendering. Line-level evidence wins;
-	// provider-touch entries fill gaps for delete-only or file-level
-	// signals.
-	fileProviders := make(map[string]string, len(fileProvider)+len(providerTouchedFiles))
-	for fp, prov := range providerTouchedFiles {
-		if prov != "" {
-			fileProviders[fp] = prov
+	// Derive the per-file provider list from scored data so each file
+	// surfaces the providers that actually own its matched diff lines.
+	// Sorted desc by matched line count: the dominant provider leads,
+	// secondary providers follow. Files with no scored line-level
+	// evidence (provider-touch only, deletions) fall back to
+	// providerOnlyLinesByProvider; final fallback is the per-file
+	// ProviderTouchedFiles entry so every AI-touched file carries at
+	// least one provider for rendering.
+	fileProviders := make(map[string][]string, len(scores)+len(providerTouchedFiles))
+	for _, s := range scores {
+		if list := sortedProvidersByCount(s.providerLines); len(list) > 0 {
+			fileProviders[s.path] = list
+			continue
+		}
+		if list := sortedProvidersByCount(s.providerOnlyLinesByProvider); len(list) > 0 {
+			fileProviders[s.path] = list
+			continue
+		}
+		if prov := providerTouchedFiles[s.path]; prov != "" {
+			fileProviders[s.path] = []string{prov}
 		}
 	}
-	for fp, prov := range fileProvider {
+	// Deleted/untouched paths don't appear in scores but may still be
+	// in ProviderTouchedFiles (bash rm, deletion-only apply_patch).
+	// Surface those with their file-level provider attribution.
+	for fp, prov := range providerTouchedFiles {
+		if _, ok := fileProviders[fp]; ok {
+			continue
+		}
 		if prov != "" {
-			fileProviders[fp] = prov
+			fileProviders[fp] = []string{prov}
 		}
 	}
 
@@ -514,10 +556,11 @@ type fileScore struct {
 
 // aiCandidates holds the AI line sets and provider metadata extracted from events.
 type aiCandidates struct {
-	aiLines              map[string]map[string]struct{} // file -> set of trimmed lines
-	providerTouchedFiles map[string]string              // file -> provider (file-level, e.g. Cursor)
-	fileProvider         map[string]string              // file -> provider (line-level, e.g. Claude)
-	providerModel        map[string]string              // provider -> model
+	aiLines              map[string]map[string]struct{}            // file -> set of trimmed lines
+	lineProviders        map[string]map[string]map[string]struct{} // file -> line -> set of providers
+	providerTouchedFiles map[string]string                         // file -> provider (file-level, e.g. Cursor)
+	fileProvider         map[string]string                         // file -> provider (line-level, e.g. Claude)
+	providerModel        map[string]string                         // provider -> model
 }
 
 // carryForwardResult carries the aggregate result and whether both windows
@@ -559,6 +602,7 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 	// Adapt candidate data for the existing scoring helpers.
 	oldCands := aiCandidates{
 		aiLines:              cands.AILines,
+		lineProviders:        cands.LineProviders,
 		providerTouchedFiles: cands.ProviderTouchedFiles,
 		fileProvider:         cands.FileProvider,
 		providerModel:        cands.ProviderModel,
@@ -638,7 +682,7 @@ func scoreDiffPerFile(dr diffResult, cands aiCandidates) ([]fileScore, attrscori
 	// Convert diffResult to scoring.DiffResult.
 	sDiff := toScoringDiff(dr)
 
-	newScores, stats := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider)
+	newScores, stats := attrscoring.ScoreFiles(sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider, cands.lineProviders)
 
 	// Convert scoring.FileScore back to fileScore.
 	out := make([]fileScore, len(newScores))
@@ -763,6 +807,34 @@ func fileScoreAILines(fs *fileScore) int {
 	return attrreporting.AILines(&input)
 }
 
+// sortedProvidersByCount returns the providers in counts ordered by
+// matched line count descending. Ties break alphabetically so the
+// ordering is stable across runs. Empty counts produce a nil slice
+// (no providers contributed), which callers treat as "fall back to
+// the next source of provider info."
+func sortedProvidersByCount(counts map[string]int) []string {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(counts))
+	for p, n := range counts {
+		if n <= 0 {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if counts[out[i]] != counts[out[j]] {
+			return counts[out[i]] > counts[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // fileScoreHasAttribution reports whether a file has any AI
 // evidence at all, line-level or provider-only. Used by the
 // carry-forward merge gate, where a historical provider-only
@@ -823,7 +895,7 @@ func deriveFileTouchOrigins(
 type commitResultContext struct {
 	aiTouchedFiles    map[string]bool
 	providerModel     map[string]string
-	fileProviders     map[string]string // file -> attributing provider
+	fileProviders     map[string][]string // file -> providers sorted desc by matched line count
 	fileTouchOrigins  map[string]attrreporting.TouchOrigin
 	carryForwardFiles map[string]bool
 }
@@ -889,17 +961,17 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 	for _, f := range cr.FilesCreated {
 		ops[f.Path] = "created"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
+		result.FilesCreated = append(result.FilesCreated, FileChange{Path: f.Path, AI: f.AI, Providers: f.Providers})
 	}
 	for _, f := range cr.FilesEdited {
 		ops[f.Path] = "edited"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
+		result.FilesEdited = append(result.FilesEdited, FileChange{Path: f.Path, AI: f.AI, Providers: f.Providers})
 	}
 	for _, f := range cr.FilesDeleted {
 		ops[f.Path] = "deleted"
 		cls[f.Path] = classificationString(f.AI)
-		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI, Provider: f.Provider})
+		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f.Path, AI: f.AI, Providers: f.Providers})
 	}
 	for _, f := range cr.Files {
 		// Fields without a matching entry in the three *Files arrays
@@ -1013,8 +1085,9 @@ func attributeWithCarryForward(
 		eventRows := toEventRows(ctx, bs, events)
 		newCands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
 		currentCands = aiCandidates{
-			aiLines: newCands.AILines, providerTouchedFiles: newCands.ProviderTouchedFiles,
-			fileProvider: newCands.FileProvider, providerModel: newCands.ProviderModel,
+			aiLines: newCands.AILines, lineProviders: newCands.LineProviders,
+			providerTouchedFiles: newCands.ProviderTouchedFiles,
+			fileProvider:         newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
 		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
 			currentScores, _ = scoreDiffPerFile(dr, currentCands)
@@ -1076,8 +1149,9 @@ func attributeWithCarryForward(
 			histRows := toEventRows(ctx, bs, histEvents)
 			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
 			histCands = aiCandidates{
-				aiLines: histNewCands.AILines, providerTouchedFiles: histNewCands.ProviderTouchedFiles,
-				fileProvider: histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
+				aiLines: histNewCands.AILines, lineProviders: histNewCands.LineProviders,
+				providerTouchedFiles: histNewCands.ProviderTouchedFiles,
+				fileProvider:         histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
 			}
 			if len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 {
 				historicalScores, _ = scoreDiffPerFile(dr, histCands)

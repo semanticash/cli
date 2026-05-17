@@ -215,8 +215,8 @@ func TestRenderWorkerTask_ValidatesRequiredFields(t *testing.T) {
 }
 
 // schtasks /Create /XML expects UTF-16 LE with a BOM. UTF-8 input
-// is silently mangled or rejected on some Windows versions, so the
-// encoding step is load-bearing. Pin the BOM and the byte ordering.
+// is silently mangled or rejected on some Windows versions, so this
+// test pins the BOM and byte ordering.
 func TestEncodeUTF16LE_HasBOMAndLittleEndianOrder(t *testing.T) {
 	got := encodeUTF16LE("AB")
 
@@ -285,4 +285,3 @@ func TestResolveWorkingDirectory(t *testing.T) {
 		})
 	}
 }
-

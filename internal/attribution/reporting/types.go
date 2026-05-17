@@ -91,13 +91,19 @@ const (
 
 // CommitResultInput holds the narrow inputs needed to assemble a full
 // commit attribution result from scored data and diff metadata.
+//
+// FileProviders carries the ordered list of providers that own
+// matched lines in each AI-attributed file, sorted by line count
+// descending. A file edited by Claude (150 lines) and Codex (2 lines)
+// produces FileProviders[path] = ["claude_code", "codex"]. Empty or
+// missing means human-only file or unknown.
 type CommitResultInput struct {
 	FileScores        []FileScoreInput       // one per diff file, in diff order
 	FilesCreated      []string               // paths created (from /dev/null)
 	FilesDeleted      []string               // paths deleted (to /dev/null)
 	TouchedFiles      map[string]bool        // AI-touched file paths (for AI flag on file changes)
 	ProviderModels    map[string]string      // provider -> model
-	FileProviders     map[string]string      // file -> attributing provider
+	FileProviders     map[string][]string    // file -> providers sorted desc by matched line count
 	FileTouchOrigins  map[string]TouchOrigin // per-file touch provenance (for evidence classification)
 	CarryForwardFiles map[string]bool        // files attributed via carry-forward
 }
@@ -150,9 +156,9 @@ type FileAttributionOutput struct {
 
 // FileChangeOutput records whether a file change was performed by AI.
 type FileChangeOutput struct {
-	Path     string
-	AI       bool
-	Provider string // empty for human or unknown-provider files
+	Path      string
+	AI        bool
+	Providers []string // providers that contributed matched lines, sorted desc by count; empty for human or unknown-provider files
 }
 
 // MatchStatsInput carries match counters from scoring into reporting.

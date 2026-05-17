@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -570,7 +571,7 @@ func TestFormatAttributionTrailers_SingleProvider(t *testing.T) {
 	if len(trailers) != 1 {
 		t.Fatalf("got %d trailers, want 1", len(trailers))
 	}
-	want := "Semantica-Attribution: 40% claude_code (100/250 lines)"
+	want := "Semantica-Attribution: claude_code 40% involvement (100/250 lines)"
 	if trailers[0] != want {
 		t.Errorf("trailer = %q, want %q", trailers[0], want)
 	}
@@ -590,8 +591,8 @@ func TestFormatAttributionTrailers_MultiProvider(t *testing.T) {
 	if len(trailers) != 2 {
 		t.Fatalf("got %d trailers, want 2", len(trailers))
 	}
-	want0 := "Semantica-Attribution: 40% claude_code (100/250 lines)"
-	want1 := "Semantica-Attribution: 20% cursor (50/250 lines)"
+	want0 := "Semantica-Attribution: claude_code 40% involvement (100/250 lines)"
+	want1 := "Semantica-Attribution: cursor 20% involvement (50/250 lines)"
 	if trailers[0] != want0 {
 		t.Errorf("trailers[0] = %q, want %q", trailers[0], want0)
 	}
@@ -613,7 +614,7 @@ func TestFormatAttributionTrailers_WithModel(t *testing.T) {
 	if len(trailers) != 1 {
 		t.Fatalf("got %d trailers, want 1", len(trailers))
 	}
-	want := "Semantica-Attribution: 75% claude_code (opus 4.6) (150/200 lines)"
+	want := "Semantica-Attribution: claude_code 75% involvement (150/200 lines, opus 4.6)"
 	if trailers[0] != want {
 		t.Errorf("trailer = %q, want %q", trailers[0], want)
 	}
@@ -1989,5 +1990,47 @@ func TestAttributeCommit_CarryForward(t *testing.T) {
 	}
 	if !foundInCreated {
 		t.Error("create.go should appear in FilesCreated")
+	}
+}
+
+// TestSortedProvidersByCount covers the per-file provider ordering
+// that drives the [ai:p1,p2,...] tag in blame output. Largest line
+// count leads; ties break alphabetically for stability across runs.
+// Empty or all-zero maps return nil so callers can detect "no
+// providers contributed" and fall back to provider-touch sources.
+func TestSortedProvidersByCount(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]int
+		want []string
+	}{
+		{"nil map", nil, nil},
+		{"empty map", map[string]int{}, nil},
+		{"all zero counts", map[string]int{"a": 0, "b": 0}, nil},
+		{"single provider", map[string]int{"claude_code": 5}, []string{"claude_code"}},
+		{"descending counts",
+			map[string]int{"codex": 2, "claude_code": 12},
+			[]string{"claude_code", "codex"},
+		},
+		{"tie breaks alphabetically",
+			map[string]int{"codex": 5, "claude_code": 5},
+			[]string{"claude_code", "codex"},
+		},
+		{"three providers, mixed",
+			map[string]int{"codex": 1, "claude_code": 10, "cursor": 3},
+			[]string{"claude_code", "cursor", "codex"},
+		},
+		{"zero-count entries dropped",
+			map[string]int{"claude_code": 4, "codex": 0, "cursor": 2},
+			[]string{"claude_code", "cursor"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sortedProvidersByCount(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("sortedProvidersByCount(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
