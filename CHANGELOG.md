@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `semantica blame` now shows the attributing provider on AI file tags when known, and `semantica explain` now lists linked session providers in the AI involvement section.
+- `semantica blame` now shows attributing providers on AI file tags when known, `semantica blame --json` includes per-file provider involvement lists, and hosted attribution pushes preserve those lists for API commit-file responses.
+- `semantica explain` now lists linked session providers in the AI involvement section.
 
 ## [0.4.1] - 2026-05-13
 
