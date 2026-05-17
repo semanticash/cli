@@ -30,7 +30,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 
 - **Git** - Semantica hooks into the Git commit lifecycle
 - **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
-- **At least one supported AI provider** for capture (Claude Code, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
+- **At least one supported AI provider** for capture (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
 - **At least one supported CLI version** for `suggest commit`, `suggest pr`, and playbook generation (`claude`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
 
 ---
@@ -256,6 +256,41 @@ semantica handoff --write
 
 The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat. The bundle includes redacted prompt context, the last assistant response, touched files, recent commits, and working-tree context when available. If multiple providers are active in an interactive terminal, Semantica asks which provider to hand off from. Use `--from <provider>` to hand off from a specific recent provider session, for example `semantica handoff --write --from claude-code`.
 
+### Agent skills
+
+Semantica also ships agent skills for natural-language workflows inside
+supported AI coding agents. Skills are authored in the public
+[`semanticash/skills`](https://github.com/semanticash/skills) repository and
+installed by the CLI into detected agent skills directories:
+
+```bash
+semantica skills install
+semantica skills uninstall
+```
+
+`semantica skills install` fetches the latest Semantica-authored `SKILL.md`
+files from the protected `main` branch of `semanticash/skills`, stamps managed
+metadata, and writes them to supported provider-scoped skills directories such
+as `~/.claude/skills`, `~/.codex/skills`, `~/.cursor/skills`,
+`~/.gemini/skills`, `~/.copilot/skills`, and `~/.kiro/skills`.
+
+Installed skills let an agent call Semantica safely without the user needing to
+remember exact command syntax. The current skills cover:
+
+- **`semantica-handoff`** - prepare a redacted `.semantica/handoff.md` bundle so a fresh same-agent or cross-agent session can continue the work.
+- **`semantica-explain`** - explain a commit using local provenance, hosted playbooks when connected, or a redacted git-only fallback.
+
+After installation, use natural language in the agent, for example "handoff
+this session" or "explain this commit with Semantica." The skills call hidden
+CLI backing commands that return structured output for the agent. For offline
+or development installs, pass a source directory laid out as
+`<source>/semantica-*/SKILL.md`, such as the `skills/` directory inside a local
+`semanticash/skills` checkout:
+
+```bash
+semantica skills install --source /path/to/semanticash/skills/skills
+```
+
 ### Playbooks
 
 Generate and revisit checkpoint playbooks directly from commit explanations:
@@ -297,6 +332,7 @@ reliably than the default detached worker path.
 | Provider | Hook config | Detection |
 |----------|-------------|-----------|
 | Claude Code | `.claude/settings.json` | Auto |
+| OpenAI Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` | Auto |
 | Cursor (IDE and CLI) | `.cursor/hooks.json` | Auto |
 | Kiro IDE | `.kiro/hooks/*.kiro.hook` | Auto |
 | Kiro CLI | `.kiro/agents/semantica.json` | Auto |
@@ -327,6 +363,7 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `checkpoint` | Manually create a checkpoint |
 | `rewind <id>` | Restore working tree to a checkpoint |
 | `sessions` | List or view agent sessions |
+| `skills install` / `skills uninstall` | Install or remove Semantica agent skills |
 | `launcher` | Manage the optional OS-backed worker launcher |
 | `connect` / `disconnect` | Connect or disconnect this repo for hosted features |
 | `workspace requests` | List, approve, or reject shared-workspace access requests |
