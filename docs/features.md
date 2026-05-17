@@ -27,7 +27,7 @@ semantica blame HEAD          # aggregate AI percentage
 semantica blame HEAD --json   # per-file breakdown with exact/formatted/modified counts
 ```
 
-The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-provider breakdown (provider name, model, line-level AI lines, provider-only lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
+The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-file `providers` involvement lists, per-commit provider breakdown (provider name, model, line-level AI lines, provider-only lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
 
 ### Prerequisites
 

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-## [0.5.0] - 2026-05-16
+## [0.5.0] - 2026-05-17
 
 ### Added
 
@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added Codex hook capture for prompts and tool steps. `apply_patch` add/update records produce line-level attribution evidence, while deletions, empty-file adds, and rename-only halves produce provider-touch evidence without inflating line counts. Bash, Write, and Edit hook payloads are normalized through the shared direct-emit path.
 - Added Codex support to cross-agent surfaces: `semantica skills install` now writes Semantica skills to `~/.codex/skills`, and `semantica handoff continue --agent codex` can launch `codex` with the saved handoff bundle when the binary is available.
 - Registered Codex in provider discovery and canonical ordering.
+
+### Fixed
+
+- Codex `apply_patch` events now route reliably when emitted with repo-relative paths, including subdirectory sessions and delete-only patch sections, while attribution keys remain repo-relative.
+
+### Changed
+
+- `semantica blame` now shows attributing providers on AI file tags when known, `semantica blame --json` includes per-file provider involvement lists, and hosted attribution pushes preserve those lists for API commit-file responses.
+- `semantica explain` now lists linked session providers in the AI involvement section.
 
 ## [0.4.1] - 2026-05-13
 

@@ -35,3 +35,30 @@ func BuildNormalizedSet(aiLines map[string]map[string]struct{}) map[string]map[s
 	}
 	return norm
 }
+
+// BuildNormalizedLineProviders projects per-line provider ownership
+// onto the whitespace-normalized line keys used by the tier-2 match.
+// When multiple trimmed lines collapse to the same normalized form
+// (different whitespace, same content), the providers from every
+// contributing source are unioned so a tier-2 match credits any
+// provider that emitted the underlying line in any whitespace form.
+func BuildNormalizedLineProviders(lineProviders map[string]map[string]map[string]struct{}) map[string]map[string]map[string]struct{} {
+	if len(lineProviders) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]map[string]struct{}, len(lineProviders))
+	for fp, perLine := range lineProviders {
+		bucket := make(map[string]map[string]struct{}, len(perLine))
+		for line, provs := range perLine {
+			norm := NormalizeWhitespace(line)
+			if bucket[norm] == nil {
+				bucket[norm] = make(map[string]struct{}, len(provs))
+			}
+			for p := range provs {
+				bucket[norm][p] = struct{}{}
+			}
+		}
+		out[fp] = bucket
+	}
+	return out
+}

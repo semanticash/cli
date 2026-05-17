@@ -18,11 +18,21 @@ type EventRow struct {
 // Candidates holds the AI-authored text extracted from events.
 // Deleted paths from bash `rm` commands are folded into ProviderTouchedFiles
 // (they contribute to "AI touched this file", not a separate category).
+//
+// LineProviders carries per-line provider ownership so the scorer can
+// credit each line's matched provider(s) individually. Without it,
+// FileProvider's "last writer wins" overwrites per-event provider
+// info and the scorer collapses every matched line in a file onto a
+// single provider - which is wrong when multiple providers touched
+// the same file (e.g. Claude wrote 150 lines and Codex later edited
+// a comment; the file then displays as "codex" with all 150 lines
+// credited to Codex).
 type Candidates struct {
-	AILines              map[string]map[string]struct{} // file -> set of trimmed lines
-	ProviderTouchedFiles map[string]string              // file -> provider (file-level, includes deletions)
-	FileProvider         map[string]string              // file -> provider (line-level)
-	ProviderModel        map[string]string              // provider -> model
+	AILines              map[string]map[string]struct{}            // file -> set of trimmed lines
+	LineProviders        map[string]map[string]map[string]struct{} // file -> line -> set of providers that emitted that line
+	ProviderTouchedFiles map[string]string                         // file -> provider (file-level, includes deletions)
+	FileProvider         map[string]string                         // file -> provider (line-level; last-writer-wins, see LineProviders for per-line breakdown)
+	ProviderModel        map[string]string                         // provider -> model
 }
 
 // EventStats collects diagnostic counters from event processing.

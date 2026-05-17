@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
@@ -87,37 +88,37 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 				}
 			}
 
+			// AI files include the provider when known. Older or
+			// incomplete records fall back to the plain [ai] tag.
+			fileTag := func(f service.FileChange) string {
+				if !f.AI {
+					return "human"
+				}
+				if len(f.Providers) > 0 {
+					return "ai:" + strings.Join(f.Providers, ",")
+				}
+				return "ai"
+			}
+
 			if nCreated > 0 {
 				_, _ = fmt.Fprintln(out)
 				_, _ = fmt.Fprintln(out, "Files created:")
 				for _, f := range res.FilesCreated {
-					label := "human"
-					if f.AI {
-						label = "ai"
-					}
-					_, _ = fmt.Fprintf(out, "  + %-60s [%s]\n", f.Path, label)
+					_, _ = fmt.Fprintf(out, "  + %-60s [%s]\n", f.Path, fileTag(f))
 				}
 			}
 			if nEdited > 0 {
 				_, _ = fmt.Fprintln(out)
 				_, _ = fmt.Fprintln(out, "Files edited:")
 				for _, f := range res.FilesEdited {
-					label := "human"
-					if f.AI {
-						label = "ai"
-					}
-					_, _ = fmt.Fprintf(out, "  ~ %-60s [%s]\n", f.Path, label)
+					_, _ = fmt.Fprintf(out, "  ~ %-60s [%s]\n", f.Path, fileTag(f))
 				}
 			}
 			if nDeleted > 0 {
 				_, _ = fmt.Fprintln(out)
 				_, _ = fmt.Fprintln(out, "Files deleted:")
 				for _, f := range res.FilesDeleted {
-					label := "human"
-					if f.AI {
-						label = "ai"
-					}
-					_, _ = fmt.Fprintf(out, "  - %-60s [%s]\n", f.Path, label)
+					_, _ = fmt.Fprintf(out, "  - %-60s [%s]\n", f.Path, fileTag(f))
 				}
 			}
 

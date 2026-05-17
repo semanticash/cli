@@ -115,11 +115,11 @@ func isUnitActive(ctx context.Context, unit string) (bool, error) {
 // --property=LoadState --value` which always exits 0 for valid
 // syntax and prints one of:
 //
-//   - "loaded"     → unit file present and parseable.
-//   - "not-found"  → unit file missing from systemd's known paths.
-//   - "masked"     → unit file is masked (intentionally disabled).
-//   - "error"      → unit file is malformed.
-//   - "merged" / "stub" / etc. → systemd internal states.
+//   - "loaded": unit file present and parseable.
+//   - "not-found": unit file missing from systemd's known paths.
+//   - "masked": unit file is masked (intentionally disabled).
+//   - "error": unit file is malformed.
+//   - "merged", "stub", etc.: systemd internal states.
 //
 // Only "loaded" maps to true. The semantic matches Status's
 // LoadedInDaemon expectation: a Type=oneshot unit returns to

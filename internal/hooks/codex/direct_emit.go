@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/semanticash/cli/internal/agents/api"
 	agentclaude "github.com/semanticash/cli/internal/agents/claude"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/hooks/builder"
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // BuildHookEvents implements hooks.DirectHookEmitter for Codex.
@@ -166,6 +168,23 @@ func buildPatchFileEvent(ctx context.Context, event *hooks.Event, bs api.BlobPut
 		return broker.RawEvent{}, fmt.Errorf("buildPatchFileEvent: empty path for op=%v", op)
 	}
 
+	// Routed path is absolute (joined with the hook's cwd if the parser
+	// returned relative). Every downstream consumer keys off this same
+	// form:
+	//   - broker.RouteEvents matches FilePaths against the registered
+	//     repo's absolute canonical_path.
+	//   - ExtractClaudeActions reads file_path from the synthesized
+	//     Write blob and calls NormalizePath(file_path, repoRoot) to
+	//     produce the repo-relative key that the final-diff matcher
+	//     compares against. If we stored the parsed (possibly
+	//     subdir-relative) path here instead, a Codex session launched
+	//     from a subdirectory would produce blob keys like "main.go"
+	//     while the final diff carries "pkg/main.go" and no match
+	//     would land.
+	//   - BuildCandidatesFromRows reads tool_uses_json's file_path for
+	//     the provider-touch path; same key story applies.
+	routedPath := absolutizeForRouting(path, event.CWD)
+
 	// Tool naming differs between the line-level and provider-touch
 	// paths so candidate building routes the event correctly:
 	//
@@ -183,11 +202,11 @@ func buildPatchFileEvent(ctx context.Context, event *hooks.Event, bs api.BlobPut
 	var payloadHash string
 	if content != "" {
 		writeInput, err := json.Marshal(map[string]string{
-			"file_path": path,
+			"file_path": routedPath,
 			"content":   content,
 		})
 		if err != nil {
-			return broker.RawEvent{}, fmt.Errorf("marshal patch input for %s: %w", path, err)
+			return broker.RawEvent{}, fmt.Errorf("marshal patch input for %s: %w", routedPath, err)
 		}
 		payloadHash = builder.SynthesizeAssistantBlob(ctx, bs, "Write", writeInput)
 		toolName = "Write"
@@ -199,13 +218,45 @@ func buildPatchFileEvent(ctx context.Context, event *hooks.Event, bs api.BlobPut
 	ev.Role = "assistant"
 	ev.PayloadHash = payloadHash
 	ev.ProvenanceHash = provenanceHash
-	ev.ToolUsesJSON = serializeStepToolUses(toolName, path, fileOpForPatch(op))
+	ev.ToolUsesJSON = serializeStepToolUses(toolName, routedPath, fileOpForPatch(op))
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = perFile.ToolUseID
 	ev.ToolName = toolName
 	ev.EventSource = "hook"
-	ev.FilePaths = []string{path}
+	ev.FilePaths = []string{routedPath}
 	return ev, nil
+}
+
+// absolutizeForRouting returns an absolute form of path suitable for
+// broker.RouteEvents prefix-matching AND for downstream
+// NormalizePath(file_path, repoRoot) relativization on the scorer
+// side. Codex's apply_patch envelope can carry either an absolute or
+// a workspace-relative path depending on which runtime emitted it,
+// and parseApplyPatchEnvelope strips the repo prefix when it knows
+// the root - but that prefix is only the cwd, which may be a
+// subdirectory of the repo. Joining with cwd here preserves the
+// subdir component so a session launched from /repo/pkg editing
+// main.go still routes to /repo/pkg/main.go and the scorer
+// relativizes against /repo to get pkg/main.go.
+//
+// platform.LooksAbsolutePath (not filepath.IsAbs) is used so an
+// already-absolute path is recognized regardless of the host OS - in
+// practice this matters for native paths on every platform and for
+// MSYS-style /c/... paths that NormalizePath maps to C:/... on the
+// scorer side. A bare POSIX /repo/... path on a Windows host would
+// also be left untouched by this helper, but it would not actually
+// route: the registered repo's canonical_path is native (C:\repo)
+// and broker.RouteEvents would find no prefix match. We have no
+// evidence Codex Desktop emits bare POSIX paths on Windows; if a
+// future probe surfaces that shape, this helper (and the broker's
+// path-compare) would need an explicit POSIX-to-native mapping
+// alongside the MSYS one already in NormalizePath. When cwd is
+// empty, path is returned unchanged.
+func absolutizeForRouting(path, cwd string) string {
+	if path == "" || platform.LooksAbsolutePath(path) || cwd == "" {
+		return path
+	}
+	return filepath.ToSlash(filepath.Join(cwd, path))
 }
 
 // perFileEvent returns a shallow copy of event with a per-file

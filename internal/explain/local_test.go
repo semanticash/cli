@@ -86,6 +86,48 @@ func TestFormatProvenance_FullResultRendersAllSections(t *testing.T) {
 	}
 }
 
+func TestFormatProvenance_ProvidersLine(t *testing.T) {
+	single := &service.ExplainResult{
+		CommitHash:    "abc12345",
+		CommitSubject: "feat: x",
+		SessionCount:  1,
+		RootSessions:  1,
+		Sessions: []service.SessionSummary{
+			{SessionID: "s1", Provider: "claude_code"},
+		},
+	}
+	out := formatProvenance(single)
+	if !strings.Contains(out, "Provider: claude_code") {
+		t.Errorf("single-provider line missing:\n%s", out)
+	}
+
+	multi := &service.ExplainResult{
+		CommitHash:    "abc12345",
+		CommitSubject: "feat: x",
+		SessionCount:  3,
+		RootSessions:  3,
+		Sessions: []service.SessionSummary{
+			{SessionID: "s1", Provider: "codex"},
+			{SessionID: "s2", Provider: "claude_code"},
+			{SessionID: "s3", Provider: "codex"}, // duplicate folded
+		},
+	}
+	out = formatProvenance(multi)
+	if !strings.Contains(out, "Providers: claude_code, codex") {
+		t.Errorf("multi-provider line missing or unsorted:\n%s", out)
+	}
+
+	none := &service.ExplainResult{
+		CommitHash:    "abc12345",
+		CommitSubject: "feat: x",
+		SessionCount:  0,
+	}
+	out = formatProvenance(none)
+	if strings.Contains(out, "Provider") {
+		t.Errorf("providers line should be omitted when no sessions; got:\n%s", out)
+	}
+}
+
 func TestFormatProvenance_SubagentPluralization(t *testing.T) {
 	res := &service.ExplainResult{
 		CommitHash:    "abc12345",
@@ -200,13 +242,9 @@ func TestLocalProvenance_MissOnLineageDBAbsent(t *testing.T) {
 	}
 }
 
-// TestExplain_LocalProvenanceHit guards the local-provenance
-// wiring. The miss conditions and formatter are unit-tested above;
-// this test exercises the actual
-// Service.Explain -> service.ExplainService -> formatProvenance
-// path end-to-end against a populated lineage.db. A regression
-// that breaks the call site or the result-shape mapping shows up
-// here as `mode: git-only` instead of `mode: provenance`.
+// TestExplain_LocalProvenanceHit exercises the local-provenance hit
+// path against a populated lineage.db. Miss conditions and formatting
+// are covered by narrower tests above.
 func TestExplain_LocalProvenanceHit(t *testing.T) {
 	ctx := context.Background()
 	dir := setupProvenanceFixture(t, "feat: add Handle")
@@ -422,9 +460,9 @@ func setupProvenanceFixture(t *testing.T, commitSubject string) string {
 		Ts:           150_000,
 		Kind:         "assistant",
 		Role:         sqlstore.NullStr("assistant"),
-		ToolUses: sql.NullString{Valid: true, String: `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"edit.go","file_op":"write"}]}`},
-		PayloadHash: sqlstore.NullStr(payloadHash),
-		Summary:     sqlstore.NullStr("Wrote edit.go"),
+		ToolUses:     sql.NullString{Valid: true, String: `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"edit.go","file_op":"write"}]}`},
+		PayloadHash:  sqlstore.NullStr(payloadHash),
+		Summary:      sqlstore.NullStr("Wrote edit.go"),
 	}); err != nil {
 		t.Fatal(err)
 	}

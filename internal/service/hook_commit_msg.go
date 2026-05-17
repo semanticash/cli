@@ -284,9 +284,17 @@ func countDiffAddedLines(diffBytes []byte) int {
 // formatAttributionTrailers builds one Semantica-Attribution trailer per
 // provider. Format depends on the evidence shape:
 //
-//   - Line-level evidence:        "40% claude_code (100/250 lines)"
-//   - Line-level with model:      "40% claude_code (opus 4.6) (100/250 lines)"
+//   - Single-provider headline:   "40% (100/250 lines)"
+//   - Per-provider involvement:   "claude_code 40% involvement (100/250 lines)"
+//   - With model:                 "claude_code 40% involvement (100/250 lines, opus 4.6)"
 //   - Provider-touch only:        "cursor provider-touched 5 lines"
+//
+// The per-provider percentage is an involvement metric, not exclusive
+// ownership: a line emitted by two providers credits both, so the
+// individual per-provider percentages can sum above the headline
+// AI%. The "involvement" qualifier in the rendered line makes the
+// semantics explicit so readers don't read shared-line credit as
+// double-counting.
 //
 // When r is nil and there are no diff lines either, no trailer is
 // emitted. When the commit only has provider-touch evidence, the
@@ -329,12 +337,15 @@ func formatAttributionTrailers(r *AIPercentResult, totalLines int) []string {
 		var line string
 		if p.AILines > 0 {
 			pct := float64(p.AILines) / float64(tl) * 100
+			// Shared lines credit every provider that emitted them,
+			// so per-provider percentages can sum above the headline
+			// AI%. The qualifier makes that involvement model clear.
 			if p.Model != "" {
-				line = fmt.Sprintf("Semantica-Attribution: %.0f%% %s (%s) (%d/%d lines)",
-					pct, p.Provider, p.Model, p.AILines, tl)
+				line = fmt.Sprintf("Semantica-Attribution: %s %.0f%% involvement (%d/%d lines, %s)",
+					p.Provider, pct, p.AILines, tl, p.Model)
 			} else {
-				line = fmt.Sprintf("Semantica-Attribution: %.0f%% %s (%d/%d lines)",
-					pct, p.Provider, p.AILines, tl)
+				line = fmt.Sprintf("Semantica-Attribution: %s %.0f%% involvement (%d/%d lines)",
+					p.Provider, pct, p.AILines, tl)
 			}
 			if p.ProviderOnlyLines > 0 {
 				// Same-provider mixed evidence keeps the

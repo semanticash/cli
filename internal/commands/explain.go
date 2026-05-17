@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 
 	"github.com/semanticash/cli/internal/git"
-	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/llm"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
@@ -54,7 +56,6 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 				return enc.Encode(res)
 			}
 
-			// Header
 			subject := res.CommitSubject
 			if subject == "" {
 				subject = "(no subject)"
@@ -63,18 +64,23 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(out, "%d files changed (+%d/-%d)\n", res.FilesChanged, res.LinesAdded, res.LinesDeleted)
 			_, _ = fmt.Fprintln(out)
 
-			// AI involvement
 			_, _ = fmt.Fprintln(out, "AI involvement:")
 			if res.SessionCount > 0 {
 				_, _ = fmt.Fprintf(out, "  %d sessions (%d root, %d subagents)\n", res.SessionCount, res.RootSessions, res.Subagents)
 			} else {
 				_, _ = fmt.Fprintln(out, "  No agent sessions linked to this commit")
 			}
+			if providers := distinctSessionProviders(res.Sessions); len(providers) > 0 {
+				header := "Provider"
+				if len(providers) > 1 {
+					header = "Providers"
+				}
+				_, _ = fmt.Fprintf(out, "  %s: %s\n", header, strings.Join(providers, ", "))
+			}
 			_, _ = fmt.Fprintf(out, "  %.1f%% AI-Attributed (%d AI / %d human)\n", res.AIPercentage, res.AILines, res.HumanLines)
 			_, _ = fmt.Fprintf(out, "  %d of %d files contain AI-produced lines\n", res.FilesWithAI, res.FilesChanged)
 			_, _ = fmt.Fprintln(out)
 
-			// Session breakdown
 			if len(res.Sessions) > 0 {
 				_, _ = fmt.Fprintln(out, "Session breakdown:")
 				for _, sess := range res.Sessions {
@@ -98,7 +104,6 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 				_, _ = fmt.Fprintln(out)
 			}
 
-			// Top edited files
 			if len(res.TopFiles) > 0 {
 				_, _ = fmt.Fprintln(out, "Top edited files:")
 				for _, f := range res.TopFiles {
@@ -106,12 +111,10 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 				}
 			}
 
-			// Show cached summary if available.
 			if res.Summary != nil {
 				renderSummary(out, res.Summary)
 			}
 
-			// Handle --generate: spawn background process if needed.
 			if generate && (force || res.Summary == nil) {
 				if err := spawnGenerateBackground(cmd, rootOpts.RepoPath, res); err != nil {
 					return err
@@ -281,4 +284,24 @@ func buildTranscriptEntries(res *service.ExplainResult) []llm.TranscriptEntry {
 		})
 	}
 	return entries
+}
+
+// distinctSessionProviders returns the sorted provider set represented
+// by linked sessions for a commit.
+func distinctSessionProviders(sessions []service.SessionSummary) []string {
+	if len(sessions) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		if s.Provider != "" {
+			seen[s.Provider] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }

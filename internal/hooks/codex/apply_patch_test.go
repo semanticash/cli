@@ -29,6 +29,15 @@ var (
 	fixtureTranscriptAlt = abs("tmp", "codex-fixture", "sessions", "rollout-test.jsonl")
 )
 
+// repoAbs returns the slash-form absolute path that buildPatchFileEvent
+// is expected to set in RawEvent.FilePaths for a relative path captured
+// from an apply_patch envelope, given the fixture repo root as the
+// hook's cwd. Tests use it to assert routing-layer absolute paths
+// without re-deriving the join logic at each call site.
+func repoAbs(parts ...string) string {
+	return filepath.ToSlash(filepath.Join(append([]string{fixtureRepo}, parts...)...))
+}
+
 func TestParseApplyPatchEnvelope_AddFileEmitsAllLines(t *testing.T) {
 	repoRoot := abs("tmp", "repo")
 	envelope := strings.Join([]string{

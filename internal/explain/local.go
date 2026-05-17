@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/semanticash/cli/internal/service"
@@ -42,20 +43,17 @@ func localProvenance(ctx context.Context, repoPath, commitHash string) string {
 	if err != nil {
 		return ""
 	}
-		// No linked sessions and no AI lines means local provenance
-		// has no useful record for this commit.
+	// No linked sessions and no AI lines means local provenance
+	// has no useful record for this commit.
 	if res.SessionCount == 0 && res.AILines == 0 {
 		return ""
 	}
 	return formatProvenance(res)
 }
 
-// formatProvenance renders an ExplainResult as a multi-line string
-// the agent prints verbatim under `mode: provenance`. The shape
-// mirrors the user-facing `semantica explain` terminal output so
-// the SKILL surface and terminal surface stay coherent. Pure
-// function: no I/O, no service calls. Hand-built fixtures in
-// tests pin the format.
+// formatProvenance renders the provenance text returned to skills.
+// It mirrors the user-facing explain output so both surfaces stay
+// coherent.
 func formatProvenance(res *service.ExplainResult) string {
 	var b strings.Builder
 
@@ -76,6 +74,9 @@ func formatProvenance(res *service.ExplainResult) string {
 			res.Subagents, plural(res.Subagents, "subagent"))
 	} else {
 		b.WriteString("  No agent sessions linked to this commit\n")
+	}
+	if providers := distinctProviders(res.Sessions); len(providers) > 0 {
+		fmt.Fprintf(&b, "  %s: %s\n", plural(len(providers), "Provider"), strings.Join(providers, ", "))
 	}
 	fmt.Fprintf(&b, "  %.1f%% AI-Attributed (%d AI / %d human)\n",
 		res.AIPercentage, res.AILines, res.HumanLines)
@@ -148,4 +149,24 @@ func plural(n int, word string) string {
 		return word
 	}
 	return word + "s"
+}
+
+// distinctProviders returns the sorted provider set represented by
+// linked sessions for a commit.
+func distinctProviders(sessions []service.SessionSummary) []string {
+	if len(sessions) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		if s.Provider != "" {
+			seen[s.Provider] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -57,8 +57,8 @@ select * from agent_events where session_id = ? order by ts desc limit ?;
 
 -- name: ListAgentEventsBySessionPaged :many
 -- Keyset pagination: returns the next page of events after the given cursor.
--- Use after_ts=0, after_event_id='' for the first page. Order is ascending
--- (chronological) for timeline construction.
+-- Pass after_ts=0 and an empty after_event_id to fetch the first page.
+-- Order is ascending (chronological) for timeline construction.
 select * from agent_events
 where session_id = sqlc.arg(session_id)
   and (ts > sqlc.arg(after_ts)

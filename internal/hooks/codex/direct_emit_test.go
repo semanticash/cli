@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -98,8 +99,9 @@ func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 	if ev.ToolUsesJSON == "" || !strings.Contains(ev.ToolUsesJSON, "main.go") {
 		t.Errorf("ToolUsesJSON missing file_path: %q", ev.ToolUsesJSON)
 	}
-	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "main.go" {
-		t.Errorf("FilePaths = %v, want [main.go]", ev.FilePaths)
+	wantAbs := repoAbs("main.go")
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantAbs {
+		t.Errorf("FilePaths = %v, want [%s]", ev.FilePaths, wantAbs)
 	}
 
 	// Load the stored blob and exercise the actual scorer-side
@@ -180,8 +182,9 @@ func TestBuildHookEvents_ApplyPatchDeleteEmitsFileTouchWithoutPayload(t *testing
 	if ev.PayloadHash != "" {
 		t.Errorf("Delete should not synthesize an assistant payload; got hash %q", ev.PayloadHash)
 	}
-	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != "legacy.go" {
-		t.Errorf("FilePaths = %v, want [legacy.go]", ev.FilePaths)
+	wantAbs := repoAbs("legacy.go")
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != wantAbs {
+		t.Errorf("FilePaths = %v, want [%s]", ev.FilePaths, wantAbs)
 	}
 }
 
@@ -235,11 +238,13 @@ func TestBuildHookEvents_ApplyPatchMoveSplitsIntoDeleteAndAdd(t *testing.T) {
 	}
 	// Order is determined by buildApplyPatchEvents: the source delete
 	// comes before the destination add.
-	if out[0].FilePaths[0] != "old/path.go" || out[0].PayloadHash != "" {
-		t.Errorf("first event should be delete of old/path.go without payload; got %+v", out[0])
+	wantOld := repoAbs("old", "path.go")
+	wantNew := repoAbs("new", "path.go")
+	if out[0].FilePaths[0] != wantOld || out[0].PayloadHash != "" {
+		t.Errorf("first event should be delete of %s without payload; got %+v", wantOld, out[0])
 	}
-	if out[1].FilePaths[0] != "new/path.go" || out[1].PayloadHash == "" {
-		t.Errorf("second event should be add of new/path.go with payload; got %+v", out[1])
+	if out[1].FilePaths[0] != wantNew || out[1].PayloadHash == "" {
+		t.Errorf("second event should be add of %s with payload; got %+v", wantNew, out[1])
 	}
 }
 
@@ -284,6 +289,77 @@ func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing
 	}
 }
 
+func TestBuildHookEvents_ApplyPatchFromSubdirCwdAttributesUnderRepoRoot(t *testing.T) {
+	// When Codex is launched from a subdirectory of the repo, the
+	// envelope's per-file header carries a path relative to that
+	// subdirectory (or an absolute path under it on the desktop
+	// runtime). The downstream scorer keys attribution by the
+	// repo-relative path that git would print in `git diff`, so the
+	// pipeline must produce "pkg/main.go" candidates - not "main.go" -
+	// when cwd is "/<repo>/pkg".
+	//
+	// Both attribution paths should resolve through the repo root:
+	// content-bearing edits through ExtractClaudeActions, and
+	// provider-touch events through ExtractProviderFileTouches.
+	subdirCwd := filepath.Join(fixtureRepo, "pkg")
+
+	t.Run("content-bearing Update", func(t *testing.T) {
+		envelope := strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: main.go",
+			"@@",
+			"-println(\"old\")",
+			"+println(\"new\")",
+			"*** End Patch",
+		}, "\n")
+		event := applyPatchEvent(envelope, subdirCwd)
+		bs := newMemBlobStore()
+		out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
+		if err != nil {
+			t.Fatalf("BuildHookEvents: %v", err)
+		}
+		if len(out) != 1 {
+			t.Fatalf("got %d events, want 1", len(out))
+		}
+		blob, _ := bs.Get(out[0].PayloadHash)
+		fileLines, _ := events.ExtractClaudeActions(blob, fixtureRepo)
+		if _, ok := fileLines["pkg/main.go"]; !ok {
+			t.Errorf("expected pkg/main.go key under repo root; got keys %v", keysOf(fileLines))
+		}
+	})
+
+	t.Run("deletion-only Update (provider-touch path)", func(t *testing.T) {
+		envelope := strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: shrink.go",
+			"@@",
+			" package shrink",
+			"-removed line",
+			"*** End Patch",
+		}, "\n")
+		event := applyPatchEvent(envelope, subdirCwd)
+		out, err := (&Provider{}).BuildHookEvents(context.Background(), event, newMemBlobStore())
+		if err != nil {
+			t.Fatalf("BuildHookEvents: %v", err)
+		}
+		if len(out) != 1 {
+			t.Fatalf("got %d events, want 1", len(out))
+		}
+		rows := []events.EventRow{{
+			Provider:    out[0].Provider,
+			Role:        out[0].Role,
+			ToolUses:    out[0].ToolUsesJSON,
+			PayloadHash: out[0].PayloadHash,
+			Payload:     nil,
+			Model:       out[0].Model,
+		}}
+		cands, _ := events.BuildCandidatesFromRows(rows, fixtureRepo, nil)
+		if got, ok := cands.ProviderTouchedFiles["pkg/shrink.go"]; !ok || got != "codex" {
+			t.Errorf("pkg/shrink.go missing under repo root; ProviderTouchedFiles=%v", cands.ProviderTouchedFiles)
+		}
+	})
+}
+
 func TestBuildHookEvents_ApplyPatchEmptyContentStillEmitsTouchEvent(t *testing.T) {
 	// Add/Update sections with no new content still touch a file. They
 	// should emit provider-touch evidence rather than disappear from
@@ -300,7 +376,7 @@ func TestBuildHookEvents_ApplyPatchEmptyContentStillEmitsTouchEvent(t *testing.T
 				"*** Add File: blank.go",
 				"*** End Patch",
 			}, "\n"),
-			wantPath: "blank.go",
+			wantPath: repoAbs("blank.go"),
 		},
 		{
 			name: "deletion-only Update",
@@ -312,7 +388,7 @@ func TestBuildHookEvents_ApplyPatchEmptyContentStillEmitsTouchEvent(t *testing.T
 				"-removed line",
 				"*** End Patch",
 			}, "\n"),
-			wantPath: "shrink.go",
+			wantPath: repoAbs("shrink.go"),
 		},
 	}
 	for _, tc := range cases {

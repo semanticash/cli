@@ -108,9 +108,9 @@ func TestContractEndToEnd_RewrittenBundleAcceptedByComplete(t *testing.T) {
 		t.Fatalf("DeriveUploadHash(step_edit): %v", err)
 	}
 
-	// At least one blob must have differing local/upload hashes, proving
-	// the rewrite is load-bearing. Step provenance with absolute paths
-	// will always differ due to path normalization.
+	// At least one blob must have differing local/upload hashes, so this
+	// test exercises the upload rewrite. Step provenance with absolute
+	// paths always differs due to path normalization.
 	anyDiffers := (localPromptHash != promptUploadHash) ||
 		(localStepWriteHash != stepWriteUploadHash) ||
 		(localStepEditHash != stepEditUploadHash)
