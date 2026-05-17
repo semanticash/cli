@@ -228,7 +228,8 @@ func TestEncodeUTF16LE_HasBOMAndLittleEndianOrder(t *testing.T) {
 		}
 		t.Fatalf("expected UTF-16 LE BOM 0xFF 0xFE prefix, got % x", got[:head])
 	}
-	// 'A' (U+0041) → 0x41 0x00, 'B' (U+0042) → 0x42 0x00 in little-endian.
+	// 'A' (U+0041) encodes to 0x41 0x00, and 'B' (U+0042)
+	// encodes to 0x42 0x00 in little-endian.
 	want := []byte{0xFF, 0xFE, 0x41, 0x00, 0x42, 0x00}
 	if len(got) != len(want) {
 		t.Fatalf("encoded length = %d, want %d (% x)", len(got), len(want), got)
@@ -241,8 +242,8 @@ func TestEncodeUTF16LE_HasBOMAndLittleEndianOrder(t *testing.T) {
 }
 
 func TestEncodeUTF16LE_HandlesSurrogatePair(t *testing.T) {
-	// U+1F600 (😀) is outside the BMP and encodes as a surrogate
-	// pair: high D83D, low DE00. Each goes out as two LE bytes.
+	// U+1F600 is outside the BMP and encodes as a surrogate pair:
+	// high D83D, low DE00. Each goes out as two LE bytes.
 	got := encodeUTF16LE("\U0001F600")
 	want := []byte{0xFF, 0xFE, 0x3D, 0xD8, 0x00, 0xDE}
 	if len(got) != len(want) {

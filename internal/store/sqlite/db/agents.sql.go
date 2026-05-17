@@ -564,7 +564,7 @@ type ListAgentEventsBySessionPagedParams struct {
 }
 
 // Keyset pagination: returns the next page of events after the given cursor.
-// Use after_ts=0, after_event_id=” for the first page. Order is ascending
+// Use after_ts=0, after_event_id='' for the first page. Order is ascending
 // (chronological) for timeline construction.
 func (q *Queries) ListAgentEventsBySessionPaged(ctx context.Context, arg ListAgentEventsBySessionPagedParams) ([]AgentEvent, error) {
 	rows, err := q.query(ctx, q.listAgentEventsBySessionPagedStmt, listAgentEventsBySessionPaged,
