@@ -92,11 +92,15 @@ const (
 // CommitResultInput holds the narrow inputs needed to assemble a full
 // commit attribution result from scored data and diff metadata.
 //
-// FileProviders carries the ordered list of providers that own
-// matched lines in each AI-attributed file, sorted by line count
-// descending. A file edited by Claude (150 lines) and Codex (2 lines)
-// produces FileProviders[path] = ["claude_code", "codex"]. Empty or
-// missing means human-only file or unknown.
+// FileProviders carries the ordered list of providers involved in
+// each AI-attributed file. Ordering is by matched line count when
+// line-level evidence exists (the dominant provider leads), and by
+// provider-touch evidence (or the single fallback provider) when the
+// file only has provider-touch signal. A file edited by Claude (150
+// lines) and Codex (2 lines) produces FileProviders[path] =
+// ["claude_code", "codex"]; a provider-touch-only file produces a
+// single-element slice from ProviderTouchedFiles. Empty or missing
+// means human-only file or unknown.
 type CommitResultInput struct {
 	FileScores        []FileScoreInput       // one per diff file, in diff order
 	FilesCreated      []string               // paths created (from /dev/null)
@@ -152,13 +156,18 @@ type FileAttributionOutput struct {
 	AIPercent           float64         // (exact + formatted + modified) / total * 100
 	PrimaryEvidence     EvidenceClass   // highest-quality evidence for display
 	AllEvidence         []EvidenceClass // all contributing evidence classes (for evaluation)
+	// Providers mirrors FileChangeOutput.Providers for the per-file detail row.
+	// Empty means the file is human-only or the provider is unknown.
+	Providers []string
 }
 
 // FileChangeOutput records whether a file change was performed by AI.
 type FileChangeOutput struct {
-	Path      string
-	AI        bool
-	Providers []string // providers that contributed matched lines, sorted desc by count; empty for human or unknown-provider files
+	Path string
+	AI   bool
+	// Providers lists the providers involved in this file. Ordering is by
+	// matched line count when available, then provider-touch evidence or fallback.
+	Providers []string
 }
 
 // MatchStatsInput carries match counters from scoring into reporting.

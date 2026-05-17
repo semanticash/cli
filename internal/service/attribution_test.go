@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -2032,5 +2033,55 @@ func TestSortedProvidersByCount(t *testing.T) {
 				t.Errorf("sortedProvidersByCount(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFromCommitResult_PreservesPerFileProviders verifies that per-file
+// provider lists survive the reporting-to-service conversion for both
+// FileAttribution and FileChange.
+func TestFromCommitResult_PreservesPerFileProviders(t *testing.T) {
+	cr := attrreporting.CommitResult{
+		Files: []attrreporting.FileAttributionOutput{
+			{
+				Path:         "pkg/handler.go",
+				AIExactLines: 12,
+				HumanLines:   1,
+				TotalLines:   13,
+				Providers:    []string{"claude_code", "codex"},
+			},
+			{
+				Path:         "pkg/human.go",
+				AIExactLines: 0,
+				HumanLines:   5,
+				TotalLines:   5,
+				Providers:    nil,
+			},
+		},
+		FilesCreated: []attrreporting.FileChangeOutput{
+			{Path: "pkg/handler.go", AI: true, Providers: []string{"claude_code", "codex"}},
+		},
+		FilesEdited: []attrreporting.FileChangeOutput{
+			{Path: "pkg/human.go", AI: false, Providers: nil},
+		},
+	}
+	result := fromCommitResult(cr, "abc123", "ckpt-1")
+
+	// FileAttribution is the per-file detail pushed to the API.
+	if len(result.Files) != 2 {
+		t.Fatalf("result.Files = %d, want 2", len(result.Files))
+	}
+	if got := result.Files[0].Providers; !reflect.DeepEqual(got, []string{"claude_code", "codex"}) {
+		t.Errorf("result.Files[0].Providers = %v, want [claude_code codex]", got)
+	}
+	if got := result.Files[1].Providers; len(got) != 0 {
+		t.Errorf("result.Files[1].Providers = %v, want empty (human-only file)", got)
+	}
+
+	// FileChange drives blame's [ai:p1,p2] tag.
+	if len(result.FilesCreated) != 1 {
+		t.Fatalf("result.FilesCreated = %d, want 1", len(result.FilesCreated))
+	}
+	if got := result.FilesCreated[0].Providers; !reflect.DeepEqual(got, []string{"claude_code", "codex"}) {
+		t.Errorf("result.FilesCreated[0].Providers = %v, want [claude_code codex]", got)
 	}
 }

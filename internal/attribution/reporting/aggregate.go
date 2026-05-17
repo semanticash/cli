@@ -139,6 +139,13 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		fa.PrimaryEvidence = ResolveFileEvidence(fs, touch, isCF)
 		fa.AllEvidence = CollectFileEvidence(fs, touch, isCF)
 
+		isAI := filesWithAI[fs.Path] || in.TouchedFiles[fs.Path]
+		var provs []string
+		if isAI {
+			provs = in.FileProviders[fs.Path]
+		}
+		fa.Providers = provs
+
 		r.AIExactLines += fa.AIExactLines
 		r.AIFormattedLines += fa.AIFormattedLines
 		r.AIModifiedLines += fa.AIModifiedLines
@@ -149,11 +156,6 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		r.Files = append(r.Files, fa)
 		filesSeen[fa.Path] = true
 
-		isAI := filesWithAI[fs.Path] || in.TouchedFiles[fs.Path]
-		var provs []string
-		if isAI {
-			provs = in.FileProviders[fs.Path]
-		}
 		if createdSet[fs.Path] {
 			r.FilesCreated = append(r.FilesCreated, FileChangeOutput{Path: fs.Path, AI: isAI, Providers: provs})
 		} else if fa.TotalLines > 0 {
@@ -196,6 +198,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 			Path:            f,
 			PrimaryEvidence: ResolveFileEvidence(emptyFS, touch, false),
 			AllEvidence:     CollectFileEvidence(emptyFS, touch, false),
+			Providers:       provs,
 		})
 		filesSeen[f] = true
 	}

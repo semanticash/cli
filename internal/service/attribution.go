@@ -68,14 +68,17 @@ type FileAttribution struct {
 	AIPercent           float64  `json:"ai_percentage"`              // (exact + formatted + modified) / total * 100
 	EvidenceClass       string   `json:"evidence_class,omitempty"`   // primary (strongest) evidence class for this file
 	EvidenceClasses     []string `json:"evidence_classes,omitempty"` // every contributing evidence class, strongest first
+	Providers           []string `json:"providers,omitempty"`        // providers involved in this file; mirrors FileChange.Providers
 }
 
 // FileChange records a file that was created, edited, or deleted in a commit,
 // along with whether the change was performed by an AI agent.
 type FileChange struct {
-	Path      string   `json:"path"`
-	AI        bool     `json:"ai"`
-	Providers []string `json:"providers,omitempty"` // providers that contributed matched lines, sorted desc by count
+	Path string `json:"path"`
+	AI   bool   `json:"ai"`
+	// Providers lists the providers involved in this file. Ordering is by
+	// matched line count when available, then provider-touch evidence or fallback.
+	Providers []string `json:"providers,omitempty"`
 }
 
 // AttributionDiagnostics provides transparency into why a particular
@@ -992,6 +995,7 @@ func fromCommitResult(cr attrreporting.CommitResult, commitHash, checkpointID st
 			AIPercent:           f.AIPercent,
 			EvidenceClass:       string(f.PrimaryEvidence),
 			EvidenceClasses:     evidenceClassesAsStrings(f.AllEvidence),
+			Providers:           f.Providers,
 		})
 	}
 	for _, p := range cr.ProviderDetails {
