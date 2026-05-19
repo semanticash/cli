@@ -91,6 +91,16 @@ type Options struct {
 
 	// LookPath overrides exec.LookPath. Used by tests.
 	LookPath func(string) (string, error)
+
+	// Registry is the explicit hook-provider registry used by the
+	// hook-related checks (footguns, SQL inspection, provider hook
+	// installation). Production callers must set this from
+	// providers.NewHookRegistry(); the doctor command does so. A
+	// nil Registry is treated as the empty set: hook-related
+	// checks become no-ops and report no findings, which is
+	// useful only for tests that exercise the non-hook paths
+	// without wiring providers.
+	Registry *hooks.Registry
 }
 
 // Run executes the health checks and returns a Report. Individual
@@ -381,7 +391,7 @@ func checkHooks(ctx context.Context, opts Options, pathBins []string) []Check {
 		return checks
 	}
 
-	for _, p := range hooks.ListProviders() {
+	for _, p := range listRegistryProviders(opts) {
 		if !p.AreHooksInstalled(ctx, repo) {
 			continue
 		}
@@ -679,4 +689,18 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// listRegistryProviders returns the hook providers to iterate over
+// for hook-related health checks. opts.Registry is the explicit
+// hook-provider registry the doctor command wires from
+// internal/providers.NewHookRegistry(). Callers that pass a nil
+// Registry get an empty slice and the hook-related checks become
+// no-ops; production wiring always sets Registry, so this only
+// affects tests that intentionally exercise the no-registry path.
+func listRegistryProviders(opts Options) []hooks.HookProvider {
+	if opts.Registry == nil {
+		return nil
+	}
+	return opts.Registry.List()
 }

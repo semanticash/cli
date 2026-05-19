@@ -71,7 +71,7 @@ func (codexWriter) Generate(ctx context.Context, binPath, prompt string) (string
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("close codex tempfile: %w", closeErr)
 	}
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// --skip-git-repo-check is mandatory: we deliberately run from
 	// os.TempDir() (cleanEnv strips GIT_* so the child process

@@ -13,6 +13,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/semanticash/cli/internal/version"
@@ -38,9 +39,9 @@ func handleAbort(out io.Writer, err error) (bool, error) {
 
 func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
-		force     bool
-		asJSON    bool
-		providers []string
+		force        bool
+		asJSON       bool
+		providerArgs []string
 	)
 	cmd := &cobra.Command{
 		Use:   "enable",
@@ -58,7 +59,7 @@ func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 			var selected []string
 			if force || !util.IsEnabledAt(repoPath) {
 				var err error
-				selected, err = resolveProviders(providers)
+				selected, err = resolveProviders(providerArgs)
 				if err != nil {
 					if errors.Is(err, errAborted) {
 						_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted by the user.")
@@ -70,6 +71,7 @@ func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 
 			svc, err := service.NewEnableService(service.EnableServiceOptions{
 				RepoPath: repoPath,
+				Registry: providers.NewHookRegistry(),
 			})
 			if err != nil {
 				return err
@@ -116,7 +118,7 @@ func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd.Flags().BoolVar(&force, "force", false, "Reinitialize Semantica state if already enabled")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
-	cmd.Flags().StringSliceVar(&providers, "providers", nil, "Agents to install hooks for (e.g. claude-code,cursor)")
+	cmd.Flags().StringSliceVar(&providerArgs, "providers", nil, "Agents to install hooks for (e.g. claude-code,cursor)")
 
 	return cmd
 }
@@ -133,7 +135,7 @@ func resolveProviders(explicit []string) ([]string, error) {
 		return explicit, nil
 	}
 
-	available := hooks.ListAvailableProviders()
+	available := providers.NewHookRegistry().ListAvailable()
 
 	switch len(available) {
 	case 0:

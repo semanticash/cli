@@ -29,9 +29,9 @@ const providerName = "cursor"
 // Provider implements hooks.HookProvider for Cursor IDE/CLI.
 type Provider struct{}
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Cursor hook provider for explicit registration
+// via providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Cursor" }

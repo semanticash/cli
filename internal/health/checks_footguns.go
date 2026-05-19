@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -178,7 +177,7 @@ func checkProviderFootguns(ctx context.Context, opts Options) []Check {
 	}
 
 	var checks []Check
-	for _, p := range hooks.ListProviders() {
+	for _, p := range listRegistryProviders(opts) {
 		if !p.AreHooksInstalled(ctx, opts.RepoPath) {
 			continue
 		}

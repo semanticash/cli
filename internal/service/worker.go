@@ -13,23 +13,27 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
-
-	// Register hook providers via init().
-	_ "github.com/semanticash/cli/internal/hooks/claude"
-	_ "github.com/semanticash/cli/internal/hooks/copilot"
-	_ "github.com/semanticash/cli/internal/hooks/cursor"
-	_ "github.com/semanticash/cli/internal/hooks/gemini"
-	_ "github.com/semanticash/cli/internal/hooks/kirocli"
-	_ "github.com/semanticash/cli/internal/hooks/kiroide"
 )
 
-type WorkerService struct{}
+type WorkerService struct {
+	registry *hooks.Registry
+}
 
-func NewWorkerService() *WorkerService { return &WorkerService{} }
+// NewWorkerService constructs the worker with the given hook
+// registry. The registry drives reconciliation of active capture
+// sessions; production callers must pass
+// providers.NewHookRegistry() (the worker cobra command does so).
+// A nil registry makes reconciliation a no-op: every per-session
+// provider lookup returns nil and is skipped. This is useful only
+// for tests that intentionally exercise the non-reconcile paths.
+func NewWorkerService(registry *hooks.Registry) *WorkerService {
+	return &WorkerService{registry: registry}
+}
 
 type WorkerInput struct {
 	CheckpointID string
@@ -211,7 +215,7 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 
 	// Reconciliation must run before manifest/checkpoint completion so
 	// recovered events are included in this checkpoint.
-	reconcileActiveSessions(ctx)
+	reconcileActiveSessions(ctx, s.registry)
 
 	// Process pending implementation observations. Errors are logged so the
 	// worker can continue with checkpoint enrichment.

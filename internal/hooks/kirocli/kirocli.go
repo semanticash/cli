@@ -33,9 +33,9 @@ type Provider struct {
 	sessionsDir string
 }
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Kiro CLI hook provider for explicit registration
+// via providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Kiro CLI" }

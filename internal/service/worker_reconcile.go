@@ -13,7 +13,7 @@ import (
 
 // reconcileActiveSessions flushes sessions that still have capture
 // state.
-func reconcileActiveSessions(ctx context.Context) {
+func reconcileActiveSessions(ctx context.Context, registry *hooks.Registry) {
 	states, err := hooks.LoadActiveCaptureStates()
 	if err != nil || len(states) == 0 {
 		return
@@ -50,7 +50,7 @@ func reconcileActiveSessions(ctx context.Context) {
 	}
 
 	for _, state := range states {
-		provider := hooks.GetProvider(state.Provider)
+		provider := registry.Get(state.Provider)
 		if provider == nil {
 			continue
 		}

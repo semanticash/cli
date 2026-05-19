@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/store/impldb"
 	impldbgen "github.com/semanticash/cli/internal/store/impldb/db"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -173,8 +174,10 @@ func TestWorkerRun_AttachesCommitToImplementation(t *testing.T) {
 		t.Fatalf("close impldb: %v", err)
 	}
 
-	// Run the worker.
-	svc := NewWorkerService()
+	// Run the worker with an empty registry - this test focuses on
+	// implementation-summary spawning, not session reconciliation,
+	// so no provider hooks need to be registered.
+	svc := NewWorkerService(hooks.NewRegistry())
 	if err := svc.Run(ctx, WorkerInput{
 		CheckpointID: cpID,
 		CommitHash:   commitHash,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semanticash/cli/internal/hooks"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -145,7 +146,10 @@ func TestWorkerRun_SkipsDrainAfterLivePushRetry(t *testing.T) {
 
 	// Run the worker. The live push for commitHash will fail (no server)
 	// with PushRetry, which should prevent the backfill drain from running.
-	ws := NewWorkerService()
+	// Empty hooks.NewRegistry() intentionally exercises the no-reconcile
+	// path; this test focuses on push-retry behavior, not session
+	// reconciliation.
+	ws := NewWorkerService(hooks.NewRegistry())
 	_ = ws.Run(ctx, WorkerInput{
 		CheckpointID: cpID,
 		CommitHash:   commitHash,
@@ -281,8 +285,11 @@ func TestWorkerRun_DrainsBackfillWhenNoPushRetry(t *testing.T) {
 	_ = sqlstore.Close(h)
 
 	// Run the worker WITHOUT a commit hash - no live push, so the
-	// livePushRetried flag stays false, and drain SHOULD run.
-	ws := NewWorkerService()
+	// livePushRetried flag stays false, and drain SHOULD run. Empty
+	// hooks.NewRegistry() intentionally exercises the no-reconcile
+	// path; this test focuses on drain semantics, not session
+	// reconciliation.
+	ws := NewWorkerService(hooks.NewRegistry())
 	if err := ws.Run(ctx, WorkerInput{
 		CheckpointID: cpID,
 		CommitHash:   "", // no commit -> no live push -> drain not skipped

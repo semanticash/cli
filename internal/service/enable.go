@@ -19,26 +19,30 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
-
-	// Register hook providers via init().
-	_ "github.com/semanticash/cli/internal/hooks/claude"
-	_ "github.com/semanticash/cli/internal/hooks/copilot"
-	_ "github.com/semanticash/cli/internal/hooks/cursor"
-	_ "github.com/semanticash/cli/internal/hooks/gemini"
-	_ "github.com/semanticash/cli/internal/hooks/kirocli"
-	_ "github.com/semanticash/cli/internal/hooks/kiroide"
 )
 
 type EnableServiceOptions struct {
 	RepoPath string
+	// Registry is the hook-provider registry used by Enable.
+	// Production callers must pass providers.NewHookRegistry()
+	// (the enable cobra command does so). A nil Registry collapses
+	// the production provider set to empty: validateProviderNames
+	// rejects every name as unknown, and installProviderHooks
+	// installs nothing, so `semantica enable` would succeed but
+	// silently capture nothing. This is the explicit-registry
+	// architecture's main footgun; documented as test-only so a
+	// future direct caller treats it as a programming error rather
+	// than a valid production path.
+	Registry *hooks.Registry
 }
 
 type EnableService struct {
 	repoPath string
+	registry *hooks.Registry
 }
 
 func NewEnableService(opts EnableServiceOptions) (*EnableService, error) {
-	return &EnableService{repoPath: opts.RepoPath}, nil
+	return &EnableService{repoPath: opts.RepoPath, registry: opts.Registry}, nil
 }
 
 type EnableOptions struct {
@@ -70,7 +74,7 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 	// surfaces an error without leaving a partial .semantica/ on
 	// disk, partially-installed Git hooks, or a half-built
 	// lineage.db.
-	if err := validateProviderNames(opts.Providers); err != nil {
+	if err := validateProviderNames(s.registry, opts.Providers); err != nil {
 		return nil, err
 	}
 
@@ -86,7 +90,7 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 		}
 		if !opts.Force {
 			preExisting := SnapshotProviderConfigs(repoRoot)
-			installed, hookErr := installProviderHooks(ctx, repoRoot, opts.Providers)
+			installed, hookErr := installProviderHooks(ctx, s.registry, repoRoot, opts.Providers)
 			if hookErr != nil {
 				return nil, fmt.Errorf("install provider hooks: %w", hookErr)
 			}
@@ -122,7 +126,7 @@ func (s *EnableService) Enable(ctx context.Context, opts EnableOptions) (*Enable
 	}
 
 	preExisting := SnapshotProviderConfigs(repoRoot)
-	installed, hookErr := installProviderHooks(ctx, repoRoot, opts.Providers)
+	installed, hookErr := installProviderHooks(ctx, s.registry, repoRoot, opts.Providers)
 	if hookErr != nil {
 		return nil, fmt.Errorf("install provider hooks: %w", hookErr)
 	}
@@ -388,11 +392,11 @@ func registerInBroker(ctx context.Context, repoRoot string) error {
 // would still leave the user's typo silently uncaptured. Pure
 // check; safe to call before any state mutation so a fresh
 // enable that hits a typo does not leave partial install state.
-func validateProviderNames(selectedNames []string) error {
+func validateProviderNames(registry *hooks.Registry, selectedNames []string) error {
 	if len(selectedNames) == 0 {
 		return nil
 	}
-	registered := hooks.ListProviders()
+	registered := registry.List()
 	byName := make(map[string]struct{}, len(registered))
 	for _, p := range registered {
 		byName[p.Name()] = struct{}{}
@@ -419,18 +423,18 @@ func validateProviderNames(selectedNames []string) error {
 // repo-local config and returns the providers that succeeded. Callers
 // should run validateProviderNames first if --providers is user-supplied;
 // this function calls it again defensively so direct uses cannot drift.
-func installProviderHooks(ctx context.Context, repoRoot string, selectedNames []string) ([]string, error) {
+func installProviderHooks(ctx context.Context, registry *hooks.Registry, repoRoot string, selectedNames []string) ([]string, error) {
 	if selectedNames != nil && len(selectedNames) == 0 {
 		return nil, nil
 	}
-	if err := validateProviderNames(selectedNames); err != nil {
+	if err := validateProviderNames(registry, selectedNames); err != nil {
 		return nil, err
 	}
 
 	// Use the shared bare command so provider hooks survive install-path changes.
 	binPath := hooks.ManagedCommand
 
-	registered := hooks.ListProviders()
+	registered := registry.List()
 
 	var toInstall []hooks.HookProvider
 	if len(selectedNames) > 0 {

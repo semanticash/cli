@@ -90,3 +90,128 @@ func names(ps []HookProvider) []string {
 	}
 	return out
 }
+
+// unavailableFakeProvider mirrors fakeProvider but reports
+// IsAvailable() == false. Used by TestRegistry_ListAvailable to
+// verify the filter; fakeProvider's IsAvailable() returns true
+// unconditionally and would not exercise the filter path.
+type unavailableFakeProvider struct{ fakeProvider }
+
+func (u *unavailableFakeProvider) IsAvailable() bool { return false }
+
+// TestNewRegistry_StoresAllProviders confirms the constructor
+// indexes every provider it receives, so Get hits and List length
+// match the input set. Argument order in the constructor does not
+// have to equal List output order (List enforces canonical order);
+// this test only verifies that no provider is dropped during
+// construction.
+func TestNewRegistry_StoresAllProviders(t *testing.T) {
+	r := NewRegistry(
+		&fakeProvider{name: "claude-code"},
+		&fakeProvider{name: "codex"},
+		&fakeProvider{name: "cursor"},
+	)
+	for _, name := range []string{"claude-code", "codex", "cursor"} {
+		if r.Get(name) == nil {
+			t.Errorf("Get(%q) = nil; expected provider", name)
+		}
+	}
+	if got := len(r.List()); got != 3 {
+		t.Errorf("len(List()) = %d, want 3", got)
+	}
+}
+
+// TestRegistry_Get_HitAndMiss covers the two outcomes Get is
+// documented to produce: a registered name returns the provider,
+// an unregistered name returns nil. Hook payloads can carry
+// provider names this binary wasn't built with, so the miss path
+// is part of the contract and worth pinning.
+func TestRegistry_Get_HitAndMiss(t *testing.T) {
+	r := NewRegistry(&fakeProvider{name: "claude-code"})
+	if got := r.Get("claude-code"); got == nil {
+		t.Error("Get(\"claude-code\") = nil; expected provider")
+	}
+	if got := r.Get("nonexistent"); got != nil {
+		t.Errorf("Get(\"nonexistent\") = %v; expected nil for unregistered name", got)
+	}
+}
+
+// TestRegistry_DuplicateNames_LastWins documents the map-backed
+// behavior for duplicate names: the later provider replaces the
+// earlier one.
+func TestRegistry_DuplicateNames_LastWins(t *testing.T) {
+	first := &fakeProvider{name: "claude-code"}
+	second := &fakeProvider{name: "claude-code"}
+	r := NewRegistry(first, second)
+	if got := r.Get("claude-code"); got != second {
+		t.Errorf("Get returned %v; want second registration to win", got)
+	}
+}
+
+// TestRegistry_List_CanonicalOrder confirms that List() always
+// returns providers in the canonical order defined by
+// providerOrder, regardless of NewRegistry argument order. This
+// is the property every consumer relies on: blame output,
+// `agents` listings, health-check iteration, and the doctor
+// report all assume the same ordering across calls.
+func TestRegistry_List_CanonicalOrder(t *testing.T) {
+	// Reversed input order; List output must still match
+	// providerOrder.
+	r := NewRegistry(
+		&fakeProvider{name: "kiro-ide"},
+		&fakeProvider{name: "kiro-cli"},
+		&fakeProvider{name: "gemini-cli"},
+		&fakeProvider{name: "copilot"},
+		&fakeProvider{name: "cursor"},
+		&fakeProvider{name: "codex"},
+		&fakeProvider{name: "claude-code"},
+	)
+	want := []string{
+		"claude-code", "codex", "cursor", "copilot",
+		"gemini-cli", "kiro-cli", "kiro-ide",
+	}
+	got := names(r.List())
+	for i, name := range want {
+		if i >= len(got) || got[i] != name {
+			t.Errorf("position %d: got %q, want %q (full: %v)", i, got[i], name, got)
+		}
+	}
+}
+
+// TestRegistry_ListAvailable_FiltersAndPreservesOrder covers the
+// IsAvailable() filter used by `semantica agents` and the health
+// checks. Available providers must come back in canonical order;
+// unavailable providers must not appear at all.
+func TestRegistry_ListAvailable_FiltersAndPreservesOrder(t *testing.T) {
+	r := NewRegistry(
+		&fakeProvider{name: "claude-code"},                                  // available
+		&unavailableFakeProvider{fakeProvider: fakeProvider{name: "codex"}}, // not available
+		&fakeProvider{name: "cursor"},                                       // available
+	)
+	got := names(r.ListAvailable())
+	want := []string{"claude-code", "cursor"}
+	if len(got) != len(want) {
+		t.Fatalf("ListAvailable len = %d, want %d (full: %v)", len(got), len(want), got)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Errorf("position %d: got %q, want %q", i, got[i], name)
+		}
+	}
+}
+
+// TestRegistry_NilReceiver_Safe confirms the test-only nil
+// contract: Get behaves like a miss, while List and ListAvailable
+// behave like an empty registry.
+func TestRegistry_NilReceiver_Safe(t *testing.T) {
+	var r *Registry
+	if got := r.Get("claude-code"); got != nil {
+		t.Errorf("(*Registry)(nil).Get returned %v; want nil", got)
+	}
+	if got := r.List(); got != nil {
+		t.Errorf("(*Registry)(nil).List returned %v; want nil", got)
+	}
+	if got := r.ListAvailable(); got != nil {
+		t.Errorf("(*Registry)(nil).ListAvailable returned %v; want nil", got)
+	}
+}

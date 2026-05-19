@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/semanticash/cli/internal/providers"
 )
 
 func TestEnable_InstallsProviderHooksWithManagedCommand(t *testing.T) {
@@ -16,7 +18,7 @@ func TestEnable_InstallsProviderHooksWithManagedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}

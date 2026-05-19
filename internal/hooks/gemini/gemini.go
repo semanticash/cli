@@ -24,9 +24,9 @@ const providerName = "gemini-cli"
 // Provider implements hooks.HookProvider for Gemini CLI.
 type Provider struct{}
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Gemini CLI hook provider for explicit registration
+// via providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Gemini CLI" }

@@ -173,7 +173,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	// Pure-deletion pass. Each path in FilesDeleted must also appear in
 	// r.Files so downstream consumers can inspect per-file evidence.
 	// Production scoring already emits zero-line entries for deleted
-	// paths, so this branch mainly protects callers that provide
+	// paths, so this fallback protects callers that provide
 	// FilesDeleted without matching FileScores. The appended rows keep
 	// zero line counts and resolve evidence from the same touch metadata
 	// used by scored deletions.

@@ -193,7 +193,7 @@ semantica explain HEAD --generate
 
 ### Prerequisites
 
-- At least one LLM CLI must be installed and accessible: Claude Code (`claude`), Cursor CLI (`agent`), Gemini CLI (`gemini`), or Copilot CLI (`copilot`). The first available provider in this order is used.
+- At least one LLM CLI must be installed and accessible: Claude Code (`claude`), Codex (`codex`), Cursor CLI (`agent`), Gemini CLI (`gemini`), Copilot CLI (`copilot`), or Kiro CLI (`kiro-cli`). The first available provider in this fallback order is used.
 - For auto-playbook, the provider must be authenticated and available non-interactively.
 - `semantica launcher enable` can move commit-driven background work under the OS launcher backend on supported platforms. This is optional; the default worker path still works without it.
 - The launcher is mainly useful when commits are often created through agent-driven workflows and the follow-up background work needs a more reliable execution path through launchd on macOS, systemd user units on Linux, or Task Scheduler on Windows.

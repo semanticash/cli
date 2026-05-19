@@ -8,7 +8,17 @@
 // fallback order.
 package providers
 
-import "github.com/semanticash/cli/internal/llm"
+import (
+	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/hooks/claude"
+	"github.com/semanticash/cli/internal/hooks/codex"
+	"github.com/semanticash/cli/internal/hooks/copilot"
+	"github.com/semanticash/cli/internal/hooks/cursor"
+	"github.com/semanticash/cli/internal/hooks/gemini"
+	"github.com/semanticash/cli/internal/hooks/kirocli"
+	"github.com/semanticash/cli/internal/hooks/kiroide"
+	"github.com/semanticash/cli/internal/llm"
+)
 
 // NewWriterRegistry returns the production WriterRegistry used by
 // `semantica explain --generate` and the post-commit auto-playbook
@@ -36,5 +46,28 @@ func NewWriterRegistry() *llm.WriterRegistry {
 		llm.Gemini(),
 		llm.Copilot(),
 		llm.KiroCLI(),
+	)
+}
+
+// NewHookRegistry returns the production hooks.Registry used by
+// every consumer that reads the capture-side provider set: the
+// worker, the commit-msg hook, enable/disable, capture, agents,
+// and the health checks. Argument order does not matter because the
+// registry's List() always returns providers in the canonical
+// order defined in internal/hooks.providerOrder, so all consumers
+// see the same iteration regardless of insertion sequence.
+//
+// Tests that want a custom set construct hooks.NewRegistry
+// directly with their own providers; this constructor exists for
+// the production-wiring path only.
+func NewHookRegistry() *hooks.Registry {
+	return hooks.NewRegistry(
+		claude.New(),
+		codex.New(),
+		copilot.New(),
+		cursor.New(),
+		gemini.New(),
+		kirocli.New(),
+		kiroide.New(),
 	)
 }
