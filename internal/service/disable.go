@@ -10,19 +10,22 @@ import (
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/util"
-
-	// Register hook providers via init().
-	_ "github.com/semanticash/cli/internal/hooks/claude"
-	_ "github.com/semanticash/cli/internal/hooks/copilot"
-	_ "github.com/semanticash/cli/internal/hooks/cursor"
-	_ "github.com/semanticash/cli/internal/hooks/gemini"
-	_ "github.com/semanticash/cli/internal/hooks/kiroide"
-	_ "github.com/semanticash/cli/internal/hooks/kirocli"
 )
 
-type DisableService struct{}
+type DisableService struct {
+	registry *hooks.Registry
+}
 
-func NewDisableService() *DisableService { return &DisableService{} }
+// NewDisableService constructs the disable-service with the given
+// hook registry. The registry drives which providers get their
+// repo-local hooks uninstalled during teardown. Production
+// callers must pass providers.NewHookRegistry() (the disable
+// cobra command does so); a nil registry causes the uninstall
+// loop to be a no-op, leaving repo-local hook files in place.
+// Treat nil as test-only.
+func NewDisableService(registry *hooks.Registry) *DisableService {
+	return &DisableService{registry: registry}
+}
 
 type DisableResult struct {
 	RepoRoot     string `json:"repo_root"`
@@ -67,7 +70,7 @@ func (s *DisableService) Disable(ctx context.Context, repoPath string) (*Disable
 	}
 
 	// Uninstall repo-local provider hooks for this repo.
-	for _, p := range hooks.ListProviders() {
+	for _, p := range s.registry.List() {
 		if err := p.UninstallHooks(ctx, repoRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "semantica: warning: uninstall %s hooks: %v\n", p.Name(), err)
 		}

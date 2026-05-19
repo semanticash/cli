@@ -3,6 +3,7 @@ package commands
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 )
 
@@ -52,7 +53,7 @@ func NewHookCommitMsgCmd(rootOpts *RootOptions) *cobra.Command {
 		Args:   cobra.MinimumNArgs(1),
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc := service.NewCommitMsgHookService(rootOpts.RepoPath)
+			svc := service.NewCommitMsgHookService(rootOpts.RepoPath, providers.NewHookRegistry())
 			return svc.Run(cmd.Context(), args[0])
 		},
 	}

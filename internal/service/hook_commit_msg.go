@@ -18,21 +18,23 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
-
-	// Register hook providers via init().
-	_ "github.com/semanticash/cli/internal/hooks/claude"
-	_ "github.com/semanticash/cli/internal/hooks/cursor"
-	_ "github.com/semanticash/cli/internal/hooks/gemini"
-	_ "github.com/semanticash/cli/internal/hooks/kirocli"
-	_ "github.com/semanticash/cli/internal/hooks/kiroide"
 )
 
 type CommitMsgHookService struct {
 	RepoPath string
+	// Registry is the hook-provider registry used by the
+	// flushActiveSessions sweep that runs before commit-msg
+	// attribution. Production callers must pass
+	// providers.NewHookRegistry(); the commit-msg cobra command
+	// does so. A nil Registry makes flushActiveSessions a no-op
+	// (every per-session lookup returns nil and is skipped),
+	// which is useful only for tests that intentionally exercise
+	// the non-flush paths.
+	Registry *hooks.Registry
 }
 
-func NewCommitMsgHookService(repoPath string) *CommitMsgHookService {
-	return &CommitMsgHookService{RepoPath: repoPath}
+func NewCommitMsgHookService(repoPath string, registry *hooks.Registry) *CommitMsgHookService {
+	return &CommitMsgHookService{RepoPath: repoPath, Registry: registry}
 }
 
 func (s *CommitMsgHookService) Run(ctx context.Context, msgFile string) error {
@@ -248,7 +250,7 @@ func (s *CommitMsgHookService) computeAttribution(
 		return nil
 	}
 
-	flushActiveSessions(attrCtx)
+	flushActiveSessions(attrCtx, s.Registry)
 
 	cfr, err = attributeWithCarryForward(attrCtx, h, bs, diffBytes, input, prevCPPtr, semDir)
 	if err == nil {
@@ -401,7 +403,7 @@ func formatDiagnosticsTrailer(cr *commitAttrResult) string {
 // active sessions (typically 1), not all sources on disk.
 // Uses the global blob store (same as hook capture) so that
 // WriteEventsToRepo can copy blobs into per-repo stores.
-func flushActiveSessions(ctx context.Context) {
+func flushActiveSessions(ctx context.Context, registry *hooks.Registry) {
 	states, err := hooks.LoadActiveCaptureStates()
 	if err != nil || len(states) == 0 {
 		return
@@ -427,7 +429,7 @@ func flushActiveSessions(ctx context.Context) {
 	}
 
 	for _, state := range states {
-		provider := hooks.GetProvider(state.Provider)
+		provider := registry.Get(state.Provider)
 		if provider == nil {
 			continue
 		}

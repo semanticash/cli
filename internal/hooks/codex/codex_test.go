@@ -839,14 +839,14 @@ func TestIsAvailable_RespectsCODEXHOME(t *testing.T) {
 	_ = p.IsAvailable()
 }
 
-// Registry integration (canonical order, ListProviders discovery) lives
-// in internal/hooks/registry_test.go; the codex package only needs to
-// confirm that its init() side effect is reachable.
+// Codex's New() constructor is the explicit-injection entry point
+// used by providers.NewHookRegistry(); a Registry built around it
+// must surface the provider by its canonical name. This test
+// guards the constructor and its Name() pairing for explicit
+// registry composition.
 func TestProvider_RegistersUnderCanonicalName(t *testing.T) {
-	// init() runs at package load via the codex package's own import
-	// chain; this test asserts the provider can be retrieved by name
-	// without going through the blank-import side-channel.
-	if hooks.GetProvider(providerName) == nil {
-		t.Fatalf("provider %q not registered after package init", providerName)
+	r := hooks.NewRegistry(New())
+	if r.Get(providerName) == nil {
+		t.Fatalf("Codex provider not retrievable from registry under %q", providerName)
 	}
 }

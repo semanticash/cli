@@ -30,9 +30,9 @@ const (
 // Provider implements hooks.HookProvider for OpenAI Codex.
 type Provider struct{}
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Codex hook provider for explicit registration via
+// providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return displayName }

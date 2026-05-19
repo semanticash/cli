@@ -1,9 +1,6 @@
 package hooks
 
-import (
-	"sort"
-	"sync"
-)
+import "sort"
 
 // providerOrder defines the canonical display order. Names must
 // match the provider Name() exactly; unknown providers fall to
@@ -18,50 +15,76 @@ var providerOrder = map[string]int{
 	"kiro-ide":    6,
 }
 
-var (
-	registryMu sync.RWMutex
-	providers  = make(map[string]HookProvider)
-)
-
-// RegisterProvider registers a hook provider by name.
-// Called by provider packages in their init() functions.
-func RegisterProvider(p HookProvider) {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	providers[p.Name()] = p
+// Registry is the explicit-injection container for hook providers.
+// Production wiring lives in internal/providers/composition.go,
+// which builds a Registry over the full canonical set via
+// NewHookRegistry. Tests construct their own Registry inline with
+// NewRegistry over just the providers they need. There is no
+// package-level default registry; callers always pass an explicit
+// instance.
+//
+// Get and List are safe for concurrent reads after construction;
+// the constructor copies its arguments into an internal map so
+// callers can mutate the input slice without affecting the
+// registry.
+type Registry struct {
+	providers map[string]HookProvider
 }
 
-// GetProvider returns the registered provider for the given name, or nil.
-func GetProvider(name string) HookProvider {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	return providers[name]
-}
-
-// ListProviders returns all registered providers in canonical order.
-func ListProviders() []HookProvider {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	result := make([]HookProvider, 0, len(providers))
+// NewRegistry constructs a Registry over the given hook providers.
+// Order of List() output is canonical (see providerOrder), not the
+// argument order, so anchors that want deterministic iteration get
+// the same order every consumer sees.
+func NewRegistry(providers ...HookProvider) *Registry {
+	r := &Registry{providers: make(map[string]HookProvider, len(providers))}
 	for _, p := range providers {
-		result = append(result, p)
+		r.providers[p.Name()] = p
 	}
-	sortProviders(result)
-	return result
+	return r
 }
 
-// ListAvailableProviders returns registered providers whose agent
-// is detected on the current machine, in canonical order.
-func ListAvailableProviders() []HookProvider {
-	all := ListProviders()
-	var available []HookProvider
+// Get returns the registered provider for the given name, or nil
+// when nothing is registered under that name. Callers must handle
+// the nil case (a hook payload may report a provider this binary
+// wasn't built with, or a future provider that's unknown today).
+func (r *Registry) Get(name string) HookProvider {
+	if r == nil {
+		return nil
+	}
+	return r.providers[name]
+}
+
+// List returns the registered providers in canonical order.
+func (r *Registry) List() []HookProvider {
+	if r == nil {
+		return nil
+	}
+	out := make([]HookProvider, 0, len(r.providers))
+	for _, p := range r.providers {
+		out = append(out, p)
+	}
+	sortProviders(out)
+	return out
+}
+
+// ListAvailable returns the subset of registered providers whose
+// IsAvailable() reports true on the current host, in canonical
+// order. Used by health checks and `semantica agents` to filter
+// the full set to what's actually installed.
+func (r *Registry) ListAvailable() []HookProvider {
+	if r == nil {
+		return nil
+	}
+	all := r.List()
+	out := make([]HookProvider, 0, len(all))
 	for _, p := range all {
 		if p.IsAvailable() {
-			available = append(available, p)
+			out = append(out, p)
 		}
 	}
-	return available
+	return out
 }
+
 
 func sortProviders(ps []HookProvider) {
 	sort.Slice(ps, func(i, j int) bool {

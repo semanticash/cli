@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.5.1] - 2026-05-20
+
+### Added
+
+- Added Codex as a playbook-generation writer. `semantica explain --generate`, the post-commit auto-playbook flow, and the commit/PR/implementation suggest commands now invoke `codex exec --skip-git-repo-check --output-last-message` when Codex is installed. Codex-only machines that previously failed with "no AI CLI found" now produce playbooks attributed to `codex`. The full fallback order is Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, Kiro CLI.
+
+### Fixed
+
+### Changed
+
+- Replaced implicit `init()`-based provider registration with explicit registries for hook providers and writer LLMs. Production provider membership is centralized in `internal/providers/composition.go` (`NewHookRegistry`, `NewWriterRegistry`) and threaded through consumers via constructor arguments.
+
 ## [0.5.0] - 2026-05-17
 
 ### Added

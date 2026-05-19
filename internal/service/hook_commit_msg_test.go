@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -284,7 +285,10 @@ func TestRun_FallbackDiagnosticsTrailer(t *testing.T) {
 		t.Fatalf("write msg: %v", err)
 	}
 
-	svc := NewCommitMsgHookService(dir)
+	// Empty hooks.NewRegistry() intentionally exercises the
+	// no-flushActiveSessions path; this test focuses on trailer
+	// formatting, not on per-session capture reconciliation.
+	svc := NewCommitMsgHookService(dir, hooks.NewRegistry())
 	if err := svc.Run(ctx, msgFile); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -510,7 +514,9 @@ func TestRun_CarryForwardTrailer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewCommitMsgHookService(dir)
+	// Empty hooks.NewRegistry() intentionally bypasses
+	// flushActiveSessions; this test focuses on trailer rendering.
+	svc := NewCommitMsgHookService(dir, hooks.NewRegistry())
 	if err := svc.Run(ctx, msgFile); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

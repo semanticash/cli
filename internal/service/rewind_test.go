@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/semanticash/cli/internal/providers"
 )
 
 // enableAndCheckpoint enables Semantica on a git repo and creates a checkpoint,
@@ -15,7 +17,7 @@ func enableAndCheckpoint(t *testing.T, dir string) string {
 	t.Helper()
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}

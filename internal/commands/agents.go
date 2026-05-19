@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
@@ -35,7 +36,7 @@ func NewAgentsCmd(rootOpts *RootOptions) *cobra.Command {
 				return err
 			}
 
-			allProviders := hooks.ListProviders()
+			allProviders := providers.NewHookRegistry().List()
 			out := cmd.OutOrStdout()
 
 			// JSON mode: just print status.

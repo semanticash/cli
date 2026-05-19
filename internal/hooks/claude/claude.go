@@ -27,9 +27,9 @@ const providerName = "claude-code"
 // Provider implements hooks.HookProvider for Claude Code.
 type Provider struct{}
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Claude Code hook provider for explicit registry
+// composition via providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Claude Code" }

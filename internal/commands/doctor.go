@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/health"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,7 @@ func NewDoctorCmd(rootOpts *RootOptions) *cobra.Command {
 			repoPath := resolveDoctorRepo(rootOpts.RepoPath)
 			report, err := health.Run(cmd.Context(), health.Options{
 				RepoPath: repoPath,
+				Registry: providers.NewHookRegistry(),
 			})
 			if err != nil {
 				return err

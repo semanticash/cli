@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/launcher"
 	"github.com/semanticash/cli/internal/util"
 )
@@ -39,9 +40,14 @@ type DrainStats struct {
 // Progress returns the number of markers removed from the queue.
 func (s DrainStats) Progress() int { return s.Processed + s.Rejected }
 
-// DefaultMarkerRunner returns the production marker runner.
-func DefaultMarkerRunner() MarkerRunner {
-	return NewWorkerService().Run
+// DefaultMarkerRunner returns the production marker runner backed
+// by the given hook registry. Production callers must pass
+// providers.NewHookRegistry() (the worker cobra command does so).
+// A nil registry produces a runner that skips reconciliation
+// silently. This is useful only for tests that exercise the drain
+// loop without provider wiring.
+func DefaultMarkerRunner(registry *hooks.Registry) MarkerRunner {
+	return NewWorkerService(registry).Run
 }
 
 // DrainOnce processes the current marker set once. Broker-level

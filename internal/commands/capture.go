@@ -10,17 +10,9 @@ import (
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/store/blobs"
 	"github.com/semanticash/cli/internal/util"
-
-	// Register hook providers via init().
-	_ "github.com/semanticash/cli/internal/hooks/claude"
-	_ "github.com/semanticash/cli/internal/hooks/codex"
-	_ "github.com/semanticash/cli/internal/hooks/copilot"
-	_ "github.com/semanticash/cli/internal/hooks/cursor"
-	_ "github.com/semanticash/cli/internal/hooks/gemini"
-	_ "github.com/semanticash/cli/internal/hooks/kirocli"
-	_ "github.com/semanticash/cli/internal/hooks/kiroide"
 )
 
 // NewCaptureCmd creates the `semantica capture <provider> <event-name>` command.
@@ -58,8 +50,10 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 
-			// Look up provider.
-			provider := hooks.GetProvider(providerName)
+			// Look up provider from the composition-root registry.
+			// Cheap to construct each invocation; the registry holds
+			// stateless provider values.
+			provider := providers.NewHookRegistry().Get(providerName)
 			if provider == nil {
 				logCaptureError(providerName, hookName, "unknown provider: %s", providerName)
 				return nil

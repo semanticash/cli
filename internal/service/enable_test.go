@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -64,7 +65,7 @@ func TestEnable_CreatesSemanticaDir(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestEnable_InstallsGitHooks(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestEnable_UpdatesGitignore(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestEnable_RejectsDoubleEnable(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestEnable_ForceReenables(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +236,7 @@ func TestEnable_FailsOutsideGitRepo(t *testing.T) {
 	dir := t.TempDir() // not a git repo
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +260,7 @@ func TestEnable_PreservesExistingGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func TestEnable_GitignoreIdempotent(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +322,7 @@ func TestDisableReEnable_PreservesSettings(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Enable Semantica.
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +348,7 @@ func TestDisableReEnable_PreservesSettings(t *testing.T) {
 	}
 
 	// 3. Disable.
-	disableSvc := NewDisableService()
+	disableSvc := NewDisableService(providers.NewHookRegistry())
 	if _, err := disableSvc.Disable(ctx, dir); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +411,7 @@ func TestEnable_UnknownProviderName_ErrorsLoudly(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +446,7 @@ func TestEnable_UnknownProviderName_NoPartialInstall(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatal(err)
 	}

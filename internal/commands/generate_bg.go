@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/semanticash/cli/internal/llm"
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
@@ -42,7 +42,8 @@ func NewGeneratePlaybookCmd() *cobra.Command {
 				return fmt.Errorf("parse input: %w", err)
 			}
 
-			gen, err := llm.Generate(cmd.Context(), in.Prompt)
+			writers := providers.NewWriterRegistry()
+			gen, err := writers.Generate(cmd.Context(), in.Prompt)
 			if err != nil {
 				return err
 			}

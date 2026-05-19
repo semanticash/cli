@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/semanticash/cli/internal/providers"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
@@ -14,7 +15,7 @@ func TestSessionServiceGetSession_CountsOnlyActualToolCalls(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatalf("new enable service: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestSessionServiceGetSession_DedupesStreamedAssistantTokensByProviderEventI
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatalf("new enable service: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestSessionServiceListSessions_DedupesStreamedAssistantTokensByProviderEven
 	dir := initGitRepo(t)
 	ctx := context.Background()
 
-	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	enableSvc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatalf("new enable service: %v", err)
 	}

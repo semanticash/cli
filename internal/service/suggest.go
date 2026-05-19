@@ -16,9 +16,20 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-type SuggestService struct{}
+type SuggestService struct {
+	// writers is the writer-LLM registry used to generate the
+	// suggested commit message. Injected at construction time so
+	// tests can substitute a stub registry. Production wiring
+	// comes from internal/providers.NewWriterRegistry().
+	writers *llm.WriterRegistry
+}
 
-func NewSuggestService() *SuggestService { return &SuggestService{} }
+// NewSuggestService constructs the commit-message suggestion
+// service. The writer registry is a required dependency; production
+// callers pass providers.NewWriterRegistry().
+func NewSuggestService(writers *llm.WriterRegistry) *SuggestService {
+	return &SuggestService{writers: writers}
+}
 
 type SuggestInput struct {
 	RepoPath string
@@ -56,7 +67,7 @@ func (s *SuggestService) Suggest(ctx context.Context, in SuggestInput) (*Suggest
 
 	prompt := llm.BuildCommitMsgPrompt(transcript, string(diffBytes))
 
-	res, err := llm.GenerateText(ctx, prompt)
+	res, err := s.writers.GenerateText(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}

@@ -60,7 +60,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Direct `postToolUse` hooks own parent Kiro CLI file and shell capture. Parent SQLite transcript replay is disabled to avoid duplicate events with mismatched provider tool IDs.
 - AgentCrew child sessions are replayed from Kiro JSONL files only when discovery has a single parent-shaped session anchor in the same cwd and prompt-to-stop window. Overlapping same-repo Kiro sessions or missing parent metadata cause child replay to fail closed.
 - If `userPromptSubmit` is missed for a turn, later tool hooks may not have capture state to attach to for that turn.
-- Playbook generation and other LLM-backed features try Claude Code, Cursor, Gemini CLI, and Copilot before Kiro CLI. Kiro CLI generation uses headless mode (`kiro-cli chat --no-interactive`) and requires Kiro CLI to have a valid cached login or `KIRO_API_KEY`.
+- Playbook generation and other LLM-backed features try Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot CLI, and Kiro CLI in that order. Kiro CLI generation uses headless mode (`kiro-cli chat --no-interactive`) and requires Kiro CLI to have a valid cached login or `KIRO_API_KEY`.
 
 ## Hosted reporting
 

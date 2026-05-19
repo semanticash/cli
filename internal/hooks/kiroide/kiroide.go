@@ -30,9 +30,11 @@ type Provider struct {
 	resolveSession func(workspacePath string) (sessionID, historyPath string, err error)
 }
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the Kiro IDE hook provider for explicit registration
+// via providers.NewHookRegistry(). resolveSession defaults to the
+// production lookup; tests construct *Provider directly with their
+// own resolver.
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "Kiro IDE" }

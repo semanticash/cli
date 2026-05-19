@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semanticash/cli/internal/providers"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
@@ -17,7 +18,7 @@ import (
 // enableSemantica is a helper that enables semantica in the given repo dir.
 func enableSemantica(t *testing.T, ctx context.Context, dir string) *EnableResult {
 	t.Helper()
-	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir})
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
 	if err != nil {
 		t.Fatalf("NewEnableService: %v", err)
 	}

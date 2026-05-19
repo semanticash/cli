@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +18,7 @@ func NewDisableCmd(rootOpts *RootOptions) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			svc := service.NewDisableService()
+			svc := service.NewDisableService(providers.NewHookRegistry())
 			res, err := svc.Disable(ctx, rootOpts.RepoPath)
 			if err != nil {
 				return err

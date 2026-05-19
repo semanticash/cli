@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 )
 
@@ -32,7 +33,7 @@ func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
 		Short:  "Complete a pending checkpoint (blobs, manifest, agent ingest)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc := service.NewWorkerService()
+			svc := service.NewWorkerService(providers.NewHookRegistry())
 			return svc.Run(cmd.Context(), service.WorkerInput{
 				CheckpointID: checkpointID,
 				CommitHash:   commitHash,
@@ -98,7 +99,7 @@ func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 			return service.DrainUntilStable(
 				cmd.Context(),
 				linger,
-				service.DefaultMarkerRunner(),
+				service.DefaultMarkerRunner(providers.NewHookRegistry()),
 			)
 		},
 	}

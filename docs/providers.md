@@ -200,7 +200,7 @@ AgentCrew subagent calls are captured at the parent boundary and, when discovery
 
 ### LLM-backed features
 
-Semantica can use Kiro CLI for playbook generation and other LLM-backed text features when `kiro-cli` is installed. The fallback chain tries Claude Code, Cursor, Gemini CLI, and Copilot first, then runs:
+Semantica can use Kiro CLI for playbook generation and other LLM-backed text features when `kiro-cli` is installed. The fallback chain tries Claude Code, Codex, Cursor, Gemini CLI, and GitHub Copilot CLI first, then runs:
 
 ```bash
 kiro-cli chat --no-interactive
@@ -330,12 +330,12 @@ commits will show 0% AI attribution.
 
 ---
 
-Provider integrations live in `internal/hooks/<provider>/`. Each provider implements the `HookProvider` interface: detection, hook install/uninstall, event parsing, transcript reading.
+Provider integrations live in `internal/hooks/<provider>/`. Each provider implements the `HookProvider` interface: detection, hook install/uninstall, event parsing, transcript reading. Provider wiring is explicit and centralized in `internal/providers/composition.go`; provider packages do not self-register through package initialization.
 
 To add a new provider:
 
-1. Create a package under `internal/hooks/<provider>/`
-2. Implement `HookProvider` (see `internal/hooks/provider.go` for the interface)
-3. Call `hooks.RegisterProvider()` in an `init()` function
-4. Import the package in `internal/service/worker.go` (blank import for `init()` registration)
-5. Add tests and documentation for the new provider
+1. Create a package under `internal/hooks/<provider>/`.
+2. Implement `HookProvider` (see `internal/hooks/provider.go` for the interface).
+3. Export a `New() *Provider` constructor that returns a configured provider value. This is the entry point the composition root calls; no `init()` registration is involved.
+4. Add the provider to `internal/providers/composition.go`'s `NewHookRegistry()` so every command, service, and health check picks it up. Insertion order is irrelevant for runtime behavior because `Registry.List()` returns providers in the canonical order defined in `internal/hooks/registry.go`.
+5. Add tests and documentation for the new provider.

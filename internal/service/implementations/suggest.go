@@ -31,17 +31,19 @@ type SuggestBatchResult struct {
 	Analyzed  int                   `json:"analyzed,omitempty"`  // how many were sent to LLM
 }
 
-// GenerateTextFunc abstracts the LLM call for testing.
-type GenerateTextFunc func(ctx context.Context, prompt string) (*llm.GenerateTextResult, error)
-
 // SuggestService generates LLM-powered suggestions for implementations.
 type SuggestService struct {
-	GenerateText GenerateTextFunc
+	// writers is the writer-LLM registry used to generate titles
+	// and merge suggestions. Injected at construction time so
+	// tests can substitute a stub registry; production callers
+	// pass providers.NewWriterRegistry().
+	writers *llm.WriterRegistry
 }
 
-// NewSuggestService creates a SuggestService using the real LLM pipeline.
-func NewSuggestService() *SuggestService {
-	return &SuggestService{GenerateText: llm.GenerateText}
+// NewSuggestService creates a SuggestService backed by the given
+// writer registry. The registry is a required dependency.
+func NewSuggestService(writers *llm.WriterRegistry) *SuggestService {
+	return &SuggestService{writers: writers}
 }
 
 // SuggestForImplementation generates a title and summary for a single implementation.
@@ -52,7 +54,7 @@ func (s *SuggestService) SuggestForImplementation(ctx context.Context, implID st
 	}
 
 	prompt := buildSinglePrompt(detail)
-	res, err := s.GenerateText(ctx, prompt)
+	res, err := s.writers.GenerateText(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -108,7 +110,7 @@ func (s *SuggestService) SuggestBatch(ctx context.Context) (*SuggestBatchResult,
 	summaries := buildBatchSummaries(ctx, h, rows)
 	prompt := llm.BuildSuggestMergeCandidatesPrompt(summaries)
 
-	res, err := s.GenerateText(ctx, prompt)
+	res, err := s.writers.GenerateText(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

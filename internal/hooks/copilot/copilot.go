@@ -26,9 +26,9 @@ const providerName = "copilot"
 // Provider implements hooks.HookProvider for GitHub Copilot CLI.
 type Provider struct{}
 
-func init() {
-	hooks.RegisterProvider(&Provider{})
-}
+// New returns the GitHub Copilot hook provider for explicit
+// registration via providers.NewHookRegistry().
+func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return "GitHub Copilot" }

@@ -199,7 +199,7 @@ func silentDropChecks(ctx context.Context, opts Options, eventsByProvider map[st
 	}
 
 	var checks []Check
-	for _, p := range hooks.ListProviders() {
+	for _, p := range listRegistryProviders(opts) {
 		name := p.Name()
 		if !p.AreHooksInstalled(ctx, opts.RepoPath) {
 			continue
