@@ -26,9 +26,9 @@ const manifestWindow = 7 * 24 * time.Hour
 const failedManifestReasonsToShow = 3
 
 // checkRecentEvents reports per-provider event activity in the last
-// 24 hours. It also flags a "hooks installed but no events landed"
-// regression - the silent capture-drop signal - when capture state
-// shows the provider was active in the window.
+// 24 hours. It also flags a likely capture drop when hooks are
+// installed, capture state shows the provider was active in the
+// window, and no events landed.
 func checkRecentEvents(ctx context.Context, opts Options) []Check {
 	if opts.RepoPath == "" {
 		return []Check{{
@@ -122,8 +122,8 @@ func activeProvidersForRepo(repoPath string, sinceUnixMilli int64) map[string]bo
 
 	result := map[string]bool{}
 	for _, s := range states {
-			// State files without a reliable in-window timestamp are
-			// ignored so stale capture state does not look active.
+		// State files without a reliable in-window timestamp are
+		// ignored so stale capture state does not look active.
 		if s.Timestamp <= 0 || s.Timestamp < sinceUnixMilli {
 			continue
 		}
@@ -192,7 +192,8 @@ func summariseEvents(eventsByProvider, mostRecentByProvider map[string]int64) Ch
 
 // silentDropChecks returns a warning for each provider that has hooks
 // installed and shows capture-state activity in the window but
-// produced zero events. That combination is the regression signal.
+// produced zero events. That combination indicates a likely capture
+// drop.
 func silentDropChecks(ctx context.Context, opts Options, eventsByProvider map[string]int64, stateActiveByProvider map[string]bool) []Check {
 	if opts.RepoPath == "" {
 		return nil
@@ -345,22 +346,28 @@ func assembleManifestChecks(statusByName map[string]int64, failedRows []sqldb.Li
 	pending := statusByName["pending"] + statusByName["packaged"] + statusByName["uploading"]
 
 	var checks []Check
-	summary := fmt.Sprintf("last 7d - %d uploaded, %d failed, %d pending", uploaded, failed, pending)
+	summary := fmt.Sprintf("last 7d - %d uploaded, %d failed, %d pending locally", uploaded, failed, pending)
+	remediation := ""
+	if pending > 0 {
+		remediation = "pending turns upload on the next commit checkpoint, or when confirmed from `semantica connect`"
+	}
 	if failed == 0 {
 		checks = append(checks, Check{
-			Category: "manifests",
-			ID:       "summary",
-			Status:   StatusOK,
-			Message:  summary,
+			Category:    "manifests",
+			ID:          "summary",
+			Status:      StatusOK,
+			Message:     summary,
+			Remediation: remediation,
 		})
 		return checks
 	}
 
 	checks = append(checks, Check{
-		Category: "manifests",
-		ID:       "summary",
-		Status:   StatusWarn,
-		Message:  summary,
+		Category:    "manifests",
+		ID:          "summary",
+		Status:      StatusWarn,
+		Message:     summary,
+		Remediation: remediation,
 	})
 
 	groups := groupFailedReasons(failedRows)

@@ -163,6 +163,37 @@ func (q *Queries) GetLatestCheckpointForRepo(ctx context.Context, repositoryID s
 	return i, err
 }
 
+const getMostRecentCommitLinkedCheckpoint = `-- name: GetMostRecentCommitLinkedCheckpoint :one
+select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model from checkpoints c
+    join commit_links cl on cl.checkpoint_id = c.checkpoint_id
+where c.repository_id = ?
+  and c.status = 'complete'
+order by c.created_at desc
+limit 1
+`
+
+// Returns the most recent completed checkpoint that has an associated
+// commit link for the repository.
+func (q *Queries) GetMostRecentCommitLinkedCheckpoint(ctx context.Context, repositoryID string) (Checkpoint, error) {
+	row := q.queryRow(ctx, q.getMostRecentCommitLinkedCheckpointStmt, getMostRecentCommitLinkedCheckpoint, repositoryID)
+	var i Checkpoint
+	err := row.Scan(
+		&i.CheckpointID,
+		&i.RepositoryID,
+		&i.CreatedAt,
+		&i.Kind,
+		&i.Trigger,
+		&i.Message,
+		&i.ManifestHash,
+		&i.SizeBytes,
+		&i.Status,
+		&i.CompletedAt,
+		&i.SummaryJson,
+		&i.SummaryModel,
+	)
+	return i, err
+}
+
 const getPreviousCommitLinkedCheckpoint = `-- name: GetPreviousCommitLinkedCheckpoint :one
 select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,25 +28,26 @@ type StatusInput struct {
 }
 
 type StatusResult struct {
-	Enabled            bool                `json:"enabled"`
-	RepoRoot           string              `json:"repo_root"`
-	Connected          bool                `json:"connected"`
-	HasRemote          bool                `json:"has_remote"`
-	Endpoint           string              `json:"endpoint"`
-	RepoProvider       string              `json:"repo_provider"`
-	WorkspaceTierTitle string              `json:"workspace_tier_title,omitempty"`
-	UpdateAvailable    bool                `json:"update_available,omitempty"`
-	LatestVersion      string              `json:"latest_version,omitempty"`
-	UpdateDownloadURL  string              `json:"update_download_url,omitempty"`
-	AutoPlaybook       bool                `json:"auto_playbook"`
-	AutoImplSummary    bool                `json:"auto_implementation_summary"`
-	GitTrailers        bool                `json:"git_trailers"`
-	LastCheckpoint     *LastCheckpointInfo `json:"last_checkpoint,omitempty"`
-	RecentSessions     []RecentSessionInfo `json:"recent_sessions,omitempty"`
-	AITrend            []AITrendPoint      `json:"ai_trend,omitempty"`
-	PlaybookCount      int64               `json:"playbook_count"`
-	Providers          []string            `json:"providers"`
-	Broker             *BrokerStatusInfo   `json:"broker,omitempty"`
+	Enabled            bool                   `json:"enabled"`
+	RepoRoot           string                 `json:"repo_root"`
+	Connected          bool                   `json:"connected"`
+	HasRemote          bool                   `json:"has_remote"`
+	Endpoint           string                 `json:"endpoint"`
+	RepoProvider       string                 `json:"repo_provider"`
+	WorkspaceTierTitle string                 `json:"workspace_tier_title,omitempty"`
+	UpdateAvailable    bool                   `json:"update_available,omitempty"`
+	LatestVersion      string                 `json:"latest_version,omitempty"`
+	UpdateDownloadURL  string                 `json:"update_download_url,omitempty"`
+	AutoPlaybook       bool                   `json:"auto_playbook"`
+	AutoImplSummary    bool                   `json:"auto_implementation_summary"`
+	GitTrailers        bool                   `json:"git_trailers"`
+	LastCheckpoint     *LastCheckpointInfo    `json:"last_checkpoint,omitempty"`
+	RecentSessions     []RecentSessionInfo    `json:"recent_sessions,omitempty"`
+	AITrend            []AITrendPoint         `json:"ai_trend,omitempty"`
+	PlaybookCount      int64                  `json:"playbook_count"`
+	Providers          []string               `json:"providers"`
+	PendingProvenance  *PendingProvenanceInfo `json:"pending_provenance,omitempty"`
+	Broker             *BrokerStatusInfo      `json:"broker,omitempty"`
 }
 
 type BrokerStatusInfo struct {
@@ -190,6 +192,12 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 	// Playbook count.
 	if count, err := h.Queries.CountCheckpointsWithSummary(ctx, repoID); err == nil {
 		result.PlaybookCount = count
+	}
+
+	if pending, err := pendingProvenanceForRepo(ctx, h, repoID); err == nil {
+		result.PendingProvenance = pending
+	} else {
+		slog.Warn("status: pending provenance query failed", "repo_id", repoID, "err", err)
 	}
 
 	// Providers: merge DB-observed providers with settings (installed hooks).

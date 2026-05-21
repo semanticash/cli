@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.5.2] - 2026-05-22
+
+### Added
+
+### Fixed
+
+- Re-running `semantica connect` on an already connected repo no longer starts a provenance sync silently. Interactive terminals now show the pending local turn count and ask before syncing; non-interactive callers get an explanatory message and no upload side effect.
+
+### Changed
+
+- `semantica status` and `semantica doctor` now explain pending local provenance turns and when they upload, so post-commit sync state is visible without re-running `connect`.
+
 ## [0.5.1] - 2026-05-20
 
 ### Added

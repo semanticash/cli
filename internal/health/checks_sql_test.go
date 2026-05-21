@@ -104,6 +104,12 @@ func TestAssembleManifestChecks_NoFailures_OK(t *testing.T) {
 	if !strings.Contains(checks[0].Message, "0 failed") {
 		t.Errorf("expected 0 failed in message, got %q", checks[0].Message)
 	}
+	if !strings.Contains(checks[0].Message, "1 pending locally") {
+		t.Errorf("expected pending count in message, got %q", checks[0].Message)
+	}
+	if !strings.Contains(checks[0].Remediation, "semantica connect") {
+		t.Errorf("expected pending remediation, got %q", checks[0].Remediation)
+	}
 }
 
 func TestAssembleManifestChecks_FailedSurfacedAsWarn(t *testing.T) {
@@ -306,8 +312,8 @@ func TestActiveProvidersForRepo_FiltersByCwdAndWindow(t *testing.T) {
 	writeState(t, baseDir, "stale-repoA", "cursor", repoA, stale)
 	writeState(t, baseDir, "fresh-repoB", "copilot", repoB, now)
 	writeState(t, baseDir, "no-cwd", "gemini", "", now)
-		// A state file with Timestamp == 0 must not count as
-		// fresh activity, even when its CWD is inside this repo.
+	// A state file with Timestamp == 0 must not count as
+	// fresh activity, even when its CWD is inside this repo.
 	writeState(t, baseDir, "zero-ts-repoA", "kiro-cli", repoA, 0)
 
 	got := activeProvidersForRepo(repoA, since)
