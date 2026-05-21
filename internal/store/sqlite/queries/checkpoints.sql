@@ -73,6 +73,16 @@ where c.repository_id = ?
 order by c.created_at desc
 limit 1;
 
+-- name: GetMostRecentCommitLinkedCheckpoint :one
+-- Returns the most recent completed checkpoint that has an associated
+-- commit link for the repository.
+select c.* from checkpoints c
+    join commit_links cl on cl.checkpoint_id = c.checkpoint_id
+where c.repository_id = ?
+  and c.status = 'complete'
+order by c.created_at desc
+limit 1;
+
 -- name: ResolveCheckpointByPrefix :many
 select checkpoint_id from checkpoints
 where checkpoint_id like ? and repository_id = ?

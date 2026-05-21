@@ -3,12 +3,14 @@ package commands
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"charm.land/huh/v2"
 	hspinner "charm.land/huh/v2/spinner"
 	"github.com/semanticash/cli/internal/auth"
 	"github.com/semanticash/cli/internal/git"
@@ -79,6 +81,9 @@ func NewDisconnectCmd(rootOpts *RootOptions) *cobra.Command {
 
 func runConnect(cmd *cobra.Command, rootOpts *RootOptions) error {
 	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := cmd.OutOrStdout()
 
 	repo, err := git.OpenRepo(rootOpts.RepoPath)
@@ -114,6 +119,9 @@ func runConnect(cmd *cobra.Command, rootOpts *RootOptions) error {
 
 func handleConnectOutcome(cmd *cobra.Command, rootOpts *RootOptions, semDir string, resp *auth.ConnectRepoResponse) error {
 	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := cmd.OutOrStdout()
 
 	switch resp.Outcome {
@@ -132,79 +140,13 @@ func handleConnectOutcome(cmd *cobra.Command, rootOpts *RootOptions, semDir stri
 		if resp.Outcome == "connected" {
 			_, _ = fmt.Fprintln(out, "Connected! Attribution will sync to the dashboard on each commit.")
 		} else if wasConnected {
-			_, _ = fmt.Fprintln(out, "Already connected.")
+			return handleAlreadyConnectedProvenance(cmd, semDir)
 		} else {
 			_, _ = fmt.Fprintln(out, "Connected. This repo was already registered with Semantica, and local sync is now enabled.")
 		}
 
-		// Sync a small initial batch of packaged provenance. The rest drains on later checkpoints.
-		const connectBackfillBatchSize = 20
 		repoRoot := filepath.Dir(semDir)
-		endpoint := auth.EffectiveEndpoint()
-		tok, tokErr := auth.AccessToken(ctx)
-		if tokErr != nil || tok == "" {
-			_, _ = fmt.Fprintln(out, "Note: could not sync provenance history (auth unavailable). It will sync on future checkpoints.")
-		} else {
-			var results []provenance.UploadResult
-			var syncErr error
-
-			sp := hspinner.New().
-				WithTheme(commandSpinnerTheme()).
-				Title("Syncing provenance...")
-
-			syncOpts := &provenance.UploadOptions{
-				OnProgress: func(current, total int, r provenance.UploadResult) {
-					sp.Title(fmt.Sprintf("Syncing provenance: %d/%d", current, total))
-				},
-			}
-
-			sp.Action(func() {
-				results, syncErr = provenance.SyncAndUpload(ctx, repoRoot, endpoint, tok, 0, connectBackfillBatchSize, syncOpts)
-				if syncErr != nil {
-					return
-				}
-				for _, r := range results {
-					if r.Err != nil && provenance.IsUnauthorized(r.Err) {
-						if refreshed, refreshErr := auth.ForceRefresh(ctx); refreshErr == nil {
-							retryResults, retryErr := provenance.SyncAndUpload(ctx, repoRoot, endpoint, refreshed, 0, connectBackfillBatchSize, syncOpts)
-							if retryErr == nil {
-								results = retryResults
-							}
-						}
-						break
-					}
-				}
-			})
-
-			if spinErr := sp.Run(); spinErr != nil {
-				results, syncErr = provenance.SyncAndUpload(ctx, repoRoot, endpoint, tok, 0, connectBackfillBatchSize, nil)
-			}
-
-			if syncErr != nil {
-				_, _ = fmt.Fprintf(out, "Note: initial provenance sync failed: %v. It will retry on future checkpoints.\n", syncErr)
-			} else {
-				uploaded, retryable, permanent := 0, 0, 0
-				for _, r := range results {
-					switch r.Action {
-					case provenance.ActionUploaded:
-						uploaded++
-					case provenance.ActionRetry:
-						retryable++
-					case provenance.ActionFail:
-						permanent++
-					}
-				}
-				if uploaded > 0 {
-					_, _ = fmt.Fprintf(out, "Synced %d provenance turn(s) to dashboard. Remaining history will continue syncing over time.\n", uploaded)
-				}
-				if retryable > 0 {
-					_, _ = fmt.Fprintf(out, "Note: %d turn(s) will retry on future checkpoints.\n", retryable)
-				}
-				if permanent > 0 {
-					_, _ = fmt.Fprintf(out, "Note: %d turn(s) could not be synced and will not retry automatically.\n", permanent)
-				}
-			}
-		}
+		runConnectProvenanceSync(cmd, repoRoot, "initial provenance sync failed")
 
 		// Backfill historical attribution for commits made before connect.
 		backfillAttribution(ctx, out, semDir, s.ConnectedRepoID)
@@ -278,6 +220,165 @@ func handleConnectOutcome(cmd *cobra.Command, rootOpts *RootOptions, semDir stri
 			return fmt.Errorf("connect failed: %s", resp.Message)
 		}
 		return fmt.Errorf("connect failed: unexpected outcome %q", resp.Outcome)
+	}
+}
+
+// Test seams for the already-connected sync prompt. Production uses the
+// TTY confirm and the normal bounded provenance sync path.
+var (
+	confirmPendingProvenanceSyncFn = huhConfirmPendingProvenanceSync
+	connectProvenanceSyncFn        = runConnectProvenanceSync
+)
+
+func handleAlreadyConnectedProvenance(cmd *cobra.Command, semDir string) error {
+	out := cmd.OutOrStdout()
+	repoRoot := filepath.Dir(semDir)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	info, err := service.PendingProvenance(ctx, repoRoot)
+	if err != nil {
+		_, _ = fmt.Fprintln(out, "Already connected.")
+		_, _ = fmt.Fprintf(out, "Note: could not inspect pending provenance: %v\n", err)
+		return nil
+	}
+	if info.Count == 0 {
+		_, _ = fmt.Fprintln(out, "Already connected. No local provenance is pending.")
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(out, "Already connected. %s\n", pendingProvenanceSentence(info))
+	if !isInteractiveCmd(cmd) {
+		_, _ = fmt.Fprintln(out, "Run `semantica connect` in an interactive terminal to choose whether to sync pending provenance.")
+		return nil
+	}
+
+	confirmed, err := confirmPendingProvenanceSyncFn(cmd, info)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		_, _ = fmt.Fprintln(out, "Skipped provenance sync.")
+		return nil
+	}
+	connectProvenanceSyncFn(cmd, repoRoot, "provenance sync failed")
+	return nil
+}
+
+func pendingProvenanceSentence(info *service.PendingProvenanceInfo) string {
+	if info.HasLastCommit {
+		if info.Count == info.SinceLastCommitCount {
+			return fmt.Sprintf("Since your last commit, %d provenance %s pending locally.",
+				info.Count, pluralTurn(info.Count))
+		}
+		if info.SinceLastCommitCount > 0 {
+			return fmt.Sprintf("%d provenance %s pending locally, including %d since your last commit.",
+				info.Count, pluralTurn(info.Count), info.SinceLastCommitCount)
+		}
+	}
+	return fmt.Sprintf("%d provenance %s pending locally.", info.Count, pluralTurn(info.Count))
+}
+
+func huhConfirmPendingProvenanceSync(_ *cobra.Command, _ *service.PendingProvenanceInfo) (bool, error) {
+	var confirmed bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Sync pending provenance to the dashboard now?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&confirmed),
+		),
+	)
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return false, nil
+		}
+		return false, err
+	}
+	return confirmed, nil
+}
+
+func runConnectProvenanceSync(cmd *cobra.Command, repoRoot, failureLabel string) {
+	// Keep connect responsive by syncing one small batch. Future checkpoints
+	// continue draining any remaining packaged turns.
+	const connectProvenanceBatchSize = 20
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := cmd.OutOrStdout()
+	endpoint := auth.EffectiveEndpoint()
+	tok, tokErr := auth.AccessToken(ctx)
+	if tokErr != nil || tok == "" {
+		_, _ = fmt.Fprintln(out, "Note: could not sync provenance history (auth unavailable). It will sync on future checkpoints.")
+		return
+	}
+
+	var results []provenance.UploadResult
+	var syncErr error
+
+	sp := hspinner.New().
+		WithTheme(commandSpinnerTheme()).
+		Title("Syncing provenance...")
+
+	syncOpts := &provenance.UploadOptions{
+		OnProgress: func(current, total int, r provenance.UploadResult) {
+			sp.Title(fmt.Sprintf("Syncing provenance: %d/%d", current, total))
+		},
+	}
+
+	sp.Action(func() {
+		results, syncErr = provenance.SyncAndUpload(ctx, repoRoot, endpoint, tok, 0, connectProvenanceBatchSize, syncOpts)
+		if syncErr != nil {
+			return
+		}
+		for _, r := range results {
+			if r.Err != nil && provenance.IsUnauthorized(r.Err) {
+				if refreshed, refreshErr := auth.ForceRefresh(ctx); refreshErr == nil {
+					retryResults, retryErr := provenance.SyncAndUpload(ctx, repoRoot, endpoint, refreshed, 0, connectProvenanceBatchSize, syncOpts)
+					if retryErr == nil {
+						results = retryResults
+					}
+				}
+				break
+			}
+		}
+	})
+
+	if spinErr := sp.Run(); spinErr != nil {
+		results, syncErr = provenance.SyncAndUpload(ctx, repoRoot, endpoint, tok, 0, connectProvenanceBatchSize, nil)
+	}
+
+	if syncErr != nil {
+		_, _ = fmt.Fprintf(out, "Note: %s: %v. It will retry on future checkpoints.\n", failureLabel, syncErr)
+		return
+	}
+
+	uploaded, retryable, permanent := 0, 0, 0
+	for _, r := range results {
+		switch r.Action {
+		case provenance.ActionUploaded:
+			uploaded++
+		case provenance.ActionRetry:
+			retryable++
+		case provenance.ActionFail:
+			permanent++
+		}
+	}
+	if uploaded > 0 {
+		_, _ = fmt.Fprintf(out, "Synced %d provenance turn(s) to dashboard. Remaining history will continue syncing over time.\n", uploaded)
+	}
+	if retryable > 0 {
+		_, _ = fmt.Fprintf(out, "Note: %d turn(s) will retry on future checkpoints.\n", retryable)
+	}
+	if permanent > 0 {
+		_, _ = fmt.Fprintf(out, "Note: %d turn(s) could not be synced and will not retry automatically.\n", permanent)
+	}
+	if uploaded == 0 && retryable == 0 && permanent == 0 {
+		_, _ = fmt.Fprintln(out, "No provenance turns needed syncing.")
 	}
 }
 

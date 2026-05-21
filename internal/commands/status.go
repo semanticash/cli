@@ -233,6 +233,10 @@ func statusSections(res *service.StatusResult) []statusSection {
 		{Title: "Settings", Fields: statusSettingsFields(res)},
 	}
 
+	if res.Connected || pendingProvenanceCount(res.PendingProvenance) > 0 {
+		sections = append(sections, statusSyncSection(res))
+	}
+
 	if res.LastCheckpoint != nil {
 		sections = append(sections, statusSection{
 			Title: "Last checkpoint",
@@ -282,6 +286,49 @@ func statusSections(res *service.StatusResult) []statusSection {
 	}
 
 	return sections
+}
+
+func statusSyncSection(res *service.StatusResult) statusSection {
+	section := statusSection{
+		Title: "Sync",
+		Fields: []statusField{{
+			Label: "Pending provenance",
+			Value: formatPendingProvenanceValue(res.PendingProvenance),
+		}},
+	}
+	if pendingProvenanceCount(res.PendingProvenance) > 0 {
+		if res.Connected {
+			section.Lines = append(section.Lines,
+				"Uploads on the next commit checkpoint, or when confirmed from `semantica connect`.")
+		} else {
+			section.Lines = append(section.Lines,
+				"Run `semantica connect` to sync pending provenance to the dashboard.")
+		}
+	}
+	return section
+}
+
+func pendingProvenanceCount(info *service.PendingProvenanceInfo) int64 {
+	if info == nil {
+		return 0
+	}
+	return info.Count
+}
+
+func formatPendingProvenanceValue(info *service.PendingProvenanceInfo) string {
+	if info == nil || info.Count == 0 {
+		return "none"
+	}
+	if info.HasLastCommit {
+		if info.Count == info.SinceLastCommitCount {
+			return fmt.Sprintf("%d %s since last commit", info.Count, pluralTurn(info.Count))
+		}
+		if info.SinceLastCommitCount > 0 {
+			return fmt.Sprintf("%d %s pending locally (%d since last commit)",
+				info.Count, pluralTurn(info.Count), info.SinceLastCommitCount)
+		}
+	}
+	return fmt.Sprintf("%d %s pending locally", info.Count, pluralTurn(info.Count))
 }
 
 func statusHint(res *service.StatusResult) string {
@@ -410,6 +457,13 @@ func enabledValue(v bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+func pluralTurn(n int64) string {
+	if n == 1 {
+		return "turn"
+	}
+	return "turns"
 }
 
 func formatCheckpointLine(cp *service.LastCheckpointInfo) string {

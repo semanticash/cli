@@ -67,3 +67,30 @@ func TestRenderStatusCard(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderStatusPlain_ShowsPendingProvenance(t *testing.T) {
+	res := &service.StatusResult{
+		Enabled:      true,
+		RepoRoot:     "/tmp/repo",
+		Connected:    true,
+		HasRemote:    true,
+		Endpoint:     "https://example.com",
+		RepoProvider: "github",
+		PendingProvenance: &service.PendingProvenanceInfo{
+			Count:                3,
+			HasLastCommit:        true,
+			SinceLastCommitCount: 3,
+		},
+	}
+
+	got := renderStatusPlain(res, auth.AuthState{Authenticated: true})
+	for _, want := range []string{
+		"Sync",
+		"Pending provenance: 3 turns since last commit",
+		"Uploads on the next commit checkpoint, or when confirmed from `semantica connect`.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status output missing %q:\n%s", want, got)
+		}
+	}
+}
