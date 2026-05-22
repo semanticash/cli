@@ -25,7 +25,7 @@
       "ToolUseID": "gemini-step-1",
       "ToolName": "Write",
       "EventSource": "hook",
-      "ProvenanceHash": "387f1419792fa01b2c53f93a55a6cb37be886814dfab6f0a37944f81b0dd360f",
+      "ProvenanceHash": "75569c4aa645588bf2f13c09667593f4420f052f82c0d52521f896d695e9ee31",
       "ProviderSessionID": "transcript",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000010000,
@@ -35,7 +35,7 @@
     }
   ],
   "expected_blobs": {
-    "387f1419792fa01b2c53f93a55a6cb37be886814dfab6f0a37944f81b0dd360f": "{\"tool_input\":{\"file_path\":\"/repo/new.go\",\"content\":\"package main\\n\"}}",
+    "75569c4aa645588bf2f13c09667593f4420f052f82c0d52521f896d695e9ee31": "{\"tool_input\":{\"content\":\"package main\\n\",\"file_path\":\"/repo/new.go\"}}",
     "7e8c88679d13915c52aee06897049cbf03fa81d01596644b44eae89effbd009c": "{\"message\":{\"content\":[{\"input\":{\"content\":\"package main\\n\",\"file_path\":\"/repo/new.go\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
   }
 }

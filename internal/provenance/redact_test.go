@@ -105,6 +105,64 @@ func TestRedactStepProvenance_NormalizesAndRedacts(t *testing.T) {
 	}
 }
 
+// Secrets embedded in the wrapped tool_input envelope must be
+// redacted before upload. This covers the shared single-file shape
+// written by file-changing providers.
+func TestRedactStepProvenance_RedactsWrappedToolInputFields(t *testing.T) {
+	const fakeKey = "sk-1234567890abcdef1234567890abcdef"
+
+	cases := []struct {
+		name   string
+		input  map[string]any
+		secret string
+	}{
+		{
+			name: "Write_content",
+			input: map[string]any{
+				"file_path": "src/main.go",
+				"content":   "api_key = " + fakeKey,
+			},
+			secret: fakeKey,
+		},
+		{
+			name: "Edit_old_string",
+			input: map[string]any{
+				"file_path":  "src/main.go",
+				"old_string": "api_key = " + fakeKey,
+				"new_string": "api_key = scrubbed",
+			},
+			secret: fakeKey,
+		},
+		{
+			name: "Edit_new_string",
+			input: map[string]any{
+				"file_path":  "src/main.go",
+				"old_string": "api_key = scrubbed",
+				"new_string": "api_key = " + fakeKey,
+			},
+			secret: fakeKey,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := map[string]any{"tool_input": tc.input}
+			blob, _ := json.Marshal(prov)
+
+			result, err := RedactForUpload(blob, "step_provenance", testRepoRoot)
+			if err != nil {
+				t.Fatalf("RedactForUpload: %v", err)
+			}
+			if strings.Contains(string(result), tc.secret) {
+				t.Errorf("secret leaked through wrapped envelope: %s", string(result))
+			}
+			if !strings.Contains(string(result), "[REDACTED]") {
+				t.Errorf("expected redaction marker in output: %s", string(result))
+			}
+		})
+	}
+}
+
 // Secrets embedded in canonical files[] entries must be redacted
 // before upload.
 func TestRedactStepProvenance_RedactsFilesArrayContent(t *testing.T) {

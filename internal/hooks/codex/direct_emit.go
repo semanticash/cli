@@ -109,7 +109,11 @@ func buildApplyPatchEvents(ctx context.Context, event *hooks.Event, bs api.BlobP
 		return nil, nil
 	}
 
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Build one shared multi-file provenance blob for the whole
+	// envelope. Per-file RawEvents all point at this hash; hosted diff
+	// readers select the entry by step file_paths and can also show the
+	// sibling files from the same patch.
+	provenanceHash := storeApplyPatchCanonicalProvenance(ctx, bs, event.CWD, files)
 	out := make([]broker.RawEvent, 0, len(files))
 
 	for i, f := range files {
@@ -149,6 +153,122 @@ func buildApplyPatchEvents(ctx context.Context, event *hooks.Event, bs api.BlobP
 		}
 	}
 	return out, nil
+}
+
+// storeApplyPatchCanonicalProvenance serializes the parsed
+// apply_patch envelope as the canonical multi-file shape:
+//
+//	{ "version": 1, "files": [ { "path": "...", "operation": "...", ... }, ... ] }
+//
+// Every per-file RawEvent emitted by buildApplyPatchEvents shares the
+// returned hash so hosted diff readers can render any one file
+// (selected by step file_paths) plus the full sibling list from one
+// fetch. Returns the empty string on blob-store failure or when bs
+// is nil; the per-file events still emit with empty ProvenanceHash
+// in that case.
+func storeApplyPatchCanonicalProvenance(ctx context.Context, bs api.BlobPutter, cwd string, files []applyPatchFile) string {
+	if bs == nil || len(files) == 0 {
+		return ""
+	}
+
+	type entry struct {
+		Path          string  `json:"path"`
+		Operation     string  `json:"operation"`
+		Content       *string `json:"content,omitempty"`
+		OldText       *string `json:"old_text,omitempty"`
+		NewText       *string `json:"new_text,omitempty"`
+		DiffAvailable bool    `json:"diff_available"`
+		Reason        string  `json:"reason,omitempty"`
+	}
+
+	strPtr := func(s string) *string { return &s }
+
+	entries := make([]entry, 0, len(files))
+	for _, f := range files {
+		switch f.op {
+		case applyPatchOpAdd:
+			if f.path == "" {
+				continue
+			}
+			c := f.content
+			entries = append(entries, entry{
+				Path:          absolutizeForRouting(f.path, cwd),
+				Operation:     "create",
+				Content:       strPtr(c),
+				DiffAvailable: true,
+			})
+
+		case applyPatchOpUpdate:
+			if f.path == "" {
+				continue
+			}
+			entries = append(entries, entry{
+				Path:          absolutizeForRouting(f.path, cwd),
+				Operation:     "edit",
+				OldText:       strPtr(f.removed),
+				NewText:       strPtr(f.content),
+				DiffAvailable: true,
+			})
+
+		case applyPatchOpDelete:
+			if f.path == "" {
+				continue
+			}
+			// Delete sections do not carry the before-state content,
+			// so hosted diff readers cannot render a before/after diff.
+			entries = append(entries, entry{
+				Path:          absolutizeForRouting(f.path, cwd),
+				Operation:     "delete",
+				DiffAvailable: false,
+				Reason:        "delete event has no preimage",
+			})
+
+		case applyPatchOpMove:
+			// Source half is metadata-only unless removed content was
+			// captured alongside the move. Destination half renders as
+			// a create when content is present.
+			if f.path != "" {
+				sourceEntry := entry{
+					Path:      absolutizeForRouting(f.path, cwd),
+					Operation: "move",
+				}
+				if f.removed != "" {
+					sourceEntry.OldText = strPtr(f.removed)
+					sourceEntry.DiffAvailable = true
+				} else {
+					sourceEntry.DiffAvailable = false
+					sourceEntry.Reason = "move source has no preimage"
+				}
+				entries = append(entries, sourceEntry)
+			}
+			if f.movedTo != "" {
+				destEntry := entry{
+					Path:      absolutizeForRouting(f.movedTo, cwd),
+					Operation: "create",
+				}
+				if f.content != "" {
+					destEntry.Content = strPtr(f.content)
+					destEntry.DiffAvailable = true
+				} else {
+					destEntry.DiffAvailable = false
+					destEntry.Reason = "move destination has no content"
+				}
+				entries = append(entries, destEntry)
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+
+	blob, err := json.Marshal(map[string]any{
+		"version": 1,
+		"files":   entries,
+	})
+	if err != nil {
+		return ""
+	}
+	return builder.PutAndHash(ctx, bs, blob)
 }
 
 // buildPatchFileEvent emits one assistant RawEvent for a single file

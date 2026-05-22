@@ -25,7 +25,7 @@
       "ToolUseID": "copilot-edit-1",
       "ToolName": "Edit",
       "EventSource": "hook",
-      "ProvenanceHash": "2c03c49cad0541c13e6b0aa366bef41146f29948b74a59789016733e889972e1",
+      "ProvenanceHash": "f7fe607f23ce95e6fdcfc016b76f19a5cb21d9623e23bc2b4d90c5fccdf33759",
       "ProviderSessionID": "sess-copilot-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000020000,
@@ -35,7 +35,7 @@
     }
   ],
   "expected_blobs": {
-    "2c03c49cad0541c13e6b0aa366bef41146f29948b74a59789016733e889972e1": "{\"tool_input\":{\"path\":\"/repo/main.go\",\"old_str\":\"foo\",\"new_str\":\"bar\"}}",
-    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "f7fe607f23ce95e6fdcfc016b76f19a5cb21d9623e23bc2b4d90c5fccdf33759": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"}}"
   }
 }

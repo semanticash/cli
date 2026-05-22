@@ -217,6 +217,153 @@ func TestBuildHookEvents_ApplyPatchMoveYieldsDistinctEventIDs(t *testing.T) {
 	}
 }
 
+// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate verifies
+// the shared canonical files[] provenance blob used by hosted diff
+// readers. A multi-file apply_patch (Add + Update) must produce one
+// blob containing both entries in canonical shape, and every per-file
+// RawEvent must share the same provenance hash so sibling files can be
+// fetched for a whole-patch view in one request.
+func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
+	envelope := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: src/new.go",
+		"+package new",
+		"+",
+		"+func Hello() {}",
+		"*** Update File: src/util.go",
+		"@@",
+		" context",
+		"-old line",
+		"+new line",
+		"*** End Patch",
+	}, "\n")
+	event := applyPatchEvent(envelope, fixtureRepo)
+	bs := newMemBlobStore()
+
+	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("BuildHookEvents: %v", err)
+	}
+	if len(out) < 2 {
+		t.Fatalf("expected at least 2 per-file events, got %d", len(out))
+	}
+
+	// Every per-file event must share the same canonical files[] hash.
+	provHash := out[0].ProvenanceHash
+	if provHash == "" {
+		t.Fatal("provenance hash empty")
+	}
+	for i, ev := range out {
+		if ev.ProvenanceHash != provHash {
+			t.Errorf("event[%d] provenance hash diverges (%q vs %q); per-file events must share one canonical blob", i, ev.ProvenanceHash, provHash)
+		}
+	}
+
+	blob, ok := bs.Get(provHash)
+	if !ok {
+		t.Fatalf("canonical files[] blob not stored under hash %q", provHash)
+	}
+
+	var doc struct {
+		Version int `json:"version"`
+		Files   []struct {
+			Path          string  `json:"path"`
+			Operation     string  `json:"operation"`
+			Content       *string `json:"content,omitempty"`
+			OldText       *string `json:"old_text,omitempty"`
+			NewText       *string `json:"new_text,omitempty"`
+			DiffAvailable bool    `json:"diff_available"`
+			Reason        string  `json:"reason,omitempty"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(blob, &doc); err != nil {
+		t.Fatalf("unmarshal canonical blob: %v\n%s", err, blob)
+	}
+	if doc.Version != 1 {
+		t.Errorf("version = %d, want 1", doc.Version)
+	}
+	if len(doc.Files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(doc.Files))
+	}
+
+	// Add entry: operation=create with content set.
+	add := doc.Files[0]
+	if add.Operation != "create" {
+		t.Errorf("add.operation = %q, want create", add.Operation)
+	}
+	if add.Content == nil || !strings.Contains(*add.Content, "func Hello()") {
+		t.Errorf("add.content missing or wrong: %v", add.Content)
+	}
+	if !add.DiffAvailable {
+		t.Errorf("add.diff_available = false, want true")
+	}
+
+	// Update entry: operation=edit with both old_text and new_text.
+	upd := doc.Files[1]
+	if upd.Operation != "edit" {
+		t.Errorf("update.operation = %q, want edit", upd.Operation)
+	}
+	if upd.OldText == nil || *upd.OldText != "old line" {
+		t.Errorf("update.old_text = %v, want old line", upd.OldText)
+	}
+	if upd.NewText == nil || *upd.NewText != "new line" {
+		t.Errorf("update.new_text = %v, want new line", upd.NewText)
+	}
+	if !upd.DiffAvailable {
+		t.Errorf("update.diff_available = false, want true")
+	}
+}
+
+// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_Delete pins that
+// Delete sections surface as non-diffable entries with an explanatory
+// reason rather than silently dropping.
+func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_Delete(t *testing.T) {
+	envelope := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Delete File: src/obsolete.go",
+		"*** End Patch",
+	}, "\n")
+	event := applyPatchEvent(envelope, fixtureRepo)
+	bs := newMemBlobStore()
+
+	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("BuildHookEvents: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected at least one event for Delete")
+	}
+
+	blob, ok := bs.Get(out[0].ProvenanceHash)
+	if !ok {
+		t.Fatalf("canonical blob not stored")
+	}
+	var doc struct {
+		Files []struct {
+			Path          string `json:"path"`
+			Operation     string `json:"operation"`
+			DiffAvailable bool   `json:"diff_available"`
+			Reason        string `json:"reason,omitempty"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(blob, &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, blob)
+	}
+	if len(doc.Files) != 1 {
+		t.Fatalf("len(files) = %d, want 1", len(doc.Files))
+	}
+	d := doc.Files[0]
+	if d.Operation != "delete" {
+		t.Errorf("operation = %q, want delete", d.Operation)
+	}
+	if d.DiffAvailable {
+		t.Errorf("delete must not be diffable")
+	}
+	if d.Reason == "" {
+		t.Errorf("expected non-empty reason on non-diffable delete")
+	}
+}
+
 func TestBuildHookEvents_ApplyPatchMoveSplitsIntoDeleteAndAdd(t *testing.T) {
 	envelope := strings.Join([]string{
 		"*** Begin Patch",

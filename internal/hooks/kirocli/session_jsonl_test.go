@@ -104,7 +104,7 @@ func TestReadKiroSessionJSONL_WriteAndShell(t *testing.T) {
 		t.Error("both calls should have Response attached from their ToolResults")
 	}
 	// Line tracks the AssistantMessage source position regardless of
-	// where the matching ToolResults landed downstream.
+	// where the matching ToolResults appears downstream.
 	if calls[0].Line != 1 || calls[1].Line != 2 {
 		t.Errorf("Lines = [%d,%d], want [1,2]", calls[0].Line, calls[1].Line)
 	}
@@ -146,8 +146,8 @@ func TestReadKiroSessionJSONL_SkipsUnacceptedToolNames(t *testing.T) {
 
 func TestReadKiroSessionJSONL_PartialFile(t *testing.T) {
 	// Sub-agent is still flushing: the AssistantMessage with the
-	// tool use is on disk but the matching ToolResults has not
-	// landed yet. The reader returns the call without a Response
+	// tool use is on disk but the matching ToolResults is not
+	// available yet. The reader returns the call without a Response
 	// instead of waiting or erroring.
 	src := kiroSessionLines(
 		kiroLineWriteAssistant,

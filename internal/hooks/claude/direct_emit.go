@@ -49,8 +49,8 @@ type bashInput struct {
 
 // buildPromptEvent creates a user prompt event from UserPromptSubmit.
 // The stored blob and the provenance hash both reference the raw
-// prompt text; the scorer and the dashboard can key off the same
-// content hash on either field.
+// prompt text, so local attribution and hosted provenance can use the
+// same content hash.
 func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	if event.Prompt == "" {
 		return nil, nil

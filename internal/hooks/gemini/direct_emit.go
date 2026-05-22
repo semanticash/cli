@@ -127,7 +127,9 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 		"content":   inp.Content,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store the normalized inputJSON, not the raw event payload, so
+	// uploaded provenance carries the shared file-edit key set.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Write", resolvedPath, "write")
 
 	ev := makeBaseRawEvent(event)
@@ -165,7 +167,9 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 		"new_string": inp.NewString,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store the normalized inputJSON so optional Gemini fields such
+	// as `instruction` do not land in hosted provenance.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Edit", resolvedPath, "edit")
 
 	ev := makeBaseRawEvent(event)

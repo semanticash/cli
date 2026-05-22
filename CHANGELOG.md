@@ -20,8 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Re-running `semantica connect` on an already connected repo no longer starts a provenance sync silently. Interactive terminals now show the pending local turn count and ask before syncing; non-interactive callers get an explanatory message and no upload side effect.
-- Cursor file-edit provenance now uses the shared wrapped diff shape, and multi-edit Cursor `Edit` payloads are split into per-edit events so hosted step diffs can render each change.
-- Provenance upload redaction now scans canonical multi-file `files[]` step blobs, including nested old/new text and non-object entries.
+- File-edit step provenance now uses canonical hosted-diff shapes across Cursor, Gemini CLI, Kiro CLI, Kiro IDE, GitHub Copilot CLI, and Codex `apply_patch`, so synced turns can render provider code changes consistently.
+- Provenance upload redaction now scans wrapped tool inputs and canonical multi-file `files[]` step blobs, including old/new text and non-object entries.
 
 
 ### Changed

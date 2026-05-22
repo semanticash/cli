@@ -13,6 +13,23 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
+// kiroFakeBlobPutter records every Put call so canonical-envelope
+// assertions can decode the stored provenance blob. Local to this
+// package to avoid pulling builder/blobs_test internals.
+type kiroFakeBlobPutter struct {
+	stored map[string][]byte
+}
+
+func newKiroFakeBlobPutter() *kiroFakeBlobPutter {
+	return &kiroFakeBlobPutter{stored: make(map[string][]byte)}
+}
+
+func (f *kiroFakeBlobPutter) Put(_ context.Context, b []byte) (string, int64, error) {
+	h := fmt.Sprintf("hash_%d", len(f.stored))
+	f.stored[h] = append([]byte(nil), b...)
+	return h, int64(len(b)), nil
+}
+
 // TestHashEventID_ActionIDDistinguishesSameFileOps checks that same-file edits
 // with different action IDs get different event IDs.
 func TestHashEventID_ActionIDDistinguishesSameFileOps(t *testing.T) {
@@ -76,6 +93,80 @@ func TestBuildEventForOp_ReplaceUsesCanonicalEditShape(t *testing.T) {
 	}
 	if !strings.Contains(ev.ToolUsesJSON, `"name":"`+agentKiro.ToolNameEdit+`"`) {
 		t.Errorf("ToolUsesJSON missing canonical Edit name: %q", ev.ToolUsesJSON)
+	}
+}
+
+// TestBuildEventForOp_CreateProvenanceUsesCanonicalEnvelope checks
+// that create actions write the wrapped canonical envelope consumed by
+// hosted diff readers.
+func TestBuildEventForOp_CreateProvenanceUsesCanonicalEnvelope(t *testing.T) {
+	bs := newKiroFakeBlobPutter()
+	op := agentKiro.FileOperation{
+		ActionType: "create",
+		ActionID:   "tooluse_create_1",
+		FilePath:   "main.go",
+		Content:    "package main\n",
+	}
+	ev, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", bs)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.ProvenanceHash == "" {
+		t.Fatal("ProvenanceHash empty")
+	}
+	blob, ok := bs.stored[ev.ProvenanceHash]
+	if !ok {
+		t.Fatalf("provenance blob not stored under hash %q", ev.ProvenanceHash)
+	}
+	var prov struct {
+		ToolInput struct {
+			FilePath string `json:"file_path"`
+			Content  string `json:"content"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(blob, &prov); err != nil {
+		t.Fatalf("unmarshal provenance: %v\nblob: %s", err, blob)
+	}
+	if prov.ToolInput.FilePath != "main.go" {
+		t.Errorf("tool_input.file_path = %q, want main.go", prov.ToolInput.FilePath)
+	}
+	if prov.ToolInput.Content != "package main\n" {
+		t.Errorf("tool_input.content = %q, want package main", prov.ToolInput.Content)
+	}
+}
+
+// TestBuildEventForOp_ReplaceProvenanceUsesCanonicalEnvelope checks
+// that replace and append actions write canonical old_string /
+// new_string fields in the wrapped envelope.
+func TestBuildEventForOp_ReplaceProvenanceUsesCanonicalEnvelope(t *testing.T) {
+	bs := newKiroFakeBlobPutter()
+	op := agentKiro.FileOperation{
+		ActionType:      "replace",
+		ActionID:        "tooluse_replace_1",
+		FilePath:        "main.go",
+		Content:         "after",
+		OriginalContent: "before",
+	}
+	ev, ok := buildEventForOp(context.Background(), op, "exec-1", 0, "sess-1", 0, "transcript", "/repo", bs)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ev.ProvenanceHash == "" {
+		t.Fatal("ProvenanceHash empty")
+	}
+	blob := bs.stored[ev.ProvenanceHash]
+	var prov struct {
+		ToolInput struct {
+			FilePath  string `json:"file_path"`
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(blob, &prov); err != nil {
+		t.Fatalf("unmarshal provenance: %v\nblob: %s", err, blob)
+	}
+	if prov.ToolInput.OldString != "before" || prov.ToolInput.NewString != "after" {
+		t.Errorf("canonical old/new missing: %+v", prov.ToolInput)
 	}
 }
 

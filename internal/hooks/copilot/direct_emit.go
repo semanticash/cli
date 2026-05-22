@@ -103,7 +103,9 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 		"content":   inp.FileText,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store canonical file_path + content keys instead of Copilot's
+	// native path + file_text shape.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Write", inp.Path, "write")
 
 	ev := makeBaseRawEvent(event)
@@ -136,7 +138,9 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 		"new_string": inp.NewStr,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store canonical old_string / new_string keys instead of
+	// Copilot's native old_str / new_str shape.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := serializeStepToolUses("Edit", inp.Path, "edit")
 
 	ev := makeBaseRawEvent(event)
@@ -312,10 +316,8 @@ func storeRedactedBashPayload(ctx context.Context, bs api.BlobPutter, command, d
 
 // serializeStepToolUses produces the provider-specific ToolUsesJSON
 // shape. Copilot uses agentcopilot.SerializeToolUses, which matches
-// Claude, Cursor, and Gemini in field layout but not in package,
-// since each provider carries its own ToolUse type. A future cleanup
-// could consolidate the four packages, but that change is out of
-// scope here.
+// Claude, Cursor, and Gemini in field layout while keeping Copilot's
+// provider-specific ToolUse type.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentcopilot.ToolUse{
 		Name:     toolName,
