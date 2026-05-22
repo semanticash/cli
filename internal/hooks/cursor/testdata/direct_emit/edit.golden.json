@@ -25,7 +25,7 @@
       "ToolUseID": "cursor-step-2",
       "ToolName": "Edit",
       "EventSource": "hook",
-      "ProvenanceHash": "10d6d6ad6fb5d51911fc03a2166c669af369f5dacac30c7167e388b7970c1ca0",
+      "ProvenanceHash": "f7fe607f23ce95e6fdcfc016b76f19a5cb21d9623e23bc2b4d90c5fccdf33759",
       "ProviderSessionID": "conv-123",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000020000,
@@ -35,7 +35,7 @@
     }
   ],
   "expected_blobs": {
-    "10d6d6ad6fb5d51911fc03a2166c669af369f5dacac30c7167e388b7970c1ca0": "{\n\t\t\t\t\t\"conversation_id\":\"conv-123\",\n\t\t\t\t\t\"file_path\":\"/repo/main.go\",\n\t\t\t\t\t\"edits\":[{\"old_string\":\"foo\",\"new_string\":\"bar\"}]\n\t\t\t\t}",
-    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+    "2d6291c32fa9c4a74dc4710c2b4493ff0a5d21518359b2346eaa08242ae55b50": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "f7fe607f23ce95e6fdcfc016b76f19a5cb21d9623e23bc2b4d90c5fccdf33759": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"}}"
   }
 }

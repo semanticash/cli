@@ -25,7 +25,7 @@
       "ToolUseID": "cursor-step-1",
       "ToolName": "Write",
       "EventSource": "hook",
-      "ProvenanceHash": "7f13f2f635954ffd1796187df2bbdaed455707526f0eae14ef23b35bf98bfaec",
+      "ProvenanceHash": "bb99ff8ecb864d853271d931a52f81a3ebbad0d0b7bfafc4e6512ccc2e4da175",
       "ProviderSessionID": "conv-123",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000010000,
@@ -36,6 +36,6 @@
   ],
   "expected_blobs": {
     "6c4aae1ae93ffde489577f46dae6c9c2233c64dac18d9ae27f012bcb152af69f": "{\"message\":{\"content\":[{\"input\":{\"content\":\"hello\\n\",\"file_path\":\"/repo/new.txt\"},\"name\":\"Write\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
-    "7f13f2f635954ffd1796187df2bbdaed455707526f0eae14ef23b35bf98bfaec": "{\n\t\t\t\t\t\"conversation_id\":\"conv-123\",\n\t\t\t\t\t\"file_path\":\"/repo/new.txt\",\n\t\t\t\t\t\"edits\":[{\"old_string\":\"\",\"new_string\":\"hello\\n\"}]\n\t\t\t\t}"
+    "bb99ff8ecb864d853271d931a52f81a3ebbad0d0b7bfafc4e6512ccc2e4da175": "{\"tool_input\":{\"content\":\"hello\\n\",\"file_path\":\"/repo/new.txt\"}}"
   }
 }

@@ -1,0 +1,74 @@
+{
+  "name": "multi_edit",
+  "description": "Cursor afterFileEdit with edits[] length \u003e 1; one RawEvent per edit with split ToolUseIDs and canonical wrapped per-edit provenance",
+  "expected_events": [
+    {
+      "EventID": "4b7fb8e06a53061eb73527b808a681357dec406b5dc19f531f1fe6ff8efaae15",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000025000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/util.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "65c547cdb07d4b4cc862f2b5a69e03c09bb97e69ad0bff12f9236f27a8e7906a",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/util.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "cursor-multi:0",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "2433ccd5ec2f5396e76a3d199171ed1e5a27c9d51faaa9d34f2063f4db44a969",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000025000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    },
+    {
+      "EventID": "e4182827519d3695775cc5c375a6a89162b74ddc02d235ac53efe4c18d7ead5f",
+      "SourceKey": "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl",
+      "Provider": "cursor",
+      "Timestamp": 1714000025000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Edit\",\"file_path\":\"/repo/util.go\",\"file_op\":\"edit\"}]}",
+      "Summary": "",
+      "PayloadHash": "da9cc242a9e75e3f4e1ec3003b40a5a22c03775f03951129e53c0b78fe243f57",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": [
+        "/repo/util.go"
+      ],
+      "TurnID": "turn-1",
+      "ToolUseID": "cursor-multi:1",
+      "ToolName": "Edit",
+      "EventSource": "hook",
+      "ProvenanceHash": "21ac7dd8df93190d911848c17977af4fabbf0e4ddc8b0135cbc480190628c476",
+      "ProviderSessionID": "conv-123",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000025000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "21ac7dd8df93190d911848c17977af4fabbf0e4ddc8b0135cbc480190628c476": "{\"tool_input\":{\"file_path\":\"/repo/util.go\",\"new_string\":\"qux\",\"old_string\":\"baz\"}}",
+    "2433ccd5ec2f5396e76a3d199171ed1e5a27c9d51faaa9d34f2063f4db44a969": "{\"tool_input\":{\"file_path\":\"/repo/util.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"}}",
+    "65c547cdb07d4b4cc862f2b5a69e03c09bb97e69ad0bff12f9236f27a8e7906a": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/util.go\",\"new_string\":\"bar\",\"old_string\":\"foo\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
+    "da9cc242a9e75e3f4e1ec3003b40a5a22c03775f03951129e53c0b78fe243f57": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/util.go\",\"new_string\":\"qux\",\"old_string\":\"baz\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}
