@@ -59,6 +59,10 @@ func normalizeContentTypes(contentTypes []string) []string {
 // Example: tmp-demo-project -> /tmp/demo/project
 //
 // Returns "" when sourceKey is not actually under the projects base.
+//
+// Cursor does not escape dashes inside path segments, so this decoded path can
+// be ambiguous. Do not use it for routing, filesystem access, or authorization
+// until the decoder is disambiguated.
 func DecodeProjectPath(sourceKey string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
