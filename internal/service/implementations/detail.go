@@ -203,7 +203,7 @@ func GetDetail(ctx context.Context, implID string) (*ImplementationDetail, error
 		}
 
 		dbPath := filepath.Join(repo.CanonicalPath, ".semantica", "lineage.db")
-		repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+		repoH, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 		if err != nil {
 			continue
 		}

@@ -127,7 +127,7 @@ func (s *TranscriptService) TranscriptsForCheckpoint(ctx context.Context, in Tra
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +393,7 @@ func (s *TranscriptService) TranscriptsForSession(ctx context.Context, in Transc
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +498,7 @@ func (s *TranscriptService) Transcripts(ctx context.Context, in TranscriptsInput
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}

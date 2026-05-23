@@ -286,7 +286,7 @@ func TestSaveCaptureState_ConcurrentSameSession(t *testing.T) {
 	if err := os.WriteFile(bogusTmp, []byte(`{"session_id":"bogus"}`), 0o644); err != nil {
 		t.Fatalf("write bogus tmp: %v", err)
 	}
-	defer os.Remove(bogusTmp)
+	defer func() { _ = os.Remove(bogusTmp) }()
 	states, err := LoadActiveCaptureStates()
 	if err != nil {
 		t.Fatalf("LoadActiveCaptureStates: %v", err)

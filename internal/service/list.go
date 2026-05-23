@@ -62,7 +62,7 @@ func (s *ListService) ListCheckpoints(ctx context.Context, in ListCheckpointsInp
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}

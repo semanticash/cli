@@ -26,7 +26,7 @@ func PendingProvenance(ctx context.Context, repoRoot string) (*PendingProvenance
 	semDir := filepath.Join(repoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}
