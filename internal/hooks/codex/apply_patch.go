@@ -23,18 +23,21 @@ const (
 // applyPatchFile is one file's worth of change parsed out of an
 // apply_patch envelope. content captures the new-line text for
 // Add/Update operations (lines that were prefixed with '+' in the
-// hunk-style update body, or every line in an Add body). For Delete
-// and Move-only operations content is empty.
+// hunk-style update body, or every line in an Add body). removed
+// captures the '-' lines from Update bodies so the canonical files[]
+// provenance shape can carry the before-side as old_text. For Delete
+// and Move-only operations both fields are empty.
 //
 // Paths are repo-relative when possible. The parser canonicalizes
 // absolute paths against the session's cwd so attribution downstream
 // keys consistently with how the scorer normalizes its own diff
 // output.
 type applyPatchFile struct {
-	op        applyPatchOp
-	path      string // primary path (repo-relative; existing path on Move)
-	movedTo   string // destination path on Move; empty otherwise
-	content   string // newline-joined Add/Update lines; empty for Delete
+	op      applyPatchOp
+	path    string // primary path (repo-relative; existing path on Move)
+	movedTo string // destination path on Move; empty otherwise
+	content string // newline-joined '+' lines; empty for Delete
+	removed string // newline-joined '-' lines; empty for Add and Delete
 }
 
 // parseApplyPatchEnvelope reads the *** Begin Patch / *** End Patch
@@ -76,6 +79,7 @@ func parseApplyPatchEnvelope(envelope, repoRoot string) []applyPatchFile {
 			return
 		}
 		current.content = joinPatchBody(body, current.op)
+		current.removed = joinRemovedBody(body, current.op)
 		out = append(out, *current)
 		current = nil
 		body = nil
@@ -119,6 +123,25 @@ func parseApplyPatchEnvelope(envelope, repoRoot string) []applyPatchFile {
 	}
 	flush()
 	return out
+}
+
+// joinRemovedBody assembles the before-side text for an Update or
+// Move section by joining '-' prefixed lines. Returns the empty
+// string for Add and Delete bodies because there is no before-state
+// content to capture. Used by the canonical files[] provenance
+// shape's old_text field; the scorer-side content does not consume
+// removed lines.
+func joinRemovedBody(body []string, op applyPatchOp) string {
+	if len(body) == 0 || (op != applyPatchOpUpdate && op != applyPatchOpMove) {
+		return ""
+	}
+	out := make([]string, 0, len(body))
+	for _, line := range body {
+		if strings.HasPrefix(line, "-") {
+			out = append(out, strings.TrimPrefix(line, "-"))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // joinPatchBody assembles the new-line content for an Add or Update

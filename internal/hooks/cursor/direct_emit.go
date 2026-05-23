@@ -103,8 +103,22 @@ func buildPromptEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter
 
 // buildFileEditEvent handles both Write and Edit tool events. Cursor
 // uses a single internal afterFileEdit hook for both; the Write or
-// Edit semantics are derived from the payload shape in
-// normalizeCursorEditInput rather than from the event type.
+// Edit semantics are derived from the payload shape rather than from
+// the event type.
+//
+// Multi-edit Edit payloads split into one RawEvent per edit. Each
+// split event carries:
+//   - a distinct ToolUseID suffixed with the edit index so downstream
+//     dedup keys do not collide;
+//   - a per-edit payload hash representing just that edit, so the
+//     scorer credits each edit's added lines independently;
+//   - a per-edit wrapped provenance hash for hosted diff readers.
+//
+// Write events do not split. A Write represents one full-file content
+// stream, so if Cursor sends multiple edit entries Semantica uses the
+// first entry's NewString as that content.
+//
+// Single-edit Edit and any Write keep the one-event shape.
 func buildFileEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
 	var payload cursorFileEditPayload
 	if err := json.Unmarshal(event.ToolInput, &payload); err != nil {
@@ -114,9 +128,19 @@ func buildFileEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutt
 		return nil, nil
 	}
 
-	inputJSON, fileOp := normalizeCursorEditInput(event.ToolName, payload)
+	if event.ToolName == "Edit" && len(payload.Edits) > 1 {
+		return buildMultiEditEvents(ctx, event, bs, payload), nil
+	}
+	return buildSingleFileEditEvent(ctx, event, bs, payload), nil
+}
+
+// buildSingleFileEditEvent emits one RawEvent for a Write or
+// single-edit Edit. Provenance uses the wrapped envelope parsed by
+// hosted diff readers.
+func buildSingleFileEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter, payload cursorFileEditPayload) []broker.RawEvent {
+	inputJSON, fileOp := buildCursorCanonicalInput(event.ToolName, payload.FilePath, firstEdit(payload.Edits))
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, event.ToolName, inputJSON)
-	provenanceHash := storeRawHookPayload(ctx, bs, event.ToolInput)
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, nil)
 	toolUsesJSON := serializeStepToolUses(event.ToolName, payload.FilePath, fileOp)
 
 	ev := makeBaseRawEvent(event)
@@ -130,8 +154,86 @@ func buildFileEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutt
 	ev.ToolName = event.ToolName
 	ev.EventSource = "hook"
 	ev.FilePaths = []string{payload.FilePath}
+	return []broker.RawEvent{ev}
+}
 
-	return []broker.RawEvent{ev}, nil
+// buildMultiEditEvents splits a multi-edit afterFileEdit into one
+// RawEvent per edit. See buildFileEditEvent for the rationale.
+//
+// The cloned event feeds ComputeEventID with the per-edit ToolUseID,
+// giving each split a distinct deterministic EventID.
+func buildMultiEditEvents(ctx context.Context, event *hooks.Event, bs api.BlobPutter, payload cursorFileEditPayload) []broker.RawEvent {
+	events := make([]broker.RawEvent, 0, len(payload.Edits))
+	for i, edit := range payload.Edits {
+		inputJSON, fileOp := buildCursorCanonicalInput("Edit", payload.FilePath, &edit)
+		payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
+		provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, nil)
+		toolUsesJSON := serializeStepToolUses("Edit", payload.FilePath, fileOp)
+
+		perEdit := *event
+		perEdit.ToolUseID = formatSplitToolUseID(event.ToolUseID, i)
+
+		ev := makeBaseRawEvent(&perEdit)
+		ev.Kind = "assistant"
+		ev.Role = "assistant"
+		ev.PayloadHash = payloadHash
+		ev.ProvenanceHash = provenanceHash
+		ev.ToolUsesJSON = toolUsesJSON
+		ev.TurnID = event.TurnID
+		ev.ToolUseID = perEdit.ToolUseID
+		ev.ToolName = "Edit"
+		ev.EventSource = "hook"
+		ev.FilePaths = []string{payload.FilePath}
+		events = append(events, ev)
+	}
+	return events
+}
+
+// formatSplitToolUseID derives a unique ToolUseID for one edit in a
+// multi-edit split. Falls back to a synthesized base when the parent
+// hook did not supply a ToolUseID.
+func formatSplitToolUseID(base string, idx int) string {
+	if base == "" {
+		return fmt.Sprintf("cursor-multi-edit:%d", idx)
+	}
+	return fmt.Sprintf("%s:%d", base, idx)
+}
+
+// firstEdit returns the first edit when present, or nil when the
+// payload has no edits (Write with empty edits, etc.).
+func firstEdit(edits []cursorEdit) *cursorEdit {
+	if len(edits) == 0 {
+		return nil
+	}
+	return &edits[0]
+}
+
+// buildCursorCanonicalInput produces the canonical tool_input JSON
+// for one Cursor file event. Write maps to {file_path, content};
+// Edit maps to {file_path, old_string, new_string}.
+func buildCursorCanonicalInput(toolName, filePath string, edit *cursorEdit) (json.RawMessage, string) {
+	if toolName == "Write" {
+		content := ""
+		if edit != nil {
+			content = edit.NewString
+		}
+		out, _ := json.Marshal(map[string]any{
+			"file_path": filePath,
+			"content":   content,
+		})
+		return out, "write"
+	}
+	oldStr, newStr := "", ""
+	if edit != nil {
+		oldStr = edit.OldString
+		newStr = edit.NewString
+	}
+	out, _ := json.Marshal(map[string]any{
+		"file_path":  filePath,
+		"old_string": oldStr,
+		"new_string": newStr,
+	})
+	return out, "edit"
 }
 
 func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) ([]broker.RawEvent, error) {
@@ -245,41 +347,6 @@ func buildAgentEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 	return []broker.RawEvent{ev}, nil
 }
 
-// normalizeCursorEditInput converts the nested Cursor afterFileEdit
-// payload into the canonical tool_input shape the attribution scorer
-// consumes. A Write maps to {file_path, content}. A single edit maps
-// to {file_path, old_string, new_string}. Multi-edit payloads (only
-// emitted by Cursor today) preserve the edits array under the same
-// file_path.
-func normalizeCursorEditInput(toolName string, payload cursorFileEditPayload) (json.RawMessage, string) {
-	if toolName == "Write" {
-		content := ""
-		if len(payload.Edits) > 0 {
-			content = payload.Edits[0].NewString
-		}
-		input, _ := json.Marshal(map[string]any{
-			"file_path": payload.FilePath,
-			"content":   content,
-		})
-		return input, "write"
-	}
-
-	if len(payload.Edits) == 1 {
-		input, _ := json.Marshal(map[string]any{
-			"file_path":  payload.FilePath,
-			"old_string": payload.Edits[0].OldString,
-			"new_string": payload.Edits[0].NewString,
-		})
-		return input, "edit"
-	}
-
-	input, _ := json.Marshal(map[string]any{
-		"file_path": payload.FilePath,
-		"edits":     payload.Edits,
-	})
-	return input, "edit"
-}
-
 // extractCursorToolOutput unwraps Cursor's tool_output string. The
 // field is a JSON-encoded string (not structured), usually shaped as
 // {"output":"...","exitCode":N}. Pull the inner text when available;
@@ -349,12 +416,9 @@ func storeRedactedBashPayload(ctx context.Context, bs api.BlobPutter, payload cu
 	return builder.PutAndHash(ctx, bs, data)
 }
 
-// serializeStepToolUses produces the ToolUsesJSON string via
-// agentcursor's helper. The shape matches Claude, Copilot, and
-// Gemini (name plus file_path plus file_op); only the implementing
-// package differs. A future cleanup could consolidate the four
-// agent-side helpers into one shared package, but that is out of
-// scope here.
+// serializeStepToolUses produces the ToolUsesJSON string using the
+// Cursor helper. The serialized shape is the shared file-edit shape:
+// name, file_path, and file_op.
 func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	tu := agentcursor.ToolUse{
 		Name:     toolName,

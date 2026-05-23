@@ -166,7 +166,41 @@ func redactStepProvenance(blob []byte, repoRoot string) ([]byte, error) {
 		obj["tool_response"] = redacted
 	}
 
+	// Canonical multi-file shape. Each entry carries file-edit content
+	// fields and an entry-local path.
+	if filesRaw, ok := obj["files"]; ok {
+		redacted, err := redactFilesArray(filesRaw, repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("redact step_provenance: files: %w", err)
+		}
+		obj["files"] = redacted
+	}
+
 	return json.Marshal(obj)
+}
+
+// redactFilesArray walks the canonical files[] wrapper and runs
+// redactToolFields on every element. Canonical entries are objects,
+// but non-object entries are scanned too so malformed producer output
+// cannot bypass redaction.
+func redactFilesArray(raw json.RawMessage, repoRoot string) (json.RawMessage, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "step_provenance", "reason", "unmarshal", "field", "files", "err", err)
+		return nil, fmt.Errorf("files: unmarshal: %w", err)
+	}
+	for i, entry := range entries {
+		redacted, err := redactToolFields(entry, repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("files[%d]: %w", i, err)
+		}
+		entries[i] = redacted
+	}
+	out, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("files: marshal: %w", err)
+	}
+	return out, nil
 }
 
 // redactToolFields normalizes paths and redacts secret content in a
@@ -216,10 +250,12 @@ func redactToolFieldsObject(raw json.RawMessage, repoRoot string) (json.RawMessa
 		}
 	}
 
-	// Content fields: redact secrets.
+	// Content fields: redact secrets in nested tool payloads and
+	// canonical files[] entries.
 	for _, key := range []string{
 		"content", "file_text", "new_string", "old_string",
 		"new_str", "old_str", "newString", "oldString",
+		"new_text", "old_text",
 		"command", "stdout", "stderr",
 		"originalFile", "newContent", "originalContent",
 	} {

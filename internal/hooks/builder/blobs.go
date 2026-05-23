@@ -75,8 +75,8 @@ func SynthesizeAssistantBlob(ctx context.Context, bs api.BlobPutter, toolName st
 	return PutAndHash(ctx, bs, data)
 }
 
-// StoreWrappedHookProvenance stores the original hook payload under
-// the shared envelope used by Claude, Copilot, Gemini, and Kiro CLI:
+// StoreWrappedHookProvenance stores a tool input payload under the
+// shared envelope used by file-changing providers:
 //
 //	{ "tool_input": <toolInput>, "tool_response": <toolResponse> }
 //
@@ -84,8 +84,9 @@ func SynthesizeAssistantBlob(ctx context.Context, bs api.BlobPutter, toolName st
 // hook phases that do not carry a response (for example pre-tool-use)
 // produce a smaller, wrapper-only blob.
 //
-// Cursor stores the raw payload without this wrapper and therefore
-// keeps a small provider-local helper instead of calling this one.
+// File-edit provenance uses this envelope so hosted diff readers can
+// parse one stable shape across providers. Provider-specific blobs may
+// still use local helpers when their schema is not file-edit data.
 //
 // Returns an empty string on marshal or blob-store failure.
 func StoreWrappedHookProvenance(ctx context.Context, bs api.BlobPutter, toolInput, toolResponse json.RawMessage) string {

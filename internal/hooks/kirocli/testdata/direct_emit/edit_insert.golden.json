@@ -25,7 +25,7 @@
       "ToolUseID": "kiro-step-3",
       "ToolName": "Edit",
       "EventSource": "hook",
-      "ProvenanceHash": "8c3992ab9e079ebb860f69852644889f667cc0a0ef2aec38ea7b61b64f62341b",
+      "ProvenanceHash": "97565c0f675b076fd9815e2f41d217e2e46901cc061ba633ea64e587150d7208",
       "ProviderSessionID": "sess-kiro-1",
       "ParentSessionID": "",
       "SessionStartedAt": 1714000030000,
@@ -36,6 +36,6 @@
   ],
   "expected_blobs": {
     "5e46b5196cf1c24454b4836ec59874db4519c5891cdf7bade1d4e9432db449ab": "{\"message\":{\"content\":[{\"input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"// new line\\n\",\"old_string\":\"\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}",
-    "8c3992ab9e079ebb860f69852644889f667cc0a0ef2aec38ea7b61b64f62341b": "{\"tool_input\":{\"command\":\"insert\",\"path\":\"/repo/main.go\",\"content\":\"// new line\\n\"}}"
+    "97565c0f675b076fd9815e2f41d217e2e46901cc061ba633ea64e587150d7208": "{\"tool_input\":{\"file_path\":\"/repo/main.go\",\"new_string\":\"// new line\\n\",\"old_string\":\"\"}}"
   }
 }

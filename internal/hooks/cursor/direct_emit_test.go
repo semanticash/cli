@@ -68,6 +68,42 @@ func TestBuildHookEvents_Write(t *testing.T) {
 	}
 }
 
+// A Write with edits[] length > 1 still emits one event. Write
+// represents one full-file content stream, so Semantica uses the
+// first edit's NewString as that content.
+func TestBuildHookEvents_Write_MultiEdit_OnlyFirstUsed(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+	event := &hooks.Event{
+		Type:          hooks.ToolStepCompleted,
+		SessionID:     "conv-123",
+		TranscriptRef: testTranscriptRef,
+		Timestamp:     1000,
+		TurnID:        "turn-123",
+		ToolUseID:     "cursor-write-multi",
+		ToolName:      "Write",
+		ToolInput: json.RawMessage(`{
+			"conversation_id":"conv-123",
+			"file_path":"/repo/odd.txt",
+			"edits":[
+				{"old_string":"","new_string":"first\n"},
+				{"old_string":"","new_string":"second\n"}
+			]
+		}`),
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("Write must collapse to 1 event regardless of edits length; got %d", len(events))
+	}
+	if events[0].ToolUseID != "cursor-write-multi" {
+		t.Errorf("Write ToolUseID = %q, want cursor-write-multi (no split suffix)", events[0].ToolUseID)
+	}
+}
+
 func TestBuildHookEvents_Edit(t *testing.T) {
 	p := &Provider{}
 	bs := newFakeBlobPutter()

@@ -20,6 +20,7 @@ import (
 	agentKiro "github.com/semanticash/cli/internal/agents/kiro"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/hooks/builder"
 )
 
 var providerName = agentKiro.ProviderNameIDE
@@ -519,22 +520,17 @@ func buildEventForOp(
 			event.FilePaths = []string{filepath.Join(workspaceDir, op.FilePath)}
 		}
 
-		if bs != nil && op.Content != "" {
-			provBlob, _ := json.Marshal(map[string]any{
-				"action":    op.ActionType,
-				"file_path": op.FilePath,
-				"content":   op.Content,
-			})
-			if h, _, err := bs.Put(ctx, provBlob); err == nil {
-				event.ProvenanceHash = h
-			}
-		}
-
 		if bs != nil && op.FilePath != "" {
+			// Wrapped provenance envelope for hosted diff readers.
 			inputJSON, _ := json.Marshal(map[string]any{
 				"file_path": op.FilePath,
 				"content":   op.Content,
 			})
+			if h := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, nil); h != "" {
+				event.ProvenanceHash = h
+			}
+
+			// Claude-shaped assistant blob for local attribution.
 			payloadBlob, _ := json.Marshal(map[string]any{
 				"type": "assistant",
 				"message": map[string]any{
@@ -558,24 +554,17 @@ func buildEventForOp(
 			event.FilePaths = []string{filepath.Join(workspaceDir, op.FilePath)}
 		}
 
-		if bs != nil {
-			provBlob, _ := json.Marshal(map[string]any{
-				"action":           op.ActionType,
-				"file_path":        op.FilePath,
-				"original_content": op.OriginalContent,
-				"modified_content": op.Content,
-			})
-			if h, _, err := bs.Put(ctx, provBlob); err == nil {
-				event.ProvenanceHash = h
-			}
-		}
-
 		if bs != nil && op.FilePath != "" {
+			// Wrapped provenance envelope for hosted diff readers.
 			inputJSON, _ := json.Marshal(map[string]any{
 				"file_path":  op.FilePath,
 				"old_string": op.OriginalContent,
 				"new_string": op.Content,
 			})
+			if h := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, nil); h != "" {
+				event.ProvenanceHash = h
+			}
+
 			payloadBlob, _ := json.Marshal(map[string]any{
 				"type": "assistant",
 				"message": map[string]any{

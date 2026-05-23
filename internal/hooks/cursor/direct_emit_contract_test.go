@@ -9,10 +9,11 @@ import (
 )
 
 // TestDirectEmit_Contract freezes Cursor's full emission shape.
-// Cursor has the most provider-specific wire details among the
-// migrated providers: no-wrapper raw hook provenance, nested
-// payload shapes, and the subagentStop summary built from
-// subagent_type. Each case below covers one of those paths.
+// File-edit provenance now flows through the canonical wrapped
+// envelope shared with the other providers; the multi-edit case
+// covers the per-edit split into distinct RawEvents. Subagent and
+// bash glue keep Cursor-specific shapes that the rest of the
+// cases cover.
 func TestDirectEmit_Contract(t *testing.T) {
 	const transcriptRef = "/workspace/.cursor/projects/tmp-demo/agent-transcripts/conv-123/conv-123.jsonl"
 
@@ -63,6 +64,27 @@ func TestDirectEmit_Contract(t *testing.T) {
 					"edits":[{"old_string":"foo","new_string":"bar"}]
 				}`),
 				Timestamp: 1714000020000,
+			},
+		},
+		{
+			Name:        "multi_edit",
+			Description: "Cursor afterFileEdit with edits[] length > 1; one RawEvent per edit with split ToolUseIDs and canonical wrapped per-edit provenance",
+			Event: &hooks.Event{
+				Type:          hooks.ToolStepCompleted,
+				SessionID:     "conv-123",
+				TranscriptRef: transcriptRef,
+				TurnID:        "turn-1",
+				ToolUseID:     "cursor-multi",
+				ToolName:      "Edit",
+				ToolInput: json.RawMessage(`{
+					"conversation_id":"conv-123",
+					"file_path":"/repo/util.go",
+					"edits":[
+						{"old_string":"foo","new_string":"bar"},
+						{"old_string":"baz","new_string":"qux"}
+					]
+				}`),
+				Timestamp: 1714000025000,
 			},
 		},
 		{

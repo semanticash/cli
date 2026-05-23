@@ -95,7 +95,9 @@ func buildWriteEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter)
 		"content":   inp.Content,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Write", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store canonical file_path + content keys instead of Kiro's
+	// native path field.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameWrite, resolvedPath, "write").String
 
 	ev := makeBaseRawEvent(event)
@@ -140,7 +142,9 @@ func buildEditEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 		"new_string": newString,
 	})
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Edit", inputJSON)
-	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, event.ToolInput, event.ToolResponse)
+	// Store canonical old_string / new_string keys and preserve
+	// empty old_string values for insert commands.
+	provenanceHash := builder.StoreWrappedHookProvenance(ctx, bs, inputJSON, event.ToolResponse)
 	toolUsesJSON := agentKiro.BuildToolUsesJSON(agentKiro.ToolNameEdit, resolvedPath, "edit").String
 
 	ev := makeBaseRawEvent(event)
