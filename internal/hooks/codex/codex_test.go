@@ -850,3 +850,143 @@ func TestProvider_RegistersUnderCanonicalName(t *testing.T) {
 		t.Fatalf("Codex provider not retrievable from registry under %q", providerName)
 	}
 }
+
+// Codex post-tool-use payloads include a provider turn_id, but Semantica
+// packages provenance by the capture-state turn created for the prompt.
+// ParseHookEvent leaves Event.TurnID empty so lifecycle can attach that
+// active turn before direct emission.
+//
+// Two tests together lock the fix:
+//
+//   - TestParseHookEvent_PostToolUseDropsProviderTurnID covers the parse
+//     layer: payload turn_id never reaches hooks.Event.TurnID.
+//   - TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID
+//     covers the end-to-end chain: parse drops it, Dispatch fills from
+//     capture state, the event downstream code sees carries the prompt
+//     turn id.
+//
+// The test also asserts that supplied ToolUseID values round-trip for
+// all capturable tools. Missing ToolUseID behavior is intentionally
+// not covered here; dropping or synthesizing ids would be a separate
+// behavior choice.
+func TestParseHookEvent_PostToolUseDropsProviderTurnID(t *testing.T) {
+	cases := []struct {
+		toolName string
+		// The direct emitter may split apply_patch into per-file events
+		// later. This test only checks that the supplied invocation id
+		// survives parsing.
+		toolUseID string
+	}{
+		{"apply_patch", "call_apply_patch_1"},
+		{"Bash", "call_bash_1"},
+		{"Write", "call_write_1"},
+		{"Edit", "call_edit_1"},
+	}
+	p := &Provider{}
+	for _, tc := range cases {
+		t.Run(tc.toolName, func(t *testing.T) {
+			payload := map[string]any{
+				"session_id":  "sess-codex-1",
+				"turn_id":     "provider-turn",
+				"tool_name":   tc.toolName,
+				"tool_use_id": tc.toolUseID,
+				"tool_input":  json.RawMessage(`{}`),
+			}
+			data, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+			event, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(string(data)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if event == nil {
+				t.Fatalf("event was nil for tool %q (expected ToolStepCompleted)", tc.toolName)
+			}
+			if event.Type != hooks.ToolStepCompleted {
+				t.Errorf("type: got %v, want ToolStepCompleted", event.Type)
+			}
+			if event.TurnID != "" {
+				t.Errorf("TurnID: got %q, want empty (provider turn id must be dropped)", event.TurnID)
+			}
+			if event.ToolUseID != tc.toolUseID {
+				t.Errorf("ToolUseID: got %q, want %q (supplied id must round-trip)", event.ToolUseID, tc.toolUseID)
+			}
+			if event.ToolName != tc.toolName {
+				t.Errorf("ToolName: got %q, want %q", event.ToolName, tc.toolName)
+			}
+		})
+	}
+}
+
+// ParseHookEvent plus Dispatch should attach the active capture-state
+// turn to Codex tool events. That is the turn packaging uses for the
+// prompt manifest.
+func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T) {
+	// Isolate SEMANTICA_HOME so SaveCaptureState writes into a tempdir.
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	// Seed capture state with a Semantica-generated turn id, mimicking
+	// what lifecycle.go does on PromptSubmitted (turnID := uuid.NewString()).
+	const sessionID = "sess-codex-dispatch"
+	const captureTurnID = "semantica-prompt-turn-1"
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID:        sessionID,
+		Provider:         "codex",
+		TranscriptRef:    "",
+		TranscriptOffset: 0,
+		Timestamp:        1,
+		TurnID:           captureTurnID,
+	}); err != nil {
+		t.Fatalf("save capture state: %v", err)
+	}
+
+	// Parse a post-tool-use payload with a different provider turn_id.
+	// Dispatch should replace the empty parsed TurnID with the active
+	// capture-state turn.
+	const providerTurnID = "codex-provider-turn"
+	payload := map[string]any{
+		"session_id":  sessionID,
+		"turn_id":     providerTurnID,
+		"tool_name":   "Bash",
+		"tool_use_id": "call_dispatch_1",
+		"tool_input":  json.RawMessage(`{"command":"echo hello"}`),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	p := &Provider{}
+	event, err := p.ParseHookEvent(context.Background(), "post-tool-use", strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event == nil {
+		t.Fatal("parse returned nil for post-tool-use Bash")
+	}
+	if event.TurnID != "" {
+		t.Fatalf("parsed event TurnID = %q, want empty (parse layer must drop provider turn id)", event.TurnID)
+	}
+
+	// Open a broker handle so Dispatch can run through the normal
+	// routing path. The assertion is on the inherited turn id.
+	registryPath := filepath.Join(t.TempDir(), "repos.json")
+	bh, err := broker.Open(context.Background(), registryPath)
+	if err != nil {
+		t.Fatalf("open broker: %v", err)
+	}
+	t.Cleanup(func() { _ = broker.Close(bh) })
+
+	// Dispatch mutates the event before routing so downstream code sees
+	// the capture-state turn id.
+	if err := hooks.Dispatch(context.Background(), p, event, bh, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	if event.TurnID != captureTurnID {
+		t.Errorf("event TurnID after Dispatch = %q, want %q (capture-state turn id)", event.TurnID, captureTurnID)
+	}
+	if event.TurnID == providerTurnID {
+		t.Errorf("event TurnID = provider turn id %q; fix did not take effect", providerTurnID)
+	}
+}

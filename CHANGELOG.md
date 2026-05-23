@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Provenance upload redaction now scans wrapped tool inputs and canonical multi-file `files[]` step blobs, including old/new text and non-object entries.
 - Concurrent hook processes now write capture state through unique temp files, preventing Cursor file-edit attribution from being lost to corrupted capture-state JSON.
 - User-facing read commands now wait longer for short-lived SQLite locks, avoiding spurious `SQLITE_BUSY` failures when they race with the post-commit worker.
+- Codex tool events now inherit the active prompt turn before direct emission, so packaged provenance can include Codex tool steps for hosted `/diff` views.
 
 
 ### Changed

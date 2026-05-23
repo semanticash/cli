@@ -85,6 +85,11 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		return nil, fmt.Errorf("parse codex hook payload: %w", err)
 	}
 
+	// Codex sends its own provider turn id, but Semantica packages
+	// provenance by the capture-state turn created for the user prompt.
+	// Leave Event.TurnID empty so lifecycle can attach the active turn
+	// before direct emission; otherwise tool steps would be stored under
+	// a provider turn that is never packaged.
 	event := &hooks.Event{
 		SessionID:     payload.SessionID,
 		TranscriptRef: payload.TranscriptPath,
@@ -96,7 +101,6 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		ToolInput:     payload.ToolInput,
 		ToolResponse:  payload.ToolResponse,
 		ToolUseID:     payload.ToolUseID,
-		TurnID:        payload.TurnID,
 	}
 
 	// Hook names arrive in the kebab-case form the installer registers
@@ -131,7 +135,9 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 // send. Decoding via a single struct keeps the per-event branches in
 // ParseHookEvent thin; unknown fields are ignored.
 type codexHookPayload struct {
-	SessionID            string          `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// TurnID is Codex's provider turn id. Keep it decoded for future
+	// use, but do not map it to hooks.Event.TurnID.
 	TurnID               string          `json:"turn_id"`
 	TranscriptPath       string          `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`
