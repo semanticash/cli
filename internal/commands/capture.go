@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,6 +15,12 @@ import (
 	"github.com/semanticash/cli/internal/store/blobs"
 	"github.com/semanticash/cli/internal/util"
 )
+
+// stdinReadDeadline bounds how long capture waits for EOF on stdin.
+// Hook runners normally pipe a JSON payload and close stdin promptly.
+// Some hosts inherit an open stdin instead, so an unbounded io.ReadAll
+// can block until the hook runner times out.
+const stdinReadDeadline = 250 * time.Millisecond
 
 // NewCaptureCmd creates the `semantica capture <provider> <event-name>` command.
 // This command is used by provider hook configurations and is not intended
@@ -31,8 +38,8 @@ func NewCaptureCmd() *cobra.Command {
 			hookName := args[1]
 			ctx := cmd.Context()
 
-			// Broker-global enabled check: any active repo in the registry?
-			// Do NOT gate on the cwd repo's local .semantica/ settings -
+			// Broker-wide enabled check: any active repo in the registry?
+			// Do not gate on the cwd repo's local .semantica/ settings:
 			// a session from repo A may be editing repo B.
 			registryPath, err := broker.DefaultRegistryPath()
 			if err != nil {
@@ -50,9 +57,8 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 
-			// Look up provider from the composition-root registry.
-			// Cheap to construct each invocation; the registry holds
-			// stateless provider values.
+			// Look up the provider from the production registry. The
+			// registry is cheap to construct and holds stateless values.
 			provider := providers.NewHookRegistry().Get(providerName)
 			if provider == nil {
 				logCaptureError(providerName, hookName, "unknown provider: %s", providerName)
@@ -62,10 +68,16 @@ func NewCaptureCmd() *cobra.Command {
 			// Read stdin once so providers implementing CwdGatedProvider
 			// can inspect the payload before any side effects, and so we
 			// can replay the same bytes into ParseHookEvent afterward.
-			payload, err := io.ReadAll(os.Stdin)
+			// Bound the read so a hook runner that leaves stdin open
+			// cannot block capture indefinitely. Providers that need a
+			// payload will fail gracefully when the deadline elapses.
+			payload, timedOut, err := readHookPayload(os.Stdin, stdinReadDeadline)
 			if err != nil {
 				logCaptureError(providerName, hookName, "read stdin (%s/%s): %v", providerName, hookName, err)
 				return nil
+			}
+			if timedOut {
+				logCaptureError(providerName, hookName, "stdin did not close before %s; continuing with empty hook payload", stdinReadDeadline)
 			}
 
 			// Optional cwd preflight. Used by providers whose hook
@@ -114,6 +126,35 @@ func NewCaptureCmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+// readHookPayload is the bounded equivalent of io.ReadAll for hook
+// payloads.
+//
+// Returns one of three outcomes:
+//
+//   - (payload, false, nil): the reader closed before the deadline.
+//   - (nil,     true,  nil): the deadline elapsed first.
+//   - (nil,     false, err): the read failed.
+//
+// On timeout, the read goroutine may remain blocked until process exit.
+// Capture is short-lived, so the caller prefers that to blocking the hook.
+func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timedOut bool, err error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		data, e := io.ReadAll(r)
+		ch <- result{data: data, err: e}
+	}()
+	select {
+	case res := <-ch:
+		return res.data, false, res.err
+	case <-time.After(deadline):
+		return nil, true, nil
+	}
 }
 
 // logCaptureError reports a capture-time failure on stderr (for
