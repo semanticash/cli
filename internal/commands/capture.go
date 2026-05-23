@@ -53,7 +53,7 @@ func NewCaptureCmd() *cobra.Command {
 
 			repos, err := broker.ListActiveRepos(ctx, bh)
 			if err != nil || len(repos) == 0 {
-				// No active repos - hooks are effectively dormant.
+				// No active repos means hooks are effectively dormant.
 				return nil
 			}
 
@@ -100,7 +100,7 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 			if event == nil {
-				// Provider returned nil - this hook does not produce a capture event.
+				// Provider returned nil because this hook does not produce a capture event.
 				return nil
 			}
 

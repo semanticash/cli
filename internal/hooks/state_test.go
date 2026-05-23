@@ -8,8 +8,32 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 )
+
+// isExpectedWindowsConcurrencyError reports whether err is a Windows
+// filesystem error that can still surface under heavy concurrent
+// rename/open contention:
+//
+//   - ERROR_ACCESS_DENIED (5): two writers race the Remove/Rename
+//     sequence and one keeps losing.
+//   - ERROR_SHARING_VIOLATION (32): a reader's os.Open lands in the
+//     brief window where a writer's rename is in flight.
+//
+// On non-Windows the helper always returns false. The concurrent tests
+// still assert that at least one save succeeded, the final file is
+// valid, and no .tmp file is stranded.
+func isExpectedWindowsConcurrencyError(err error) bool {
+	if runtime.GOOS != "windows" || err == nil {
+		return false
+	}
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
+		return errno == 5 || errno == 32
+	}
+	return false
+}
 
 func setupTestCaptureDir(t *testing.T) {
 	t.Helper()
@@ -250,8 +274,16 @@ func TestSaveCaptureState_ConcurrentSameSession(t *testing.T) {
 	wg.Wait()
 	close(errs)
 
+	saveFailures := 0
 	for err := range errs {
+		if isExpectedWindowsConcurrencyError(err) {
+			saveFailures++
+			continue
+		}
 		t.Errorf("save: %v", err)
+	}
+	if saveFailures == writers {
+		t.Fatalf("every save returned a Windows concurrency error; no writer ever succeeded")
 	}
 
 	// The final file must contain one complete CaptureState.
@@ -315,6 +347,11 @@ func TestSaveCaptureState_ConcurrentReadersAndWriters(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, writers+readers)
+	// Track writer successes separately so the test can assert at
+	// least one concurrent writer actually committed. The seed save
+	// above means LoadCaptureState would otherwise succeed even if
+	// every concurrent writer failed.
+	var writerSuccesses atomic.Int32
 
 	for i := 0; i < writers; i++ {
 		wg.Add(1)
@@ -326,7 +363,9 @@ func TestSaveCaptureState_ConcurrentReadersAndWriters(t *testing.T) {
 				Timestamp:        int64(1000 + i),
 			}); err != nil {
 				errs <- err
+				return
 			}
+			writerSuccesses.Add(1)
 		}(i)
 	}
 	for i := 0; i < readers; i++ {
@@ -356,6 +395,40 @@ func TestSaveCaptureState_ConcurrentReadersAndWriters(t *testing.T) {
 	close(errs)
 
 	for err := range errs {
+		if isExpectedWindowsConcurrencyError(err) {
+			continue
+		}
 		t.Errorf("concurrent op: %v", err)
+	}
+
+	// At least one concurrent writer must succeed so the seed file
+	// cannot hide write failures.
+	if writerSuccesses.Load() == 0 {
+		t.Fatalf("no concurrent writer succeeded under contention (all %d returned Windows errors)", writers)
+	}
+
+	// Final state must be a valid CaptureState. The file may carry any
+	// writer's offset, but it must unmarshal cleanly.
+	loaded, err := LoadCaptureState(sessionID)
+	if err != nil {
+		t.Fatalf("load after concurrent ops: %v", err)
+	}
+	if loaded.SessionID != sessionID {
+		t.Errorf("final session ID = %q, want %q", loaded.SessionID, sessionID)
+	}
+
+	// No .tmp must be stranded after the contention settles.
+	dir, err := captureDir()
+	if err != nil {
+		t.Fatalf("captureDir: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("stranded temp file after concurrent ops: %s", e.Name())
+		}
 	}
 }
