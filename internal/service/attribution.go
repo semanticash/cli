@@ -23,11 +23,23 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// AttributionService computes AI vs human attribution for git commits.
-type AttributionService struct{}
+// AttributionService computes per-commit AI vs human attribution.
+// openOpts lets worker callers fail fast while user-facing commands
+// can wait out short-lived SQLite writer locks.
+type AttributionService struct {
+	openOpts sqlstore.OpenOptions
+}
 
-// NewAttributionService returns a ready-to-use AttributionService.
-func NewAttributionService() *AttributionService { return &AttributionService{} }
+// NewAttributionService returns a fail-fast service for worker paths.
+func NewAttributionService() *AttributionService {
+	return &AttributionService{openOpts: sqlstore.DefaultOpenOptions()}
+}
+
+// NewAttributionServiceWithOpenOptions returns a service with custom
+// SQLite open options.
+func NewAttributionServiceWithOpenOptions(opts sqlstore.OpenOptions) *AttributionService {
+	return &AttributionService{openOpts: opts}
+}
 
 // BlameInput holds the parameters for a blame request.
 type BlameInput struct {
@@ -150,7 +162,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, s.openOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +457,7 @@ func (s *AttributionService) Blame(ctx context.Context, in BlameInput) (*Attribu
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, s.openOpts)
 	if err != nil {
 		return nil, err
 	}

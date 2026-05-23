@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/semanticash/cli/internal/service"
+	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +24,7 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 				return rerr
 			}
 
-			svc := service.NewAttributionService()
+			svc := service.NewAttributionServiceWithOpenOptions(sqlstore.UserFacingOpenOptions())
 			var res *service.AttributionResult
 			out := cmd.OutOrStdout()
 			action := func() {

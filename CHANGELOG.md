@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-## [0.5.2] - 2026-05-22
+## [0.5.2] - 2026-05-24
 
 ### Added
 
@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Re-running `semantica connect` on an already connected repo no longer starts a provenance sync silently. Interactive terminals now show the pending local turn count and ask before syncing; non-interactive callers get an explanatory message and no upload side effect.
 - File-edit step provenance now uses canonical hosted-diff shapes across Cursor, Gemini CLI, Kiro CLI, Kiro IDE, GitHub Copilot CLI, and Codex `apply_patch`, so synced turns can render provider code changes consistently.
 - Provenance upload redaction now scans wrapped tool inputs and canonical multi-file `files[]` step blobs, including old/new text and non-object entries.
+- Concurrent hook processes now write capture state through unique temp files, preventing Cursor file-edit attribution from being lost to corrupted capture-state JSON.
+- User-facing read commands now wait longer for short-lived SQLite locks, avoiding spurious `SQLITE_BUSY` failures when they race with the post-commit worker.
+- Codex tool events now inherit the active prompt turn before direct emission, so packaged provenance can include Codex tool steps for hosted `/diff` views.
 
 
 ### Changed

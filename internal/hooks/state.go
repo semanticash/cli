@@ -81,7 +81,12 @@ func CaptureDirWritable() error {
 	return nil
 }
 
-// SaveCaptureState writes a capture state file atomically.
+// SaveCaptureState writes a capture state through a unique temp file.
+//
+// Multiple hook processes can update the same session concurrently, so
+// each writer gets its own staging path. The live file is replaced only
+// after the JSON has been fully written and closed. Temp files end in
+// .json.tmp so LoadActiveCaptureStates ignores in-flight writes.
 func SaveCaptureState(state *CaptureState) error {
 	if state.Key() == "" {
 		return fmt.Errorf("empty capture state key")
@@ -92,7 +97,8 @@ func SaveCaptureState(state *CaptureState) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir capture dir: %w", err)
 	}
 
@@ -101,13 +107,23 @@ func SaveCaptureState(state *CaptureState) error {
 		return fmt.Errorf("marshal capture state: %w", err)
 	}
 
-	// Atomic write.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, "capture-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp capture state: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write capture state: %w", err)
 	}
-	if err := platform.SafeRename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close capture state: %w", err)
+	}
+	if err := platform.SafeRename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename capture state: %w", err)
 	}
 	return nil

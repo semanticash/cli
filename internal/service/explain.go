@@ -114,7 +114,7 @@ func (s *ExplainService) SaveSummary(ctx context.Context, in SaveSummaryInput) e
 	semDir := filepath.Join(repoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 		return nil, fmt.Errorf("semantica is disabled. run `semantica enable` to re-enable")
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.UserFacingOpenOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 	subject, _ := repo.CommitSubject(ctx, commitHash)
 
 	// --- Attribution facts ---
-	attrSvc := NewAttributionService()
+	attrSvc := NewAttributionServiceWithOpenOptions(sqlstore.UserFacingOpenOptions())
 	blame, err := attrSvc.Blame(ctx, BlameInput{RepoPath: in.RepoPath, Ref: commitHash})
 	if err != nil {
 		return nil, fmt.Errorf("attribution: %w", err)

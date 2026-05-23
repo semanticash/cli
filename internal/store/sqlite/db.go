@@ -19,13 +19,24 @@ type OpenOptions struct {
 	Synchronous string
 }
 
-// DefaultOpenOptions returns the standard options used by most callers:
-// BusyTimeout 250ms, Synchronous "NORMAL".
+// DefaultOpenOptions returns fail-fast SQLite settings for hook,
+// broker, worker, and background paths that retry or defer work on
+// lock contention.
 func DefaultOpenOptions() OpenOptions {
 	return OpenOptions{
 		BusyTimeout: 250 * time.Millisecond,
 		Synchronous: "NORMAL",
 	}
+}
+
+// UserFacingOpenOptions returns patient SQLite settings for commands
+// where a user is waiting for a local result. These commands can race
+// with the post-commit worker's writer lock, so they wait longer than
+// hook and worker paths before returning SQLITE_BUSY.
+func UserFacingOpenOptions() OpenOptions {
+	opts := DefaultOpenOptions()
+	opts.BusyTimeout = 5 * time.Second
+	return opts
 }
 
 type Handle struct {
