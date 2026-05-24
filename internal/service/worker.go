@@ -256,9 +256,9 @@ func runPostCompletion(ctx context.Context, wctx *workerContext, in WorkerInput)
 		spawnAutoPlaybook(wctx.semDir, in.CheckpointID, in.CommitHash, in.RepoRoot)
 	}
 
-	if util.IsConnected(wctx.semDir) {
-		syncProvenance(ctx, in.RepoRoot, wctx.cp.CreatedAt)
-	}
+	// Drain all packaged manifests. The manifest timestamp is set during
+	// packaging, so checkpoint timestamps are too early for this filter.
+	_ = drainAllPackagedProvenance(ctx, wctx.semDir, in.RepoRoot)
 
 	livePushRetried := false
 	if in.CommitHash != "" && util.IsConnected(wctx.semDir) {
