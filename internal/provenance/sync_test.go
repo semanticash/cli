@@ -1,9 +1,18 @@
 package provenance
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
+	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/util"
 )
 
 func TestFormatLoadOrRedactReason_RedactErrorHasStablePrefix(t *testing.T) {
@@ -87,4 +96,133 @@ func TestFormatLoadOrRedactReason_RoutesRedactErrorsThroughHelper(t *testing.T) 
 	if got != want {
 		t.Errorf("formatLoadOrRedactReason redact path = %q, want %q (must equal redactionFailedReason output)", got, want)
 	}
+}
+
+// TestSyncPendingTurns_WatermarkSemantics covers the packaged-manifest
+// watermark filter. A non-zero watermark is an upper bound on
+// created_at; watermark=0 drains all packaged manifests.
+func TestSyncPendingTurns_WatermarkSemantics(t *testing.T) {
+	ctx := context.Background()
+	const manifestCreatedAt int64 = 2000
+
+	cases := []struct {
+		name      string
+		watermark int64
+		wantCount int
+	}{
+		{
+			name:      "watermark earlier than manifest excludes it",
+			watermark: 1000,
+			wantCount: 0,
+		},
+		{
+			name:      "watermark=0 drains all packaged manifests",
+			watermark: 0,
+			wantCount: 1,
+		},
+		{
+			name:      "watermark later than manifest includes it",
+			watermark: 3000,
+			wantCount: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Each subtest gets its own repo because the fixture omits
+			// the bundle blob, so a returned manifest is marked failed.
+			repoRoot := setupPackagedManifestRepo(t, ctx, manifestCreatedAt)
+			results, err := SyncPendingTurns(ctx, repoRoot, tc.watermark, 50)
+			if err != nil {
+				t.Fatalf("SyncPendingTurns(watermark=%d): %v", tc.watermark, err)
+			}
+			if len(results) != tc.wantCount {
+				t.Errorf("watermark=%d: got %d results, want %d", tc.watermark, len(results), tc.wantCount)
+			}
+		})
+	}
+}
+
+// setupPackagedManifestRepo creates a temp repo with one packaged
+// provenance manifest. The handle is closed before returning so
+// SyncPendingTurns can open its own.
+func setupPackagedManifestRepo(t *testing.T, ctx context.Context, manifestCreatedAt int64) string {
+	t.Helper()
+
+	repoRoot := t.TempDir()
+	semDir := filepath.Join(repoRoot, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatalf("mkdir .semantica: %v", err)
+	}
+	// SyncPendingTurns returns early unless settings declare a connected
+	// repo. The connected repo ID value is not used by this test.
+	if err := util.WriteSettings(semDir, util.Settings{
+		Enabled:         true,
+		ConnectedRepoID: "test-connected-repo",
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatalf("migrate lineage.db: %v", err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open lineage.db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID,
+		RootPath:     repoRoot,
+		CreatedAt:    manifestCreatedAt,
+		EnabledAt:    manifestCreatedAt,
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+
+	sourceID := uuid.NewString()
+	if _, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID:     sourceID,
+		RepositoryID: repoID,
+		Provider:     "test",
+		SourceKey:    "test-source",
+		LastSeenAt:   manifestCreatedAt,
+		CreatedAt:    manifestCreatedAt,
+	}); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	sessionID := uuid.NewString()
+	if _, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID:         sessionID,
+		ProviderSessionID: "provider-session-1",
+		RepositoryID:      repoID,
+		Provider:          "test",
+		SourceID:          sourceID,
+		StartedAt:         manifestCreatedAt,
+		LastSeenAt:        manifestCreatedAt,
+		MetadataJson:      "{}",
+	}); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	if err := h.Queries.UpsertProvenanceManifest(ctx, sqldb.UpsertProvenanceManifestParams{
+		ManifestID:   uuid.NewString(),
+		RepositoryID: repoID,
+		SessionID:    sessionID,
+		TurnID:       uuid.NewString(),
+		Provider:     "test",
+		Kind:         "turn_bundle",
+		StartedAt:    manifestCreatedAt,
+		Status:       "packaged",
+		CreatedAt:    manifestCreatedAt,
+		UpdatedAt:    manifestCreatedAt,
+	}); err != nil {
+		t.Fatalf("upsert manifest: %v", err)
+	}
+
+	return repoRoot
 }

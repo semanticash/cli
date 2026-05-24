@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Concurrent hook processes now write capture state through unique temp files, preventing Cursor file-edit attribution from being lost to corrupted capture-state JSON.
 - User-facing read commands now wait longer for short-lived SQLite locks, avoiding spurious `SQLITE_BUSY` failures when they race with the post-commit worker.
 - Codex tool events now inherit the active prompt turn before direct emission, so packaged provenance can include Codex tool steps for hosted `/diff` views.
-
+- Post-commit provenance sync now drains newly packaged turn manifests immediately, so hosted diff data no longer waits for a later commit to upload.
 
 ### Changed
 
