@@ -63,6 +63,36 @@ Semantica installs lightweight hooks in each detected provider's configuration f
 
 File snapshots in `.semantica/objects/` are stored using SHA-256 content addressing with zstd compression. Blob integrity can be verified by recomputing the hash.
 
+## Verifying release artifacts
+
+Starting with `v0.5.3`, Semantica releases publish SLSA build provenance attestations signed by GitHub Actions OIDC and recorded in the public Sigstore [Rekor](https://docs.sigstore.dev/logging/overview/) transparency log. An attestation lets you verify that a downloaded artifact was built by the Semantica release workflow at a specific tag, not only that it matches the same-release `checksums.txt`.
+
+### Quick verification
+
+You need [GitHub CLI](https://cli.github.com/) `gh >= 2.67.0`. Earlier versions (`2.49.0` through `< 2.67.0`) are affected by [CVE-2025-25204](https://nvd.nist.gov/vuln/detail/CVE-2025-25204), which can cause `gh attestation verify` to return success when no attestation is present. Check with `gh --version`.
+
+Download the artifact and verify it, replacing the version and architecture as needed:
+
+```sh
+gh release download v0.5.3 \
+  --repo semanticash/cli \
+  --pattern 'semantica_linux_amd64.tar.gz'
+
+gh attestation verify ./semantica_linux_amd64.tar.gz \
+  --repo semanticash/cli \
+  --signer-workflow semanticash/cli/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.5.3
+```
+
+A successful verification confirms the artifact was produced by the named workflow at the named tag. Pinning `--signer-workflow` and `--source-ref` (instead of only `--owner`) ensures the attestation came from the release workflow and tag you expected.
+
+### Scope and limitations
+
+- **Releases before `v0.5.3` have no attestation.** They install via SHA-256 checksum verification as before; the verification command above will fail for older tags. This is expected.
+- **Homebrew and Scoop installs do not consume these attestations yet.** Their trust model continues to be the tap or bucket manifest commit.
+- **The default `install.sh` path is unchanged in `v0.5.3`.** It still verifies SHA-256 against `checksums.txt`. Automatic installer-side attestation verification may be added in a future release; today you can run the command above manually.
+- **Maintainer account compromise is not covered.** An attacker who can edit the release workflow or push tags can produce a valid attestation for malicious artifacts. Branch protection on `.github/workflows/release.yml` and signed-commit enforcement are separate hardenings.
+
 ## Supported versions
 
 Security fixes are applied to the latest release. We do not backport fixes to older versions.

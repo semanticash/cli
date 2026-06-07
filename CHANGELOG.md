@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+## [0.5.3] - 2026-05-07
+
+### Added
+
+- Release artifacts now publish SLSA build provenance attestations signed via GitHub Actions OIDC and recorded in the Sigstore Rekor transparency log. See [SECURITY.md](https://github.com/semanticash/cli/blob/main/SECURITY.md#verifying-release-artifacts) for the manual verification recipe. Releases before `v0.5.3` continue to use SHA-256 checksum verification.
+
+### Fixed
+
+### Changed
+
 ## [0.5.2] - 2026-05-24
 
 ### Added
