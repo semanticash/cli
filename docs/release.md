@@ -106,6 +106,8 @@ git push origin v0.1.1
    - Updates the Homebrew tap cask
    - Extracts the matching `CHANGELOG.md` entry and uses it as the GitHub release body
 
+   After GoReleaser, a separate `actions/attest@v4` step publishes a SLSA build provenance attestation for the archives and `checksums.txt`, signed via GitHub Actions OIDC and recorded in the Sigstore Rekor transparency log. See [SECURITY.md](../SECURITY.md#verifying-release-artifacts) for the verification recipe. The attestation step runs after publishing, so an attestation failure does not roll back the release. Revisit this ordering if installer-side attestation verification is added later.
+
 If the release workflow cannot find a `CHANGELOG.md` section for the tag version, it fails instead of publishing raw commit-message notes.
 
 ## Version injection

@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write           # OIDC token for Sigstore Fulcio short-lived cert
+  attestations: write       # write the attestation to GitHub's store
+  artifact-metadata: write  # required by current actions/attest API
 
 jobs:
   release:
@@ -38,6 +41,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+
+      # Publish SLSA build provenance for the release artifacts. The
+      # attestation is signed by GitHub Actions OIDC -> Sigstore Fulcio
+      # and recorded in Rekor. Users verify with `gh attestation verify`;
+      # see SECURITY.md for the manual recipe.
+      - name: Attest build provenance for release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/semantica_*.tar.gz
+            dist/semantica_*.zip
+            dist/checksums.txt
 
       - name: Notify Discord
         if: success()
