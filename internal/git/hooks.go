@@ -131,6 +131,10 @@ fi
 }
 
 func buildSemanticaHookWrapperScript(hookName, userHookFile, subcommand string, passArgs bool) []byte {
+	if hookName == "pre-push" || subcommand == "pre-push" {
+		return buildPrePushWrapperScript(hookName, userHookFile, subcommand, passArgs)
+	}
+
 	args := ""
 	if passArgs {
 		if hookName == "commit-msg" || subcommand == "commit-msg" {
@@ -164,6 +168,64 @@ if command -v semantica >/dev/null 2>&1; then
   semantica hook %s%s%s || true
 fi
 `, semanticaHookMarker, hookName, userHookFile, userHookFile, userHookFile, subcommand, args, redirect))
+}
+
+// buildPrePushWrapperScript replays git's one-shot stdin to both hooks.
+// If buffering is unavailable, the preserved user hook keeps raw stdin and
+// Semantica is skipped.
+func buildPrePushWrapperScript(hookName, userHookFile, subcommand string, passArgs bool) []byte {
+	args := ""
+	if passArgs {
+		args = ` "$@"`
+	}
+	redirect := hookOutputRedirect(hookName, subcommand)
+
+	return []byte(fmt.Sprintf(`#!/bin/sh
+# %s (wrapper): %s
+# Preserved user hook: %s
+
+HOOK_DIR="$(dirname "$0")"
+USER_HOOK="$HOOK_DIR/%s"
+
+# Allocate a portable temp file for replaying git's pre-push stdin.
+STDIN_BUF=""
+if STDIN_BUF_CAND="$(mktemp -t semantica-pre-push 2>/dev/null)" && [ -n "$STDIN_BUF_CAND" ]; then
+  STDIN_BUF="$STDIN_BUF_CAND"
+elif STDIN_BUF_CAND="$(mktemp 2>/dev/null)" && [ -n "$STDIN_BUF_CAND" ]; then
+  STDIN_BUF="$STDIN_BUF_CAND"
+fi
+
+if [ -n "$STDIN_BUF" ]; then
+  # Capture once, then replay to the preserved hook and Semantica.
+  trap 'rm -f "$STDIN_BUF"' EXIT
+  # If capture fails, block rather than run the user hook on partial input.
+  if ! cat > "$STDIN_BUF"; then
+    echo "semantica: pre-push: failed to capture git stdin; aborting push to avoid weakening user hook" >&2
+    exit 1
+  fi
+
+  if [ -x "$USER_HOOK" ]; then
+    "$USER_HOOK"%s < "$STDIN_BUF"
+    user_rc=$?
+    if [ $user_rc -ne 0 ]; then
+      exit $user_rc
+    fi
+  fi
+
+  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+  [ -f "$REPO_ROOT/.semantica/enabled" ] || exit 0
+  if command -v semantica >/dev/null 2>&1; then
+    semantica hook %s%s < "$STDIN_BUF"%s || true
+  fi
+  exit 0
+fi
+
+# Fallback: keep the preserved user hook in control when buffering fails.
+if [ -x "$USER_HOOK" ]; then
+  exec "$USER_HOOK"%s
+fi
+exit 0
+`, semanticaHookMarker, hookName, userHookFile, userHookFile, args, subcommand, args, redirect, args))
 }
 
 // preservedHookNamePattern matches the backup filename shape
@@ -211,6 +273,7 @@ func parsePreservedUserHook(content []byte) string {
 }
 
 func hookOutputRedirect(hookName, subcommand string) string {
+	// Only post-commit prints a Semantica summary; other hooks report through doctor.
 	if hookName == "post-commit" || subcommand == "post-commit" {
 		return ""
 	}

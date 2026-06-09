@@ -5,13 +5,20 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.4] - 2026-06-09
 
 ### Added
 
+- Added opt-in preview plumbing for push-time intent-gap analysis, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` hook trigger.
+- Added CLI helpers for intent-gap PR discovery and canonical payload hashing, matching the API upload contract.
+
 ### Fixed
 
+- Existing enabled repos now refresh the `pre-push` hook when intent-gap analysis is turned on, so upgraded installs do not need to rerun `semantica enable`.
+
 ### Changed
+
+- `semantica enable` now installs the Semantica `pre-push` hook alongside the existing hooks while preserving user hook behavior.
 
 ## [0.5.3] - 2026-06-07
 

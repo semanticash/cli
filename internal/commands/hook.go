@@ -17,8 +17,29 @@ func NewHookCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.AddCommand(NewHookPreCommitCmd(rootOpts))
 	cmd.AddCommand(NewHookPostCommitCmd(rootOpts))
 	cmd.AddCommand(NewHookCommitMsgCmd(rootOpts))
+	cmd.AddCommand(NewHookPrePushCmd(rootOpts))
 
 	return cmd
+}
+
+// NewHookPrePushCmd handles git's pre-push hook without blocking the push.
+// Decisions are logged for doctor instead of returned to git.
+func NewHookPrePushCmd(rootOpts *RootOptions) *cobra.Command {
+	return &cobra.Command{
+		// Git passes remote name and URL as argv; accept extras so wrappers
+		// can forward "$@" unchanged.
+		Use:    "pre-push [remote_name] [remote_url]",
+		Short:  "Handle git pre-push hook",
+		Args:   cobra.ArbitraryArgs,
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := service.NewPrePushService()
+			_, err := svc.HandlePrePush(cmd.Context(), rootOpts.RepoPath, cmd.InOrStdin())
+			// Keep Semantica's hook non-blocking; diagnostics are recorded by the service.
+			_ = err
+			return nil
+		},
+	}
 }
 
 func NewHookPreCommitCmd(rootOpts *RootOptions) *cobra.Command {

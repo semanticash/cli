@@ -1,0 +1,43 @@
+{
+  "input": {
+    "repository_id": "11111111-2222-3333-4444-555555555555",
+    "pr_number": 42,
+    "head_sha": "deadbeefcafef00d1234567890abcdef12345678",
+    "base_sha": "00112233445566778899aabbccddeeff00112233",
+    "algorithm_version": "1a1-cli-v1",
+    "prompt_template_version": "tpl-v3",
+    "finding_schema_version": "1",
+    "redaction_version": "1",
+    "provider": "claude_code",
+    "model": "claude-opus-4-7",
+    "producer_state": "analyzed",
+    "coverage_summary": {
+      "thin_prompt_count": 0,
+      "pr_commits_total": 5,
+      "pr_commits_with_local_turns": 5,
+      "total_prompt_count": 8
+    },
+    "findings": [
+      {
+        "schema_version": "1",
+        "finding_id": "f_0123456789abcdef",
+        "kind": "deferred",
+        "title": "Deferred input validation",
+        "confidence": "medium",
+        "originally_requested_in": {
+          "turn_id": "t-1",
+          "prompt_excerpt": "add canonical hash with validation",
+          "prompt_excerpt_hash": "h-1"
+        },
+        "trajectory_note": "added validate() then removed after revert prompt",
+        "current_state": {
+          "file": "api/src/internal/intentgap/payloadhash.go",
+          "line_range": [12, 40],
+          "summary": "validation removed; no replacement"
+        }
+      }
+    ]
+  },
+  "canonical_bytes": "{\"repository_id\":\"11111111-2222-3333-4444-555555555555\",\"pr_number\":42,\"head_sha\":\"deadbeefcafef00d1234567890abcdef12345678\",\"base_sha\":\"00112233445566778899aabbccddeeff00112233\",\"algorithm_version\":\"1a1-cli-v1\",\"prompt_template_version\":\"tpl-v3\",\"finding_schema_version\":\"1\",\"redaction_version\":\"1\",\"provider\":\"claude_code\",\"model\":\"claude-opus-4-7\",\"producer_state\":\"analyzed\",\"coverage_summary\":{\"pr_commits_total\":5,\"pr_commits_with_local_turns\":5,\"thin_prompt_count\":0,\"total_prompt_count\":8},\"findings\":[{\"confidence\":\"medium\",\"current_state\":{\"file\":\"api/src/internal/intentgap/payloadhash.go\",\"line_range\":[12,40],\"summary\":\"validation removed; no replacement\"},\"finding_id\":\"f_0123456789abcdef\",\"kind\":\"deferred\",\"originally_requested_in\":{\"prompt_excerpt\":\"add canonical hash with validation\",\"prompt_excerpt_hash\":\"h-1\",\"turn_id\":\"t-1\"},\"schema_version\":\"1\",\"title\":\"Deferred input validation\",\"trajectory_note\":\"added validate() then removed after revert prompt\"}]}",
+  "payload_hash": "af89d375f5036a5d35890ae2b66dd58f4384e866361a70d48cdde95f112de7c2"
+}
