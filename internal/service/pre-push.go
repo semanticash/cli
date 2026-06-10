@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/semanticash/cli/internal/git"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -17,9 +20,8 @@ import (
 //
 // git invokes pre-push with the remote name + URL as argv and one
 // "<local-ref> <local-sha> <remote-ref> <remote-sha>" line per pushed
-// ref on stdin. The hook stays NON-blocking by contract (any error
-// inside the service must not fail the push) so settings reads, file
-// I/O, and command spawn errors are all logged-and-swallowed.
+// ref on stdin. The hook is non-blocking: settings reads, file I/O,
+// and command spawn errors are logged and do not fail the push.
 type PrePushService struct{}
 
 func NewPrePushService() *PrePushService { return &PrePushService{} }
@@ -42,7 +44,7 @@ type PrePushResult struct {
 // HandlePrePush is the hook entry point.
 //
 // Contract:
-//   - Always returns nil (NEVER block the push).
+//   - Always returns nil so Semantica does not block the push.
 //   - Decisions land in PrePushResult and the activity log.
 //   - When triggered, follow-up analysis runs outside the blocking hook path.
 func (s *PrePushService) HandlePrePush(ctx context.Context, repoPath string, stdin io.Reader) (*PrePushResult, error) {
@@ -101,11 +103,44 @@ func (s *PrePushService) HandlePrePush(ctx context.Context, repoPath string, std
 		return res, nil
 	}
 
-	// All gates passed. Record the decision for doctor and future upload work.
+	// All gates passed. Record the decision for doctor and spawn the
+	// upload worker detached so the hook returns immediately.
 	res.Triggered = true
 	res.Reason = fmt.Sprintf("intent-gap trigger on branch %q (push to be analyzed)", branch)
 	util.AppendActivityLog(semDir, "pre-push: %s", res.Reason)
+	spawnIntentGapUpload(semDir, repoRoot)
 	return res, nil
+}
+
+// spawnIntentGapUpload launches the detached `semantica hook
+// intent-gap-upload` subprocess. The pre-push hook intentionally
+// returns immediately so the user's `git push` is not delayed by the
+// HTTP round trip; the spawned worker handles the upload in the
+// background. Failures to spawn are logged but do not surface to git.
+func spawnIntentGapUpload(semDir, repoRoot string) {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "semantica"
+	}
+	logFile, err := util.OpenWorkerLog(semDir)
+	if err != nil {
+		util.AppendActivityLog(semDir, "pre-push warning: open worker log failed: %v", err)
+		return
+	}
+	cmd := exec.Command(exe, "hook", "intent-gap-upload",
+		"--repo", repoRoot,
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Env = platform.WithoutLoopbackProxies(os.Environ())
+	platform.DetachProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		util.AppendActivityLog(semDir, "pre-push warning: spawn upload worker failed: %v", err)
+		_ = logFile.Close()
+		return
+	}
+	_ = logFile.Close()
 }
 
 // PushedRef is one parsed line of pre-push stdin.

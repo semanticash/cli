@@ -104,7 +104,7 @@ func newSetIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:       "intent-gap <enabled|disabled>",
 		Short:     "Enable or disable background intent-gap analysis at push time",
-		Long:      "When enabled, Semantica checks at push time whether the current branch has an open PR and records the intent-gap trigger for background analysis. The pre-push hook itself stays non-blocking. Off by default during preview.",
+		Long:      "When enabled, Semantica checks at push time whether the current branch has an open PR and records the intent-gap trigger for background analysis. The pre-push hook itself stays non-blocking. Off by default.",
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"enabled", "disabled", "on", "off", "true", "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/semanticash/cli/internal/providers"
@@ -18,8 +20,34 @@ func NewHookCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.AddCommand(NewHookPostCommitCmd(rootOpts))
 	cmd.AddCommand(NewHookCommitMsgCmd(rootOpts))
 	cmd.AddCommand(NewHookPrePushCmd(rootOpts))
+	cmd.AddCommand(NewHookIntentGapUploadCmd(rootOpts))
 
 	return cmd
+}
+
+// NewHookIntentGapUploadCmd is the detached worker spawned by the
+// pre-push hook. It is hidden because it is an internal entrypoint.
+//
+// Output is redirected by the spawning hook, and the command returns
+// nil so worker failures never affect the parent hook's exit code.
+// Errors that occur before .semantica is available are written to
+// stderr, which the spawning hook captures in the worker log.
+func NewHookIntentGapUploadCmd(rootOpts *RootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:    "intent-gap-upload",
+		Short:  "Internal: run the intent-gap transport upload",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{})
+			_, err := svc.Run(cmd.Context(), rootOpts.RepoPath)
+			if err != nil {
+				// The service logs once .semantica is available.
+				// Before that, stderr is the only worker-log sink.
+				fmt.Fprintf(cmd.ErrOrStderr(), "intent-gap-upload: %v\n", err)
+			}
+			return nil
+		},
+	}
 }
 
 // NewHookPrePushCmd handles git's pre-push hook without blocking the push.
