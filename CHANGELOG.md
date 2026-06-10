@@ -10,12 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Added opt-in push-time intent-gap transport uploads, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` hook trigger.
+- Added `semantica intent-gap analyze` to manually record the same intent-gap upload for the current HEAD, with quiet mode for scripts.
 - Added CLI helpers for intent-gap PR discovery and canonical payload hashing, matching the API upload contract.
 - Added a repo-safe device identifier for intent-gap upload audit metadata; it is excluded from canonical payload hashing and deduplication.
 
 ### Fixed
 
-- Existing enabled repos now refresh the `pre-push` hook when intent-gap analysis is turned on, so upgraded installs do not need to rerun `semantica enable`.
+- Existing enabled repos now refresh the `pre-push` hook when intent-gap uploads are turned on, so upgraded installs do not need to rerun `semantica enable`.
 - Intent-gap uploads now map local LLM writer names to the API provider enum and log skipped or failed background uploads for `semantica doctor`.
 
 ### Changed

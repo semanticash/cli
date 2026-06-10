@@ -44,6 +44,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewExplainCmd(opts))
 	cmd.AddCommand(NewStatusCmd(opts))
 	cmd.AddCommand(NewSetCmd(opts))
+	cmd.AddCommand(NewIntentGapCmd(opts))
 	cmd.AddCommand(NewAgentsCmd(opts))
 	cmd.AddCommand(NewSuggestCmd(opts))
 	cmd.AddCommand(NewTidyCmd(opts))

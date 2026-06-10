@@ -14,7 +14,7 @@ import (
 )
 
 // OpenPR is the minimal PR descriptor the pre-push trigger needs to
-// decide whether to upload findings and how to label them. Fuller PR
+// decide whether to record an upload and how to label it. Fuller PR
 // detail flows through the existing /prs/{prNumber} surface and is
 // not requested here.
 type OpenPR struct {
@@ -46,7 +46,7 @@ var (
 // AmbiguousPRError carries the list of conflicting PRs so the caller
 // can render an actionable doctor message ("PRs #42 and #57 both
 // have head_branch = feat/x; resolve before running intent-gap
-// analysis").
+// upload").
 type AmbiguousPRError struct {
 	Matches []OpenPR
 }
