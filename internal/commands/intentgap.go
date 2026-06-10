@@ -70,17 +70,17 @@ func renderAnalyzeResult(out interface{ Write(p []byte) (int, error) }, quiet bo
 	switch res.Status {
 	case service.UploadStatusUploaded:
 		if !quiet {
-			fmt.Fprintf(out, "Intent-gap upload recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
+			_, _ = fmt.Fprintf(out, "Intent-gap upload recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
 		}
 		return nil
 	case service.UploadStatusDuplicate:
 		if !quiet {
-			fmt.Fprintf(out, "Intent-gap upload already recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
+			_, _ = fmt.Fprintf(out, "Intent-gap upload already recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
 		}
 		return nil
 	case service.UploadStatusSkipped:
 		if !quiet {
-			fmt.Fprintf(out, "Skipped: %s\n", res.Reason)
+			_, _ = fmt.Fprintf(out, "Skipped: %s\n", res.Reason)
 		}
 		return nil
 	case service.UploadStatusError:

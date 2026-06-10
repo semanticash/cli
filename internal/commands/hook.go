@@ -43,7 +43,7 @@ func NewHookIntentGapUploadCmd(rootOpts *RootOptions) *cobra.Command {
 			if err != nil {
 				// The service logs once .semantica is available.
 				// Before that, stderr is the only worker-log sink.
-				fmt.Fprintf(cmd.ErrOrStderr(), "intent-gap-upload: %v\n", err)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "intent-gap-upload: %v\n", err)
 			}
 			return nil
 		},

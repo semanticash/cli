@@ -48,9 +48,8 @@ func TestPickInstalledProvider_FirstInstalledWins(t *testing.T) {
 
 // Writers whose local Name() diverges from the wire enum (e.g. cursor
 // the writer vs cursor_cli the API enum) must be returned under the
-// wire enum so the upload request validates. Without this, users
-// whose first installed CLI is Cursor or Copilot would see uploads
-// rejected at the API.
+// wire enum so the upload request validates for users whose first
+// installed CLI is Cursor or Copilot.
 func TestPickInstalledProvider_TranslatesToWireEnum(t *testing.T) {
 	cases := []struct {
 		writerName string

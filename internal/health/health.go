@@ -122,6 +122,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	checks = append(checks, checkManifests(ctx, opts)...)
 	checks = append(checks, checkProviderFootguns(ctx, opts)...)
 	checks = append(checks, checkHookErrors(ctx)...)
+	checks = append(checks, checkIntentGap(opts)...)
 
 	return assemble(checks), nil
 }

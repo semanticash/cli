@@ -430,12 +430,11 @@ func TestIntentGapUploadService_SkipsWriteActivityLog(t *testing.T) {
 	}
 }
 
-// A repo that never opted in should not get a .semantica directory
-// just because the upload service decided to skip.
+// A repo without local Semantica state should not get a .semantica
+// directory just because the upload service decided to skip.
 func TestIntentGapUploadService_NotEnabledDoesNotCreateSemDir(t *testing.T) {
 	dir := t.TempDir()
-	// Initialize git so OpenRepo succeeds, but do NOT create
-	// .semantica/ - simulate a repo that never ran `semantica enable`.
+	// Initialize git so OpenRepo succeeds, but leave .semantica absent.
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir

@@ -121,19 +121,5 @@ func TestComputePayloadHash_NilMeansEmpty(t *testing.T) {
 }
 
 func toInput(g goldenInput) PayloadHashInput {
-	return PayloadHashInput{
-		RepositoryID:          g.RepositoryID,
-		PRNumber:              g.PRNumber,
-		HeadSHA:               g.HeadSHA,
-		BaseSHA:               g.BaseSHA,
-		AlgorithmVersion:      g.AlgorithmVersion,
-		PromptTemplateVersion: g.PromptTemplateVersion,
-		FindingSchemaVersion:  g.FindingSchemaVersion,
-		RedactionVersion:      g.RedactionVersion,
-		Provider:              g.Provider,
-		Model:                 g.Model,
-		ProducerState:         g.ProducerState,
-		CoverageSummary:       g.CoverageSummary,
-		Findings:              g.Findings,
-	}
+	return PayloadHashInput(g)
 }
