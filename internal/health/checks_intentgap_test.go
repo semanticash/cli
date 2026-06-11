@@ -9,8 +9,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// writeSemDir creates a .semantica directory with the given settings
-// so the check can read them without standing up a full enable flow.
+// writeSemDir creates local settings for health-check tests.
 func writeSemDir(t *testing.T, root string, intentGapEnabled *bool) string {
 	t.Helper()
 	semDir := filepath.Join(root, ".semantica")
@@ -28,8 +27,7 @@ func writeSemDir(t *testing.T, root string, intentGapEnabled *bool) string {
 
 func mustBool(v bool) *bool { return &v }
 
-// No .semantica directory means the repo is outside local Semantica
-// state, so doctor stays silent.
+// Doctor stays silent when the repository has no Semantica state.
 func TestCheckIntentGap_NoSemDirIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	got := checkIntentGap(Options{RepoPath: dir})
@@ -38,8 +36,7 @@ func TestCheckIntentGap_NoSemDirIsSilent(t *testing.T) {
 	}
 }
 
-// Disabled intent-gap surfaces as an OK informational line so users
-// can confirm their toggle.
+// A disabled setting is informational, not a warning.
 func TestCheckIntentGap_SettingDisabledReportsAsOK(t *testing.T) {
 	dir := t.TempDir()
 	writeSemDir(t, dir, mustBool(false))
@@ -76,9 +73,7 @@ func TestCheckIntentGap_SettingEnabledReportsAsOK(t *testing.T) {
 	}
 }
 
-// No activity log yet is the normal-state path; surfaces as OK with
-// a clear "no activity" message rather than implying something is
-// wrong.
+// Missing activity is a normal initial state.
 func TestCheckIntentGap_NoActivityLogIsOK(t *testing.T) {
 	dir := t.TempDir()
 	writeSemDir(t, dir, mustBool(true))
@@ -96,8 +91,7 @@ func TestCheckIntentGap_NoActivityLogIsOK(t *testing.T) {
 	}
 }
 
-// A successful upload line surfaces as OK with the line verbatim in
-// the message so users can read the upload_id and PR number.
+// Successful activity is reported with its original details.
 func TestCheckIntentGap_SuccessfulUploadReportsAsOK(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -116,9 +110,7 @@ func TestCheckIntentGap_SuccessfulUploadReportsAsOK(t *testing.T) {
 	}
 }
 
-// An upload error line surfaces as a warning with a remediation
-// pointing at the manual retry command. This is the doctor's main
-// job: tell the user what to do next.
+// Upload errors include a manual retry action.
 func TestCheckIntentGap_UploadErrorReportsAsWarn(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -137,9 +129,7 @@ func TestCheckIntentGap_UploadErrorReportsAsWarn(t *testing.T) {
 	}
 }
 
-// Skip lines (no open PR, ambiguous, etc.) are normal-state events,
-// not failures - they surface as OK with the reason. Doctor's job is
-// not to flag every skip as a problem.
+// Expected skip outcomes remain informational.
 func TestCheckIntentGap_SkipReasonReportsAsOK(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -158,8 +148,7 @@ func TestCheckIntentGap_SkipReasonReportsAsOK(t *testing.T) {
 	}
 }
 
-// The tail of the log is what matters: when an old error is followed
-// by a recent successful upload, the recent one wins.
+// The most recent relevant activity determines status.
 func TestCheckIntentGap_MostRecentLineWins(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -193,10 +182,27 @@ func TestCheckIntentGap_IgnoresUnrelatedLines(t *testing.T) {
 	}
 }
 
-// Pre-push parse failures stop the upload worker from ever being
-// spawned. Doctor must surface these as warnings so the user does
-// not see a clean log and assume the trigger is silent rather than
-// broken.
+// A recorded analyzer error remains a warning.
+func TestCheckIntentGap_AnalyzerErroredUploadWarns(t *testing.T) {
+	dir := t.TempDir()
+	semDir := writeSemDir(t, dir, mustBool(true))
+	util.AppendActivityLog(semDir, "intent-gap analyzer failed PR #42: parse_failed")
+	util.AppendActivityLog(semDir, "intent-gap analysis errored reason=parse_failed PR #42 upload=uploaded upload_id=u-1")
+
+	got := checkIntentGap(Options{RepoPath: dir})
+	last := findCheck(got, "last_activity")
+	if last == nil {
+		t.Fatalf("expected a last_activity check")
+	}
+	if last.Status != StatusWarn {
+		t.Errorf("analyzer-errored upload should be warn; got %s", last.Status)
+	}
+	if !strings.Contains(last.Remediation, "intent-gap analyze") {
+		t.Errorf("remediation should point at the analyze command; got %q", last.Remediation)
+	}
+}
+
+// Pre-push parse failures surface as warnings.
 func TestCheckIntentGap_PrePushParseFailureWarns(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -215,9 +221,7 @@ func TestCheckIntentGap_PrePushParseFailureWarns(t *testing.T) {
 	}
 }
 
-// Worker-log open failures and spawn failures are also pre-push
-// warnings that would prevent the background upload worker from
-// running.
+// Worker startup failures surface as warnings.
 func TestCheckIntentGap_PrePushWarningWarns(t *testing.T) {
 	cases := []struct {
 		name string
@@ -244,8 +248,7 @@ func TestCheckIntentGap_PrePushWarningWarns(t *testing.T) {
 	}
 }
 
-// pre-push lines count: they record the trigger decision that drives
-// the upload, so they're part of the same lifecycle.
+// Pre-push trigger lines are part of intent-gap activity.
 func TestCheckIntentGap_PrePushLineCounts(t *testing.T) {
 	dir := t.TempDir()
 	semDir := writeSemDir(t, dir, mustBool(true))
@@ -270,11 +273,7 @@ func findCheck(checks []Check, id string) *Check {
 	return nil
 }
 
-// The text renderer used in piped / CI output must know how to title
-// and order the intent-gap category; otherwise the category renders
-// under its raw machine name and sorts past unknown categories. This
-// test catches the drift between the card renderer's per-category
-// tables and the parallel ones in render.go.
+// Text output uses the intended title and category order.
 func TestRenderText_KnowsIntentGapCategory(t *testing.T) {
 	if title, ok := categoryTitle["intent-gap"]; !ok || title == "" {
 		t.Errorf("text renderer missing categoryTitle[\"intent-gap\"]; piped output will show the raw name")
@@ -284,9 +283,7 @@ func TestRenderText_KnowsIntentGapCategory(t *testing.T) {
 	}
 }
 
-// And the rendered text must include the intent-gap header when the
-// report contains an intent-gap check. End-to-end confirmation that
-// the wiring works.
+// Reports containing intent-gap checks include the category heading.
 func TestRenderText_IncludesIntentGapHeader(t *testing.T) {
 	r := assemble([]Check{
 		{Category: "intent-gap", ID: "setting", Status: StatusOK, Message: "intent-gap uploads enabled"},

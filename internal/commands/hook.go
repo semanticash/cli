@@ -35,7 +35,7 @@ func NewHookCmd(rootOpts *RootOptions) *cobra.Command {
 func NewHookIntentGapUploadCmd(rootOpts *RootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:    "intent-gap-upload",
-		Short:  "Internal: run the intent-gap transport upload",
+		Short:  "Internal: analyze and record intent-gap findings",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{})

@@ -40,9 +40,7 @@ func TestBuildTransportOnlyBody_DeterministicHash(t *testing.T) {
 	}
 }
 
-// producer_device_id is part of the body but NOT the canonical hash.
-// Different devices uploading the same logical payload must produce
-// the same hash so the server treats them as one row.
+// Device metadata does not affect logical-payload deduplication.
 func TestBuildTransportOnlyBody_DeviceIDExcludedFromHash(t *testing.T) {
 	base := UploadInput{
 		RepositoryID:     "11111111-2222-3333-4444-555555555555",
@@ -187,10 +185,7 @@ func TestPostUpload_SendsAuthAndIdempotency(t *testing.T) {
 	}
 }
 
-// A 200/201 status with the wrapper envelope's error flag set is
-// still an error - the HTTP status alone is not authoritative. Without
-// this check, an upstream bug or misconfigured proxy could surface as
-// a silent "uploaded successfully with no upload_id" result.
+// An error response envelope overrides a successful HTTP status.
 func TestPostUpload_RejectsEnvelopeError(t *testing.T) {
 	srv := stubUploadServer(t, http.StatusOK, `{"error":true,"message":"upstream timeout","payload":{}}`)
 	defer srv.Close()

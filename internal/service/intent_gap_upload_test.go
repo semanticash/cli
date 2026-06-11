@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semanticash/cli/internal/intentgap"
 	"github.com/semanticash/cli/internal/llm"
 	"github.com/semanticash/cli/internal/util"
 )
@@ -391,12 +393,347 @@ func TestIntentGapUploadService_SkipsWhenNotConnected(t *testing.T) {
 	}
 }
 
-// Suppress the unused import warning when no test in this file
-// references json.
+// Keep json available to tests added under build-specific configurations.
 var _ = json.Marshal
 
-// Skip paths in enabled repos write an activity-log entry so doctor
-// can surface the last upload outcome without re-running the service.
+// Analyzer path tests.
+
+// stubBundleAssembler returns a fixed bundle for orchestrator tests.
+type stubBundleAssembler struct {
+	bundle intentgap.Bundle
+	err    error
+}
+
+func (s *stubBundleAssembler) Assemble(context.Context, intentgap.BundleInput) (intentgap.Bundle, error) {
+	return s.bundle, s.err
+}
+
+// stubAnalyzer returns a fixed analysis result.
+type stubAnalyzer struct {
+	result intentgap.AnalysisResult
+	err    error
+}
+
+func (s *stubAnalyzer) Analyze(context.Context, intentgap.AnalysisInput) (intentgap.AnalysisResult, error) {
+	return s.result, s.err
+}
+
+func minimalBundle() intentgap.Bundle {
+	return intentgap.Bundle{
+		BaseRef: "main",
+		BaseSHA: "merge-base-sha",
+		HeadSHA: "head-sha",
+		Diff:    []byte("--- a\n+++ b\n"),
+	}
+}
+
+func validFindingsJSON() json.RawMessage {
+	return json.RawMessage(`[
+		{
+			"schema_version":"1",
+			"finding_id":"f_0123456789abcdef",
+			"kind":"deferred",
+			"title":"Deferred validation",
+			"confidence":"medium",
+			"originally_requested_in":{"turn_id":"t-1","prompt_excerpt":"add validation","prompt_excerpt_hash":"h"},
+			"trajectory_note":"added then removed",
+			"current_state":{"file":"handler.go","line_range":[12,24],"summary":"removed"}
+		}
+	]`)
+}
+
+// Findings are encoded and accepted as a new upload.
+func TestIntentGapUploadService_AnalyzedWithFindings(t *testing.T) {
+	srv := orchestratorStubServer(t,
+		`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`,
+		http.StatusOK,
+		http.StatusCreated,
+		`{"error":false,"message":"ok","payload":{"upload_id":"u-new","received_at":"2026-06-10T12:00:00Z"}}`)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: minimalBundle()},
+		Analyzer: &stubAnalyzer{result: intentgap.AnalysisResult{
+			Findings:              validFindingsJSON(),
+			CoverageSummary:       json.RawMessage(`{"commits":1}`),
+			Provider:              "claude_code",
+			Model:                 "claude-opus-4-7",
+			PromptTemplateVersion: intentgap.PromptTemplateVersion,
+		}},
+	})
+	got, err := svc.Run(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Status != UploadStatusUploaded {
+		t.Errorf("Status = %s, want uploaded", got.Status)
+	}
+	if got.UploadID != "u-new" {
+		t.Errorf("UploadID = %q, want u-new", got.UploadID)
+	}
+}
+
+// An empty finding set is recorded as analyzed rather than skipped.
+func TestIntentGapUploadService_AnalyzedEmpty(t *testing.T) {
+	srv := orchestratorStubServer(t,
+		`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`,
+		http.StatusOK,
+		http.StatusCreated,
+		`{"error":false,"message":"ok","payload":{"upload_id":"u-empty","received_at":"2026-06-10T12:00:00Z"}}`)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: minimalBundle()},
+		Analyzer: &stubAnalyzer{result: intentgap.AnalysisResult{
+			Findings:              json.RawMessage(`[]`),
+			CoverageSummary:       json.RawMessage(`{"commits":1}`),
+			Provider:              "claude_code",
+			Model:                 "claude-opus-4-7",
+			PromptTemplateVersion: intentgap.PromptTemplateVersion,
+		}},
+	})
+	got, err := svc.Run(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Status != UploadStatusUploaded {
+		t.Errorf("Status = %s, want uploaded (empty is analyzed, not skipped)", got.Status)
+	}
+}
+
+// Lineage failures use a distinct reason code.
+func TestIntentGapUploadService_LineageUnavailableUsesDedicatedReason(t *testing.T) {
+	var captured []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prs/by-head-branch"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/intent_gap/findings"):
+			captured, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"upload_id":"u-lin","received_at":"2026-06-10T12:00:00Z"}}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{err: intentgap.ErrLineageUnavailable},
+	})
+	got, err := svc.Run(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Analysis != AnalysisErrored {
+		t.Errorf("Analysis = %s, want errored", got.Analysis)
+	}
+	if got.AnalysisReason != string(intentgap.ReasonLineageUnavailable) {
+		t.Errorf("AnalysisReason = %q, want %q", got.AnalysisReason, string(intentgap.ReasonLineageUnavailable))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(captured, &parsed); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	cov, _ := parsed["coverage_summary"].(map[string]any)
+	if cov["error_reason"] != string(intentgap.ReasonLineageUnavailable) {
+		t.Errorf("wire error_reason = %v, want lineage_unavailable", cov["error_reason"])
+	}
+}
+
+// Redaction failures cannot be reported as an empty successful analysis.
+func TestIntentGapUploadService_RedactionFailureUsesDedicatedReason(t *testing.T) {
+	var captured []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prs/by-head-branch"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/intent_gap/findings"):
+			captured, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"upload_id":"u-red","received_at":"2026-06-10T12:00:00Z"}}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{err: intentgap.ErrRedactionFailed},
+	})
+	got, err := svc.Run(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Analysis != AnalysisErrored {
+		t.Errorf("Analysis = %s, want errored", got.Analysis)
+	}
+	if got.AnalysisReason != string(intentgap.ReasonRedactionFailed) {
+		t.Errorf("AnalysisReason = %q, want %q", got.AnalysisReason, string(intentgap.ReasonRedactionFailed))
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(captured, &parsed); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	cov, _ := parsed["coverage_summary"].(map[string]any)
+	if cov["error_reason"] != string(intentgap.ReasonRedactionFailed) {
+		t.Errorf("wire error_reason = %v, want redaction_failed", cov["error_reason"])
+	}
+}
+
+// Errored results retain the bundle's resolved base SHA.
+func TestIntentGapUploadService_AnalyzerErrorPreservesBaseSHA(t *testing.T) {
+	// Capture the request to verify base_sha.
+	var capturedBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prs/by-head-branch"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/intent_gap/findings"):
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"upload_id":"u-x","received_at":"2026-06-10T12:00:00Z"}}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	bundle := minimalBundle()
+	bundle.BaseSHA = "real-merge-base-sha"
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: bundle},
+		Analyzer:        &stubAnalyzer{err: intentgap.ErrAnalyzerLLMUnavailable},
+	})
+	if _, err := svc.Run(context.Background(), repo); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	if got := parsed["base_sha"]; got != "real-merge-base-sha" {
+		t.Errorf("errored body base_sha = %v, want %q (bundle's resolved merge-base)", got, "real-merge-base-sha")
+	}
+}
+
+// Analyzer failures are recorded as errored uploads.
+func TestIntentGapUploadService_AnalyzerErrorUploadsErroredRow(t *testing.T) {
+	srv := orchestratorStubServer(t,
+		`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`,
+		http.StatusOK,
+		http.StatusCreated,
+		`{"error":false,"message":"ok","payload":{"upload_id":"u-errored","received_at":"2026-06-10T12:00:00Z"}}`)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+		IntentGapEnabled: mustBool(true),
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     installedRegistry(),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: minimalBundle()},
+		Analyzer:        &stubAnalyzer{err: intentgap.ErrAnalyzerLLMUnavailable},
+	})
+	got, err := svc.Run(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Status != UploadStatusUploaded {
+		t.Errorf("Status = %s, want uploaded (errored row uploaded successfully)", got.Status)
+	}
+	if got.UploadID != "u-errored" {
+		t.Errorf("UploadID = %q, want u-errored", got.UploadID)
+	}
+
+	logPath := filepath.Join(repo, ".semantica", "activity.log")
+	data, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(data), "intent-gap analyzer failed") {
+		t.Errorf("expected analyzer-failed activity log; got:\n%s", data)
+	}
+}
+
+// Skip outcomes are recorded for local diagnostics.
 func TestIntentGapUploadService_SkipsWriteActivityLog(t *testing.T) {
 	repo := initEnabledRepo(t, settingsOpts{
 		Branch:           "main",
@@ -430,11 +767,10 @@ func TestIntentGapUploadService_SkipsWriteActivityLog(t *testing.T) {
 	}
 }
 
-// A repo without local Semantica state should not get a .semantica
-// directory just because the upload service decided to skip.
+// A skipped analysis does not create local Semantica state.
 func TestIntentGapUploadService_NotEnabledDoesNotCreateSemDir(t *testing.T) {
 	dir := t.TempDir()
-	// Initialize git so OpenRepo succeeds, but leave .semantica absent.
+	// Initialize Git without creating .semantica.
 	run := func(args ...string) {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = dir
@@ -473,8 +809,7 @@ func TestIntentGapUploadService_NotEnabledDoesNotCreateSemDir(t *testing.T) {
 	}
 }
 
-// Upload-time HTTP error path also writes to the activity log so a
-// failed server round-trip is surfaceable by doctor.
+// Upload failures are recorded for local diagnostics.
 func TestIntentGapUploadService_UploadErrorWritesActivityLog(t *testing.T) {
 	srv := orchestratorStubServer(t,
 		`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`,

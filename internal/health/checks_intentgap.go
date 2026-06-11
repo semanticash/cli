@@ -8,31 +8,22 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// activityLogTailLines bounds how far back the intent-gap check reads
-// the activity log when looking for the most recent intent-gap or
-// pre-push line. The activity log is shared with other capture-side
-// events, so older entries can be plentiful; capping the tail keeps
-// doctor fast on long-lived repos.
+// activityLogTailLines bounds local log scanning for doctor.
 const activityLogTailLines = 500
 
-// checkIntentGap surfaces the intent-gap setting state and the most
-// recent intent-gap or pre-push activity line in the repository. The
-// checks are purely local: no HTTP, no git command, so they stay
-// fast and offline-friendly. Network-dependent diagnostics (e.g.
-// "open PR at HEAD but no upload yet") belong on `intent-gap analyze`
-// instead, which already produces a skip result with a clear reason.
+// checkIntentGap reports local configuration and recent activity without
+// requiring network access.
 func checkIntentGap(opts Options) []Check {
 	var checks []Check
 
 	if opts.RepoPath == "" {
-		// Non-repo context: skip without noise so the rest of the
-		// report stays readable.
+		// Non-repository contexts do not need intent-gap diagnostics.
 		return checks
 	}
 
 	semDir := filepath.Join(opts.RepoPath, ".semantica")
 	if _, err := os.Stat(semDir); err != nil {
-		// Keep doctor quiet for repos without local Semantica state.
+		// Repositories without Semantica state should not produce warnings.
 		return checks
 	}
 
@@ -56,11 +47,7 @@ func checkIntentGap(opts Options) []Check {
 	return checks
 }
 
-// lastIntentGapActivity tails the activity log and returns the most
-// recent line whose body mentions intent-gap or the pre-push trigger.
-// The result is informational; an upload error line surfaces as a
-// warning with a remediation pointing at `semantica intent-gap
-// analyze`. Absence of any line is a normal-state OK.
+// lastIntentGapActivity reports the latest relevant local activity entry.
 func lastIntentGapActivity(semDir string) Check {
 	path := filepath.Join(semDir, "activity.log")
 	data, err := os.ReadFile(path)
@@ -107,14 +94,15 @@ func lastIntentGapActivity(semDir string) Check {
 	}
 }
 
-// isUploadFailureLine reports whether an activity line records a
-// failed intent-gap upload or a pre-push failure that prevented the
-// background worker from starting.
+// isUploadFailureLine recognizes analysis, upload, and pre-push failures.
 func isUploadFailureLine(line string) bool {
 	switch {
 	case strings.Contains(line, "intent-gap upload error"):
 		return true
 	case strings.Contains(line, "intent-gap error:"):
+		return true
+	case strings.Contains(line, "intent-gap analysis errored"):
+		// Recording an errored row does not make the analysis successful.
 		return true
 	case strings.Contains(line, "pre-push warning:"):
 		return true
@@ -124,10 +112,7 @@ func isUploadFailureLine(line string) bool {
 	return false
 }
 
-// mostRecentIntentGapLine returns the most recent non-empty activity
-// log line that mentions either the intent-gap upload path or the
-// pre-push trigger that drives it. The boolean reports whether any
-// such line was found.
+// mostRecentIntentGapLine returns the latest relevant non-empty log line.
 func mostRecentIntentGapLine(logBody string) (string, bool) {
 	lines := strings.Split(logBody, "\n")
 	start := len(lines) - activityLogTailLines

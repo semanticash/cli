@@ -13,25 +13,21 @@ import (
 	"github.com/semanticash/cli/internal/version"
 )
 
-// Producer states accepted by the intent-gap upload contract. The
-// background push path currently emits transport_only rows.
+// Producer states accepted by the intent-gap upload contract.
 const (
 	ProducerStateTransportOnly = "transport_only"
 	ProducerStateAnalyzed      = "analyzed"
 	ProducerStateErrored       = "errored"
 )
 
-// Versions encoded in every upload. Bumping any of these invalidates
-// the server's recompute, so they're pinned here as named constants
-// rather than scattered string literals.
+// Versions encoded in uploads and canonical payload hashes.
 const (
 	AlgorithmVersionTransport = "0.1.0-transport"
 	FindingSchemaVersion      = "1"
 	RedactionVersion          = "1"
 )
 
-// UploadInput is the local repo data needed for a transport-only
-// upload.
+// UploadInput contains repository and producer metadata for an upload.
 type UploadInput struct {
 	RepositoryID     string
 	PRNumber         int32
@@ -49,9 +45,7 @@ type UploadResponse struct {
 	ReceivedAt string `json:"received_at"`
 }
 
-// UploadResult records what the upload did, so the caller can write
-// activity logs and surface the outcome in doctor without re-parsing
-// the HTTP response.
+// UploadResult contains the accepted upload identity and HTTP status.
 type UploadResult struct {
 	StatusCode int
 	UploadID   string
@@ -71,6 +65,117 @@ type SkipReason struct {
 func (e *SkipReason) Error() string { return "intentgap: skipped: " + e.Reason }
 func (e *SkipReason) Is(target error) bool {
 	return target == ErrSkipped
+}
+
+// AnalyzedBodyInput combines upload metadata with analyzer output.
+type AnalyzedBodyInput struct {
+	UploadInput
+	PromptTemplateVersion string
+	Findings              json.RawMessage
+	CoverageSummary       json.RawMessage
+}
+
+// BuildAnalyzedBody builds an analyzed request and its canonical hash.
+func BuildAnalyzedBody(in AnalyzedBodyInput, producedAt time.Time) ([]byte, string, error) {
+	return buildUploadBody(buildBodyOpts{
+		Upload:                in.UploadInput,
+		ProducerState:         ProducerStateAnalyzed,
+		AlgorithmVersion:      AlgorithmVersionAnalyzed,
+		PromptTemplateVersion: in.PromptTemplateVersion,
+		Findings:              in.Findings,
+		CoverageSummary:       in.CoverageSummary,
+		ProducedAt:            producedAt,
+	})
+}
+
+// BuildErroredBody builds an errored request with no findings.
+//
+// Errored rows let the server's materializer keep showing the prior
+// analyzed verdict on the check (it filters errored upstream) while
+// dashboard surfaces still see the failure entry for diagnostics.
+func BuildErroredBody(in UploadInput, reason, promptTemplateVersion string, producedAt time.Time) ([]byte, string, error) {
+	coverage := map[string]any{"error_reason": reason}
+	coverageBytes, _ := json.Marshal(coverage)
+	return buildUploadBody(buildBodyOpts{
+		Upload:                in,
+		ProducerState:         ProducerStateErrored,
+		AlgorithmVersion:      AlgorithmVersionAnalyzed,
+		PromptTemplateVersion: promptTemplateVersion,
+		Findings:              nil,
+		CoverageSummary:       coverageBytes,
+		ProducedAt:            producedAt,
+	})
+}
+
+// buildBodyOpts contains shared body-builder inputs.
+type buildBodyOpts struct {
+	Upload                UploadInput
+	ProducerState         string
+	AlgorithmVersion      string
+	PromptTemplateVersion string
+	Findings              json.RawMessage
+	CoverageSummary       json.RawMessage
+	ProducedAt            time.Time
+}
+
+// buildUploadBody computes the canonical hash and encodes the wire body.
+func buildUploadBody(o buildBodyOpts) ([]byte, string, error) {
+	hashInput := PayloadHashInput{
+		RepositoryID:          o.Upload.RepositoryID,
+		PRNumber:              o.Upload.PRNumber,
+		HeadSHA:               o.Upload.HeadSHA,
+		BaseSHA:               o.Upload.BaseSHA,
+		AlgorithmVersion:      o.AlgorithmVersion,
+		PromptTemplateVersion: o.PromptTemplateVersion,
+		FindingSchemaVersion:  FindingSchemaVersion,
+		RedactionVersion:      RedactionVersion,
+		Provider:              o.Upload.Provider,
+		Model:                 o.Upload.Model,
+		ProducerState:         o.ProducerState,
+		CoverageSummary:       o.CoverageSummary,
+		Findings:              o.Findings,
+	}
+	hash, _, err := ComputePayloadHash(hashInput)
+	if err != nil {
+		return nil, "", fmt.Errorf("compute payload hash: %w", err)
+	}
+
+	// Empty coverage / findings serialize as {} / [] so the wire shape
+	// matches what the canonical hash collapsed nil to.
+	cov := emptyJSONOr(o.CoverageSummary, "{}")
+	findings := emptyJSONOr(o.Findings, "[]")
+
+	body := map[string]any{
+		"repository_id":           o.Upload.RepositoryID,
+		"pr_number":               o.Upload.PRNumber,
+		"head_sha":                o.Upload.HeadSHA,
+		"base_sha":                o.Upload.BaseSHA,
+		"algorithm_version":       o.AlgorithmVersion,
+		"prompt_template_version": o.PromptTemplateVersion,
+		"finding_schema_version":  FindingSchemaVersion,
+		"redaction_version":       RedactionVersion,
+		"provider":                o.Upload.Provider,
+		"model":                   o.Upload.Model,
+		"producer_state":          o.ProducerState,
+		"producer_device_id":      o.Upload.ProducerDeviceID,
+		"payload_hash":            hash,
+		"coverage_summary":        json.RawMessage(cov),
+		"findings":                json.RawMessage(findings),
+		"produced_at":             o.ProducedAt.UTC().Format(time.RFC3339),
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode body: %w", err)
+	}
+	return encoded, hash, nil
+}
+
+// emptyJSONOr normalizes empty JSON fields to their wire defaults.
+func emptyJSONOr(raw json.RawMessage, fallback string) []byte {
+	if len(raw) == 0 {
+		return []byte(fallback)
+	}
+	return []byte(raw)
 }
 
 // BuildTransportOnlyBody builds the request body bytes plus the
@@ -123,9 +228,8 @@ func BuildTransportOnlyBody(in UploadInput, producedAt time.Time) ([]byte, strin
 	return encoded, hash, nil
 }
 
-// PostUpload sends the prepared body to the server's intent-gap
-// findings endpoint. 200 (idempotent duplicate) and 201 (fresh row)
-// are both success; anything else is an error the caller logs.
+// PostUpload sends a prepared body. Both fresh and duplicate responses
+// are successful outcomes.
 func PostUpload(
 	ctx context.Context,
 	httpClient *http.Client,

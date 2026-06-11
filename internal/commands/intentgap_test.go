@@ -8,9 +8,7 @@ import (
 	"github.com/semanticash/cli/internal/service"
 )
 
-// The render helper is the function the analyze command's RunE
-// delegates to, so these tests pin the actual production output
-// shapes rather than a copy.
+// These tests cover the command's shared result renderer.
 
 func TestRenderAnalyzeResult_Uploaded(t *testing.T) {
 	var buf bytes.Buffer
@@ -26,11 +24,8 @@ func TestRenderAnalyzeResult_Uploaded(t *testing.T) {
 	if !strings.Contains(got, "PR #42") || !strings.Contains(got, "u-new") {
 		t.Errorf("uploaded render missing PR # and upload_id: %q", got)
 	}
-	if !strings.Contains(got, "upload recorded") {
-		t.Errorf("render should say 'upload recorded' (transport-only); got: %q", got)
-	}
-	if strings.Contains(got, "analysis uploaded") || strings.Contains(got, "findings uploaded") {
-		t.Errorf("render must not claim findings/analysis were uploaded while the service ships transport_only; got: %q", got)
+	if !strings.Contains(got, "analysis recorded") {
+		t.Errorf("render should say 'analysis recorded'; got: %q", got)
 	}
 }
 
@@ -45,8 +40,8 @@ func TestRenderAnalyzeResult_Duplicate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "upload already recorded") {
-		t.Errorf("duplicate render should say 'upload already recorded'; got: %q", got)
+	if !strings.Contains(got, "analysis already recorded") {
+		t.Errorf("duplicate render should say 'analysis already recorded'; got: %q", got)
 	}
 }
 
@@ -65,9 +60,29 @@ func TestRenderAnalyzeResult_Skipped(t *testing.T) {
 	}
 }
 
-// Error status must return a non-nil error so cobra propagates a
-// non-zero exit code; the reason flows through verbatim so scripts
-// can grep for it.
+// Recording an errored row still returns a non-zero analysis result.
+func TestRenderAnalyzeResult_AnalysisErroredEvenOnUploadSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	res := &service.IntentGapUploadResult{
+		Status:         service.UploadStatusUploaded,
+		Analysis:       service.AnalysisErrored,
+		AnalysisReason: "llm_unavailable",
+		PRNumber:       42,
+		UploadID:       "u-errored",
+	}
+	err := renderAnalyzeResult(&buf, false, res)
+	if err == nil {
+		t.Fatalf("analyzer-errored result should produce a non-zero exit error")
+	}
+	if !strings.Contains(err.Error(), "llm_unavailable") {
+		t.Errorf("error should carry the sanitized reason code; got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "errored") {
+		t.Errorf("stdout should mention the errored state; got: %q", buf.String())
+	}
+}
+
+// Upload errors return a non-zero exit code with the original reason.
 func TestRenderAnalyzeResult_Error(t *testing.T) {
 	var buf bytes.Buffer
 	res := &service.IntentGapUploadResult{
@@ -83,8 +98,7 @@ func TestRenderAnalyzeResult_Error(t *testing.T) {
 	}
 }
 
-// Quiet suppresses success/skip output. Error status is unaffected
-// because the non-zero exit code is the whole point of -q for scripts.
+// Quiet mode suppresses normal output without suppressing errors.
 func TestRenderAnalyzeResult_QuietSuppressesSuccessOutput(t *testing.T) {
 	var buf bytes.Buffer
 	res := &service.IntentGapUploadResult{
@@ -100,9 +114,7 @@ func TestRenderAnalyzeResult_QuietSuppressesSuccessOutput(t *testing.T) {
 	}
 }
 
-// An unknown status is a programming error in this package, not a
-// runtime condition; surface it as an error so the regression is
-// loud at exit time rather than silently mis-rendered.
+// Unknown statuses fail instead of producing misleading output.
 func TestRenderAnalyzeResult_UnknownStatus(t *testing.T) {
 	var buf bytes.Buffer
 	res := &service.IntentGapUploadResult{Status: "weird"}
@@ -112,8 +124,7 @@ func TestRenderAnalyzeResult_UnknownStatus(t *testing.T) {
 	}
 }
 
-// The command must appear in the root command tree under its
-// `intent-gap` name so users can discover it via `semantica --help`.
+// The command is discoverable from the root help output.
 func TestIntentGapAnalyze_RegisteredOnRoot(t *testing.T) {
 	root := NewRootCmd()
 	for _, c := range root.Commands() {

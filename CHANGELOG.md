@@ -5,12 +5,12 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.5.4] - 2026-06-10
+## [0.5.4] - 2026-06-12
 
 ### Added
 
-- Added opt-in push-time intent-gap transport uploads, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` hook trigger.
-- Added `semantica intent-gap analyze` to manually record the same intent-gap upload for the current HEAD, with quiet mode for scripts.
+- Added opt-in local intent-gap analysis at push time, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` trigger.
+- Added `semantica intent-gap analyze` to analyze and record findings for the current pull request, with quiet mode for scripts.
 - Added CLI helpers for intent-gap PR discovery and canonical payload hashing, matching the API upload contract.
 - Added a repo-safe device identifier for intent-gap upload audit metadata; it is excluded from canonical payload hashing and deduplication.
 

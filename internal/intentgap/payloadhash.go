@@ -16,12 +16,7 @@ import (
 	"strconv"
 )
 
-// PayloadHashInput captures the 13 fields that contribute to a CLI
-// upload's payload_hash. Excluded fields (per the canonical spec):
-// tenant_id, producer_user_id (server-owned), producer_device_id
-// (intentional cross-device dedup), analysis_source, analysis_scope
-// (server-forced for this endpoint), produced_at, received_at,
-// upload_id.
+// PayloadHashInput contains the fields included in the canonical upload hash.
 type PayloadHashInput struct {
 	RepositoryID          string
 	PRNumber              int32
@@ -41,9 +36,7 @@ type PayloadHashInput struct {
 	Findings        json.RawMessage
 }
 
-// payloadHashFieldOrder pins the top-level emit order. Lexicographic
-// sorting was rejected because explicit numeric order keeps the
-// fixture bytes human-auditable.
+// payloadHashFieldOrder defines the canonical top-level field order.
 var payloadHashFieldOrder = []string{
 	"repository_id",
 	"pr_number",
@@ -111,10 +104,7 @@ func canonicalPayloadBytes(in PayloadHashInput) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// jsonStrBytes encodes a Go string as a JSON string literal with HTML
-// escaping disabled. The API mirror does the same; flipping it would
-// produce <  / >  / & for <, >, &, breaking parity with
-// the CLI's serializer.
+// jsonStrBytes matches the API serializer by disabling HTML escaping.
 func jsonStrBytes(s string) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

@@ -17,8 +17,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// IntentGapUploadStatus is the high-level outcome of a single upload
-// attempt.
+// IntentGapUploadStatus is the high-level outcome of an upload attempt.
 type IntentGapUploadStatus string
 
 const (
@@ -28,7 +27,7 @@ const (
 	UploadStatusError     IntentGapUploadStatus = "error"
 )
 
-// IntentGapUploadResult records the upload outcome for the caller.
+// IntentGapUploadResult records transport and analysis outcomes separately.
 type IntentGapUploadResult struct {
 	Status     IntentGapUploadStatus
 	Reason     string
@@ -38,32 +37,40 @@ type IntentGapUploadResult struct {
 	ReceivedAt string
 	Provider   string
 	Model      string
+	// Analysis is empty when execution stops before analysis.
+	Analysis AnalysisOutcome
+	// AnalysisReason contains a sanitized code for errored analysis.
+	AnalysisReason string
 }
 
-// IntentGapUploadDeps lets tests inject fake collaborators in place of
-// the production wiring. A nil field falls back to the production
-// helper, so callers in normal code can pass an empty struct.
+// AnalysisOutcome reports whether local analysis completed or errored.
+type AnalysisOutcome string
+
+const (
+	AnalysisAnalyzed AnalysisOutcome = "analyzed"
+	AnalysisErrored  AnalysisOutcome = "errored"
+)
+
+// IntentGapUploadDeps provides optional collaborators for the upload service.
 type IntentGapUploadDeps struct {
 	HTTPClient *http.Client
-	// Endpoint defaults to auth.EffectiveEndpoint(); tests pin a
-	// stub server URL here.
+	// Endpoint defaults to auth.EffectiveEndpoint.
 	Endpoint string
-	// Token defaults to auth.AccessToken(ctx); tests pin a fixed value.
+	// Token defaults to the current CLI access token.
 	Token string
-	// Now defaults to time.Now; tests pin a fixed timestamp so the
-	// produced_at field is deterministic.
+	// Now defaults to time.Now.
 	Now func() time.Time
-	// LLMRegistry defaults to the production fallback chain; tests
-	// can hand in a stub registry whose Find() resolves to whatever
-	// shape they want to exercise.
+	// LLMRegistry defaults to the configured local AI fallback chain.
 	LLMRegistry *llm.WriterRegistry
-	// DeviceID defaults to intentgap.LoadOrCreateDeviceID(); tests
-	// pin a fixed value to avoid touching the user-global config dir.
+	// DeviceID defaults to the persisted installation identifier.
 	DeviceID string
+	// BundleAssembler defaults to the Git and lineage-backed assembler.
+	BundleAssembler intentgap.BundleAssembler
+	// Analyzer defaults to the local LLM analyzer.
+	Analyzer intentgap.IntentGapAnalyzer
 }
 
-// IntentGapUploadService runs the transport-only upload path used by
-// the pre-push hook and user-facing intent-gap commands.
+// IntentGapUploadService analyzes the current pull request and records the result.
 type IntentGapUploadService struct {
 	deps IntentGapUploadDeps
 }
@@ -72,16 +79,8 @@ func NewIntentGapUploadService(deps IntentGapUploadDeps) *IntentGapUploadService
 	return &IntentGapUploadService{deps: deps}
 }
 
-// Run executes the upload path against the repo at repoPath. The
-// returned result distinguishes uploaded / duplicate / skipped /
-// error so the caller can render the outcome uniformly. An error
-// return covers infrastructure failures (DB / HTTP / git); skip
-// outcomes are reported via Status, not via the error.
-//
-// Code paths that reach .semantica write their outcome to the
-// activity log so background workers leave a doctor-visible trail.
-// Errors before repo state is available surface only via the returned
-// error.
+// Run analyzes the current PR and records the result. Expected skip outcomes
+// are returned in Status; infrastructure failures are returned as errors.
 func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*IntentGapUploadResult, error) {
 	repo, err := git.OpenRepo(repoPath)
 	if err != nil {
@@ -176,22 +175,33 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 		Model:            provider.Model,
 		ProducerDeviceID: deviceID,
 	}
-	body, hash, err := intentgap.BuildTransportOnlyBody(in, now())
+
+	analysis, err := s.runAnalysisAndBuildBody(ctx, semDir, in, pr, repoRoot, now)
 	if err != nil {
 		util.AppendActivityLog(semDir, "intent-gap error: build body: %v", err)
 		return nil, fmt.Errorf("build body: %w", err)
 	}
+	// Prefer the writer that produced the analysis when one was invoked.
+	if analysis.Provider != "" {
+		in.Provider = analysis.Provider
+	}
+	if analysis.Model != "" {
+		in.Model = analysis.Model
+	}
+	in.BaseSHA = analysis.BaseSHA
 
-	uploadRes, err := intentgap.PostUpload(ctx, s.deps.HTTPClient, endpoint, token, in, body, hash)
+	uploadRes, err := intentgap.PostUpload(ctx, s.deps.HTTPClient, endpoint, token, in, analysis.Body, analysis.Hash)
 	if err != nil {
 		util.AppendActivityLog(semDir, "intent-gap upload error PR #%d: %v", pr.PRNumber, err)
 		return &IntentGapUploadResult{
-			Status:   UploadStatusError,
-			Reason:   err.Error(),
-			PRNumber: pr.PRNumber,
-			HeadSHA:  headSHA,
-			Provider: provider.Name,
-			Model:    provider.Model,
+			Status:         UploadStatusError,
+			Reason:         err.Error(),
+			PRNumber:       pr.PRNumber,
+			HeadSHA:        headSHA,
+			Provider:       in.Provider,
+			Model:          in.Model,
+			Analysis:       analysis.Outcome,
+			AnalysisReason: analysis.Reason,
 		}, nil
 	}
 
@@ -199,16 +209,159 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 	if uploadRes.StatusCode == http.StatusOK {
 		status = UploadStatusDuplicate
 	}
-	util.AppendActivityLog(semDir, "intent-gap %s PR #%d upload_id=%s", status, pr.PRNumber, uploadRes.UploadID)
+	// Keep the final activity line aligned with the analysis outcome.
+	switch analysis.Outcome {
+	case AnalysisErrored:
+		util.AppendActivityLog(semDir, "intent-gap analysis errored reason=%s PR #%d upload=%s upload_id=%s",
+			analysis.Reason, pr.PRNumber, status, uploadRes.UploadID)
+	default:
+		util.AppendActivityLog(semDir, "intent-gap %s PR #%d upload_id=%s", status, pr.PRNumber, uploadRes.UploadID)
+	}
 	return &IntentGapUploadResult{
-		Status:     status,
-		PRNumber:   pr.PRNumber,
-		HeadSHA:    headSHA,
-		UploadID:   uploadRes.UploadID,
-		ReceivedAt: uploadRes.ReceivedAt,
-		Provider:   provider.Name,
-		Model:      provider.Model,
+		Status:         status,
+		PRNumber:       pr.PRNumber,
+		HeadSHA:        headSHA,
+		UploadID:       uploadRes.UploadID,
+		ReceivedAt:     uploadRes.ReceivedAt,
+		Provider:       in.Provider,
+		Model:          in.Model,
+		Analysis:       analysis.Outcome,
+		AnalysisReason: analysis.Reason,
 	}, nil
+}
+
+// analysisProduct contains a prepared upload and its analysis metadata.
+type analysisProduct struct {
+	Body     []byte
+	Hash     string
+	Outcome  AnalysisOutcome
+	Reason   string
+	Provider string
+	Model    string
+	BaseSHA  string
+}
+
+// runAnalysisAndBuildBody prepares either an analyzed or errored upload.
+func (s *IntentGapUploadService) runAnalysisAndBuildBody(
+	ctx context.Context,
+	semDir string,
+	in intentgap.UploadInput,
+	pr *intentgap.OpenPR,
+	repoRoot string,
+	now func() time.Time,
+) (analysisProduct, error) {
+	assembler := s.deps.BundleAssembler
+	if assembler == nil {
+		assembler = intentgap.NewGitBundleAssembler(defaultGitOpener, newSQLiteTurnLoader(repoRoot))
+	}
+	analyzer := s.deps.Analyzer
+	if analyzer == nil {
+		// Use the same fallback chain used for provider selection.
+		registry := s.deps.LLMRegistry
+		if registry == nil {
+			registry = providers.NewWriterRegistry()
+		}
+		analyzer = intentgap.NewLLMAnalyzer(registry)
+	}
+
+	bundle, bundleErr := assembler.Assemble(ctx, intentgap.BundleInput{
+		RepoRoot: repoRoot,
+		HeadSHA:  in.HeadSHA,
+	})
+	if bundleErr != nil {
+		// Keep local error details out of the uploaded reason code.
+		util.AppendActivityLog(semDir, "intent-gap bundle assembly failed PR #%d: %v", pr.PRNumber, bundleErr)
+		// Preserve actionable failure categories without uploading local details.
+		reason := string(intentgap.ReasonBundleFailed)
+		switch {
+		case errors.Is(bundleErr, intentgap.ErrLineageUnavailable):
+			reason = string(intentgap.ReasonLineageUnavailable)
+		case errors.Is(bundleErr, intentgap.ErrRedactionFailed):
+			reason = string(intentgap.ReasonRedactionFailed)
+		}
+		body, hash, err := intentgap.BuildErroredBody(in, reason, intentgap.PromptTemplateVersion, now())
+		return analysisProduct{Body: body, Hash: hash, Outcome: AnalysisErrored, Reason: reason}, err
+	}
+
+	result, analyzerErr := analyzer.Analyze(ctx, intentgap.AnalysisInput{
+		Bundle:       bundle,
+		PRNumber:     pr.PRNumber,
+		RepositoryID: in.RepositoryID,
+	})
+	if analyzerErr != nil {
+		// Keep subprocess details local and upload only a sanitized code.
+		util.AppendActivityLog(semDir, "intent-gap analyzer failed PR #%d: %v", pr.PRNumber, analyzerErr)
+		reason := string(intentgap.ReasonCodeFor(analyzerErr))
+		// Preserve the resolved base SHA in errored results.
+		erroredIn := in
+		erroredIn.BaseSHA = bundle.BaseSHA
+		body, hash, err := intentgap.BuildErroredBody(erroredIn, reason, intentgap.PromptTemplateVersion, now())
+		return analysisProduct{Body: body, Hash: hash, Outcome: AnalysisErrored, Reason: reason, BaseSHA: bundle.BaseSHA}, err
+	}
+
+	body, hash, err := intentgap.BuildAnalyzedBody(intentgap.AnalyzedBodyInput{
+		UploadInput:           withProviderModel(in, result.Provider, result.Model, bundle.BaseSHA),
+		PromptTemplateVersion: result.PromptTemplateVersion,
+		Findings:              result.Findings,
+		CoverageSummary:       result.CoverageSummary,
+	}, now())
+	return analysisProduct{
+		Body:     body,
+		Hash:     hash,
+		Outcome:  AnalysisAnalyzed,
+		Provider: result.Provider,
+		Model:    result.Model,
+		BaseSHA:  bundle.BaseSHA,
+	}, err
+}
+
+// withProviderModel applies analyzer attribution without clearing preselected
+// values when analysis does not invoke a writer.
+func withProviderModel(in intentgap.UploadInput, provider, model, baseSHA string) intentgap.UploadInput {
+	if provider != "" {
+		in.Provider = provider
+	}
+	if model != "" {
+		in.Model = model
+	}
+	in.BaseSHA = baseSHA
+	return in
+}
+
+// defaultGitOpener adapts git.OpenRepo to the bundle assembler interface.
+func defaultGitOpener(repoPath string) (intentgap.GitRepo, error) {
+	r, err := git.OpenRepo(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return gitRepoAdapter{r: r}, nil
+}
+
+// gitRepoAdapter implements intentgap.GitRepo over git.Repo.
+type gitRepoAdapter struct{ r *git.Repo }
+
+func (a gitRepoAdapter) DefaultBaseRef(ctx context.Context) (string, error) {
+	return a.r.DefaultBaseRef(ctx)
+}
+func (a gitRepoAdapter) MergeBase(ctx context.Context, x, y string) (string, error) {
+	return a.r.MergeBase(ctx, x, y)
+}
+func (a gitRepoAdapter) DiffBetween(ctx context.Context, x, y string) ([]byte, error) {
+	return a.r.DiffBetween(ctx, x, y)
+}
+func (a gitRepoAdapter) CountCommitsBetween(ctx context.Context, x, y string) (int, error) {
+	return a.r.CountCommitsBetween(ctx, x, y)
+}
+func (a gitRepoAdapter) CommitSummariesBetween(ctx context.Context, x, y string, limit int) ([]intentgap.CommitMetaBetween, error) {
+	rows, err := a.r.CommitSummariesBetween(ctx, x, y, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]intentgap.CommitMetaBetween, len(rows))
+	for i, r := range rows {
+		out[i] = intentgap.CommitMetaBetween{Hash: r.Hash, Subject: r.Subject}
+	}
+	return out, nil
 }
 
 // skipped builds a skip result and records the reason when repo-local

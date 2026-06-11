@@ -7,27 +7,16 @@ import (
 	"github.com/semanticash/cli/internal/llm"
 )
 
-// ErrNoInstalledProvider is returned when no writer in the registry
-// has a locatable binary on the host. The intent-gap upload path
-// treats this as a skip reason rather than an error: there is nothing
-// useful to record for a machine with no LLM CLI installed.
+// ErrNoInstalledProvider indicates that no supported local AI CLI is available.
 var ErrNoInstalledProvider = errors.New("intentgap: no LLM CLI installed")
 
-// InstalledProvider is the choice of writer the upload path records
-// in the provider/model fields. The Name has already been mapped to
-// the canonical wire form the server's upload validator accepts;
-// callers do not need to re-translate.
+// InstalledProvider identifies the selected writer using API wire names.
 type InstalledProvider struct {
 	Name  string
 	Model string
 }
 
-// writerNameToWireProvider translates the locally stable writer name
-// (used in attribution records and logs) to the canonical wire enum
-// the intent-gap upload endpoint accepts. Writer names diverge from
-// the wire enum for historical reasons (e.g. "cursor" the writer vs
-// "cursor_cli" the API enum); this mapper centralizes the translation
-// so a renamed writer is a single-line fix.
+// writerNameToWireProvider maps local writer names to API provider values.
 var writerNameToWireProvider = map[string]string{
 	"claude_code": "claude_code",
 	"codex":       "codex",
@@ -37,20 +26,13 @@ var writerNameToWireProvider = map[string]string{
 	"kiro_cli":    "kiro_cli",
 }
 
-// MapWriterNameToWire returns the canonical wire provider name for a
-// given writer Name(), or ("", false) when the writer is unknown.
-// Exposed so tests and other call sites can reuse the same mapping.
+// MapWriterNameToWire returns the API provider value for a writer name.
 func MapWriterNameToWire(writerName string) (string, bool) {
 	wire, ok := writerNameToWireProvider[writerName]
 	return wire, ok
 }
 
-// PickInstalledProvider walks the registry in fallback order and
-// returns the first writer whose Find() resolves to a binary, mapped
-// to the wire enum. Writers with an unknown name are skipped (rather
-// than uploaded under a guessed enum), which means a freshly added
-// writer requires both a new map entry above and a matching enum on
-// the server before it can drive uploads.
+// PickInstalledProvider returns the first installed, API-supported writer.
 func PickInstalledProvider(reg *llm.WriterRegistry) (InstalledProvider, error) {
 	if reg == nil {
 		return InstalledProvider{}, ErrNoInstalledProvider

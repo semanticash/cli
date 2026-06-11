@@ -8,12 +8,11 @@ import (
 	"github.com/semanticash/cli/internal/service"
 )
 
-// NewIntentGapCmd is the user-facing command tree for intent-gap
-// upload tooling.
+// NewIntentGapCmd creates the intent-gap command group.
 func NewIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "intent-gap",
-		Short: "Record and inspect intent-gap uploads",
+		Short: "Run and inspect intent-gap analysis",
 	}
 
 	cmd.AddCommand(newIntentGapAnalyzeCmd(rootOpts))
@@ -21,31 +20,35 @@ func NewIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-// newIntentGapAnalyzeCmd runs the same upload path the pre-push hook
-// spawns, but in the foreground so the user can see the outcome. Used
-// to bridge the gap when a PR was opened after the most recent push,
-// and as a manual trigger for diagnostics.
+// newIntentGapAnalyzeCmd runs the pre-push analysis path in the foreground.
 func newIntentGapAnalyzeCmd(rootOpts *RootOptions) *cobra.Command {
 	var quiet bool
 
 	cmd := &cobra.Command{
 		Use:   "analyze",
-		Short: "Record an intent-gap upload for the current HEAD",
-		Long: `Resolves the open PR for the current branch and records an
-intent-gap upload server-side. Today's upload is a transport-only
-trigger - no local findings are generated yet; the row signals that
-the lifecycle is alive so the rest of the pipeline can be exercised
-end-to-end.
+		Short: "Analyze the current PR with your installed AI agent and record findings",
+		Long: `Resolves the open PR for the current branch, assembles a bundle
+of commits and the cumulative diff, runs intent-gap analysis using your
+installed AI CLI fallback chain (Claude Code, Codex, Cursor, Gemini CLI,
+GitHub Copilot CLI, or Kiro CLI), and uploads the findings to the
+connected workspace.
 
 Useful when:
-  - A PR was opened after the last push and no upload has been
-    recorded yet.
-  - You want to confirm that the upload path is healthy without
-    waiting for the next push.
+  - A PR was opened after the last push and no analysis has been recorded yet.
+  - You want to re-run analysis without waiting for the next push.
 
-The command does not block on capture or settings failures: those
-surface as a skip result with a human-readable reason. Network or
-server errors return a non-zero exit code.`,
+Skip conditions (exit 0, reason in output):
+  - Semantica or intent-gap not enabled in this repo.
+  - Repo not connected to a workspace.
+  - No open PR for the current branch (or more than one).
+  - No AI CLI installed.
+
+Non-zero exit:
+  - The analyzer ran but failed (LLM unavailable mid-flight, output
+    could not be parsed, output failed schema validation). An errored
+    row is still recorded server-side so doctor and the dashboard see
+    the failure.
+  - The wire upload itself failed (network / server error).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{})
@@ -62,20 +65,27 @@ server errors return a non-zero exit code.`,
 	return cmd
 }
 
-// renderAnalyzeResult prints the analyze command's per-status output
-// and returns a non-nil error only when the upload failed at the
-// HTTP / envelope layer. Extracted so the rendering shape can be
-// exercised in tests without standing up a full git repo + stub API.
+// renderAnalyzeResult renders the upload outcome. Analyzer and transport
+// failures return errors even when an errored row was recorded successfully.
 func renderAnalyzeResult(out interface{ Write(p []byte) (int, error) }, quiet bool, res *service.IntentGapUploadResult) error {
+	// Report analysis failure separately from successful error recording.
+	if res.Analysis == service.AnalysisErrored && res.Status != service.UploadStatusError {
+		if !quiet {
+			_, _ = fmt.Fprintf(out, "Intent-gap analysis errored (%s); errored row recorded for PR #%d\n",
+				res.AnalysisReason, res.PRNumber)
+		}
+		return fmt.Errorf("intent-gap analysis errored: %s", res.AnalysisReason)
+	}
+
 	switch res.Status {
 	case service.UploadStatusUploaded:
 		if !quiet {
-			_, _ = fmt.Fprintf(out, "Intent-gap upload recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
+			_, _ = fmt.Fprintf(out, "Intent-gap analysis recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
 		}
 		return nil
 	case service.UploadStatusDuplicate:
 		if !quiet {
-			_, _ = fmt.Fprintf(out, "Intent-gap upload already recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
+			_, _ = fmt.Fprintf(out, "Intent-gap analysis already recorded for PR #%d (upload_id=%s)\n", res.PRNumber, res.UploadID)
 		}
 		return nil
 	case service.UploadStatusSkipped:
@@ -84,10 +94,7 @@ func renderAnalyzeResult(out interface{ Write(p []byte) (int, error) }, quiet bo
 		}
 		return nil
 	case service.UploadStatusError:
-		// Non-zero exit lets `semantica intent-gap analyze` participate
-		// in scripts the way other diagnostic commands do; the service
-		// already wrote the reason to the activity log so doctor can
-		// surface it later.
+		// Preserve a non-zero exit for scripts; details are in the activity log.
 		return fmt.Errorf("intent-gap upload failed to record: %s", res.Reason)
 	default:
 		return fmt.Errorf("intent-gap analyze: unknown status %q", res.Status)

@@ -90,8 +90,7 @@ func TestLookupOpenPRByBranch_AmbiguousMatch(t *testing.T) {
 	}
 }
 
-// Server-side 5xx surfaces as ErrUnavailable so the caller can skip
-// quietly + write a doctor/debug line instead of failing the push.
+// Server failures are reported as unavailable discovery.
 func TestLookupOpenPRByBranch_ServerError(t *testing.T) {
 	srv := stubServer(t, http.StatusInternalServerError, `{"error":true,"message":"boom"}`)
 	defer srv.Close()
@@ -102,8 +101,7 @@ func TestLookupOpenPRByBranch_ServerError(t *testing.T) {
 	}
 }
 
-// Unauthorized surfaces as ErrUnavailable too - the pre-push path
-// must never block on auth issues; it just falls through silently.
+// Authentication failures are reported as unavailable discovery.
 func TestLookupOpenPRByBranch_Unauthorized(t *testing.T) {
 	srv := stubServer(t, http.StatusUnauthorized, `{"error":true,"message":"nope"}`)
 	defer srv.Close()
