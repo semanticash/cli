@@ -22,6 +22,7 @@ func NewIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 
 // newIntentGapAnalyzeCmd runs the pre-push analysis path in the foreground.
 func newIntentGapAnalyzeCmd(rootOpts *RootOptions) *cobra.Command {
+	var base string
 	var quiet bool
 
 	cmd := &cobra.Command{
@@ -36,6 +37,7 @@ connected workspace.
 Useful when:
   - A PR was opened after the last push and no analysis has been recorded yet.
   - You want to re-run analysis without waiting for the next push.
+  - The repository uses a non-standard default branch; pass --base explicitly.
 
 Skip conditions (exit 0, reason in output):
   - Semantica or intent-gap not enabled in this repo.
@@ -51,7 +53,7 @@ Non-zero exit:
   - The wire upload itself failed (network / server error).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{})
+			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{BaseRef: base})
 			res, err := svc.Run(cmd.Context(), rootOpts.RepoPath)
 			if err != nil {
 				return err
@@ -60,6 +62,7 @@ Non-zero exit:
 		},
 	}
 
+	cmd.Flags().StringVar(&base, "base", "", "Base branch or ref (default: auto-detect)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress success/skip output; only error exit codes")
 
 	return cmd

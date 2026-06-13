@@ -134,3 +134,14 @@ func TestIntentGapAnalyze_RegisteredOnRoot(t *testing.T) {
 	}
 	t.Fatal("intent-gap command not registered on root")
 }
+
+func TestIntentGapAnalyze_BaseFlag(t *testing.T) {
+	cmd := newIntentGapAnalyzeCmd(&RootOptions{})
+	flag := cmd.Flags().Lookup("base")
+	if flag == nil {
+		t.Fatal("analyze command should expose --base")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("--base default = %q, want auto-detect", flag.DefValue)
+	}
+}
