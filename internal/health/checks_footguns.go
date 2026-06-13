@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -200,8 +201,14 @@ func checkProviderFootguns(ctx context.Context, opts Options) []Check {
 }
 
 // claudeTrackedHookCheck warns when Semantica's Claude hooks are in
-// the tracked `settings.json` rather than the gitignored
-// `settings.local.json`. Returns ok=false when no warning is needed.
+// a `.claude/settings.json` that git will actually commit. Many repos
+// keep both `settings.json` and `settings.local.json` ignored locally;
+// the warning is only shown after confirming git does not ignore the
+// file.
+//
+// Returns ok=false when the file is missing, has no Semantica marker,
+// or git says the path is ignored. If git cannot confirm the path is
+// ignored, the warning is shown.
 func claudeTrackedHookCheck(repoPath string) (Check, bool) {
 	tracked := filepath.Join(repoPath, ".claude", claudeTrackedSettingsBasename)
 	data, err := os.ReadFile(tracked)
@@ -211,11 +218,29 @@ func claudeTrackedHookCheck(repoPath string) (Check, bool) {
 	if !strings.Contains(string(data), claudeMarker) {
 		return Check{}, false
 	}
+	if isGitIgnored(repoPath, tracked) {
+		return Check{}, false
+	}
 	return Check{
 		Category:    "footguns",
 		ID:          "claude_tracked_settings",
 		Status:      StatusWarn,
-		Message:     "Claude Code hooks are configured in tracked .claude/settings.json (will be committed)",
+		Message:     "Claude Code hooks are configured in .claude/settings.json, which is not gitignored",
 		Remediation: "move Semantica hooks to .claude/settings.local.json (gitignored) so teammates without Semantica are unaffected",
 	}, true
+}
+
+// isGitIgnored reports whether `git check-ignore` considers path
+// ignored relative to repoPath. Any non-zero result is treated as
+// "not confirmed ignored".
+func isGitIgnored(repoPath, path string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "check-ignore", "--quiet", path)
+	err := cmd.Run()
+	if err == nil {
+		// Exit 0: path is ignored.
+		return true
+	}
+	// Exit 1 means not ignored; 128 and other non-zero statuses mean git
+	// could not answer. In both cases the caller should keep the warning.
+	return false
 }

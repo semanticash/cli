@@ -5,13 +5,23 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.4] - 2026-06-13
 
 ### Added
 
+- Added opt-in local intent-gap analysis at push time, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` trigger.
+- Added `semantica intent-gap analyze` to analyze and record findings for the current pull request, with quiet mode for scripts.
+- Added CLI helpers for intent-gap PR discovery and canonical payload hashing, matching the API upload contract.
+- Added a repo-safe device identifier for intent-gap upload audit metadata; it is excluded from canonical payload hashing and deduplication.
+
 ### Fixed
 
+- Existing enabled repos now refresh the `pre-push` hook when intent-gap uploads are turned on, so upgraded installs do not need to rerun `semantica enable`.
+- Intent-gap uploads now map local LLM writer names to the API provider enum and log skipped or failed background uploads for `semantica doctor`.
+
 ### Changed
+
+- `semantica enable` now installs the Semantica `pre-push` hook alongside the existing hooks while preserving user hook behavior.
 
 ## [0.5.3] - 2026-06-07
 

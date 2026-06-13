@@ -25,13 +25,15 @@ type Automations struct {
 }
 
 type Settings struct {
-	Enabled         bool         `json:"enabled"`
-	Version         int          `json:"version"`
-	Providers       []string     `json:"providers,omitempty"`
-	Trailers        *bool        `json:"trailers,omitempty"`
-	Automations     *Automations `json:"automations,omitempty"`
-	Connected       bool         `json:"connected"`
-	ConnectedRepoID string       `json:"connected_repo_id,omitempty"`
+	Enabled   bool     `json:"enabled"`
+	Version   int      `json:"version"`
+	Providers []string `json:"providers,omitempty"`
+	Trailers  *bool    `json:"trailers,omitempty"`
+	// IntentGapEnabled gates background intent-gap analysis. It is opt-in.
+	IntentGapEnabled *bool        `json:"intent_gap_enabled,omitempty"`
+	Automations      *Automations `json:"automations,omitempty"`
+	Connected        bool         `json:"connected"`
+	ConnectedRepoID  string       `json:"connected_repo_id,omitempty"`
 }
 
 func SettingsPath(semDir string) string {
@@ -122,6 +124,16 @@ func TrailersEnabled(semDir string) bool {
 		return true
 	}
 	return *s.Trailers
+}
+
+// IntentGapEnabled returns whether background intent-gap analysis is enabled.
+// It defaults to false so settings read failures do not trigger uploads.
+func IntentGapEnabled(semDir string) bool {
+	s, err := ReadSettings(semDir)
+	if err != nil || s.IntentGapEnabled == nil {
+		return false
+	}
+	return *s.IntentGapEnabled
 }
 
 // IsImplementationSummaryEnabled returns true if the auto-implementation-summary automation is enabled.

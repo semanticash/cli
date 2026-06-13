@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -172,6 +173,63 @@ func TestClaudeTrackedHookCheck_NoMarker_Silent(t *testing.T) {
 	if _, ok := claudeTrackedHookCheck(repo); ok {
 		t.Error("expected no warning when settings.json lacks the Semantica marker")
 	}
+}
+
+// Some repos intentionally gitignore .claude/settings.json so each
+// developer can keep local hooks without affecting teammates.
+func TestClaudeTrackedHookCheck_Gitignored_Silent(t *testing.T) {
+	repo := initGitRepoForFootgun(t)
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"hooks": {"PostToolUse": [{"hooks":[{"command":"semantica capture claude-code PostToolUse"}]}]}}`
+	if err := os.WriteFile(filepath.Join(repo, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".claude/settings.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := claudeTrackedHookCheck(repo); ok {
+		t.Error("expected no warning when settings.json is gitignored")
+	}
+}
+
+// In a real git repo without an ignore rule, a marked settings.json
+// should still warn because it can be committed.
+func TestClaudeTrackedHookCheck_GitTrackedAndMarked_Warns(t *testing.T) {
+	repo := initGitRepoForFootgun(t)
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"hooks": {"PostToolUse": [{"hooks":[{"command":"semantica capture claude-code PostToolUse"}]}]}}`
+	if err := os.WriteFile(filepath.Join(repo, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := claudeTrackedHookCheck(repo)
+	if !ok {
+		t.Fatal("expected warn when settings.json has the marker and is not gitignored")
+	}
+	if got.Status != StatusWarn {
+		t.Errorf("status = %q, want warn", got.Status)
+	}
+}
+
+// initGitRepoForFootgun runs `git init` in a temp dir so the
+// gitignore-aware check can resolve a real repo. Returns the
+// canonical (symlink-resolved) path the check expects.
+func initGitRepoForFootgun(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q", dir)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		canonical = filepath.Clean(dir)
+	}
+	return canonical
 }
 
 func writeHookErrorRaw(t *testing.T, configDir string, ts time.Time, provider, hook, msg string) {

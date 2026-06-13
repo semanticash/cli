@@ -386,6 +386,78 @@ func TestBuildSemanticaHookWrapperScript_PostCommit_VisibleOutput(t *testing.T) 
 	}
 }
 
+// Pre-push stdin is a one-shot ref list, so wrappers must replay it to
+// both the preserved user hook and Semantica.
+func TestBuildSemanticaHookWrapperScript_PrePush_BuffersStdin(t *testing.T) {
+	script := string(buildSemanticaHookWrapperScript("pre-push", "pre-push.user.42", "pre-push", true))
+
+	if !strings.Contains(script, `mktemp`) {
+		t.Errorf("pre-push wrapper must allocate STDIN_BUF via mktemp; got:\n%s", script)
+	}
+	if !strings.Contains(script, `cat > "$STDIN_BUF"`) {
+		t.Errorf("pre-push wrapper must capture stdin into the buffer; got:\n%s", script)
+	}
+	if !strings.Contains(script, `"$USER_HOOK" "$@" < "$STDIN_BUF"`) {
+		t.Errorf("user hook must read from STDIN_BUF (not raw stdin); got:\n%s", script)
+	}
+	if !strings.Contains(script, `semantica hook pre-push "$@" < "$STDIN_BUF"`) {
+		t.Errorf("semantica must read from STDIN_BUF (not raw stdin); got:\n%s", script)
+	}
+	if !strings.Contains(script, `trap 'rm -f "$STDIN_BUF"' EXIT`) {
+		t.Errorf("pre-push wrapper must clean up STDIN_BUF on exit; got:\n%s", script)
+	}
+	if !strings.Contains(script, `exit $user_rc`) {
+		t.Errorf("pre-push wrapper must propagate user-hook exit code; got:\n%s", script)
+	}
+	if !strings.Contains(script, `|| true`) {
+		t.Errorf("pre-push wrapper's semantica call must stay non-blocking; got:\n%s", script)
+	}
+}
+
+// If no buffer can be created, the wrapper leaves the preserved user hook
+// in control and skips Semantica.
+func TestBuildSemanticaHookWrapperScript_PrePush_BufferFailureRunsUserHookRaw(t *testing.T) {
+	script := string(buildSemanticaHookWrapperScript("pre-push", "pre-push.user.42", "pre-push", true))
+
+	if !strings.Contains(script, `exec "$USER_HOOK" "$@"`) {
+		t.Errorf("buffer-failure fallback must exec the user hook with $@; got:\n%s", script)
+	}
+
+	if !strings.Contains(script, `if [ -x "$USER_HOOK" ]; then
+  exec "$USER_HOOK"`) {
+		t.Errorf("buffer-failure fallback must guard exec on USER_HOOK being executable; got:\n%s", script)
+	}
+
+	fallbackStart := strings.Index(script, "# Fallback")
+	if fallbackStart < 0 {
+		t.Fatalf("expected '# Fallback' marker in script; got:\n%s", script)
+	}
+	if strings.Contains(script[fallbackStart:], "semantica hook") {
+		t.Errorf("fallback path must not invoke semantica hook; got:\n%s", script[fallbackStart:])
+	}
+}
+
+// If stdin capture fails after allocation, the wrapper must fail closed;
+// raw stdin may already be consumed.
+func TestBuildSemanticaHookWrapperScript_PrePush_CaptureFailureFailsClosed(t *testing.T) {
+	script := string(buildSemanticaHookWrapperScript("pre-push", "pre-push.user.42", "pre-push", true))
+
+	if !strings.Contains(script, `if ! cat > "$STDIN_BUF"`) {
+		t.Errorf("pre-push wrapper must guard `cat > $STDIN_BUF` against failure; got:\n%s", script)
+	}
+	capFailIdx := strings.Index(script, `if ! cat > "$STDIN_BUF"`)
+	if capFailIdx >= 0 {
+		tail := script[capFailIdx:]
+		if !strings.Contains(tail[:200], "exit 1") {
+			t.Errorf("pre-push wrapper must exit non-zero on capture failure; got:\n%s", tail[:200])
+		}
+	}
+	userHookIdx := strings.Index(script, `"$USER_HOOK" "$@" < "$STDIN_BUF"`)
+	if userHookIdx < 0 || userHookIdx <= capFailIdx {
+		t.Errorf("user hook execution must come after capture-failure guard; got:\n%s", script)
+	}
+}
+
 // TestBuildSemanticaHookWrapperScript_PropagatesUserHookExitCode
 // verifies that preserved user hooks keep normal Git blocking
 // semantics while Semantica's capture hook remains non-blocking.

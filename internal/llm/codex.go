@@ -42,8 +42,7 @@ func (codexWriter) Find() string {
 }
 
 // Generate invokes `codex exec` with the prompt piped on stdin and
-// the final narrative captured via `--output-last-message`. Runner
-// contract (documented in plans/provider-registries-explicit-v1.md):
+// the final narrative captured via `--output-last-message`. Runner contract:
 //
 //   - stderr is always captured; on a non-zero exit it is included
 //     in the returned error so callers can diagnose codex failures.

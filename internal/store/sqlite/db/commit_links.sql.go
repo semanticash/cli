@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 const getCommitLinkByCommitHash = `-- name: GetCommitLinkByCommitHash :one
@@ -102,6 +103,86 @@ func (q *Queries) ListCommitLinksByRepository(ctx context.Context, arg ListCommi
 			&i.RepositoryID,
 			&i.CheckpointID,
 			&i.LinkedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserPromptsForCommit = `-- name: ListUserPromptsForCommit :many
+with this_checkpoint as (
+    select c.checkpoint_id, c.repository_id, ck.created_at
+    from commit_links c
+    join checkpoints ck on ck.checkpoint_id = c.checkpoint_id
+    where c.commit_hash = ?
+    limit 1
+),
+prev_checkpoint_ts as (
+    select coalesce(max(ck2.created_at), 0) as cutoff
+    from commit_links c2
+    join checkpoints ck2 on ck2.checkpoint_id = c2.checkpoint_id
+    join this_checkpoint tc on tc.repository_id = c2.repository_id
+    where ck2.created_at < tc.created_at
+),
+ranked as (
+    select
+        e.event_id, e.turn_id, e.ts, e.summary, e.payload_hash,
+        row_number() over (partition by e.turn_id order by e.ts asc) as rn
+    from this_checkpoint tc
+    cross join prev_checkpoint_ts pc
+    join session_checkpoints sc on sc.checkpoint_id = tc.checkpoint_id
+    join agent_events e on e.session_id = sc.session_id
+    where e.role = 'user'
+      and e.kind = 'user'
+      and e.turn_id is not null
+      and e.turn_id != ''
+      and e.ts <= tc.created_at
+      and e.ts > pc.cutoff
+)
+select event_id, turn_id, ts, summary, payload_hash
+from ranked
+where rn = 1
+order by ts asc
+`
+
+type ListUserPromptsForCommitRow struct {
+	EventID     string         `json:"event_id"`
+	TurnID      sql.NullString `json:"turn_id"`
+	Ts          int64          `json:"ts"`
+	Summary     sql.NullString `json:"summary"`
+	PayloadHash sql.NullString `json:"payload_hash"`
+}
+
+// Returns user prompts attributable to a single commit.
+//
+// Isolation rules:
+//   - User prompt events only; assistant and tool-result events are excluded.
+//   - Events must fall within the commit checkpoint window.
+//   - Duplicate turn IDs keep the earliest event for deterministic ordering.
+//   - Events without a turn ID are excluded because they cannot be cited.
+func (q *Queries) ListUserPromptsForCommit(ctx context.Context, commitHash string) ([]ListUserPromptsForCommitRow, error) {
+	rows, err := q.query(ctx, q.listUserPromptsForCommitStmt, listUserPromptsForCommit, commitHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserPromptsForCommitRow{}
+	for rows.Next() {
+		var i ListUserPromptsForCommitRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.TurnID,
+			&i.Ts,
+			&i.Summary,
+			&i.PayloadHash,
 		); err != nil {
 			return nil, err
 		}

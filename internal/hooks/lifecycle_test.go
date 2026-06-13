@@ -437,6 +437,10 @@ func TestDispatch_ToolStepCompleted_BuildErrorDoesNotFail(t *testing.T) {
 
 func TestDispatch_ToolStepCompleted_WriteErrorDoesNotFail(t *testing.T) {
 	setupTestCaptureDir(t)
+	// Redirect the global config dir so the broker write failure
+	// this test deliberately provokes lands in a temp hook-errors.log
+	// rather than the developer's real one.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	repoPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoPath, ".semantica"), 0o755); err != nil {
@@ -521,6 +525,10 @@ func TestDispatch_SubagentPromptSubmitted_BuildErrorDoesNotFail(t *testing.T) {
 
 func TestDispatch_SubagentPromptSubmitted_WriteErrorDoesNotFail(t *testing.T) {
 	setupTestCaptureDir(t)
+	// Redirect the global config dir so the broker write failure
+	// this test deliberately provokes lands in a temp hook-errors.log
+	// rather than the developer's real one.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	repoPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoPath, ".semantica"), 0o755); err != nil {
