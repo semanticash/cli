@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Added opt-in local intent-gap analysis at push time, including `semantica set intent-gap <enabled|disabled>` and a non-blocking `pre-push` trigger.
 - Added `semantica intent-gap analyze` to analyze and record findings for the current pull request, with a base-ref override and quiet mode for scripts.
+- Added the `semantica-intent-gap` agent skill so users can trigger the same analysis from a supported AI agent in natural language; the SKILL.md is installed alongside the existing Semantica skills.
 - Added CLI helpers for intent-gap PR discovery and canonical payload hashing, matching the API upload contract.
 - Added a stable installation identifier for intent-gap upload audit metadata; it is excluded from canonical payload hashing and deduplication.
 

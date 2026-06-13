@@ -308,6 +308,7 @@ remember exact command syntax. The current skills cover:
 
 - **`semantica-handoff`** - prepare a redacted `.semantica/handoff.md` bundle so a fresh same-agent or cross-agent session can continue the work.
 - **`semantica-explain`** - explain a commit using local provenance, hosted playbooks when connected, or a redacted git-only fallback.
+- **`semantica-intent-gap`** - run intent-gap analysis on the current PR; surfaces requested-but-missing work, unrequested code, or deferred trajectories using your installed AI CLI.
 
 After installation, use natural language in the agent, for example "handoff
 this session" or "explain this commit with Semantica." The skills call hidden
