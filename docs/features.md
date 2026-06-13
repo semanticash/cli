@@ -286,6 +286,11 @@ semantica intent-gap analyze --base origin/main
 semantica doctor
 ```
 
+Inside a supported AI agent, the installed `semantica-intent-gap` skill
+exposes the same analysis through natural language ("run intent-gap analysis",
+"did this PR miss anything from my prompts"). See [Agent skills](../README.md#agent-skills)
+for installation.
+
 ### How it works
 
 - The CLI resolves the open pull request for the current branch through the

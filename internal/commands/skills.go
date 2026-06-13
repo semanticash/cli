@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/semanticash/cli/internal/explain"
+	"github.com/semanticash/cli/internal/service"
 	"github.com/semanticash/cli/internal/skills"
 	"github.com/semanticash/cli/internal/version"
 	"github.com/spf13/cobra"
@@ -27,6 +28,7 @@ func NewSkillsCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.AddCommand(newSkillsUninstallCmd())
 	cmd.AddCommand(newSkillsHandoffCmd(rootOpts))
 	cmd.AddCommand(newSkillsExplainCmd(rootOpts))
+	cmd.AddCommand(newSkillsIntentGapCmd(rootOpts))
 	return cmd
 }
 
@@ -180,6 +182,34 @@ func newSkillsExplainCmd(rootOpts *RootOptions) *cobra.Command {
 			return nil
 		},
 	}
+	return cmd
+}
+
+// newSkillsIntentGapCmd is the hidden backing command for the
+// semantica-intent-gap SKILL.md body. It mirrors what
+// `semantica intent-gap analyze` does for terminal users: runs the
+// upload service in the foreground and prints the same one-line
+// status the user-facing command produces, so the SKILL.md body
+// can print stdout verbatim. --base mirrors the user-facing flag.
+func newSkillsIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
+	var base string
+	cmd := &cobra.Command{
+		Use:           "intent-gap",
+		Short:         "Backing command for the semantica-intent-gap skill (hidden)",
+		Args:          cobra.NoArgs,
+		Hidden:        true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{BaseRef: base})
+			res, err := svc.Run(cmd.Context(), rootOpts.RepoPath)
+			if err != nil {
+				return err
+			}
+			return renderAnalyzeResult(cmd.OutOrStdout(), false, res)
+		},
+	}
+	cmd.Flags().StringVar(&base, "base", "", "Base branch or ref (default: auto-detect)")
 	return cmd
 }
 
