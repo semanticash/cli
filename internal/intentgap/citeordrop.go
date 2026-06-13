@@ -201,6 +201,9 @@ func validateRegionInDiff(fr fileRegion, changedRegions map[string][]lineRange) 
 			// A zero range cannot identify source evidence.
 			return "line_range_missing", true
 		}
+		if lr[0] < 1 || lr[1] < lr[0] {
+			return "line_range_invalid", true
+		}
 		if !lineRangeIntersects(lr, regions) {
 			return "line_range_outside_diff", true
 		}

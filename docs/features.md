@@ -271,6 +271,60 @@ semantica suggest pr --copy
 
 ---
 
+## Intent-gap Analysis
+
+Intent-gap analysis compares captured user prompts with the committed pull
+request diff. It runs through a supported AI CLI installed on the developer's
+machine and records advisory findings for hosted review.
+
+### What you see
+
+```bash
+semantica set intent-gap enabled
+semantica intent-gap analyze
+semantica intent-gap analyze --base origin/main
+semantica doctor
+```
+
+### How it works
+
+- The CLI resolves the open pull request for the current branch through the
+  connected Semantica workspace.
+- It builds a bounded bundle from commits between the merge base and `HEAD`,
+  the cumulative Git diff, and captured user prompts linked to those commits.
+- Prompt excerpts are redacted before they are passed to the local AI CLI.
+- Model output must match the intent-gap JSON schema. Semantica replaces
+  model-supplied finding IDs with canonical IDs and drops findings whose prompt
+  or changed-line citations cannot be verified against the bundle.
+- The CLI uploads findings, coverage metadata, and provider/model attribution.
+  It does not upload the raw cumulative diff through the intent-gap endpoint.
+- When enabled, the pre-push hook starts this path in a detached process and
+  does not delay or fail the push. The manual command runs the same path in the
+  foreground and returns a non-zero status for analysis or upload failures.
+
+### Prerequisites
+
+- Semantica is enabled, authenticated, and connected for the repository.
+- `intent_gap_enabled` is enabled with `semantica set intent-gap enabled`.
+- An open pull request for the current branch is already known to Semantica.
+- At least one supported AI CLI is installed and authenticated.
+
+### Caveats
+
+- Analysis covers committed branch history and captured prompts linked to those
+  commits. It does not include staged or uncommitted changes.
+- An empty finding list means the analysis completed without an accepted
+  finding. It is not a guarantee that no gap exists.
+- Missing captured prompts are reported as an evidence gap and the LLM is not
+  called.
+- Findings are advisory. Schema and citation checks constrain fabrication, but
+  they do not make model judgments deterministic.
+
+See [Limitations](limitations.md#intent-gap-analysis) for current input caps and
+grounding boundaries.
+
+---
+
 ## Implementations
 
 Implementations are Semantica's concrete local record for agent work that often

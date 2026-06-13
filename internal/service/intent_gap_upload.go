@@ -54,6 +54,8 @@ const (
 // IntentGapUploadDeps provides optional collaborators for the upload service.
 type IntentGapUploadDeps struct {
 	HTTPClient *http.Client
+	// BaseRef overrides automatic base-branch detection for manual analysis.
+	BaseRef string
 	// Endpoint defaults to auth.EffectiveEndpoint.
 	Endpoint string
 	// Token defaults to the current CLI access token.
@@ -266,6 +268,7 @@ func (s *IntentGapUploadService) runAnalysisAndBuildBody(
 
 	bundle, bundleErr := assembler.Assemble(ctx, intentgap.BundleInput{
 		RepoRoot: repoRoot,
+		Base:     s.deps.BaseRef,
 		HeadSHA:  in.HeadSHA,
 	})
 	if bundleErr != nil {

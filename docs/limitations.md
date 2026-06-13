@@ -41,6 +41,39 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - `semantica suggest pr` detects the base branch best-effort. Repos with non-standard default branch names may need `--base` explicitly.
 - Playbook generation is asynchronous - results are not immediately available after `--generate`.
 
+## Intent-gap analysis
+
+- Intent-gap analysis is opt-in and requires an authenticated, connected
+  repository. It is not part of offline core capture.
+- The CLI analyzes an open pull request already known to Semantica for the
+  current branch. The first push that creates a pull request may run before the
+  server knows about it; rerun `semantica intent-gap analyze` after the pull
+  request appears.
+- Automatic analysis runs only when the checked-out branch is among the refs
+  being pushed. It is detached and never blocks the push.
+- The analyzed range contains committed changes between the merge base and
+  `HEAD`. Staged and uncommitted changes are excluded.
+- Prompt evidence is limited to captured user prompts linked to commits in that
+  range. Missing or incomplete capture reduces the available intent signal. No
+  captured prompts is an insufficient-evidence outcome, not proof that no gap
+  exists.
+- The hosted check currently uses the same empty-findings label for completed
+  analysis and the no-captured-prompts path. Treat `no gaps found` as advisory;
+  it does not confirm that prompt coverage was available.
+- Analyzer input is capped at 96 KiB of cumulative diff, 100 commits, and 200
+  captured prompts. When prompt history exceeds the cap, the oldest prompts are
+  dropped first.
+- Citation filtering verifies captured turn IDs, redacted prompt excerpts and
+  hashes, and whether cited file ranges intersect the cumulative diff. It does
+  not currently verify `evidence_class` or `ai_authored_regions_checked`
+  against line-level attribution data.
+- `deferred` findings are model judgments in this version. The CLI does not yet
+  reconstruct a per-commit add/remove trajectory to verify deferral
+  deterministically.
+- Findings are advisory and may be incomplete or incorrect. JSON Schema,
+  canonical IDs, and citation filtering reduce malformed or fabricated output
+  but do not eliminate LLM error.
+
 ## Kiro IDE
 
 - Kiro IDE hooks do not expose an explicit session ID to external commands. Semantica pairs `promptSubmit`, `fileEdited`, and `agentStop` by workspace-scoped capture state and chooses the session best-effort at prompt submission.

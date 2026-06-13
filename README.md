@@ -31,7 +31,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 - **Git** - Semantica hooks into the Git commit lifecycle
 - **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
 - **At least one supported AI provider** for capture (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
-- **At least one supported CLI version** for `suggest commit`, `suggest pr`, and playbook generation (`claude`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
+- **At least one supported AI CLI** for LLM-backed features such as suggestions, playbooks, and intent-gap analysis (`claude`, `codex`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
 
 ---
 
@@ -172,6 +172,35 @@ Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 semantica set trailers enabled
 semantica set trailers disabled    # checkpoint-only commits
 ```
+
+### Intent-gap analysis
+
+For connected repositories, Semantica can compare captured user prompts with
+the committed pull request diff using an installed AI CLI. The result is an
+advisory review signal for requested work that may be incomplete, deferred
+work, or changed code without supporting captured intent.
+
+Intent-gap analysis is off by default:
+
+```bash
+semantica set intent-gap enabled
+```
+
+When enabled, the non-blocking pre-push hook starts analysis in the background
+when the current branch is pushed and Semantica knows about an open pull
+request for that branch. You can also run it directly:
+
+```bash
+semantica intent-gap analyze
+semantica intent-gap analyze --base origin/main
+semantica doctor
+```
+
+Findings are generated locally, validated against captured prompt citations
+and changed diff regions, then recorded for hosted review. They are not proof
+that an implementation is correct or complete. See the
+[feature guide](docs/features.md#intent-gap-analysis) and
+[known limitations](docs/limitations.md#intent-gap-analysis).
 
 ### Cross-repo implementations
 
@@ -358,6 +387,7 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `implementations [id]` | List or inspect cross-repo implementation stories |
 | `suggest commit` | Generate a commit message from uncommitted changes |
 | `suggest pr` | Generate a PR title and body from the current branch diff |
+| `intent-gap analyze` | Analyze captured PR intent and record advisory findings |
 | `suggest implementations` | Suggest titles, summaries, and merge candidates for implementations |
 | `tidy` | Preview or remove stale local Semantica state |
 | `checkpoint` | Manually create a checkpoint |

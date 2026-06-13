@@ -152,6 +152,16 @@ func TestFilterFindingsByCitations_LineRangeOutsideDiffDropped(t *testing.T) {
 	}
 }
 
+func TestFilterFindingsByCitations_ReversedLineRangeDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	findings := json.RawMessage("[" + underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{14, 12}) + "]")
+
+	res, _ := FilterFindingsByCitations(findings, bundle)
+	if res.DroppedReasons["line_range_invalid"] != 1 {
+		t.Errorf("DroppedReasons = %v, want line_range_invalid=1", res.DroppedReasons)
+	}
+}
+
 // finding_id is no longer checked by cite-or-drop; the analyzer
 // rewrites it from canonical anchors after this filter accepts the
 // finding. Verify that a placeholder id passes the filter and that
@@ -445,4 +455,3 @@ func TestParseChangedRegions_MultipleHunksMultipleFiles(t *testing.T) {
 		t.Errorf("regions = %v, want foo.go:2 bar.go:1", out)
 	}
 }
-

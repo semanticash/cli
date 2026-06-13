@@ -402,9 +402,11 @@ var _ = json.Marshal
 type stubBundleAssembler struct {
 	bundle intentgap.Bundle
 	err    error
+	input  intentgap.BundleInput
 }
 
-func (s *stubBundleAssembler) Assemble(context.Context, intentgap.BundleInput) (intentgap.Bundle, error) {
+func (s *stubBundleAssembler) Assemble(_ context.Context, in intentgap.BundleInput) (intentgap.Bundle, error) {
+	s.input = in
 	return s.bundle, s.err
 }
 
@@ -440,6 +442,36 @@ func validFindingsJSON() json.RawMessage {
 			"current_state":{"file":"handler.go","line_range":[12,24],"summary":"removed"}
 		}
 	]`)
+}
+
+func TestRunAnalysisAndBuildBody_PassesBaseRef(t *testing.T) {
+	assembler := &stubBundleAssembler{bundle: minimalBundle()}
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		BaseRef:         "origin/develop",
+		BundleAssembler: assembler,
+		Analyzer: &stubAnalyzer{result: intentgap.AnalysisResult{
+			Findings:              json.RawMessage(`[]`),
+			CoverageSummary:       json.RawMessage(`{}`),
+			Provider:              "claude_code",
+			Model:                 "test-model",
+			PromptTemplateVersion: intentgap.PromptTemplateVersion,
+		}},
+	})
+
+	_, err := svc.runAnalysisAndBuildBody(
+		context.Background(),
+		t.TempDir(),
+		intentgap.UploadInput{RepositoryID: "repo-1", PRNumber: 42, HeadSHA: "head-1"},
+		&intentgap.OpenPR{PRNumber: 42},
+		t.TempDir(),
+		func() time.Time { return time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC) },
+	)
+	if err != nil {
+		t.Fatalf("runAnalysisAndBuildBody: %v", err)
+	}
+	if assembler.input.Base != "origin/develop" {
+		t.Errorf("bundle base = %q, want origin/develop", assembler.input.Base)
+	}
 }
 
 // Findings are encoded and accepted as a new upload.
