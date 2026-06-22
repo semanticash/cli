@@ -49,13 +49,13 @@ func TestRenderAnalyzeResult_Skipped(t *testing.T) {
 	var buf bytes.Buffer
 	res := &service.IntentGapUploadResult{
 		Status: service.UploadStatusSkipped,
-		Reason: "intent_gap.enabled is false",
+		Reason: "no open PR for branch \"feat/x\"",
 	}
 	if err := renderAnalyzeResult(&buf, false, res); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "Skipped: intent_gap.enabled is false") {
+	if !strings.Contains(got, "Skipped: no open PR for branch \"feat/x\"") {
 		t.Errorf("skipped render should include the reason verbatim; got: %q", got)
 	}
 }

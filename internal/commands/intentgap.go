@@ -40,7 +40,7 @@ Useful when:
   - The repository uses a non-standard default branch; pass --base explicitly.
 
 Skip conditions (exit 0, reason in output):
-  - Semantica or intent-gap not enabled in this repo.
+  - Semantica not enabled in this repo.
   - Repo not connected to a workspace.
   - No open PR for the current branch (or more than one).
   - No AI CLI installed.

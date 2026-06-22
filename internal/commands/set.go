@@ -21,9 +21,7 @@ Examples:
   semantica set auto-playbook enabled        Enable auto-playbook
   semantica set auto-playbook disabled       Disable auto-playbook
   semantica set trailers enabled             Enable attribution & diagnostics trailers
-  semantica set trailers disabled            Disable attribution & diagnostics trailers
-  semantica set intent-gap enabled           Enable manual intent-gap analysis
-  semantica set intent-gap disabled          Disable manual intent-gap analysis`,
+  semantica set trailers disabled            Disable attribution & diagnostics trailers`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return cmd.Help()
@@ -67,12 +65,6 @@ Examples:
 			}
 			_, _ = fmt.Fprintf(out, "  Git Trailers:    %s\n", trailerStatus)
 
-			intentGapStatus := "disabled"
-			if util.IntentGapEnabled(semDir) {
-				intentGapStatus = "enabled"
-			}
-			_, _ = fmt.Fprintf(out, "  Intent-gap:      %s\n", intentGapStatus)
-
 			connectedStatus := "no"
 			if s.Connected {
 				connectedStatus = "yes"
@@ -95,55 +87,8 @@ Examples:
 	cmd.AddCommand(newSetAutoPlaybookCmd(rootOpts))
 	cmd.AddCommand(newSetAutoImplementationSummaryCmd(rootOpts))
 	cmd.AddCommand(newSetTrailersCmd(rootOpts))
-	cmd.AddCommand(newSetIntentGapCmd(rootOpts))
 
 	return cmd
-}
-
-func newSetIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:       "intent-gap <enabled|disabled>",
-		Short:     "Enable or disable manual intent-gap analysis",
-		Long:      "Allows manual intent-gap analysis in this repository. Analysis runs only when you invoke `semantica intent-gap analyze` or the `semantica-intent-gap` agent skill. The CLI compares captured prompts against the committed PR diff using an installed AI CLI and uploads advisory findings to the connected workspace. Off by default.",
-		Args:      cobra.ExactArgs(1),
-		ValidArgs: []string{"enabled", "disabled", "on", "off", "true", "false"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, err := git.OpenRepo(rootOpts.RepoPath)
-			if err != nil {
-				return err
-			}
-			semDir := filepath.Join(repo.Root(), ".semantica")
-
-			if !util.IsEnabled(semDir) {
-				return fmt.Errorf("semantica is not enabled. Run `semantica enable` first")
-			}
-
-			s, err := util.ReadSettings(semDir)
-			if err != nil {
-				return fmt.Errorf("read settings: %w", err)
-			}
-
-			out := cmd.OutOrStdout()
-			boolTrue, boolFalse := true, false
-
-			switch args[0] {
-			case "enabled", "true", "on":
-				s.IntentGapEnabled = &boolTrue
-				_, _ = fmt.Fprintln(out, "Intent-gap analysis: enabled")
-			case "disabled", "false", "off":
-				s.IntentGapEnabled = &boolFalse
-				_, _ = fmt.Fprintln(out, "Intent-gap analysis: disabled")
-			default:
-				return fmt.Errorf("invalid value: %q (use enabled/disabled)", args[0])
-			}
-
-			if err := util.WriteSettings(semDir, s); err != nil {
-				return fmt.Errorf("write settings: %w", err)
-			}
-
-			return nil
-		},
-	}
 }
 
 func newSetTrailersCmd(rootOpts *RootOptions) *cobra.Command {

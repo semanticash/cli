@@ -28,11 +28,8 @@ type Settings struct {
 	Enabled   bool     `json:"enabled"`
 	Version   int      `json:"version"`
 	Providers []string `json:"providers,omitempty"`
-	Trailers  *bool    `json:"trailers,omitempty"`
-	// IntentGapEnabled allows manual intent-gap analysis in this repository.
-	// It applies to `semantica intent-gap analyze` and the agent skill. Opt-in.
-	IntentGapEnabled *bool        `json:"intent_gap_enabled,omitempty"`
-	Automations      *Automations `json:"automations,omitempty"`
+	Trailers    *bool        `json:"trailers,omitempty"`
+	Automations *Automations `json:"automations,omitempty"`
 	Connected        bool         `json:"connected"`
 	ConnectedRepoID  string       `json:"connected_repo_id,omitempty"`
 }
@@ -125,16 +122,6 @@ func TrailersEnabled(semDir string) bool {
 		return true
 	}
 	return *s.Trailers
-}
-
-// IntentGapEnabled returns whether manual intent-gap analysis is allowed.
-// It defaults to false so settings read failures do not surface the feature.
-func IntentGapEnabled(semDir string) bool {
-	s, err := ReadSettings(semDir)
-	if err != nil || s.IntentGapEnabled == nil {
-		return false
-	}
-	return *s.IntentGapEnabled
 }
 
 // IsImplementationSummaryEnabled returns true if the auto-implementation-summary automation is enabled.

@@ -180,12 +180,6 @@ the committed pull request diff using an installed AI CLI. The result is an
 advisory review signal for requested work that may be incomplete, deferred
 work, or changed code without supporting captured intent.
 
-Intent-gap analysis is off by default:
-
-```bash
-semantica set intent-gap enabled
-```
-
 Run it from the terminal when you want a fresh analysis recorded for the
 current PR head:
 

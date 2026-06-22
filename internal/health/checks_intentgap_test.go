@@ -10,22 +10,19 @@ import (
 )
 
 // writeSemDir creates local settings for health-check tests.
-func writeSemDir(t *testing.T, root string, intentGapEnabled *bool) string {
+func writeSemDir(t *testing.T, root string) string {
 	t.Helper()
 	semDir := filepath.Join(root, ".semantica")
 	if err := os.MkdirAll(semDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := util.WriteSettings(semDir, util.Settings{
-		Enabled:          true,
-		IntentGapEnabled: intentGapEnabled,
+		Enabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	return semDir
 }
-
-func mustBool(v bool) *bool { return &v }
 
 // Doctor stays silent when the repository has no Semantica state.
 func TestCheckIntentGap_NoSemDirIsSilent(t *testing.T) {
@@ -36,47 +33,10 @@ func TestCheckIntentGap_NoSemDirIsSilent(t *testing.T) {
 	}
 }
 
-// A disabled setting is informational, not a warning.
-func TestCheckIntentGap_SettingDisabledReportsAsOK(t *testing.T) {
-	dir := t.TempDir()
-	writeSemDir(t, dir, mustBool(false))
-
-	got := checkIntentGap(Options{RepoPath: dir})
-	if len(got) < 1 {
-		t.Fatalf("expected at least the setting check; got 0")
-	}
-	if got[0].ID != "setting" {
-		t.Fatalf("expected setting check first; got id=%q", got[0].ID)
-	}
-	if got[0].Status != StatusOK {
-		t.Errorf("setting status = %s, want ok", got[0].Status)
-	}
-	if !strings.Contains(got[0].Message, "disabled") {
-		t.Errorf("setting message should say disabled; got %q", got[0].Message)
-	}
-}
-
-// Enabled intent-gap surfaces as an OK informational line.
-func TestCheckIntentGap_SettingEnabledReportsAsOK(t *testing.T) {
-	dir := t.TempDir()
-	writeSemDir(t, dir, mustBool(true))
-
-	got := checkIntentGap(Options{RepoPath: dir})
-	if len(got) < 1 {
-		t.Fatalf("expected at least the setting check; got 0")
-	}
-	if got[0].Status != StatusOK {
-		t.Errorf("setting status = %s, want ok", got[0].Status)
-	}
-	if !strings.Contains(got[0].Message, "enabled") {
-		t.Errorf("setting message should say enabled; got %q", got[0].Message)
-	}
-}
-
 // Missing activity is a normal initial state.
 func TestCheckIntentGap_NoActivityLogIsOK(t *testing.T) {
 	dir := t.TempDir()
-	writeSemDir(t, dir, mustBool(true))
+	writeSemDir(t, dir)
 
 	got := checkIntentGap(Options{RepoPath: dir})
 	last := findCheck(got, "last_activity")
@@ -94,7 +54,7 @@ func TestCheckIntentGap_NoActivityLogIsOK(t *testing.T) {
 // Successful activity is reported with its original details.
 func TestCheckIntentGap_SuccessfulUploadReportsAsOK(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "intent-gap uploaded PR #42 upload_id=u-new")
 
 	got := checkIntentGap(Options{RepoPath: dir})
@@ -113,7 +73,7 @@ func TestCheckIntentGap_SuccessfulUploadReportsAsOK(t *testing.T) {
 // Upload errors include a manual retry action.
 func TestCheckIntentGap_UploadErrorReportsAsWarn(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "intent-gap upload error PR #42: status 500: boom")
 
 	got := checkIntentGap(Options{RepoPath: dir})
@@ -132,7 +92,7 @@ func TestCheckIntentGap_UploadErrorReportsAsWarn(t *testing.T) {
 // Expected skip outcomes remain informational.
 func TestCheckIntentGap_SkipReasonReportsAsOK(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "intent-gap skipped: no open PR for branch \"feat/x\"")
 
 	got := checkIntentGap(Options{RepoPath: dir})
@@ -151,7 +111,7 @@ func TestCheckIntentGap_SkipReasonReportsAsOK(t *testing.T) {
 // The most recent relevant activity determines status.
 func TestCheckIntentGap_MostRecentLineWins(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "intent-gap upload error PR #42: status 500: boom")
 	util.AppendActivityLog(semDir, "intent-gap uploaded PR #42 upload_id=u-new")
 
@@ -169,7 +129,7 @@ func TestCheckIntentGap_MostRecentLineWins(t *testing.T) {
 // doctor section.
 func TestCheckIntentGap_IgnoresUnrelatedLines(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "post-commit warning: open db failed: x")
 
 	got := checkIntentGap(Options{RepoPath: dir})
@@ -185,7 +145,7 @@ func TestCheckIntentGap_IgnoresUnrelatedLines(t *testing.T) {
 // A recorded analyzer error remains a warning.
 func TestCheckIntentGap_AnalyzerErroredUploadWarns(t *testing.T) {
 	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
+	semDir := writeSemDir(t, dir)
 	util.AppendActivityLog(semDir, "intent-gap analyzer failed PR #42: parse_failed")
 	util.AppendActivityLog(semDir, "intent-gap analysis errored reason=parse_failed PR #42 upload=uploaded upload_id=u-1")
 
@@ -224,7 +184,7 @@ func TestRenderText_KnowsIntentGapCategory(t *testing.T) {
 // Reports containing intent-gap checks include the category heading.
 func TestRenderText_IncludesIntentGapHeader(t *testing.T) {
 	r := assemble([]Check{
-		{Category: "intent-gap", ID: "setting", Status: StatusOK, Message: "manual intent-gap analysis enabled"},
+		{Category: "intent-gap", ID: "last_activity", Status: StatusOK, Message: "last activity: intent-gap uploaded PR #42 upload_id=u-new"},
 	})
 	var buf strings.Builder
 	if err := RenderText(&buf, r); err != nil {
@@ -233,7 +193,7 @@ func TestRenderText_IncludesIntentGapHeader(t *testing.T) {
 	if !strings.Contains(buf.String(), "Intent-gap") {
 		t.Errorf("text output missing 'Intent-gap' header; got:\n%s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "manual intent-gap analysis enabled") {
+	if !strings.Contains(buf.String(), "intent-gap uploaded PR #42") {
 		t.Errorf("text output missing the check message; got:\n%s", buf.String())
 	}
 }

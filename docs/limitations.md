@@ -43,8 +43,8 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Intent-gap analysis
 
-- Intent-gap analysis is opt-in and requires an authenticated, connected
-  repository. It is not part of offline core capture.
+- Intent-gap analysis requires an authenticated, connected repository. It is
+  not part of offline core capture.
 - Analysis is manual: it runs only when the user invokes
   `semantica intent-gap analyze` or the `semantica-intent-gap` agent skill.
   The CLI requires an open pull request already known to Semantica for the

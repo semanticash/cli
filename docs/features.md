@@ -280,7 +280,6 @@ developer's machine and records advisory findings for hosted review.
 ### What you see
 
 ```bash
-semantica set intent-gap enabled
 semantica intent-gap analyze
 semantica intent-gap analyze --base origin/main
 semantica doctor
@@ -309,7 +308,6 @@ for installation.
 ### Prerequisites
 
 - Semantica is enabled, authenticated, and connected for the repository.
-- `intent_gap_enabled` is enabled with `semantica set intent-gap enabled`.
 - An open pull request for the current branch is already known to Semantica.
 - At least one supported AI CLI is installed and authenticated.
 

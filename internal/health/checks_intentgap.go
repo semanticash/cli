@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/semanticash/cli/internal/util"
 )
 
 // activityLogTailLines bounds local log scanning for doctor.
@@ -25,22 +23,6 @@ func checkIntentGap(opts Options) []Check {
 	if _, err := os.Stat(semDir); err != nil {
 		// Repositories without Semantica state should not produce warnings.
 		return checks
-	}
-
-	if util.IntentGapEnabled(semDir) {
-		checks = append(checks, Check{
-			Category: "intent-gap",
-			ID:       "setting",
-			Status:   StatusOK,
-			Message:  "manual intent-gap analysis enabled",
-		})
-	} else {
-		checks = append(checks, Check{
-			Category: "intent-gap",
-			ID:       "setting",
-			Status:   StatusOK,
-			Message:  "manual intent-gap analysis disabled (off by default)",
-		})
 	}
 
 	checks = append(checks, lastIntentGapActivity(semDir))
