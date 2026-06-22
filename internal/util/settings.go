@@ -29,7 +29,8 @@ type Settings struct {
 	Version   int      `json:"version"`
 	Providers []string `json:"providers,omitempty"`
 	Trailers  *bool    `json:"trailers,omitempty"`
-	// IntentGapEnabled gates background intent-gap analysis. It is opt-in.
+	// IntentGapEnabled allows manual intent-gap analysis in this repository.
+	// It applies to `semantica intent-gap analyze` and the agent skill. Opt-in.
 	IntentGapEnabled *bool        `json:"intent_gap_enabled,omitempty"`
 	Automations      *Automations `json:"automations,omitempty"`
 	Connected        bool         `json:"connected"`
@@ -126,8 +127,8 @@ func TrailersEnabled(semDir string) bool {
 	return *s.Trailers
 }
 
-// IntentGapEnabled returns whether background intent-gap analysis is enabled.
-// It defaults to false so settings read failures do not trigger uploads.
+// IntentGapEnabled returns whether manual intent-gap analysis is allowed.
+// It defaults to false so settings read failures do not surface the feature.
 func IntentGapEnabled(semDir string) bool {
 	s, err := ReadSettings(semDir)
 	if err != nil || s.IntentGapEnabled == nil {

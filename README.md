@@ -186,15 +186,18 @@ Intent-gap analysis is off by default:
 semantica set intent-gap enabled
 ```
 
-When enabled, the non-blocking pre-push hook starts analysis in the background
-when the current branch is pushed and Semantica knows about an open pull
-request for that branch. You can also run it directly:
+Run it from the terminal when you want a fresh analysis recorded for the
+current PR head:
 
 ```bash
 semantica intent-gap analyze
 semantica intent-gap analyze --base origin/main
 semantica doctor
 ```
+
+The `semantica-intent-gap` agent skill triggers the same analysis from a
+supported AI agent through natural language ("run intent-gap analysis",
+"did this PR miss anything from my prompts").
 
 Findings are generated locally, validated against captured prompt citations
 and changed diff regions, then recorded for hosted review. They are not proof

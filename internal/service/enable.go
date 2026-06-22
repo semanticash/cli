@@ -180,10 +180,6 @@ func reEnableLocal(ctx context.Context, repo *git.Repo, repoRoot, semDir, dbPath
 		{Name: "pre-commit", Subcommand: "pre-commit"},
 		{Name: "post-commit", Subcommand: "post-commit"},
 		{Name: "commit-msg", Subcommand: "commit-msg", PassArgs: true},
-		// pre-push: git invokes with `<remote-name> <remote-url>` as
-		// argv plus the per-ref stdin protocol. PassArgs=true forwards
-		// the argv; stdin is inherited via the shell wrapper.
-		{Name: "pre-push", Subcommand: "pre-push", PassArgs: true},
 	} {
 		if err := repo.InstallSemanticaHook(ctx, hi); err != nil {
 			fmt.Fprintf(os.Stderr, "semantica: warning: reinstall %s hook: %v\n", hi.Name, err)
@@ -305,14 +301,6 @@ func (s *EnableService) initLocalState(
 		PassArgs:   true,
 	}); err != nil {
 		return nil, fmt.Errorf("install commit-msg hook: %w", err)
-	}
-
-	if err := repo.InstallSemanticaHook(ctx, git.HookInstallOptions{
-		Name:       "pre-push",
-		Subcommand: "pre-push",
-		PassArgs:   true,
-	}); err != nil {
-		return nil, fmt.Errorf("install pre-push hook: %w", err)
 	}
 
 	return &EnableResult{

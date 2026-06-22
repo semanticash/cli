@@ -32,14 +32,14 @@ func checkIntentGap(opts Options) []Check {
 			Category: "intent-gap",
 			ID:       "setting",
 			Status:   StatusOK,
-			Message:  "intent-gap uploads enabled",
+			Message:  "manual intent-gap analysis enabled",
 		})
 	} else {
 		checks = append(checks, Check{
 			Category: "intent-gap",
 			ID:       "setting",
 			Status:   StatusOK,
-			Message:  "intent-gap uploads disabled (off by default)",
+			Message:  "manual intent-gap analysis disabled (off by default)",
 		})
 	}
 
@@ -94,7 +94,7 @@ func lastIntentGapActivity(semDir string) Check {
 	}
 }
 
-// isUploadFailureLine recognizes analysis, upload, and pre-push failures.
+// isUploadFailureLine recognizes analysis and upload failures.
 func isUploadFailureLine(line string) bool {
 	switch {
 	case strings.Contains(line, "intent-gap upload error"):
@@ -103,10 +103,6 @@ func isUploadFailureLine(line string) bool {
 		return true
 	case strings.Contains(line, "intent-gap analysis errored"):
 		// Recording an errored row does not make the analysis successful.
-		return true
-	case strings.Contains(line, "pre-push warning:"):
-		return true
-	case strings.Contains(line, "pre-push:") && strings.Contains(line, "failed"):
 		return true
 	}
 	return false
@@ -124,7 +120,7 @@ func mostRecentIntentGapLine(logBody string) (string, bool) {
 		if line == "" {
 			continue
 		}
-		if !strings.Contains(line, "intent-gap") && !strings.Contains(line, "pre-push") {
+		if !strings.Contains(line, "intent-gap") {
 			continue
 		}
 		return line, true

@@ -71,9 +71,9 @@ metadata, provider/model attribution, and the cited redacted prompt excerpts
 needed to explain a finding. The raw cumulative diff and uncited full prompt
 bundle are not uploaded through this endpoint.
 
-The automatic pre-push path is best-effort and non-blocking. Use
-`semantica intent-gap analyze` to retry in the foreground and `semantica doctor`
-to inspect the most recent local outcome.
+Run `semantica intent-gap analyze` (or trigger the `semantica-intent-gap`
+agent skill) when you want to record an analysis for the current PR head.
+Use `semantica doctor` to inspect the most recent local outcome.
 
 ## Authentication
 

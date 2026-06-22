@@ -143,8 +143,8 @@ func TestPostUpload_IdempotentDuplicate(t *testing.T) {
 	}
 }
 
-// 4xx and 5xx are errors. The caller logs them but they don't crash
-// the pre-push hook.
+// 4xx and 5xx are errors. The caller logs them and reports a failed
+// manual upload.
 func TestPostUpload_ServerError(t *testing.T) {
 	srv := stubUploadServer(t, http.StatusInternalServerError, `{"error":true,"message":"boom"}`)
 	defer srv.Close()

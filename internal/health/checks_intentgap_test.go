@@ -202,68 +202,6 @@ func TestCheckIntentGap_AnalyzerErroredUploadWarns(t *testing.T) {
 	}
 }
 
-// Pre-push parse failures surface as warnings.
-func TestCheckIntentGap_PrePushParseFailureWarns(t *testing.T) {
-	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
-	util.AppendActivityLog(semDir, "pre-push: parse pre-push stdin failed: malformed pre-push line: \"x\"")
-
-	got := checkIntentGap(Options{RepoPath: dir})
-	last := findCheck(got, "last_activity")
-	if last == nil {
-		t.Fatalf("expected a last_activity check")
-	}
-	if last.Status != StatusWarn {
-		t.Errorf("status = %s, want warn", last.Status)
-	}
-	if !strings.Contains(last.Remediation, "intent-gap analyze") {
-		t.Errorf("remediation should point at the analyze command; got %q", last.Remediation)
-	}
-}
-
-// Worker startup failures surface as warnings.
-func TestCheckIntentGap_PrePushWarningWarns(t *testing.T) {
-	cases := []struct {
-		name string
-		line string
-	}{
-		{"open worker log", "pre-push warning: open worker log failed: permission denied"},
-		{"spawn worker", "pre-push warning: spawn upload worker failed: exec format error"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			semDir := writeSemDir(t, dir, mustBool(true))
-			util.AppendActivityLog(semDir, "%s", tc.line)
-
-			got := checkIntentGap(Options{RepoPath: dir})
-			last := findCheck(got, "last_activity")
-			if last == nil {
-				t.Fatalf("expected a last_activity check")
-			}
-			if last.Status != StatusWarn {
-				t.Errorf("status = %s, want warn", last.Status)
-			}
-		})
-	}
-}
-
-// Pre-push trigger lines are part of intent-gap activity.
-func TestCheckIntentGap_PrePushLineCounts(t *testing.T) {
-	dir := t.TempDir()
-	semDir := writeSemDir(t, dir, mustBool(true))
-	util.AppendActivityLog(semDir, "pre-push: intent-gap trigger on branch \"feat/x\" (push to be analyzed)")
-
-	got := checkIntentGap(Options{RepoPath: dir})
-	last := findCheck(got, "last_activity")
-	if last == nil {
-		t.Fatalf("expected a last_activity check")
-	}
-	if !strings.Contains(last.Message, "intent-gap trigger") {
-		t.Errorf("expected pre-push trigger line to surface; got %q", last.Message)
-	}
-}
-
 func findCheck(checks []Check, id string) *Check {
 	for i := range checks {
 		if checks[i].ID == id {
@@ -286,7 +224,7 @@ func TestRenderText_KnowsIntentGapCategory(t *testing.T) {
 // Reports containing intent-gap checks include the category heading.
 func TestRenderText_IncludesIntentGapHeader(t *testing.T) {
 	r := assemble([]Check{
-		{Category: "intent-gap", ID: "setting", Status: StatusOK, Message: "intent-gap uploads enabled"},
+		{Category: "intent-gap", ID: "setting", Status: StatusOK, Message: "manual intent-gap analysis enabled"},
 	})
 	var buf strings.Builder
 	if err := RenderText(&buf, r); err != nil {
@@ -295,7 +233,7 @@ func TestRenderText_IncludesIntentGapHeader(t *testing.T) {
 	if !strings.Contains(buf.String(), "Intent-gap") {
 		t.Errorf("text output missing 'Intent-gap' header; got:\n%s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "intent-gap uploads enabled") {
+	if !strings.Contains(buf.String(), "manual intent-gap analysis enabled") {
 		t.Errorf("text output missing the check message; got:\n%s", buf.String())
 	}
 }
