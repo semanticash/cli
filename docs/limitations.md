@@ -43,14 +43,12 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Intent-gap analysis
 
-- Intent-gap analysis is opt-in and requires an authenticated, connected
-  repository. It is not part of offline core capture.
-- The CLI analyzes an open pull request already known to Semantica for the
-  current branch. The first push that creates a pull request may run before the
-  server knows about it; rerun `semantica intent-gap analyze` after the pull
-  request appears.
-- Automatic analysis runs only when the checked-out branch is among the refs
-  being pushed. It is detached and never blocks the push.
+- Intent-gap analysis requires an authenticated, connected repository. It is
+  not part of offline core capture.
+- Analysis is manual: it runs only when the user invokes
+  `semantica intent-gap analyze` or the `semantica-intent-gap` agent skill.
+  The CLI requires an open pull request already known to Semantica for the
+  current branch.
 - The analyzed range contains committed changes between the merge base and
   `HEAD`. Staged and uncommitted changes are excluded.
 - Prompt evidence is limited to captured user prompts linked to commits in that

@@ -21,9 +21,7 @@ Examples:
   semantica set auto-playbook enabled        Enable auto-playbook
   semantica set auto-playbook disabled       Disable auto-playbook
   semantica set trailers enabled             Enable attribution & diagnostics trailers
-  semantica set trailers disabled            Disable attribution & diagnostics trailers
-  semantica set intent-gap enabled           Enable background intent-gap analysis
-  semantica set intent-gap disabled          Disable background intent-gap analysis`,
+  semantica set trailers disabled            Disable attribution & diagnostics trailers`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return cmd.Help()
@@ -67,12 +65,6 @@ Examples:
 			}
 			_, _ = fmt.Fprintf(out, "  Git Trailers:    %s\n", trailerStatus)
 
-			intentGapStatus := "disabled"
-			if util.IntentGapEnabled(semDir) {
-				intentGapStatus = "enabled"
-			}
-			_, _ = fmt.Fprintf(out, "  Intent-gap:      %s\n", intentGapStatus)
-
 			connectedStatus := "no"
 			if s.Connected {
 				connectedStatus = "yes"
@@ -95,70 +87,8 @@ Examples:
 	cmd.AddCommand(newSetAutoPlaybookCmd(rootOpts))
 	cmd.AddCommand(newSetAutoImplementationSummaryCmd(rootOpts))
 	cmd.AddCommand(newSetTrailersCmd(rootOpts))
-	cmd.AddCommand(newSetIntentGapCmd(rootOpts))
 
 	return cmd
-}
-
-func newSetIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:       "intent-gap <enabled|disabled>",
-		Short:     "Enable or disable background intent-gap analysis at push time",
-		Long:      "When enabled, Semantica runs intent-gap analysis on push to a branch with an open PR. The analysis uses your installed AI CLI fallback chain (Claude Code, Codex, Cursor, Gemini CLI, Copilot CLI, or Kiro CLI) and uploads findings to the connected workspace. The pre-push hook stays non-blocking - analysis runs detached so the push itself is not delayed. Off by default.",
-		Args:      cobra.ExactArgs(1),
-		ValidArgs: []string{"enabled", "disabled", "on", "off", "true", "false"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, err := git.OpenRepo(rootOpts.RepoPath)
-			if err != nil {
-				return err
-			}
-			semDir := filepath.Join(repo.Root(), ".semantica")
-
-			if !util.IsEnabled(semDir) {
-				return fmt.Errorf("semantica is not enabled. Run `semantica enable` first")
-			}
-
-			s, err := util.ReadSettings(semDir)
-			if err != nil {
-				return fmt.Errorf("read settings: %w", err)
-			}
-
-			out := cmd.OutOrStdout()
-			boolTrue, boolFalse := true, false
-
-			enabling := false
-			switch args[0] {
-			case "enabled", "true", "on":
-				s.IntentGapEnabled = &boolTrue
-				enabling = true
-				_, _ = fmt.Fprintln(out, "Intent-gap analysis: enabled")
-			case "disabled", "false", "off":
-				s.IntentGapEnabled = &boolFalse
-				_, _ = fmt.Fprintln(out, "Intent-gap analysis: disabled")
-			default:
-				return fmt.Errorf("invalid value: %q (use enabled/disabled)", args[0])
-			}
-
-			if err := util.WriteSettings(semDir, s); err != nil {
-				return fmt.Errorf("write settings: %w", err)
-			}
-
-			// Upgraded repos may not have the pre-push hook yet. Refreshing it
-			// here makes the setting effective without requiring re-enable.
-			// Disabling leaves the hook installed; the service checks the setting.
-			if enabling {
-				if err := repo.InstallSemanticaHook(cmd.Context(), git.HookInstallOptions{
-					Name:       "pre-push",
-					Subcommand: "pre-push",
-					PassArgs:   true,
-				}); err != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-						"semantica: warning: failed to install pre-push hook (%v); intent-gap will only run after `semantica enable` refreshes hooks\n", err)
-				}
-			}
-			return nil
-		},
-	}
 }
 
 func newSetTrailersCmd(rootOpts *RootOptions) *cobra.Command {

@@ -274,13 +274,12 @@ semantica suggest pr --copy
 ## Intent-gap Analysis
 
 Intent-gap analysis compares captured user prompts with the committed pull
-request diff. It runs through a supported AI CLI installed on the developer's
-machine and records advisory findings for hosted review.
+request diff. It runs on demand through a supported AI CLI installed on the
+developer's machine and records advisory findings for hosted review.
 
 ### What you see
 
 ```bash
-semantica set intent-gap enabled
 semantica intent-gap analyze
 semantica intent-gap analyze --base origin/main
 semantica doctor
@@ -303,14 +302,12 @@ for installation.
   or changed-line citations cannot be verified against the bundle.
 - The CLI uploads findings, coverage metadata, and provider/model attribution.
   It does not upload the raw cumulative diff through the intent-gap endpoint.
-- When enabled, the pre-push hook starts this path in a detached process and
-  does not delay or fail the push. The manual command runs the same path in the
-  foreground and returns a non-zero status for analysis or upload failures.
+- The command runs in the foreground and returns a non-zero exit status when
+  the analysis or the upload fails. There is no automatic background trigger.
 
 ### Prerequisites
 
 - Semantica is enabled, authenticated, and connected for the repository.
-- `intent_gap_enabled` is enabled with `semantica set intent-gap enabled`.
 - An open pull request for the current branch is already known to Semantica.
 - At least one supported AI CLI is installed and authenticated.
 

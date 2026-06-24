@@ -425,8 +425,6 @@ semantica set auto-playbook enabled        # Enable auto-playbook generation
 semantica set auto-playbook disabled       # Disable auto-playbook generation
 semantica set trailers enabled             # Enable attribution and diagnostics trailers
 semantica set trailers disabled            # Checkpoint-only commits
-semantica set intent-gap enabled            # Enable background PR intent-gap analysis
-semantica set intent-gap disabled           # Disable background PR intent-gap analysis
 ```
 
 #### Subcommands
@@ -435,7 +433,6 @@ semantica set intent-gap disabled           # Disable background PR intent-gap a
 |------------|-----------|-------------|
 | `auto-playbook` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable auto-playbook generation after each commit |
 | `trailers` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable `Semantica-Attribution` and `Semantica-Diagnostics` trailers (`Semantica-Checkpoint` is always included) |
-| `intent-gap` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable non-blocking intent-gap analysis at push time |
 
 ### `semantica intent-gap analyze`
 
@@ -448,10 +445,9 @@ semantica intent-gap analyze --base origin/main
 semantica intent-gap analyze --quiet
 ```
 
-The command requires Semantica and intent-gap analysis to be enabled, an
-authenticated and connected repository, and an open pull request for the
-current branch. It uses the same analysis path as the non-blocking pre-push
-hook, but runs in the foreground so failures are visible immediately.
+The command requires Semantica to be enabled, an authenticated and connected
+repository, and an open pull request for the current branch. It runs in the
+foreground so analysis or upload failures are visible immediately.
 
 | Flag | Description |
 |------|-------------|
@@ -515,7 +511,6 @@ Settings live in `.semantica/settings.json`:
   "providers": ["claude-code", "cursor", "kiro-cli"],
   "connected": false,
   "connected_repo_id": "",
-  "intent_gap_enabled": false,
   "trailers": true,
   "automations": {
     "playbook": {
@@ -532,7 +527,6 @@ Settings live in `.semantica/settings.json`:
 | `providers` | List of providers with hooks installed. |
 | `connected` | Whether this repo attempts hosted sync (set by `semantica connect`). |
 | `connected_repo_id` | Repo-local connection metadata written when hosted sync is enabled. |
-| `intent_gap_enabled` | Enables local intent-gap analysis for open pull requests. Defaults to `false`. |
 | `trailers` | Controls whether attribution and diagnostics trailers are appended. `Semantica-Checkpoint` is always included. Defaults to `true`. |
 | `automations.playbook.enabled` | Auto-generate LLM playbook summaries on every commit. |
 

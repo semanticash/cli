@@ -94,9 +94,6 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 	if !util.IsEnabled(semDir) {
 		return skipped(semDir, "semantica not enabled"), nil
 	}
-	if !util.IntentGapEnabled(semDir) {
-		return skipped(semDir, "intent_gap.enabled is false"), nil
-	}
 
 	settings, err := util.ReadSettings(semDir)
 	if err != nil {

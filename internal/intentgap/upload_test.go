@@ -143,8 +143,8 @@ func TestPostUpload_IdempotentDuplicate(t *testing.T) {
 	}
 }
 
-// 4xx and 5xx are errors. The caller logs them but they don't crash
-// the pre-push hook.
+// 4xx and 5xx are errors. The caller logs them and reports a failed
+// manual upload.
 func TestPostUpload_ServerError(t *testing.T) {
 	srv := stubUploadServer(t, http.StatusInternalServerError, `{"error":true,"message":"boom"}`)
 	defer srv.Close()
@@ -223,7 +223,7 @@ func TestPostUpload_RejectsMissingUploadID(t *testing.T) {
 // ErrSkipped flows through errors.Is so callers can switch on it
 // regardless of the underlying reason.
 func TestSkipReason_MatchesErrSkipped(t *testing.T) {
-	err := &SkipReason{Reason: "intent_gap.enabled is false"}
+	err := &SkipReason{Reason: "no open PR for branch \"feat/x\""}
 	if !errors.Is(err, ErrSkipped) {
 		t.Errorf("SkipReason should satisfy errors.Is(err, ErrSkipped)")
 	}

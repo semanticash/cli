@@ -31,8 +31,8 @@ func stubServer(t *testing.T, status int, body string) *httptest.Server {
 const fakeRepoID = "11111111-2222-3333-4444-555555555555"
 const fakeToken = "tok-x"
 
-// Exactly-one match returns the PR. This is the happy path the
-// pre-push handler proceeds on.
+// Exactly-one match returns the PR. This is the happy path manual
+// intent-gap analysis proceeds on.
 func TestLookupOpenPRByBranch_SingleMatch(t *testing.T) {
 	body := `{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"abc","head_branch":"feat/x"}]}}`
 	srv := stubServer(t, http.StatusOK, body)

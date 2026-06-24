@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/semanticash/cli/internal/util"
 )
 
 // activityLogTailLines bounds local log scanning for doctor.
@@ -25,22 +23,6 @@ func checkIntentGap(opts Options) []Check {
 	if _, err := os.Stat(semDir); err != nil {
 		// Repositories without Semantica state should not produce warnings.
 		return checks
-	}
-
-	if util.IntentGapEnabled(semDir) {
-		checks = append(checks, Check{
-			Category: "intent-gap",
-			ID:       "setting",
-			Status:   StatusOK,
-			Message:  "intent-gap uploads enabled",
-		})
-	} else {
-		checks = append(checks, Check{
-			Category: "intent-gap",
-			ID:       "setting",
-			Status:   StatusOK,
-			Message:  "intent-gap uploads disabled (off by default)",
-		})
 	}
 
 	checks = append(checks, lastIntentGapActivity(semDir))
@@ -94,7 +76,7 @@ func lastIntentGapActivity(semDir string) Check {
 	}
 }
 
-// isUploadFailureLine recognizes analysis, upload, and pre-push failures.
+// isUploadFailureLine recognizes analysis and upload failures.
 func isUploadFailureLine(line string) bool {
 	switch {
 	case strings.Contains(line, "intent-gap upload error"):
@@ -103,10 +85,6 @@ func isUploadFailureLine(line string) bool {
 		return true
 	case strings.Contains(line, "intent-gap analysis errored"):
 		// Recording an errored row does not make the analysis successful.
-		return true
-	case strings.Contains(line, "pre-push warning:"):
-		return true
-	case strings.Contains(line, "pre-push:") && strings.Contains(line, "failed"):
 		return true
 	}
 	return false
@@ -124,7 +102,7 @@ func mostRecentIntentGapLine(logBody string) (string, bool) {
 		if line == "" {
 			continue
 		}
-		if !strings.Contains(line, "intent-gap") && !strings.Contains(line, "pre-push") {
+		if !strings.Contains(line, "intent-gap") {
 			continue
 		}
 		return line, true

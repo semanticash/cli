@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // ExtractClaudeActions parses a Claude-format assistant payload and extracts:
@@ -96,9 +98,11 @@ func ExtractDeletedPaths(cmd, repoRoot string) []string {
 	return paths
 }
 
-// NormalizePath converts an absolute file path to a repo-relative path
-// using forward slashes, matching the format produced by "git diff".
-// Handles MSYS-style paths (/c/workspace/...) from Claude Code on Windows.
+// NormalizePath converts a file path to the repo-relative, forward-slash
+// form `git diff` produces. Accepts absolute paths (from Claude's
+// Edit/Write tools) and already-repo-relative paths (from Bash `rm`
+// arguments). Handles MSYS-style paths (/c/workspace/...) from Claude
+// Code on Windows.
 func NormalizePath(filePath, repoRoot string) string {
 	if filePath == "" {
 		return ""
@@ -106,6 +110,13 @@ func NormalizePath(filePath, repoRoot string) string {
 	// Convert MSYS paths (/c/workspace/...) to Windows paths (C:/workspace/...).
 	if runtime.GOOS == "windows" && len(filePath) >= 3 && filePath[0] == '/' && filePath[2] == '/' {
 		filePath = strings.ToUpper(string(filePath[1])) + ":" + filePath[2:]
+	}
+	// Already-relative inputs (typical of `rm path/to/file` in a Bash
+	// command) can't be passed to filepath.Rel with an absolute base -
+	// Rel needs the cwd to resolve them and returns an error instead.
+	// Treat them as already repo-relative: just clean and forward-slash.
+	if !platform.LooksAbsolutePath(filePath) {
+		return filepath.ToSlash(filepath.Clean(filePath))
 	}
 	// Clean both paths so mixed separators (forward vs back) are normalized
 	// before filepath.Rel computes the relative path.

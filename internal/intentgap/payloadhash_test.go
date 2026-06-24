@@ -92,9 +92,8 @@ func TestComputePayloadHash_MatchesGoldenBytes(t *testing.T) {
 }
 
 // Pins the contract that omitted coverage_summary / findings hash
-// identically to explicit empties. The pre-push transport_only
-// upload path sends nil findings; the server uses {} / [] in its
-// recompute, so the two must converge.
+// identically to explicit empties. Some upload paths send nil findings;
+// the server uses {} / [] in its recompute, so the two must converge.
 func TestComputePayloadHash_NilMeansEmpty(t *testing.T) {
 	g := loadGolden(t)
 	base := toInput(g.Input)

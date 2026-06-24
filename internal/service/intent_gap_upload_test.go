@@ -19,9 +19,8 @@ import (
 )
 
 // initEnabledRepo sets up a temp git repo with the .semantica state
-// the upload path expects: enabled marker, settings.json with
-// intent_gap enabled and connected_repo_id set, and a single commit
-// so HEAD resolves to a real SHA.
+// the upload path expects: enabled marker, connected repo metadata, and
+// a single commit so HEAD resolves to a real SHA.
 func initEnabledRepo(t *testing.T, opts settingsOpts) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -43,10 +42,9 @@ func initEnabledRepo(t *testing.T, opts settingsOpts) string {
 		t.Fatal(err)
 	}
 	s := util.Settings{
-		Enabled:          opts.SemanticaEnabled,
-		Connected:        opts.Connected,
-		ConnectedRepoID:  opts.ConnectedRepoID,
-		IntentGapEnabled: opts.IntentGapEnabled,
+		Enabled:         opts.SemanticaEnabled,
+		Connected:       opts.Connected,
+		ConnectedRepoID: opts.ConnectedRepoID,
 	}
 	if err := util.WriteSettings(semDir, s); err != nil {
 		t.Fatal(err)
@@ -63,10 +61,7 @@ type settingsOpts struct {
 	SemanticaEnabled bool
 	Connected        bool
 	ConnectedRepoID  string
-	IntentGapEnabled *bool
 }
-
-func mustBool(v bool) *bool { return &v }
 
 // orchestratorStubServer routes discovery + upload calls to handlers
 // the tests configure, so each scenario can pin the wire shapes it
@@ -107,36 +102,6 @@ func (w *stubInstalledWriter) Generate(context.Context, string, string) (string,
 	return "", nil
 }
 
-// Disabled intent-gap setting is a clean skip; the orchestrator never
-// reaches the network.
-func TestIntentGapUploadService_SkipsWhenSettingDisabled(t *testing.T) {
-	repo := initEnabledRepo(t, settingsOpts{
-		Branch:           "main",
-		SemanticaEnabled: true,
-		Connected:        true,
-		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(false),
-	})
-
-	svc := NewIntentGapUploadService(IntentGapUploadDeps{
-		Endpoint:    "http://should-not-be-called",
-		Token:       "tok",
-		LLMRegistry: installedRegistry(),
-		DeviceID:    "dev-1",
-		Now:         func() time.Time { return time.Unix(0, 0) },
-	})
-	got, err := svc.Run(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if got.Status != UploadStatusSkipped {
-		t.Errorf("Status = %s, want skipped", got.Status)
-	}
-	if !strings.Contains(got.Reason, "intent_gap.enabled is false") {
-		t.Errorf("Reason = %q, want it to mention the disabled setting", got.Reason)
-	}
-}
-
 // No open PR for the pushed branch is a skip (not an error). The CLI
 // just records the reason; doctor surfaces it.
 func TestIntentGapUploadService_SkipsWhenNoOpenPR(t *testing.T) {
@@ -150,7 +115,6 @@ func TestIntentGapUploadService_SkipsWhenNoOpenPR(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -185,7 +149,6 @@ func TestIntentGapUploadService_SkipsWhenAmbiguousPR(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -222,7 +185,6 @@ func TestIntentGapUploadService_Uploaded(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -266,7 +228,6 @@ func TestIntentGapUploadService_Duplicate(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -301,7 +262,6 @@ func TestIntentGapUploadService_SkipsWhenNoProviderInstalled(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	emptyRegistry := llm.NewWriterRegistry(&stubInstalledWriter{name: "claude_code", binPath: ""})
@@ -340,7 +300,6 @@ func TestIntentGapUploadService_ServerError(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -371,7 +330,6 @@ func TestIntentGapUploadService_SkipsWhenNotConnected(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        false,
 		ConnectedRepoID:  "",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -488,7 +446,6 @@ func TestIntentGapUploadService_AnalyzedWithFindings(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -532,7 +489,6 @@ func TestIntentGapUploadService_AnalyzedEmpty(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -582,7 +538,6 @@ func TestIntentGapUploadService_LineageUnavailableUsesDedicatedReason(t *testing
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -637,7 +592,6 @@ func TestIntentGapUploadService_RedactionFailureUsesDedicatedReason(t *testing.T
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -693,7 +647,6 @@ func TestIntentGapUploadService_AnalyzerErrorPreservesBaseSHA(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	bundle := minimalBundle()
@@ -735,7 +688,6 @@ func TestIntentGapUploadService_AnalyzerErrorUploadsErroredRow(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
@@ -767,16 +719,20 @@ func TestIntentGapUploadService_AnalyzerErrorUploadsErroredRow(t *testing.T) {
 
 // Skip outcomes are recorded for local diagnostics.
 func TestIntentGapUploadService_SkipsWriteActivityLog(t *testing.T) {
+	srv := orchestratorStubServer(t,
+		`{"error":false,"message":"ok","payload":{"pull_requests":[]}}`,
+		http.StatusOK, http.StatusOK, "")
+	defer srv.Close()
+
 	repo := initEnabledRepo(t, settingsOpts{
-		Branch:           "main",
+		Branch:           "feat/x",
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(false),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{
-		Endpoint:    "http://should-not-be-called",
+		Endpoint:    srv.URL,
 		Token:       "tok",
 		LLMRegistry: installedRegistry(),
 		DeviceID:    "dev-1",
@@ -794,7 +750,7 @@ func TestIntentGapUploadService_SkipsWriteActivityLog(t *testing.T) {
 	if !strings.Contains(string(data), "intent-gap skipped") {
 		t.Errorf("expected 'intent-gap skipped' entry in activity.log; got:\n%s", data)
 	}
-	if !strings.Contains(string(data), "intent_gap.enabled is false") {
+	if !strings.Contains(string(data), "no open PR") {
 		t.Errorf("expected reason text in activity.log; got:\n%s", data)
 	}
 }
@@ -855,7 +811,6 @@ func TestIntentGapUploadService_UploadErrorWritesActivityLog(t *testing.T) {
 		SemanticaEnabled: true,
 		Connected:        true,
 		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
-		IntentGapEnabled: mustBool(true),
 	})
 
 	svc := NewIntentGapUploadService(IntentGapUploadDeps{

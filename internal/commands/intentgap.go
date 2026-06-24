@@ -20,7 +20,7 @@ func NewIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-// newIntentGapAnalyzeCmd runs the pre-push analysis path in the foreground.
+// newIntentGapAnalyzeCmd runs manual PR intent-gap analysis in the foreground.
 func newIntentGapAnalyzeCmd(rootOpts *RootOptions) *cobra.Command {
 	var base string
 	var quiet bool
@@ -35,12 +35,12 @@ GitHub Copilot CLI, or Kiro CLI), and uploads the findings to the
 connected workspace.
 
 Useful when:
-  - A PR was opened after the last push and no analysis has been recorded yet.
-  - You want to re-run analysis without waiting for the next push.
+  - A PR is open and no analysis has been recorded for the current head.
+  - You want to record a fresh analysis after new commits land.
   - The repository uses a non-standard default branch; pass --base explicitly.
 
 Skip conditions (exit 0, reason in output):
-  - Semantica or intent-gap not enabled in this repo.
+  - Semantica not enabled in this repo.
   - Repo not connected to a workspace.
   - No open PR for the current branch (or more than one).
   - No AI CLI installed.
