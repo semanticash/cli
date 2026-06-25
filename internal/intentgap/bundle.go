@@ -67,6 +67,7 @@ type BundleInput struct {
 type GitBundleAssembler struct {
 	gitRepoOpener GitRepoOpener
 	turnLoader    TurnLoader
+	actionLoader  AgentActionLoader
 }
 
 // GitRepoOpener opens the Git operations required by bundle assembly.
@@ -88,11 +89,20 @@ type CommitMetaBetween struct {
 }
 
 // NewGitBundleAssembler constructs a Git-backed bundle assembler.
-func NewGitBundleAssembler(opener GitRepoOpener, turns TurnLoader) *GitBundleAssembler {
+// A nil loader is replaced by the no-op variant so callers that do
+// not need that evidence source can pass nil instead of wiring a stub.
+func NewGitBundleAssembler(opener GitRepoOpener, turns TurnLoader, actions AgentActionLoader) *GitBundleAssembler {
 	if turns == nil {
 		turns = NoopTurnLoader{}
 	}
-	return &GitBundleAssembler{gitRepoOpener: opener, turnLoader: turns}
+	if actions == nil {
+		actions = NoopAgentActionLoader{}
+	}
+	return &GitBundleAssembler{
+		gitRepoOpener: opener,
+		turnLoader:    turns,
+		actionLoader:  actions,
+	}
 }
 
 // Assemble builds a bounded bundle for the requested revision range.
@@ -166,18 +176,31 @@ func (a *GitBundleAssembler) Assemble(ctx context.Context, in BundleInput) (Bund
 		turns = turns[turnsDropped:]
 	}
 
+	actions, actionsErr := a.actionLoader.LoadActionsForCommits(ctx, commitHashes)
+	if actionsErr != nil {
+		return Bundle{}, actionsErr
+	}
+	actionsDropped := 0
+	if len(actions) > MaxBundleAgentActions {
+		// Drop oldest first so the most recent activity survives.
+		actionsDropped = len(actions) - MaxBundleAgentActions
+		actions = actions[actionsDropped:]
+	}
+
 	return Bundle{
-		RepoRoot: in.RepoRoot,
-		BaseRef:  baseRef,
-		BaseSHA:  mergeBase,
-		HeadSHA:  in.HeadSHA,
-		Commits:  bundleCommits,
-		Diff:     diff,
-		Turns:    turns,
+		RepoRoot:     in.RepoRoot,
+		BaseRef:      baseRef,
+		BaseSHA:      mergeBase,
+		HeadSHA:      in.HeadSHA,
+		Commits:      bundleCommits,
+		Diff:         diff,
+		Turns:        turns,
+		AgentActions: actions,
 		Truncated: BundleTruncation{
-			DiffBytesDropped: diffBytesDropped,
-			CommitsDropped:   dropped,
-			TurnsDropped:     turnsDropped,
+			DiffBytesDropped:    diffBytesDropped,
+			CommitsDropped:      dropped,
+			TurnsDropped:        turnsDropped,
+			AgentActionsDropped: actionsDropped,
 		},
 	}, nil
 }

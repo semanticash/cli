@@ -385,20 +385,24 @@ func firstJSONArray(s string) (string, bool) {
 // buildCoverageSummary records analyzed and truncated input counts.
 func buildCoverageSummary(b Bundle) json.RawMessage {
 	type cov struct {
-		Commits          int `json:"commits"`
-		CommitsDropped   int `json:"commits_dropped"`
-		DiffBytes        int `json:"diff_bytes"`
-		DiffBytesDropped int `json:"diff_bytes_dropped"`
-		Turns            int `json:"turns"`
-		TurnsDropped     int `json:"turns_dropped"`
+		Commits             int `json:"commits"`
+		CommitsDropped      int `json:"commits_dropped"`
+		DiffBytes           int `json:"diff_bytes"`
+		DiffBytesDropped    int `json:"diff_bytes_dropped"`
+		Turns               int `json:"turns"`
+		TurnsDropped        int `json:"turns_dropped"`
+		AgentActions        int `json:"agent_actions_count"`
+		AgentActionsDropped int `json:"agent_actions_dropped"`
 	}
 	c := cov{
-		Commits:          len(b.Commits),
-		CommitsDropped:   b.Truncated.CommitsDropped,
-		DiffBytes:        len(b.Diff),
-		DiffBytesDropped: b.Truncated.DiffBytesDropped,
-		Turns:            len(b.Turns),
-		TurnsDropped:     b.Truncated.TurnsDropped,
+		Commits:             len(b.Commits),
+		CommitsDropped:      b.Truncated.CommitsDropped,
+		DiffBytes:           len(b.Diff),
+		DiffBytesDropped:    b.Truncated.DiffBytesDropped,
+		Turns:               len(b.Turns),
+		TurnsDropped:        b.Truncated.TurnsDropped,
+		AgentActions:        len(b.AgentActions),
+		AgentActionsDropped: b.Truncated.AgentActionsDropped,
 	}
 	out, _ := json.Marshal(c)
 	return out

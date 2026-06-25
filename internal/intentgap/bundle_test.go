@@ -59,7 +59,7 @@ func TestGitBundleAssembler_HappyPath(t *testing.T) {
 			return []byte("--- a\n+++ b\n"), nil
 		},
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	b, err := a.Assemble(context.Background(), BundleInput{
 		RepoRoot: "/tmp/r",
@@ -96,7 +96,7 @@ func TestGitBundleAssembler_AutoBaseRef(t *testing.T) {
 		commitsFn: func(base, head string, limit int) ([]CommitMetaBetween, error) { return nil, nil },
 		diffFn:    func(base, head string) ([]byte, error) { return nil, nil },
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	b, err := a.Assemble(context.Background(), BundleInput{
 		RepoRoot: "/tmp/r",
@@ -110,14 +110,12 @@ func TestGitBundleAssembler_AutoBaseRef(t *testing.T) {
 	}
 }
 
-// DefaultBaseRef failure surfaces as a clear error and not a misleading
-// bundle. Without this the assembler would attempt merge-base against
-// an empty string and produce confusing downstream output.
+// DefaultBaseRef failure surfaces as a clear error before merge-base.
 func TestGitBundleAssembler_DefaultBaseRefError(t *testing.T) {
 	repo := &fakeRepo{
 		defaultBaseErr: errors.New("no candidates"),
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	_, err := a.Assemble(context.Background(), BundleInput{
 		RepoRoot: "/tmp/r",
@@ -151,7 +149,7 @@ func TestGitBundleAssembler_CommitTruncationReportsRealTotal(t *testing.T) {
 		diffFn:  func(base, head string) ([]byte, error) { return nil, nil },
 		countFn: func(base, head string) (int, error) { return 500, nil },
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	b, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"})
 	if err != nil {
@@ -175,7 +173,7 @@ func TestGitBundleAssembler_NoTruncationWhenUnderCap(t *testing.T) {
 		diffFn:  func(base, head string) ([]byte, error) { return nil, nil },
 		countFn: func(base, head string) (int, error) { return 2, nil },
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 	b, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -198,7 +196,7 @@ func TestGitBundleAssembler_DiffTruncationRecorded(t *testing.T) {
 		commitsFn:   func(base, head string, limit int) ([]CommitMetaBetween, error) { return nil, nil },
 		diffFn:      func(base, head string) ([]byte, error) { return bigDiff, nil },
 	}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	b, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"})
 	if err != nil {
@@ -212,12 +210,10 @@ func TestGitBundleAssembler_DiffTruncationRecorded(t *testing.T) {
 	}
 }
 
-// Required inputs are validated up front so the assembler surfaces
-// misuse as a clear error rather than a confusing downstream git
-// failure.
+// Required inputs are validated before git operations run.
 func TestGitBundleAssembler_RequiresRepoRootAndHead(t *testing.T) {
 	repo := &fakeRepo{}
-	a := NewGitBundleAssembler(openerFor(repo), nil)
+	a := NewGitBundleAssembler(openerFor(repo), nil, nil)
 
 	if _, err := a.Assemble(context.Background(), BundleInput{HeadSHA: "h"}); err == nil {
 		t.Errorf("expected error when RepoRoot is missing")
@@ -230,12 +226,99 @@ func TestGitBundleAssembler_RequiresRepoRootAndHead(t *testing.T) {
 // No GitRepoOpener wired in is a programming error; reporting it as a
 // clear error beats a nil-pointer panic at runtime.
 func TestGitBundleAssembler_NilOpener(t *testing.T) {
-	a := NewGitBundleAssembler(nil, nil)
+	a := NewGitBundleAssembler(nil, nil, nil)
 	_, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", HeadSHA: "h"})
 	if err == nil {
 		t.Fatalf("expected error from nil opener")
 	}
 	if !strings.Contains(err.Error(), "GitRepoOpener") {
 		t.Errorf("error should mention the missing opener; got: %v", err)
+	}
+}
+
+// stubActionLoader returns a canned list of actions. Used by the
+// retention-cap and pass-through tests below.
+type stubActionLoader struct {
+	actions []BundleAgentAction
+	err     error
+}
+
+func (s *stubActionLoader) LoadActionsForCommits(context.Context, []string) ([]BundleAgentAction, error) {
+	return s.actions, s.err
+}
+
+// Actions surface on the bundle when the loader returns less than
+// the cap, with no truncation reported.
+func TestGitBundleAssembler_AgentActionsPassThrough(t *testing.T) {
+	repo := &fakeRepo{
+		mergeBaseFn: func(a, b string) (string, error) { return "mb", nil },
+		commitsFn:   func(base, head string, limit int) ([]CommitMetaBetween, error) { return nil, nil },
+		diffFn:      func(base, head string) ([]byte, error) { return nil, nil },
+	}
+	actions := []BundleAgentAction{
+		{ActionID: "a1", TurnID: "t1", ToolName: "Edit", FilePath: "a.go"},
+		{ActionID: "a2", TurnID: "t1", ToolName: "Edit", FilePath: "b.go"},
+	}
+	a := NewGitBundleAssembler(openerFor(repo), nil, &stubActionLoader{actions: actions})
+	b, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(b.AgentActions) != 2 {
+		t.Errorf("AgentActions len = %d, want 2", len(b.AgentActions))
+	}
+	if b.Truncated.AgentActionsDropped != 0 {
+		t.Errorf("AgentActionsDropped = %d, want 0", b.Truncated.AgentActionsDropped)
+	}
+}
+
+// When the loader returns more actions than the cap, the assembler
+// drops the oldest entries (the prefix) so the most recent activity
+// survives. The truncation count reflects exactly how many entries
+// were dropped.
+func TestGitBundleAssembler_AgentActionsCappedKeepsMostRecent(t *testing.T) {
+	repo := &fakeRepo{
+		mergeBaseFn: func(a, b string) (string, error) { return "mb", nil },
+		commitsFn:   func(base, head string, limit int) ([]CommitMetaBetween, error) { return nil, nil },
+		diffFn:      func(base, head string) ([]byte, error) { return nil, nil },
+	}
+	over := MaxBundleAgentActions + 3
+	actions := make([]BundleAgentAction, over)
+	for i := range actions {
+		actions[i] = BundleAgentAction{
+			ActionID: "a" + string(rune('A'+i%26)),
+			TurnID:   "t1",
+			ToolName: "Edit",
+			TS:       int64(i),
+		}
+	}
+	a := NewGitBundleAssembler(openerFor(repo), nil, &stubActionLoader{actions: actions})
+	b, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(b.AgentActions) != MaxBundleAgentActions {
+		t.Errorf("kept len = %d, want %d", len(b.AgentActions), MaxBundleAgentActions)
+	}
+	if b.Truncated.AgentActionsDropped != 3 {
+		t.Errorf("AgentActionsDropped = %d, want 3", b.Truncated.AgentActionsDropped)
+	}
+	if b.AgentActions[0].TS != 3 {
+		t.Errorf("oldest kept TS = %d, want 3 (dropped 3 oldest)", b.AgentActions[0].TS)
+	}
+}
+
+// A loader failure stops bundle assembly rather than returning a
+// bundle with incomplete action evidence.
+func TestGitBundleAssembler_AgentActionLoaderErrorStopsAssembly(t *testing.T) {
+	repo := &fakeRepo{
+		mergeBaseFn: func(a, b string) (string, error) { return "mb", nil },
+		commitsFn:   func(base, head string, limit int) ([]CommitMetaBetween, error) { return nil, nil },
+		diffFn:      func(base, head string) ([]byte, error) { return nil, nil },
+	}
+	wantErr := errors.New("loader failed")
+	a := NewGitBundleAssembler(openerFor(repo), nil, &stubActionLoader{err: wantErr})
+	if _, err := a.Assemble(context.Background(), BundleInput{RepoRoot: "/tmp/r", Base: "main", HeadSHA: "h"}); !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want %v", err, wantErr)
 	}
 }

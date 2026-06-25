@@ -331,6 +331,34 @@ func TestLLMAnalyzer_CoverageSummaryReflectsBundle(t *testing.T) {
 	}
 }
 
+// Agent action counts are reported in coverage_summary without
+// including the actions themselves in the upload.
+func TestLLMAnalyzer_CoverageSummaryReportsAgentActionCounts(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a1", TurnID: "t1", ToolName: "Edit", FilePath: "a.go"},
+		{ActionID: "a2", TurnID: "t1", ToolName: "Edit", FilePath: "b.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 7
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned("[]")}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	var cov map[string]int
+	if err := json.Unmarshal(res.CoverageSummary, &cov); err != nil {
+		t.Fatalf("CoverageSummary not JSON object: %v", err)
+	}
+	if cov["agent_actions_count"] != 2 {
+		t.Errorf("agent_actions_count = %d, want 2", cov["agent_actions_count"])
+	}
+	if cov["agent_actions_dropped"] != 7 {
+		t.Errorf("agent_actions_dropped = %d, want 7", cov["agent_actions_dropped"])
+	}
+}
+
 // The retry prompt includes the previous response for correction.
 func TestReformatPrompt_CitesPrevious(t *testing.T) {
 	got := reformatPrompt("the bad response")
@@ -366,12 +394,9 @@ func TestFirstJSONArray_RespectsEscapes(t *testing.T) {
 }
 
 // End-to-end check that cite-or-drop runs inside the analyzer
-// pipeline and surfaces the drop count in coverage_summary. Without
-// this the LLM could hallucinate citations and we would not see them.
+// pipeline and surfaces the drop count in coverage_summary.
 func TestLLMAnalyzer_CiteOrDropDropsHallucinatedFindings(t *testing.T) {
-	// LLM emits one finding citing a turn_id that is not in the
-	// bundle. The bundle carries a different turn so the analyzer
-	// can prove the model's citation was fabricated.
+	// The response cites a turn_id that is not present in the bundle.
 	in := AnalysisInput{
 		PRNumber: 42,
 		Bundle: Bundle{

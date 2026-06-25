@@ -251,7 +251,11 @@ func (s *IntentGapUploadService) runAnalysisAndBuildBody(
 ) (analysisProduct, error) {
 	assembler := s.deps.BundleAssembler
 	if assembler == nil {
-		assembler = intentgap.NewGitBundleAssembler(defaultGitOpener, newSQLiteTurnLoader(repoRoot))
+		assembler = intentgap.NewGitBundleAssembler(
+			defaultGitOpener,
+			newSQLiteTurnLoader(repoRoot),
+			newSQLiteAgentActionLoader(repoRoot),
+		)
 	}
 	analyzer := s.deps.Analyzer
 	if analyzer == nil {
