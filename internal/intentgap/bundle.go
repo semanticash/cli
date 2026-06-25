@@ -15,8 +15,12 @@ type Bundle struct {
 	// Diff is the cumulative unified diff, capped at MaxBundleDiffBytes.
 	Diff []byte
 	// Turns contains captured user prompts linked to commits in the PR range.
-	Turns     []BundleTurn
-	Truncated BundleTruncation
+	Turns []BundleTurn
+	// AgentActions contains the assistant tool-use records linked to
+	// the same window as Turns. These are mechanical evidence only:
+	// what tool touched what path, without semantic intent claims.
+	AgentActions []BundleAgentAction
+	Truncated    BundleTruncation
 }
 
 // BundleCommit identifies one commit in merge-base..HEAD.
@@ -27,9 +31,10 @@ type BundleCommit struct {
 
 // BundleTruncation records input omitted by bundle size limits.
 type BundleTruncation struct {
-	DiffBytesDropped int
-	CommitsDropped   int
-	TurnsDropped     int
+	DiffBytesDropped    int
+	CommitsDropped      int
+	TurnsDropped        int
+	AgentActionsDropped int
 }
 
 // Bundle size limits keep analyzer input bounded.
@@ -40,6 +45,9 @@ const (
 	MaxBundleCommits = 100
 	// MaxBundleTurns caps captured prompts, retaining the most recent entries.
 	MaxBundleTurns = 200
+	// MaxBundleAgentActions caps captured agent actions, retaining the
+	// most recent entries. This bounds analyzer input and payload reads.
+	MaxBundleAgentActions = 500
 )
 
 // BundleAssembler builds analyzer input for a repository revision.
