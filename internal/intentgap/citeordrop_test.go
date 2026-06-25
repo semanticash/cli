@@ -3,6 +3,7 @@ package intentgap
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -410,7 +411,7 @@ func TestFilterFindingsByCitations_UnrequestedHonestKept(t *testing.T) {
 
 	res, _ := FilterFindingsByCitations(findings, bundle)
 	if res.AcceptedCount != 1 {
-		t.Errorf("honest unrequested dropped: %+v", res)
+		t.Errorf("valid unrequested finding dropped: %+v", res)
 	}
 }
 
@@ -453,5 +454,349 @@ func TestParseChangedRegions_MultipleHunksMultipleFiles(t *testing.T) {
 	out := parseChangedRegions(diff)
 	if len(out["foo.go"]) != 2 || len(out["bar.go"]) != 1 {
 		t.Errorf("regions = %v, want foo.go:2 bar.go:1", out)
+	}
+}
+
+// A positive action citation must point at a real captured action.
+// An empty or unknown ActionID drops the finding.
+func TestValidateAgentActionCitation_RequiresKnownActionID(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{
+		{ActionID: "a1", ToolName: "Edit", FilePath: "a.go"},
+	})
+
+	if reason, drop := validateAgentActionCitation(agentActionCitation{ActionID: ""}, idx); !drop || reason != "missing_action_id" {
+		t.Errorf("empty action_id should drop with missing_action_id; got reason=%q drop=%v", reason, drop)
+	}
+	if reason, drop := validateAgentActionCitation(agentActionCitation{ActionID: "ghost"}, idx); !drop || reason != "unknown_action_id" {
+		t.Errorf("unknown action_id should drop; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// A citation that names a real action and no scope is accepted: the
+// ActionID alone is enough to anchor the claim.
+func TestValidateAgentActionCitation_ScopelessCitationAccepted(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{{ActionID: "a1", ToolName: "Edit", FilePath: "a.go"}})
+	if reason, drop := validateAgentActionCitation(agentActionCitation{ActionID: "a1"}, idx); drop {
+		t.Errorf("scopeless citation should be accepted; got reason=%q", reason)
+	}
+}
+
+// A scope file that disagrees with the action's recorded file drops
+// the citation.
+func TestValidateAgentActionCitation_ScopeFileMustMatchActionFile(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{{ActionID: "a1", ToolName: "Edit", FilePath: "a.go"}})
+	cit := agentActionCitation{
+		ActionID: "a1",
+		Scope:    &citationScope{File: "b.go"},
+	}
+	if reason, drop := validateAgentActionCitation(cit, idx); !drop || reason != "action_file_mismatch" {
+		t.Errorf("file mismatch should drop; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// When an action's FilePath is empty (e.g. an unknown-path Bash
+// fallback), the validator does not reject a scope-file claim - the
+// action recorded no path to compare against.
+func TestValidateAgentActionCitation_EmptyActionFilePathPassesFileScope(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{{ActionID: "a1", ToolName: "Bash", FilePath: ""}})
+	cit := agentActionCitation{
+		ActionID: "a1",
+		Scope:    &citationScope{File: "a.go"},
+	}
+	if reason, drop := validateAgentActionCitation(cit, idx); drop {
+		t.Errorf("unknown action FilePath should not reject file scope; got reason=%q", reason)
+	}
+}
+
+// When both the action and the citation carry line ranges, they must
+// overlap. Non-overlapping ranges drop the citation.
+func TestValidateAgentActionCitation_LineRangeMustOverlap(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{
+		{ActionID: "a1", ToolName: "Edit", FilePath: "a.go", LineRangeStart: 10, LineRangeEnd: 20},
+	})
+	cit := agentActionCitation{
+		ActionID: "a1",
+		Scope:    &citationScope{File: "a.go", LineRange: lineRange{30, 40}},
+	}
+	if reason, drop := validateAgentActionCitation(cit, idx); !drop || reason != "action_line_range_mismatch" {
+		t.Errorf("non-overlapping line range should drop; got reason=%q drop=%v", reason, drop)
+	}
+	overlap := agentActionCitation{
+		ActionID: "a1",
+		Scope:    &citationScope{File: "a.go", LineRange: lineRange{15, 25}},
+	}
+	if reason, drop := validateAgentActionCitation(overlap, idx); drop {
+		t.Errorf("overlapping line range should be accepted; got reason=%q", reason)
+	}
+}
+
+// When either side's line range is zero, the line-range check is not
+// asserted. Line ranges are best-effort, so unknown ranges are not
+// treated as mismatches.
+func TestValidateAgentActionCitation_UnknownLineRangesSkipRangeCheck(t *testing.T) {
+	idx := indexActionsByID([]BundleAgentAction{
+		{ActionID: "a1", ToolName: "Edit", FilePath: "a.go"},
+	})
+	citWithRange := agentActionCitation{
+		ActionID: "a1",
+		Scope:    &citationScope{File: "a.go", LineRange: lineRange{30, 40}},
+	}
+	if reason, drop := validateAgentActionCitation(citWithRange, idx); drop {
+		t.Errorf("action with no range should not reject citation's range; got reason=%q", reason)
+	}
+}
+
+// Negative claims without a resolved scope are not provable. They
+// must be dropped rather than accepted as universal negatives.
+func TestValidateNoActionCitation_RequiresScope(t *testing.T) {
+	actions := []BundleAgentAction{{ActionID: "a1", FilePath: "a.go"}}
+	if reason, drop := validateNoActionCitation(noActionCitation{Scope: nil}, actions); !drop || reason != "negative_citation_requires_scope" {
+		t.Errorf("nil scope should drop; got reason=%q drop=%v", reason, drop)
+	}
+	if reason, drop := validateNoActionCitation(noActionCitation{Scope: &citationScope{File: ""}}, actions); !drop || reason != "negative_citation_requires_scope" {
+		t.Errorf("empty scope file should drop; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// A file-level negative citation ("no action touched a.go") is
+// dropped whenever any action on that file exists. The file-only
+// scope is the strictest case.
+func TestValidateNoActionCitation_FileLevelDroppedWhenAnyActionTouchedFile(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", FilePath: "a.go", LineRangeStart: 5, LineRangeEnd: 10},
+	}
+	cit := noActionCitation{Scope: &citationScope{File: "a.go"}}
+	if reason, drop := validateNoActionCitation(cit, actions); !drop || reason != "action_touched_negative_scope" {
+		t.Errorf("file-level negative should drop when any action touched the file; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// A line-narrowed negative citation accepts the claim only when no
+// action overlaps the cited lines.
+func TestValidateNoActionCitation_LineNarrowed(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", FilePath: "a.go", LineRangeStart: 5, LineRangeEnd: 10},
+	}
+	overlapping := noActionCitation{
+		Scope: &citationScope{File: "a.go", LineRange: lineRange{8, 12}},
+	}
+	if reason, drop := validateNoActionCitation(overlapping, actions); !drop {
+		t.Errorf("overlapping line negative should drop; got reason=%q", reason)
+	}
+	disjoint := noActionCitation{
+		Scope: &citationScope{File: "a.go", LineRange: lineRange{50, 60}},
+	}
+	if reason, drop := validateNoActionCitation(disjoint, actions); drop {
+		t.Errorf("disjoint line negative should be accepted; got reason=%q", reason)
+	}
+}
+
+// An action whose line range is unknown is treated conservatively
+// for negative claims: the validator cannot prove non-overlap, so
+// the negative is dropped.
+func TestValidateNoActionCitation_UnknownActionRangeDropsNegative(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", FilePath: "a.go"}, // no line range
+	}
+	cit := noActionCitation{
+		Scope: &citationScope{File: "a.go", LineRange: lineRange{50, 60}},
+	}
+	if reason, drop := validateNoActionCitation(cit, actions); !drop {
+		t.Errorf("unknown action range should drop the negative claim; got reason=%q", reason)
+	}
+}
+
+// A negative claim on a file with no actions is accepted.
+func TestValidateNoActionCitation_NoActionsOnFileAccepted(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", FilePath: "other.go", LineRangeStart: 5, LineRangeEnd: 10},
+	}
+	cit := noActionCitation{Scope: &citationScope{File: "a.go"}}
+	if reason, drop := validateNoActionCitation(cit, actions); drop {
+		t.Errorf("no actions on cited file should accept negative; got reason=%q", reason)
+	}
+}
+
+// A captured action whose FilePath is unknown (typically a Bash
+// invocation whose command did not parse into a concrete path) blocks
+// any file-scoped negative claim. The validator cannot prove the
+// agent did not touch the cited file, so the conservative result is
+// to drop the negative rather than accept it on insufficient evidence.
+func TestValidateNoActionCitation_UnknownActionFilePathDropsNegative(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", ToolName: "Bash", FilePath: ""}, // unknown-path Bash
+	}
+	cit := noActionCitation{Scope: &citationScope{File: "a.go"}}
+	if reason, drop := validateNoActionCitation(cit, actions); !drop || reason != "action_touched_negative_scope" {
+		t.Errorf("unknown action FilePath should drop the negative; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// A line-narrowed negative on a specific file is also blocked by an
+// unknown-path action - that activity may have touched any line of
+// any file. The validator stays conservative across both scope
+// shapes.
+func TestValidateNoActionCitation_UnknownActionFilePathBlocksLineNarrowedNegative(t *testing.T) {
+	actions := []BundleAgentAction{
+		{ActionID: "a1", ToolName: "Bash", FilePath: ""},
+	}
+	cit := noActionCitation{
+		Scope: &citationScope{File: "a.go", LineRange: lineRange{50, 60}},
+	}
+	if reason, drop := validateNoActionCitation(cit, actions); !drop {
+		t.Errorf("unknown action FilePath should block line-narrowed negative; got reason=%q drop=%v", reason, drop)
+	}
+}
+
+// A finding that carries a valid positive action citation passes the
+// pipeline end-to-end and lands in the accepted set, with no drop
+// reasons recorded.
+func TestFilterFindingsByCitations_ValidPositiveActionCitationKept(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("expected 1 accepted finding; got %d, drops=%v", res.AcceptedCount, res.DroppedReasons)
+	}
+}
+
+// A finding whose positive action citation names an ActionID that is
+// not in the bundle is rejected end-to-end. This is the analogue of
+// the unknown_turn_id drop for prompt citations.
+func TestFilterFindingsByCitations_UnknownActionCitationDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_ghost"},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("finding with unknown action citation should have been dropped; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["unknown_action_id"] != 1 {
+		t.Errorf("expected unknown_action_id drop; got %v", res.DroppedReasons)
+	}
+}
+
+// A finding with a negative no-action citation is rejected when an
+// action in the bundle does touch the cited scope. The negative
+// claim is unverifiable, so the finding must not survive the filter.
+func TestFilterFindingsByCitations_NoActionCitationDroppedWhenTouched(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"no_action_citation":{"scope":{"file":"handler.go"}},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("negative on a touched scope should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["action_touched_negative_scope"] != 1 {
+		t.Errorf("expected action_touched_negative_scope drop; got %v", res.DroppedReasons)
+	}
+}
+
+// Findings that do not carry the new citation fields behave exactly
+// as they did before action evidence was added. The wiring must be a
+// no-op for legacy producers.
+func TestFilterFindingsByCitations_NoActionCitationFieldsPreservesLegacyBehavior(t *testing.T) {
+	bundle := canonicalBundle()
+	// Two findings: the first is valid by the existing rules, the
+	// second has a citation flaw the legacy pipeline already catches.
+	good := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	bad := deferredFinding("t-1", "WRONG excerpt", "h-1", "handler.go", lineRange{12, 14})
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+good+","+bad+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("expected 1 accepted; got %d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["prompt_excerpt_mismatch"] != 1 {
+		t.Errorf("legacy excerpt-mismatch drop should still fire; got %v", res.DroppedReasons)
+	}
+}
+
+// A finding that contains agent_action_citation with the wrong JSON
+// type (e.g. a string instead of an object) is rejected. Treating a
+// malformed field as no-op would violate the invariant: if action
+// citation fields appear in a finding, they are verified or dropped.
+func TestFilterFindingsByCitations_MalformedActionCitationDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":"not-an-object","current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("malformed citation should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["malformed_action_citation"] != 1 {
+		t.Errorf("expected malformed_action_citation drop; got %v", res.DroppedReasons)
+	}
+}
+
+// The same rule applies to the negative citation field: a malformed
+// no_action_citation is rejected rather than ignored.
+func TestFilterFindingsByCitations_MalformedNoActionCitationDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"no_action_citation":[1,2,3],"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("malformed negative citation should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["malformed_no_action_citation"] != 1 {
+		t.Errorf("expected malformed_no_action_citation drop; got %v", res.DroppedReasons)
+	}
+}
+
+// An explicit JSON null is treated as "field omitted." Producers can
+// clear a citation by emitting null without paying a drop penalty.
+func TestFilterFindingsByCitations_NullActionCitationFieldsAreOmitted(t *testing.T) {
+	bundle := canonicalBundle()
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":null,"no_action_citation":null,"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("null citation fields should be ignored; got accepted=%d, drops=%v", res.AcceptedCount, res.DroppedReasons)
 	}
 }
