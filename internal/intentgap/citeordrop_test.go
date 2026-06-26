@@ -800,3 +800,53 @@ func TestFilterFindingsByCitations_NullActionCitationFieldsAreOmitted(t *testing
 		t.Errorf("null citation fields should be ignored; got accepted=%d, drops=%v", res.AcceptedCount, res.DroppedReasons)
 	}
 }
+
+// A no_action_citation must be rejected whenever the captured-actions
+// list was truncated by the bundle's size cap. An older action that
+// was dropped at the cap could have touched the cited scope, so the
+// negative citation is unverifiable from the retained action data.
+func TestFilterFindingsByCitations_NoActionCitationDroppedUnderTruncation(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "other.go"},
+	}
+	bundle.Truncated.AgentActionsDropped = 3
+
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	// File-only negative on handler.go: no visible action touches it,
+	// but truncation means the validator cannot prove that.
+	body = strings.Replace(body, `"current_state":`,
+		`"no_action_citation":{"scope":{"file":"handler.go"}},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("negative under truncation should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["actions_truncated_negative_unverifiable"] != 1 {
+		t.Errorf("expected actions_truncated_negative_unverifiable drop; got %v", res.DroppedReasons)
+	}
+}
+
+// Positive citations remain valid under truncation. The cited action
+// must exist in the retained action list.
+func TestFilterFindingsByCitations_PositiveCitationUnchangedUnderTruncation(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	bundle.Truncated.AgentActionsDropped = 3
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("positive citation under truncation should still pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
+	}
+}

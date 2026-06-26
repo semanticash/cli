@@ -490,3 +490,139 @@ type panicLLMRunner struct{}
 func (panicLLMRunner) GenerateText(context.Context, string) (*llm.GenerateTextResult, error) {
 	panic("LLM must not be called when bundle has no captured prompts")
 }
+
+// The rendered prompt frames the analyzer with the three-anchor
+// evidence model so the LLM can reason about ask/attempt/result
+// alignment rather than guessing whether the agent tried something.
+func TestRenderAnalyzerPrompt_FramesThreeAnchorEvidenceModel(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"ASK",
+		"ATTEMPT",
+		"RESULT",
+		"three mechanical evidence anchors",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// The prompt documents optional citation fields so the LLM can attach
+// findings to action evidence. Without these instructions the
+// cite-or-drop layer would not receive those fields.
+func TestRenderAnalyzerPrompt_DocumentsOptionalCitationFields(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"agent_action_citation",
+		"no_action_citation",
+		"Confidence guidance",
+		"unrequested",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// Captured actions are rendered with their action_id, tool name, and
+// file path so the LLM has a citable list. Line ranges only appear
+// when known, and unknown file paths are shown explicitly.
+func TestRenderAnalyzerPrompt_ListsCapturedActions(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{
+			ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit",
+			FilePath: "handler.go", LineRangeStart: 42, LineRangeEnd: 58,
+		},
+		{
+			ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Bash",
+			// Bash with no derivable path is shown explicitly.
+			FilePath: "",
+		},
+	}
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"action_id=a_1111111111111111",
+		"tool=Edit",
+		"file=handler.go",
+		"lines=42-58",
+		"action_id=a_2222222222222222",
+		"tool=Bash",
+		"file=(unknown)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// When the bundle has no captured actions, the prompt steers the LLM
+// away from citation fields that have no verifiable source. This is
+// the dual of the no-prompts message that already exists for turns.
+func TestRenderAnalyzerPrompt_NoActionsMessageStopsCitations(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = nil
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "No captured agent actions") {
+		t.Errorf("prompt should explain absence of action data; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Avoid agent_action_citation") {
+		t.Errorf("prompt should tell the model to avoid action citations; got:\n%s", prompt)
+	}
+}
+
+// Action truncation is surfaced so the LLM knows the listing is not
+// complete. Negative action citations are unsafe when older actions
+// were dropped at the cap.
+func TestRenderAnalyzerPrompt_ReportsActionTruncation(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_3333333333333333", TurnID: "t-1", ToolName: "Edit", FilePath: "a.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 12
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "12 older actions omitted") {
+		t.Errorf("prompt should report action truncation count; got:\n%s", prompt)
+	}
+}
+
+// The prompt template version is bumped to 0.2.0 to reflect the new
+// evidence model; the payload hash depends on it, so downstream
+// systems can distinguish v1 (prompt-only) and v2 (action-aware)
+// uploads.
+func TestPromptTemplateVersion_v2(t *testing.T) {
+	if PromptTemplateVersion != "0.2.0" {
+		t.Errorf("PromptTemplateVersion = %q, want 0.2.0", PromptTemplateVersion)
+	}
+}
+
+// Under truncation the prompt tells the LLM not to emit
+// no_action_citation. The cite-or-drop layer also rejects it.
+func TestRenderAnalyzerPrompt_TruncationDisablesNegativeCitations(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_3333333333333333", TurnID: "t-1", ToolName: "Edit", FilePath: "a.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 5
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Do NOT emit no_action_citation") {
+		t.Errorf("prompt should ban no_action_citation under truncation; got:\n%s", prompt)
+	}
+}
+
+// The under_impl / deferred confidence guidance is kept generic, but
+// unrequested gets a kind-specific note because its ASK anchor is the
+// absence of a supporting prompt rather than positive alignment.
+func TestRenderAnalyzerPrompt_UnrequestedGetsKindSpecificConfidenceNote(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Confidence guidance (unrequested):") {
+		t.Errorf("prompt should carry a kind-specific guidance for unrequested; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "captured-intent search that returned no supporting prompt") {
+		t.Errorf("unrequested guidance should frame ASK as a complete search; got:\n%s", prompt)
+	}
+}

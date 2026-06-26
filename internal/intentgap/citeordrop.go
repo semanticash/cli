@@ -49,9 +49,11 @@ func FilterFindingsByCitations(findings json.RawMessage, bundle Bundle) (CiteOrD
 	changedRegions := parseChangedRegions(bundle.Diff)
 	actionsByID := indexActionsByID(bundle.AgentActions)
 
+	actionsTruncated := bundle.Truncated.AgentActionsDropped > 0
+
 	accepted := make([]json.RawMessage, 0, len(arr))
 	for _, raw := range arr {
-		dropReason, drop := shouldDropFinding(raw, turnsByID, capturedPromptCount, changedRegions, actionsByID, bundle.AgentActions)
+		dropReason, drop := shouldDropFinding(raw, turnsByID, capturedPromptCount, changedRegions, actionsByID, bundle.AgentActions, actionsTruncated)
 		if drop {
 			res.DroppedCount++
 			res.DroppedReasons[dropReason]++
@@ -69,7 +71,7 @@ func FilterFindingsByCitations(findings json.RawMessage, bundle Bundle) (CiteOrD
 }
 
 // shouldDropFinding validates the evidence required by one finding kind.
-func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, capturedPromptCount int, changedRegions map[string][]lineRange, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction) (string, bool) {
+func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, capturedPromptCount int, changedRegions map[string][]lineRange, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction, actionsTruncated bool) (string, bool) {
 	var probe struct {
 		Kind      string `json:"kind"`
 		FindingID string `json:"finding_id"`
@@ -83,7 +85,7 @@ func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, cap
 	// once analyzer prompts start emitting them. If neither field is
 	// present, this is a no-op and the finding falls through to the
 	// existing kind-specific checks unchanged.
-	if reason, drop := validateOptionalActionCitations(raw, actionsByID, actions); drop {
+	if reason, drop := validateOptionalActionCitations(raw, actionsByID, actions, actionsTruncated); drop {
 		return reason, true
 	}
 
@@ -357,7 +359,7 @@ func indexActionsByID(actions []BundleAgentAction) map[string]BundleAgentAction 
 // through as if the field were omitted. That preserves the
 // invariant: if action citation fields appear, they are verified or
 // dropped.
-func validateOptionalActionCitations(raw json.RawMessage, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction) (string, bool) {
+func validateOptionalActionCitations(raw json.RawMessage, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction, actionsTruncated bool) (string, bool) {
 	var presence struct {
 		AgentActionCitation json.RawMessage `json:"agent_action_citation"`
 		NoActionCitation    json.RawMessage `json:"no_action_citation"`
@@ -379,6 +381,13 @@ func validateOptionalActionCitations(raw json.RawMessage, actionsByID map[string
 		}
 	}
 	if isJSONFieldPresent(presence.NoActionCitation) {
+		// A truncated action list cannot prove non-overlap. An older
+		// action that was dropped at the size cap might have touched
+		// the cited scope, so the negative claim is unverifiable from
+		// the data the validator can see.
+		if actionsTruncated {
+			return "actions_truncated_negative_unverifiable", true
+		}
 		var cit noActionCitation
 		if err := json.Unmarshal(presence.NoActionCitation, &cit); err != nil {
 			return "malformed_no_action_citation", true

@@ -13,7 +13,11 @@ import (
 
 // PromptTemplateVersion identifies the prompt used to produce findings.
 // Bump it when prompt changes may affect model output.
-const PromptTemplateVersion = "0.1.0"
+//
+// 0.2.0 introduces the three-anchor evidence model (ask, attempt,
+// result), surfaces captured agent tool invocations, and documents the
+// optional agent_action_citation and no_action_citation fields.
+const PromptTemplateVersion = "0.2.0"
 
 // AlgorithmVersionAnalyzed identifies uploads produced by local LLM analysis.
 const AlgorithmVersionAnalyzed = "0.1.0-local-llm"
@@ -213,10 +217,19 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	var b strings.Builder
 
 	b.WriteString("You are reviewing a pull request for intent-gap analysis.\n\n")
+	b.WriteString("You have three mechanical evidence anchors:\n")
+	b.WriteString("  1. ASK     - captured user prompts (turns below)\n")
+	b.WriteString("  2. ATTEMPT - captured agent tool invocations (actions below)\n")
+	b.WriteString("  3. RESULT  - the cumulative pull request diff\n\n")
+	b.WriteString("Each anchor is mechanical. A turn proves the user typed text; an\n")
+	b.WriteString("action proves the agent invoked a tool on a file; a diff proves\n")
+	b.WriteString("text landed on disk. None alone proves the agent attempted any\n")
+	b.WriteString("particular semantic goal. Semantic claims require multiple anchors\n")
+	b.WriteString("aligning on the same resolved scope.\n\n")
 	b.WriteString("Output a JSON array of intent-gap findings. Each finding object MUST\n")
 	b.WriteString("match the following schema:\n\n")
 	b.WriteString("  schema_version: \"1\"\n")
-	b.WriteString("  finding_id:     placeholder, e.g. \"f_0000000000000000\" - the CLI\n")
+	b.WriteString("  finding_id:     placeholder, e.g. \"f_0000000000000000\" - Semantica\n")
 	b.WriteString("                  computes the real id deterministically from the\n")
 	b.WriteString("                  citation anchors; do not invent hex digits.\n")
 	b.WriteString("  kind:           one of [\"under_impl\", \"unrequested\", \"deferred\"]\n")
@@ -231,6 +244,34 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	b.WriteString("  deferred:    originally_requested_in {turn_id,prompt_excerpt,prompt_excerpt_hash},\n")
 	b.WriteString("               trajectory_note,\n")
 	b.WriteString("               current_state {file,line_range:[start,end],summary}\n")
+	b.WriteString("\nOptional citation fields (apply to any kind):\n")
+	b.WriteString("  agent_action_citation: {action_id, scope?}\n")
+	b.WriteString("      Anchors a finding to a captured action whose mechanical\n")
+	b.WriteString("      activity supports the finding. Use an action_id from the\n")
+	b.WriteString("      captured actions list below; scope is optional and may\n")
+	b.WriteString("      narrow to {file, line_range?}. Semantica verifies the\n")
+	b.WriteString("      cited action exists and that any cited scope matches the\n")
+	b.WriteString("      action's recorded file and line range.\n")
+	b.WriteString("  no_action_citation: {scope}\n")
+	b.WriteString("      For findings that state no captured action touched a\n")
+	b.WriteString("      concrete scope. scope must include file; line_range\n")
+	b.WriteString("      narrows it. Semantica verifies that no captured action\n")
+	b.WriteString("      overlaps the scope. Actions whose own file or line range\n")
+	b.WriteString("      is unknown cannot prove non-overlap, so negative findings\n")
+	b.WriteString("      against ambiguous activity are dropped.\n")
+	b.WriteString("\nConfidence guidance (under_impl and deferred):\n")
+	b.WriteString("  high   - All three anchors align on the resolved scope.\n")
+	b.WriteString("  medium - Two anchors align; one is partial or absent.\n")
+	b.WriteString("  low    - Only one anchor is present, or evidence is thin.\n")
+	b.WriteString("           Prefer dropping a low-confidence finding to emitting it.\n")
+	b.WriteString("\nConfidence guidance (unrequested):\n")
+	b.WriteString("  The ASK anchor for unrequested findings is a complete\n")
+	b.WriteString("  captured-intent search that returned no supporting prompt,\n")
+	b.WriteString("  not positive alignment with a prompt. Reserve high for\n")
+	b.WriteString("  cases where the diff is clear and the search is complete\n")
+	b.WriteString("  (captured_intent_search.prompts_considered equals the\n")
+	b.WriteString("  number of visible turns). Use lower confidence when the\n")
+	b.WriteString("  search is partial or capture coverage is in doubt.\n")
 	b.WriteString("\nReturn an empty array [] if you find no gaps. Do not invent findings.\n")
 	b.WriteString("Respond with ONLY the JSON array. No prose, no markdown code fences.\n\n")
 
@@ -270,6 +311,8 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 		b.WriteString("and a qualifier acknowledging the absence of captured intent.\n")
 	}
 
+	renderAgentActions(&b, in.Bundle)
+
 	b.WriteString("\nCumulative diff base..head:\n")
 	b.WriteString("```diff\n")
 	b.Write(in.Bundle.Diff)
@@ -283,6 +326,45 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	}
 
 	return b.String()
+}
+
+// renderAgentActions writes the captured tool-invocation listing. The
+// listing is the ground truth the LLM cites with agent_action_citation;
+// without it, the LLM has no verifiable source for ATTEMPT evidence and
+// must stay at low confidence on activity that requires action evidence.
+func renderAgentActions(b *strings.Builder, bundle Bundle) {
+	if len(bundle.AgentActions) == 0 {
+		b.WriteString("\nNo captured agent actions are available for this PR's\n")
+		b.WriteString("commits. Mechanical evidence about what the agent attempted\n")
+		b.WriteString("cannot be verified from this bundle. Avoid agent_action_citation\n")
+		b.WriteString("entirely; avoid no_action_citation because absence of capture\n")
+		b.WriteString("is not proof the agent did not act.\n")
+		return
+	}
+	b.WriteString("\nCaptured agent actions (oldest first). These are the tool\n")
+	b.WriteString("invocations recorded inside the analyzed commit window. Cite\n")
+	b.WriteString("an action_id with agent_action_citation when a finding references\n")
+	b.WriteString("mechanical activity on a file. Do NOT cite action_ids not\n")
+	b.WriteString("listed here.\n")
+	for _, a := range bundle.AgentActions {
+		b.WriteString("- ")
+		fmt.Fprintf(b, "action_id=%s turn_id=%s tool=%s", a.ActionID, a.TurnID, a.ToolName)
+		if a.FilePath != "" {
+			fmt.Fprintf(b, " file=%s", a.FilePath)
+		} else {
+			b.WriteString(" file=(unknown)")
+		}
+		if a.LineRangeStart > 0 && a.LineRangeEnd > 0 {
+			fmt.Fprintf(b, " lines=%d-%d", a.LineRangeStart, a.LineRangeEnd)
+		}
+		b.WriteString("\n")
+	}
+	if bundle.Truncated.AgentActionsDropped > 0 {
+		fmt.Fprintf(b, "(...%d older actions omitted due to size cap)\n",
+			bundle.Truncated.AgentActionsDropped)
+		b.WriteString("Do NOT emit no_action_citation while older actions are omitted.\n")
+		b.WriteString("The listing above is incomplete and cannot prove non-overlap.\n")
+	}
 }
 
 // truncatePromptExcerpt bounds one prompt's contribution to model context.
