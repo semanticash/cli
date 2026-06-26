@@ -391,8 +391,8 @@ func TestFilterFindingsByCitations_UnrequestedOverstatedPromptCountDropped(t *te
 }
 
 // unrequested with prompt_count BELOW visible count (partial search)
-// is also dropped: claiming "code is unrequested" while only having
-// looked at some of the intent is not actionable.
+// is also dropped: a partial intent search cannot support an
+// unrequested-code finding.
 func TestFilterFindingsByCitations_UnrequestedPartialSearchDropped(t *testing.T) {
 	bundle := canonicalBundle() // 1 turn visible
 	findings := json.RawMessage("[" + unrequestedFinding(0, "handler.go", lineRange{12, 14}) + "]")
@@ -405,7 +405,7 @@ func TestFilterFindingsByCitations_UnrequestedPartialSearchDropped(t *testing.T)
 
 // unrequested with prompts_considered == visible count + valid file
 // is kept.
-func TestFilterFindingsByCitations_UnrequestedHonestKept(t *testing.T) {
+func TestFilterFindingsByCitations_UnrequestedValidKept(t *testing.T) {
 	bundle := canonicalBundle()
 	findings := json.RawMessage("[" + unrequestedFinding(1, "handler.go", lineRange{12, 14}) + "]")
 
@@ -473,7 +473,7 @@ func TestValidateAgentActionCitation_RequiresKnownActionID(t *testing.T) {
 }
 
 // A citation that names a real action and no scope is accepted: the
-// ActionID alone is enough to anchor the claim.
+// ActionID alone is enough to anchor the finding.
 func TestValidateAgentActionCitation_ScopelessCitationAccepted(t *testing.T) {
 	idx := indexActionsByID([]BundleAgentAction{{ActionID: "a1", ToolName: "Edit", FilePath: "a.go"}})
 	if reason, drop := validateAgentActionCitation(agentActionCitation{ActionID: "a1"}, idx); drop {
@@ -495,7 +495,7 @@ func TestValidateAgentActionCitation_ScopeFileMustMatchActionFile(t *testing.T) 
 }
 
 // When an action's FilePath is empty (e.g. an unknown-path Bash
-// fallback), the validator does not reject a scope-file claim - the
+// fallback), the validator does not reject a scoped citation - the
 // action recorded no path to compare against.
 func TestValidateAgentActionCitation_EmptyActionFilePathPassesFileScope(t *testing.T) {
 	idx := indexActionsByID([]BundleAgentAction{{ActionID: "a1", ToolName: "Bash", FilePath: ""}})
@@ -546,7 +546,7 @@ func TestValidateAgentActionCitation_UnknownLineRangesSkipRangeCheck(t *testing.
 	}
 }
 
-// Negative claims without a resolved scope are not provable. They
+// Negative citations without a resolved scope are not provable. They
 // must be dropped rather than accepted as universal negatives.
 func TestValidateNoActionCitation_RequiresScope(t *testing.T) {
 	actions := []BundleAgentAction{{ActionID: "a1", FilePath: "a.go"}}
@@ -571,7 +571,7 @@ func TestValidateNoActionCitation_FileLevelDroppedWhenAnyActionTouchedFile(t *te
 	}
 }
 
-// A line-narrowed negative citation accepts the claim only when no
+// A line-narrowed negative citation is accepted only when no
 // action overlaps the cited lines.
 func TestValidateNoActionCitation_LineNarrowed(t *testing.T) {
 	actions := []BundleAgentAction{
@@ -592,7 +592,7 @@ func TestValidateNoActionCitation_LineNarrowed(t *testing.T) {
 }
 
 // An action whose line range is unknown is treated conservatively
-// for negative claims: the validator cannot prove non-overlap, so
+// for negative citations: the validator cannot prove non-overlap, so
 // the negative is dropped.
 func TestValidateNoActionCitation_UnknownActionRangeDropsNegative(t *testing.T) {
 	actions := []BundleAgentAction{
@@ -602,11 +602,11 @@ func TestValidateNoActionCitation_UnknownActionRangeDropsNegative(t *testing.T) 
 		Scope: &citationScope{File: "a.go", LineRange: lineRange{50, 60}},
 	}
 	if reason, drop := validateNoActionCitation(cit, actions); !drop {
-		t.Errorf("unknown action range should drop the negative claim; got reason=%q", reason)
+		t.Errorf("unknown action range should drop the negative citation; got reason=%q", reason)
 	}
 }
 
-// A negative claim on a file with no actions is accepted.
+// A negative citation on a file with no actions is accepted.
 func TestValidateNoActionCitation_NoActionsOnFileAccepted(t *testing.T) {
 	actions := []BundleAgentAction{
 		{ActionID: "a1", FilePath: "other.go", LineRangeStart: 5, LineRangeEnd: 10},
@@ -619,7 +619,7 @@ func TestValidateNoActionCitation_NoActionsOnFileAccepted(t *testing.T) {
 
 // A captured action whose FilePath is unknown (typically a Bash
 // invocation whose command did not parse into a concrete path) blocks
-// any file-scoped negative claim. The validator cannot prove the
+// any file-scoped negative citation. The validator cannot prove the
 // agent did not touch the cited file, so the conservative result is
 // to drop the negative rather than accept it on insufficient evidence.
 func TestValidateNoActionCitation_UnknownActionFilePathDropsNegative(t *testing.T) {
@@ -650,15 +650,17 @@ func TestValidateNoActionCitation_UnknownActionFilePathBlocksLineNarrowedNegativ
 
 // A finding that carries a valid positive action citation passes the
 // pipeline end-to-end and lands in the accepted set, with no drop
-// reasons recorded.
+// reasons recorded. Uses under_impl because the deferred-kind rule
+// additionally requires the cited action to be part of a trajectory;
+// that case is covered by the dedicated trajectory tests below.
 func TestFilterFindingsByCitations_ValidPositiveActionCitationKept(t *testing.T) {
 	bundle := canonicalBundle()
 	bundle.AgentActions = []BundleAgentAction{
 		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
 	}
-	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
-	body = strings.Replace(body, `"current_state":`,
-		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"current_state":`, 1)
+	body := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"observed_diff_evidence":`,
+		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"observed_diff_evidence":`, 1)
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if err != nil {
@@ -695,7 +697,7 @@ func TestFilterFindingsByCitations_UnknownActionCitationDropped(t *testing.T) {
 
 // A finding with a negative no-action citation is rejected when an
 // action in the bundle does touch the cited scope. The negative
-// claim is unverifiable, so the finding must not survive the filter.
+// citation is unverifiable, so the finding must not survive the filter.
 func TestFilterFindingsByCitations_NoActionCitationDroppedWhenTouched(t *testing.T) {
 	bundle := canonicalBundle()
 	bundle.AgentActions = []BundleAgentAction{
@@ -831,16 +833,17 @@ func TestFilterFindingsByCitations_NoActionCitationDroppedUnderTruncation(t *tes
 }
 
 // Positive citations remain valid under truncation. The cited action
-// must exist in the retained action list.
+// must exist in the retained action list. Uses under_impl because
+// the deferred-kind trajectory rule is exercised by dedicated tests.
 func TestFilterFindingsByCitations_PositiveCitationUnchangedUnderTruncation(t *testing.T) {
 	bundle := canonicalBundle()
 	bundle.AgentActions = []BundleAgentAction{
 		{ActionID: "a_known", ToolName: "Edit", FilePath: "handler.go"},
 	}
 	bundle.Truncated.AgentActionsDropped = 3
-	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
-	body = strings.Replace(body, `"current_state":`,
-		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"current_state":`, 1)
+	body := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"observed_diff_evidence":`,
+		`"agent_action_citation":{"action_id":"a_known","scope":{"file":"handler.go"}},"observed_diff_evidence":`, 1)
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if err != nil {
@@ -848,5 +851,124 @@ func TestFilterFindingsByCitations_PositiveCitationUnchangedUnderTruncation(t *t
 	}
 	if res.AcceptedCount != 1 {
 		t.Errorf("positive citation under truncation should still pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
+	}
+}
+
+// A deferred finding that cites an action belonging to a detected
+// revert trajectory on the SAME file as current_state passes cite-
+// or-drop end-to-end. The bundle here records changes on
+// handler.go:10-20 (in the diff) while the trajectory cluster sits
+// at handler.go:50-65 (no diff overlap), so both file alignment and
+// the trajectory detection hold.
+func TestFilterFindingsByCitations_DeferredCitingTrajectoryActionKept(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_traj_one", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60},
+		{ActionID: "a_traj_two", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_traj_one"},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("deferred citing a same-file trajectory action should pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
+	}
+}
+
+// A deferred finding whose cited action belongs to a trajectory on
+// a different file than current_state is rejected. Without this
+// scope bound, a reverted edit elsewhere in the PR could anchor a
+// deferred finding regardless of where the finding points.
+func TestFilterFindingsByCitations_DeferredCitingTrajectoryOnUnrelatedFileDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	// Trajectory on extras.go (no diff for that file), but the
+	// finding's current_state points at handler.go.
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_traj_one", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 1, LineRangeEnd: 5},
+		{ActionID: "a_traj_two", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 3, LineRangeEnd: 7},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_traj_one"},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("trajectory on different file should drop deferred; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["deferred_trajectory_scope_mismatch"] != 1 {
+		t.Errorf("expected deferred_trajectory_scope_mismatch; got %v", res.DroppedReasons)
+	}
+}
+
+// A deferred finding whose cited action is NOT part of any detected
+// revert trajectory is rejected. A deferred finding references a
+// mechanical add-then-remove sequence, so the cited action must
+// belong to a detected trajectory; a single clean Edit that landed
+// in the diff does not match that shape.
+func TestFilterFindingsByCitations_DeferredCitingNonTrajectoryActionDropped(t *testing.T) {
+	bundle := canonicalBundle()
+	// One Edit on handler.go (which the diff covers) is not a
+	// trajectory: a single action cannot be add-then-remove.
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_landed", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_landed"},"current_state":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 0 {
+		t.Errorf("deferred citing non-trajectory action should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["deferred_action_not_in_trajectory"] != 1 {
+		t.Errorf("expected deferred_action_not_in_trajectory; got %v", res.DroppedReasons)
+	}
+}
+
+// The trajectory rule is scoped to deferred findings. An under_impl
+// finding may cite any captured action whose file and line range
+// match the finding; trajectory membership is irrelevant there.
+func TestFilterFindingsByCitations_UnderImplCitingNonTrajectoryActionNotSubjectToRule(t *testing.T) {
+	bundle := canonicalBundle()
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_landed", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go"},
+	}
+	body := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"observed_diff_evidence":`,
+		`"agent_action_citation":{"action_id":"a_landed"},"observed_diff_evidence":`, 1)
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("under_impl with non-trajectory action should still pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
+	}
+}
+
+// A deferred finding that omits agent_action_citation entirely
+// continues to pass under the existing prompt + diff checks. The
+// trajectory rule only fires when the citation is present.
+func TestFilterFindingsByCitations_DeferredWithoutAgentActionCitationStillKept(t *testing.T) {
+	bundle := canonicalBundle()
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	// No agent_action_citation field added.
+
+	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
+	if err != nil {
+		t.Fatalf("FilterFindingsByCitations: %v", err)
+	}
+	if res.AcceptedCount != 1 {
+		t.Errorf("deferred without citation should still pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
 	}
 }

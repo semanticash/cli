@@ -384,7 +384,8 @@ func renderRevertTrajectories(b *strings.Builder, candidates []TrajectoryCandida
 	b.WriteString("captured prompt requests work in one of these scopes, you may\n")
 	b.WriteString("emit a deferred finding that cites one listed action with\n")
 	b.WriteString("agent_action_citation and describes the sequence in\n")
-	b.WriteString("trajectory_note.\n")
+	b.WriteString("trajectory_note. A deferred finding that cites any action_id\n")
+	b.WriteString("not listed here is rejected.\n")
 	for _, c := range candidates {
 		b.WriteString("- file=" + c.File)
 		if c.LineStart > 0 && c.LineEnd > 0 {
