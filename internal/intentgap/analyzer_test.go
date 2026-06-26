@@ -42,18 +42,33 @@ func canned(text string) *llm.GenerateTextResult {
 // match the canonicalBundle helper defined in citeordrop_test.go.
 // Used by analyzer happy-path tests that need the pipeline to survive
 // schema validation AND cite-or-drop.
+//
+// The deferred finding cites action a_1111111111111111, which sampleInput
+// pairs with a sibling action a_2222222222222222 so DetectEditRevertTrajectories
+// emits a trajectory candidate on handler.go that the cite-or-drop
+// trajectory rule can accept.
 func validDeferredJSON() string {
-	return `[` + deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14}) + `]`
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_1111111111111111"},"current_state":`, 1)
+	return `[` + body + `]`
 }
 
 // sampleInput pairs the canonicalBundle with a PR number; analyzer
-// tests that need a richer bundle replace the field.
+// tests that need a richer bundle replace the field. The bundle carries
+// two captured actions on handler.go outside the diff range, which
+// DetectEditRevertTrajectories reads as an add-then-remove sequence,
+// so deferred findings citing a_1111111111111111 survive cite-or-drop.
 func sampleInput() AnalysisInput {
 	b := canonicalBundle()
 	b.BaseRef = "main"
 	b.BaseSHA = "base-sha"
 	b.HeadSHA = "head-sha"
 	b.Commits = []BundleCommit{{Hash: "c1", Subject: "first"}}
+	b.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60, TS: 100},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65, TS: 200},
+	}
 	return AnalysisInput{PRNumber: 42, Bundle: b}
 }
 
@@ -67,6 +82,7 @@ func TestLLMAnalyzer_StampsBeforeSchemaValidation(t *testing.T) {
 		"confidence":"medium",
 		"originally_requested_in":{"turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
 		"trajectory_note":"n",
+		"agent_action_citation":{"action_id":"a_1111111111111111"},
 		"current_state":{"file":"handler.go","line_range":[12,14],"summary":"s"}
 	}]`
 	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(withoutID)}}
@@ -628,7 +644,7 @@ func TestRenderAnalyzerPrompt_UnrequestedGetsKindSpecificConfidenceNote(t *testi
 }
 
 // Mechanically detected trajectories surface in the prompt as hints,
-// so the LLM can claim a deferred finding when a captured prompt
+// so the LLM can emit a deferred finding when a captured prompt
 // maps onto one of the listed scopes. Without this section, the LLM
 // would have to re-derive trajectories from the diff and action list.
 func TestRenderAnalyzerPrompt_RendersDetectedTrajectoriesAsHints(t *testing.T) {
@@ -659,7 +675,8 @@ func TestRenderAnalyzerPrompt_RendersDetectedTrajectoriesAsHints(t *testing.T) {
 // findings without supporting mechanical evidence.
 func TestRenderAnalyzerPrompt_OmitsTrajectorySectionWhenNoneDetected(t *testing.T) {
 	in := sampleInput()
-	// canonicalBundle has no actions, so the detector returns nothing.
+	// Clear the captured actions so the detector returns nothing.
+	in.Bundle.AgentActions = nil
 	prompt := renderAnalyzerPrompt(in)
 	if strings.Contains(prompt, "Detected revert trajectories") {
 		t.Errorf("prompt should omit trajectory section when none detected; got:\n%s", prompt)

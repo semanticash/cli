@@ -367,12 +367,21 @@ func TestStampFindingIDs_DeterministicAcrossRuns(t *testing.T) {
 	}
 }
 
-// deferred follows the same citation rules.
+// A deferred finding that cites a captured action belonging to a
+// detected revert trajectory on the same file as current_state is
+// kept. The trajectory candidate is built from two captured actions
+// on handler.go outside the diff range.
 func TestFilterFindingsByCitations_DeferredValidCitationKept(t *testing.T) {
 	bundle := canonicalBundle()
-	findings := json.RawMessage("[" + deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14}) + "]")
+	bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60, TS: 100},
+		{ActionID: "a_2222222222222222", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65, TS: 200},
+	}
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_1111111111111111"},"current_state":`, 1)
 
-	res, _ := FilterFindingsByCitations(findings, bundle)
+	res, _ := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if res.AcceptedCount != 1 {
 		t.Errorf("valid deferred dropped: %+v", res)
 	}
@@ -720,14 +729,16 @@ func TestFilterFindingsByCitations_NoActionCitationDroppedWhenTouched(t *testing
 }
 
 // Findings that do not carry the new citation fields behave exactly
-// as they did before action evidence was added. The wiring must be a
-// no-op for legacy producers.
+// as they did before action evidence was added, for kinds that do not
+// require an action citation. Under_impl and unrequested keep their
+// pre-existing citation rules; the optional-citations layer is a
+// no-op when the fields are absent.
 func TestFilterFindingsByCitations_NoActionCitationFieldsPreservesLegacyBehavior(t *testing.T) {
 	bundle := canonicalBundle()
 	// Two findings: the first is valid by the existing rules, the
 	// second has a citation flaw the legacy pipeline already catches.
-	good := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
-	bad := deferredFinding("t-1", "WRONG excerpt", "h-1", "handler.go", lineRange{12, 14})
+	good := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	bad := underImplFinding("t-1", "WRONG excerpt", "h-1", "handler.go", lineRange{12, 14})
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+good+","+bad+"]"), bundle)
 	if err != nil {
@@ -786,13 +797,15 @@ func TestFilterFindingsByCitations_MalformedNoActionCitationDropped(t *testing.T
 	}
 }
 
-// An explicit JSON null is treated as "field omitted." Producers can
-// clear a citation by emitting null without paying a drop penalty.
+// An explicit JSON null is treated as "field omitted" by the optional-
+// citations layer. Producers can clear an under_impl finding's citation
+// by emitting null without paying a drop penalty. (Deferred is exercised
+// elsewhere; it has its own required-citation rule.)
 func TestFilterFindingsByCitations_NullActionCitationFieldsAreOmitted(t *testing.T) {
 	bundle := canonicalBundle()
-	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
-	body = strings.Replace(body, `"current_state":`,
-		`"agent_action_citation":null,"no_action_citation":null,"current_state":`, 1)
+	body := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"observed_diff_evidence":`,
+		`"agent_action_citation":null,"no_action_citation":null,"observed_diff_evidence":`, 1)
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if err != nil {
@@ -863,12 +876,12 @@ func TestFilterFindingsByCitations_PositiveCitationUnchangedUnderTruncation(t *t
 func TestFilterFindingsByCitations_DeferredCitingTrajectoryActionKept(t *testing.T) {
 	bundle := canonicalBundle()
 	bundle.AgentActions = []BundleAgentAction{
-		{ActionID: "a_traj_one", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60},
-		{ActionID: "a_traj_two", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65},
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65},
 	}
 	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
 	body = strings.Replace(body, `"current_state":`,
-		`"agent_action_citation":{"action_id":"a_traj_one"},"current_state":`, 1)
+		`"agent_action_citation":{"action_id":"a_1111111111111111"},"current_state":`, 1)
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if err != nil {
@@ -888,12 +901,12 @@ func TestFilterFindingsByCitations_DeferredCitingTrajectoryOnUnrelatedFileDroppe
 	// Trajectory on extras.go (no diff for that file), but the
 	// finding's current_state points at handler.go.
 	bundle.AgentActions = []BundleAgentAction{
-		{ActionID: "a_traj_one", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 1, LineRangeEnd: 5},
-		{ActionID: "a_traj_two", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 3, LineRangeEnd: 7},
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 1, LineRangeEnd: 5},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "extras.go", LineRangeStart: 3, LineRangeEnd: 7},
 	}
 	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
 	body = strings.Replace(body, `"current_state":`,
-		`"agent_action_citation":{"action_id":"a_traj_one"},"current_state":`, 1)
+		`"agent_action_citation":{"action_id":"a_1111111111111111"},"current_state":`, 1)
 
 	res, err := FilterFindingsByCitations(json.RawMessage("["+body+"]"), bundle)
 	if err != nil {
@@ -956,10 +969,11 @@ func TestFilterFindingsByCitations_UnderImplCitingNonTrajectoryActionNotSubjectT
 	}
 }
 
-// A deferred finding that omits agent_action_citation entirely
-// continues to pass under the existing prompt + diff checks. The
-// trajectory rule only fires when the citation is present.
-func TestFilterFindingsByCitations_DeferredWithoutAgentActionCitationStillKept(t *testing.T) {
+// A deferred finding without agent_action_citation is dropped. The
+// deferred classification rests on a mechanical add-then-remove
+// trajectory in the captured actions; without the citation there is
+// no action evidence to verify, so cite-or-drop drops the finding.
+func TestFilterFindingsByCitations_DeferredWithoutAgentActionCitationDropped(t *testing.T) {
 	bundle := canonicalBundle()
 	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
 	// No agent_action_citation field added.
@@ -968,7 +982,10 @@ func TestFilterFindingsByCitations_DeferredWithoutAgentActionCitationStillKept(t
 	if err != nil {
 		t.Fatalf("FilterFindingsByCitations: %v", err)
 	}
-	if res.AcceptedCount != 1 {
-		t.Errorf("deferred without citation should still pass; got accepted=%d drops=%v", res.AcceptedCount, res.DroppedReasons)
+	if res.AcceptedCount != 0 {
+		t.Errorf("deferred without citation should drop; got accepted=%d", res.AcceptedCount)
+	}
+	if res.DroppedReasons["deferred_missing_action_citation"] != 1 {
+		t.Errorf("expected deferred_missing_action_citation; got %v", res.DroppedReasons)
 	}
 }

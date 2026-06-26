@@ -365,9 +365,12 @@ func indexTrajectoriesByActionID(trajectories []TrajectoryCandidate) map[string]
 }
 
 // validateDeferredTrajectoryCitation runs after the deferred finding's
-// turn and diff citations have validated. It is a no-op when the
-// finding omits agent_action_citation. When the citation is present:
+// turn and diff citations have validated. Deferred findings require:
 //
+//   - An agent_action_citation field naming a captured action. A
+//     deferred classification rests on a mechanical add-then-remove
+//     sequence in the captured actions; without the citation there is
+//     nothing to verify against.
 //   - The cited action must belong to a detected revert trajectory.
 //   - The trajectory's file must match the finding's current_state
 //     file. Without this bound, a reverted edit elsewhere in the PR
@@ -375,11 +378,10 @@ func indexTrajectoriesByActionID(trajectories []TrajectoryCandidate) map[string]
 //     finding says the deferred work would live.
 //
 // Line-range alignment is intentionally not enforced. A deferred
-// finding's current_state typically references surviving code in the
-// diff (which is where validateRegionInDiff confirms it landed), while
-// the trajectory range covers reverted lines that are not in the diff
-// by construction. These ranges naturally differ; requiring overlap
-// would make the rule unsatisfiable in the realistic case.
+// finding's current_state usually references surviving code in the
+// diff (validated by validateRegionInDiff), while the trajectory range
+// covers reverted lines that are absent from the final diff. Requiring
+// overlap would reject valid same-file deferred findings.
 func validateDeferredTrajectoryCitation(raw json.RawMessage, currentFile string, trajectoriesByActionID map[string]*TrajectoryCandidate) (string, bool) {
 	var probe struct {
 		Cit *agentActionCitation `json:"agent_action_citation"`
@@ -388,7 +390,7 @@ func validateDeferredTrajectoryCitation(raw json.RawMessage, currentFile string,
 		return "", false
 	}
 	if probe.Cit == nil || probe.Cit.ActionID == "" {
-		return "", false
+		return "deferred_missing_action_citation", true
 	}
 	cand, ok := trajectoriesByActionID[probe.Cit.ActionID]
 	if !ok {
