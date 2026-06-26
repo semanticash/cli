@@ -312,6 +312,7 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	}
 
 	renderAgentActions(&b, in.Bundle)
+	renderRevertTrajectories(&b, DetectEditRevertTrajectories(in.Bundle))
 
 	b.WriteString("\nCumulative diff base..head:\n")
 	b.WriteString("```diff\n")
@@ -364,6 +365,41 @@ func renderAgentActions(b *strings.Builder, bundle Bundle) {
 			bundle.Truncated.AgentActionsDropped)
 		b.WriteString("Do NOT emit no_action_citation while older actions are omitted.\n")
 		b.WriteString("The listing above is incomplete and cannot prove non-overlap.\n")
+	}
+}
+
+// renderRevertTrajectories writes any add-then-remove sequences the
+// detector found. These are hints for the LLM: scopes where the
+// agent touched a file repeatedly but the cumulative diff records no
+// surviving change. A captured prompt that maps onto one of these
+// scopes is the deferred case (#42); without a matching prompt the
+// trajectory is just mechanical activity and should not become a
+// finding by itself.
+func renderRevertTrajectories(b *strings.Builder, candidates []TrajectoryCandidate) {
+	if len(candidates) == 0 {
+		return
+	}
+	b.WriteString("\nDetected revert trajectories. The agent touched these scopes\n")
+	b.WriteString("repeatedly but the diff records no surviving change. When a\n")
+	b.WriteString("captured prompt requests work in one of these scopes, you may\n")
+	b.WriteString("emit a deferred finding that cites one listed action with\n")
+	b.WriteString("agent_action_citation and describes the sequence in\n")
+	b.WriteString("trajectory_note.\n")
+	for _, c := range candidates {
+		b.WriteString("- file=" + c.File)
+		if c.LineStart > 0 && c.LineEnd > 0 {
+			fmt.Fprintf(b, " lines=%d-%d", c.LineStart, c.LineEnd)
+		} else {
+			b.WriteString(" lines=(file-level)")
+		}
+		b.WriteString(" actions=[")
+		for i, id := range c.ActionIDs {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(id)
+		}
+		b.WriteString("]\n")
 	}
 }
 

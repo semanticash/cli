@@ -626,3 +626,42 @@ func TestRenderAnalyzerPrompt_UnrequestedGetsKindSpecificConfidenceNote(t *testi
 		t.Errorf("unrequested guidance should frame ASK as a complete search; got:\n%s", prompt)
 	}
 }
+
+// Mechanically detected trajectories surface in the prompt as hints,
+// so the LLM can claim a deferred finding when a captured prompt
+// maps onto one of the listed scopes. Without this section, the LLM
+// would have to re-derive trajectories from the diff and action list.
+func TestRenderAnalyzerPrompt_RendersDetectedTrajectoriesAsHints(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "added.go", LineRangeStart: 10, LineRangeEnd: 20},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "added.go", LineRangeStart: 15, LineRangeEnd: 25},
+	}
+	// Diff exists for an unrelated file, so the trajectory detector
+	// sees no surviving change for added.go.
+	in.Bundle.Diff = []byte(
+		"--- a/other.go\n+++ b/other.go\n@@ -1,1 +1,2 @@\n line\n+added\n",
+	)
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Detected revert trajectories") {
+		t.Errorf("prompt should announce trajectory hints; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "file=added.go") || !strings.Contains(prompt, "lines=10-25") {
+		t.Errorf("prompt missing trajectory entry; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "a_1111111111111111") || !strings.Contains(prompt, "a_2222222222222222") {
+		t.Errorf("prompt should list contributing action_ids; got:\n%s", prompt)
+	}
+}
+
+// When no trajectories are detected, the analyzer prompt omits the
+// section entirely so the LLM is not nudged toward emitting deferred
+// findings without supporting mechanical evidence.
+func TestRenderAnalyzerPrompt_OmitsTrajectorySectionWhenNoneDetected(t *testing.T) {
+	in := sampleInput()
+	// canonicalBundle has no actions, so the detector returns nothing.
+	prompt := renderAnalyzerPrompt(in)
+	if strings.Contains(prompt, "Detected revert trajectories") {
+		t.Errorf("prompt should omit trajectory section when none detected; got:\n%s", prompt)
+	}
+}
