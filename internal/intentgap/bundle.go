@@ -15,8 +15,12 @@ type Bundle struct {
 	// Diff is the cumulative unified diff, capped at MaxBundleDiffBytes.
 	Diff []byte
 	// Turns contains captured user prompts linked to commits in the PR range.
-	Turns     []BundleTurn
-	Truncated BundleTruncation
+	Turns []BundleTurn
+	// AgentActions contains the assistant tool-use records linked to
+	// the same window as Turns. These are mechanical evidence only:
+	// what tool touched what path, without semantic intent claims.
+	AgentActions []BundleAgentAction
+	Truncated    BundleTruncation
 }
 
 // BundleCommit identifies one commit in merge-base..HEAD.
@@ -27,9 +31,10 @@ type BundleCommit struct {
 
 // BundleTruncation records input omitted by bundle size limits.
 type BundleTruncation struct {
-	DiffBytesDropped int
-	CommitsDropped   int
-	TurnsDropped     int
+	DiffBytesDropped    int
+	CommitsDropped      int
+	TurnsDropped        int
+	AgentActionsDropped int
 }
 
 // Bundle size limits keep analyzer input bounded.
@@ -40,6 +45,9 @@ const (
 	MaxBundleCommits = 100
 	// MaxBundleTurns caps captured prompts, retaining the most recent entries.
 	MaxBundleTurns = 200
+	// MaxBundleAgentActions caps captured agent actions, retaining the
+	// most recent entries. This bounds analyzer input and payload reads.
+	MaxBundleAgentActions = 500
 )
 
 // BundleAssembler builds analyzer input for a repository revision.
@@ -59,6 +67,7 @@ type BundleInput struct {
 type GitBundleAssembler struct {
 	gitRepoOpener GitRepoOpener
 	turnLoader    TurnLoader
+	actionLoader  AgentActionLoader
 }
 
 // GitRepoOpener opens the Git operations required by bundle assembly.
@@ -80,11 +89,20 @@ type CommitMetaBetween struct {
 }
 
 // NewGitBundleAssembler constructs a Git-backed bundle assembler.
-func NewGitBundleAssembler(opener GitRepoOpener, turns TurnLoader) *GitBundleAssembler {
+// A nil loader is replaced by the no-op variant so callers that do
+// not need that evidence source can pass nil instead of wiring a stub.
+func NewGitBundleAssembler(opener GitRepoOpener, turns TurnLoader, actions AgentActionLoader) *GitBundleAssembler {
 	if turns == nil {
 		turns = NoopTurnLoader{}
 	}
-	return &GitBundleAssembler{gitRepoOpener: opener, turnLoader: turns}
+	if actions == nil {
+		actions = NoopAgentActionLoader{}
+	}
+	return &GitBundleAssembler{
+		gitRepoOpener: opener,
+		turnLoader:    turns,
+		actionLoader:  actions,
+	}
 }
 
 // Assemble builds a bounded bundle for the requested revision range.
@@ -158,18 +176,31 @@ func (a *GitBundleAssembler) Assemble(ctx context.Context, in BundleInput) (Bund
 		turns = turns[turnsDropped:]
 	}
 
+	actions, actionsErr := a.actionLoader.LoadActionsForCommits(ctx, commitHashes)
+	if actionsErr != nil {
+		return Bundle{}, actionsErr
+	}
+	actionsDropped := 0
+	if len(actions) > MaxBundleAgentActions {
+		// Drop oldest first so the most recent activity survives.
+		actionsDropped = len(actions) - MaxBundleAgentActions
+		actions = actions[actionsDropped:]
+	}
+
 	return Bundle{
-		RepoRoot: in.RepoRoot,
-		BaseRef:  baseRef,
-		BaseSHA:  mergeBase,
-		HeadSHA:  in.HeadSHA,
-		Commits:  bundleCommits,
-		Diff:     diff,
-		Turns:    turns,
+		RepoRoot:     in.RepoRoot,
+		BaseRef:      baseRef,
+		BaseSHA:      mergeBase,
+		HeadSHA:      in.HeadSHA,
+		Commits:      bundleCommits,
+		Diff:         diff,
+		Turns:        turns,
+		AgentActions: actions,
 		Truncated: BundleTruncation{
-			DiffBytesDropped: diffBytesDropped,
-			CommitsDropped:   dropped,
-			TurnsDropped:     turnsDropped,
+			DiffBytesDropped:    diffBytesDropped,
+			CommitsDropped:      dropped,
+			TurnsDropped:        turnsDropped,
+			AgentActionsDropped: actionsDropped,
 		},
 	}, nil
 }

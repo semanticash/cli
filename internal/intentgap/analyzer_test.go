@@ -42,18 +42,33 @@ func canned(text string) *llm.GenerateTextResult {
 // match the canonicalBundle helper defined in citeordrop_test.go.
 // Used by analyzer happy-path tests that need the pipeline to survive
 // schema validation AND cite-or-drop.
+//
+// The deferred finding cites action a_1111111111111111, which sampleInput
+// pairs with a sibling action a_2222222222222222 so DetectEditRevertTrajectories
+// emits a trajectory candidate on handler.go that the cite-or-drop
+// trajectory rule can accept.
 func validDeferredJSON() string {
-	return `[` + deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14}) + `]`
+	body := deferredFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	body = strings.Replace(body, `"current_state":`,
+		`"agent_action_citation":{"action_id":"a_1111111111111111"},"current_state":`, 1)
+	return `[` + body + `]`
 }
 
 // sampleInput pairs the canonicalBundle with a PR number; analyzer
-// tests that need a richer bundle replace the field.
+// tests that need a richer bundle replace the field. The bundle carries
+// two captured actions on handler.go outside the diff range, which
+// DetectEditRevertTrajectories reads as an add-then-remove sequence,
+// so deferred findings citing a_1111111111111111 survive cite-or-drop.
 func sampleInput() AnalysisInput {
 	b := canonicalBundle()
 	b.BaseRef = "main"
 	b.BaseSHA = "base-sha"
 	b.HeadSHA = "head-sha"
 	b.Commits = []BundleCommit{{Hash: "c1", Subject: "first"}}
+	b.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 50, LineRangeEnd: 60, TS: 100},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "handler.go", LineRangeStart: 55, LineRangeEnd: 65, TS: 200},
+	}
 	return AnalysisInput{PRNumber: 42, Bundle: b}
 }
 
@@ -67,6 +82,7 @@ func TestLLMAnalyzer_StampsBeforeSchemaValidation(t *testing.T) {
 		"confidence":"medium",
 		"originally_requested_in":{"turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
 		"trajectory_note":"n",
+		"agent_action_citation":{"action_id":"a_1111111111111111"},
 		"current_state":{"file":"handler.go","line_range":[12,14],"summary":"s"}
 	}]`
 	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(withoutID)}}
@@ -253,15 +269,183 @@ func TestLLMAnalyzer_LLMCallFailsSurfacesAsUnavailable(t *testing.T) {
 	}
 }
 
-// Schema-invalid findings produce a schema failure.
-func TestLLMAnalyzer_BadSchemaSurfacesAsSchemaError(t *testing.T) {
-	bad := `[{"whatever": true}]`
-	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad)}}
+// When every finding in the initial response is dropped for schema
+// violations, the analyzer asks for one repair pass. The repair embeds
+// minimal valid shapes per kind so the model can copy them directly.
+func TestLLMAnalyzer_RetryOnSchemaFailure(t *testing.T) {
+	bad := `[{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"s","turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"s","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"n"}
+	}]`
+	good := `[` + underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14}) + `]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad), canned(good)}}
 	a := NewLLMAnalyzer(runner)
 
-	_, err := a.Analyze(context.Background(), sampleInput())
-	if !errors.Is(err, ErrAnalyzerSchemaFailed) {
-		t.Fatalf("err should wrap ErrAnalyzerSchemaFailed; got %v", err)
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should repair schema-invalid response: %v", err)
+	}
+	if runner.calls != 2 {
+		t.Errorf("calls = %d, want 2 (initial + schema repair)", runner.calls)
+	}
+	if !strings.Contains(runner.prompts[1], "dropped because it failed the intent-gap finding schema") ||
+		!strings.Contains(runner.prompts[1], "ai_authored_regions_checked is an ARRAY") {
+		t.Errorf("schema repair prompt missing schema guidance; got: %q", runner.prompts[1])
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(res.Findings, &arr); err != nil {
+		t.Fatalf("findings not parseable: %v", err)
+	}
+	if len(arr) != 1 {
+		t.Errorf("findings len = %d, want 1", len(arr))
+	}
+}
+
+// When every finding fails schema validation across both the initial
+// response and the repair retry, the analyzer succeeds with an empty
+// findings array plus a diagnostic coverage_summary. A single
+// malformed finding does not turn the whole analysis into an errored
+// row.
+func TestLLMAnalyzer_AllFindingsInvalidYieldsEmptyArrayWithDiagnostics(t *testing.T) {
+	bad := `[{"whatever": true}]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad), canned(bad)}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed with [] when all findings invalid; got %v", err)
+	}
+	if string(res.Findings) != "[]" {
+		t.Errorf("findings = %s, want []", string(res.Findings))
+	}
+	var cov map[string]any
+	if err := json.Unmarshal(res.CoverageSummary, &cov); err != nil {
+		t.Fatalf("coverage not object: %v", err)
+	}
+	if cov["findings_dropped"] == nil {
+		t.Errorf("coverage_summary missing findings_dropped: %v", cov)
+	}
+	reasons, _ := cov["drop_reasons"].(map[string]any)
+	if len(reasons) == 0 {
+		t.Errorf("coverage_summary missing drop_reasons: %v", cov)
+	}
+	if len(res.SchemaDiagnostics) == 0 {
+		t.Errorf("SchemaDiagnostics should carry structural details for the activity log")
+	}
+}
+
+// When the repair retry's LLM call fails, the analyzer still succeeds
+// with an empty findings array but records schema_repair_call_failed
+// in coverage so an all-invalid run with a failed repair is
+// distinguishable from one where the repair simply produced more
+// invalid findings.
+func TestLLMAnalyzer_SchemaRepairCallFailureRecordedInCoverage(t *testing.T) {
+	bad := `[{"whatever": true}]`
+	runner := &fakeLLMRunner{
+		responses: []*llm.GenerateTextResult{canned(bad), nil},
+		errs:      []error{nil, errors.New("provider down")},
+	}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed when repair retry fails; got %v", err)
+	}
+	if string(res.Findings) != "[]" {
+		t.Errorf("findings = %s, want []", string(res.Findings))
+	}
+	var cov map[string]any
+	_ = json.Unmarshal(res.CoverageSummary, &cov)
+	failures, _ := cov["schema_repair_failures"].(map[string]any)
+	if failures["schema_repair_call_failed"] == nil {
+		t.Errorf("coverage_summary.schema_repair_failures missing schema_repair_call_failed: %v", failures)
+	}
+	reasons, _ := cov["drop_reasons"].(map[string]any)
+	if reasons["schema_repair_call_failed"] != nil {
+		t.Errorf("coverage_summary.drop_reasons should not include repair failures: %v", reasons)
+	}
+}
+
+// The dropped-finding diagnostic carries kind, schema error, and the
+// top-level key list - never the raw finding bytes. This guards
+// against prompt excerpts, file paths, or code snippets leaking
+// through the local activity log.
+func TestFilterFindingsBySchema_DiagnosticIsStructuralOnly(t *testing.T) {
+	// Invalid because ai_authored_regions_checked must be an array.
+	bad := `[{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"SECRET SUMMARY","turn_id":"t-1","prompt_excerpt":"PRIVATE PROMPT","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"another secret","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"do not leak"}
+	}]`
+	result := FilterFindingsBySchema(json.RawMessage(bad))
+	if len(result.DroppedSamples) != 1 {
+		t.Fatalf("DroppedSamples len = %d, want 1", len(result.DroppedSamples))
+	}
+	sample := result.DroppedSamples[0]
+	for _, leak := range []string{"SECRET SUMMARY", "PRIVATE PROMPT", "another secret", "do not leak"} {
+		if strings.Contains(sample, leak) {
+			t.Errorf("diagnostic leaked %q: %s", leak, sample)
+		}
+	}
+	if !strings.Contains(sample, "kind=under_impl") {
+		t.Errorf("diagnostic missing kind: %s", sample)
+	}
+	if !strings.Contains(sample, "keys=[") {
+		t.Errorf("diagnostic missing top-level keys list: %s", sample)
+	}
+}
+
+// A response with one valid finding and one schema-invalid finding
+// keeps the valid one and drops the other. The repair retry is skipped
+// because at least one finding survived the initial filter.
+func TestLLMAnalyzer_MixedSchemaValidityKeepsValidFindings(t *testing.T) {
+	good := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	badShape := `{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"s","turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"s","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"n"}
+	}`
+	body := `[` + good + `,` + badShape + `]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(body)}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed when one finding is valid: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Errorf("calls = %d, want 1 (no repair retry when any finding survives)", runner.calls)
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(res.Findings, &arr); err != nil {
+		t.Fatalf("findings not parseable: %v", err)
+	}
+	if len(arr) != 1 {
+		t.Errorf("findings len = %d, want 1 (one bad finding dropped)", len(arr))
+	}
+	var cov map[string]any
+	_ = json.Unmarshal(res.CoverageSummary, &cov)
+	if cov["findings_dropped"] == nil {
+		t.Errorf("coverage_summary missing findings_dropped: %v", cov)
+	}
+	if len(res.SchemaDiagnostics) != 1 {
+		t.Errorf("SchemaDiagnostics len = %d, want 1 (one dropped finding recorded)", len(res.SchemaDiagnostics))
 	}
 }
 
@@ -331,6 +515,34 @@ func TestLLMAnalyzer_CoverageSummaryReflectsBundle(t *testing.T) {
 	}
 }
 
+// Agent action counts are reported in coverage_summary without
+// including the actions themselves in the upload.
+func TestLLMAnalyzer_CoverageSummaryReportsAgentActionCounts(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a1", TurnID: "t1", ToolName: "Edit", FilePath: "a.go"},
+		{ActionID: "a2", TurnID: "t1", ToolName: "Edit", FilePath: "b.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 7
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned("[]")}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	var cov map[string]int
+	if err := json.Unmarshal(res.CoverageSummary, &cov); err != nil {
+		t.Fatalf("CoverageSummary not JSON object: %v", err)
+	}
+	if cov["agent_actions_count"] != 2 {
+		t.Errorf("agent_actions_count = %d, want 2", cov["agent_actions_count"])
+	}
+	if cov["agent_actions_dropped"] != 7 {
+		t.Errorf("agent_actions_dropped = %d, want 7", cov["agent_actions_dropped"])
+	}
+}
+
 // The retry prompt includes the previous response for correction.
 func TestReformatPrompt_CitesPrevious(t *testing.T) {
 	got := reformatPrompt("the bad response")
@@ -366,12 +578,9 @@ func TestFirstJSONArray_RespectsEscapes(t *testing.T) {
 }
 
 // End-to-end check that cite-or-drop runs inside the analyzer
-// pipeline and surfaces the drop count in coverage_summary. Without
-// this the LLM could hallucinate citations and we would not see them.
+// pipeline and surfaces the drop count in coverage_summary.
 func TestLLMAnalyzer_CiteOrDropDropsHallucinatedFindings(t *testing.T) {
-	// LLM emits one finding citing a turn_id that is not in the
-	// bundle. The bundle carries a different turn so the analyzer
-	// can prove the model's citation was fabricated.
+	// The response cites a turn_id that is not present in the bundle.
 	in := AnalysisInput{
 		PRNumber: 42,
 		Bundle: Bundle{
@@ -464,4 +673,182 @@ type panicLLMRunner struct{}
 
 func (panicLLMRunner) GenerateText(context.Context, string) (*llm.GenerateTextResult, error) {
 	panic("LLM must not be called when bundle has no captured prompts")
+}
+
+// The rendered prompt frames the analyzer with the three-anchor
+// evidence model so the LLM can reason about ask/attempt/result
+// alignment rather than guessing whether the agent tried something.
+func TestRenderAnalyzerPrompt_FramesThreeAnchorEvidenceModel(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"ASK",
+		"ATTEMPT",
+		"RESULT",
+		"three mechanical evidence anchors",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// The prompt documents optional citation fields so the LLM can attach
+// findings to action evidence. Without these instructions the
+// cite-or-drop layer would not receive those fields.
+func TestRenderAnalyzerPrompt_DocumentsOptionalCitationFields(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"agent_action_citation",
+		"no_action_citation",
+		"ai_authored_regions_checked:[{file,lines:[[start,end]]}, ...]",
+		"NOT a yes/no boolean",
+		"Confidence guidance",
+		"unrequested",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// Captured actions are rendered with their action_id, tool name, and
+// file path so the LLM has a citable list. Line ranges only appear
+// when known, and unknown file paths are shown explicitly.
+func TestRenderAnalyzerPrompt_ListsCapturedActions(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{
+			ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit",
+			FilePath: "handler.go", LineRangeStart: 42, LineRangeEnd: 58,
+		},
+		{
+			ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Bash",
+			// Bash with no derivable path is shown explicitly.
+			FilePath: "",
+		},
+	}
+	prompt := renderAnalyzerPrompt(in)
+	for _, want := range []string{
+		"action_id=a_1111111111111111",
+		"tool=Edit",
+		"file=handler.go",
+		"lines=42-58",
+		"action_id=a_2222222222222222",
+		"tool=Bash",
+		"file=(unknown)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
+// When the bundle has no captured actions, the prompt steers the LLM
+// away from citation fields that have no verifiable source. This is
+// the dual of the no-prompts message that already exists for turns.
+func TestRenderAnalyzerPrompt_NoActionsMessageStopsCitations(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = nil
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "No captured agent actions") {
+		t.Errorf("prompt should explain absence of action data; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Avoid agent_action_citation") {
+		t.Errorf("prompt should tell the model to avoid action citations; got:\n%s", prompt)
+	}
+}
+
+// Action truncation is surfaced so the LLM knows the listing is not
+// complete. Negative action citations are unsafe when older actions
+// were dropped at the cap.
+func TestRenderAnalyzerPrompt_ReportsActionTruncation(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_3333333333333333", TurnID: "t-1", ToolName: "Edit", FilePath: "a.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 12
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "12 older actions omitted") {
+		t.Errorf("prompt should report action truncation count; got:\n%s", prompt)
+	}
+}
+
+// The prompt template version is bumped to 0.2.0 to reflect the new
+// evidence model; the payload hash depends on it, so downstream
+// systems can distinguish v1 (prompt-only) and v2 (action-aware)
+// uploads.
+func TestPromptTemplateVersion_v2(t *testing.T) {
+	if PromptTemplateVersion != "0.2.0" {
+		t.Errorf("PromptTemplateVersion = %q, want 0.2.0", PromptTemplateVersion)
+	}
+}
+
+// Under truncation the prompt tells the LLM not to emit
+// no_action_citation. The cite-or-drop layer also rejects it.
+func TestRenderAnalyzerPrompt_TruncationDisablesNegativeCitations(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_3333333333333333", TurnID: "t-1", ToolName: "Edit", FilePath: "a.go"},
+	}
+	in.Bundle.Truncated.AgentActionsDropped = 5
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Do NOT emit no_action_citation") {
+		t.Errorf("prompt should ban no_action_citation under truncation; got:\n%s", prompt)
+	}
+}
+
+// The under_impl / deferred confidence guidance is kept generic, but
+// unrequested gets a kind-specific note because its ASK anchor is the
+// absence of a supporting prompt rather than positive alignment.
+func TestRenderAnalyzerPrompt_UnrequestedGetsKindSpecificConfidenceNote(t *testing.T) {
+	in := sampleInput()
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Confidence guidance (unrequested):") {
+		t.Errorf("prompt should carry a kind-specific guidance for unrequested; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "captured-intent search that returned no supporting prompt") {
+		t.Errorf("unrequested guidance should frame ASK as a complete search; got:\n%s", prompt)
+	}
+}
+
+// Mechanically detected trajectories surface in the prompt as hints,
+// so the LLM can emit a deferred finding when a captured prompt
+// maps onto one of the listed scopes. Without this section, the LLM
+// would have to re-derive trajectories from the diff and action list.
+func TestRenderAnalyzerPrompt_RendersDetectedTrajectoriesAsHints(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit", FilePath: "added.go", LineRangeStart: 10, LineRangeEnd: 20},
+		{ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit", FilePath: "added.go", LineRangeStart: 15, LineRangeEnd: 25},
+	}
+	// Diff exists for an unrelated file, so the trajectory detector
+	// sees no surviving change for added.go.
+	in.Bundle.Diff = []byte(
+		"--- a/other.go\n+++ b/other.go\n@@ -1,1 +1,2 @@\n line\n+added\n",
+	)
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "Detected revert trajectories") {
+		t.Errorf("prompt should announce trajectory hints; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "file=added.go") || !strings.Contains(prompt, "lines=10-25") {
+		t.Errorf("prompt missing trajectory entry; got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "a_1111111111111111") || !strings.Contains(prompt, "a_2222222222222222") {
+		t.Errorf("prompt should list contributing action_ids; got:\n%s", prompt)
+	}
+}
+
+// When no trajectories are detected, the analyzer prompt omits the
+// section entirely so the LLM is not nudged toward emitting deferred
+// findings without supporting mechanical evidence.
+func TestRenderAnalyzerPrompt_OmitsTrajectorySectionWhenNoneDetected(t *testing.T) {
+	in := sampleInput()
+	// Clear the captured actions so the detector returns nothing.
+	in.Bundle.AgentActions = nil
+	prompt := renderAnalyzerPrompt(in)
+	if strings.Contains(prompt, "Detected revert trajectories") {
+		t.Errorf("prompt should omit trajectory section when none detected; got:\n%s", prompt)
+	}
 }

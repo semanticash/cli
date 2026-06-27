@@ -40,17 +40,21 @@ func FilterFindingsByCitations(findings json.RawMessage, bundle Bundle) (CiteOrD
 		return res, nil
 	}
 
-	// Index turns once for per-finding citation checks.
+	// Index turns and actions once for per-finding citation checks.
 	turnsByID := make(map[string]BundleTurn, len(bundle.Turns))
 	for _, t := range bundle.Turns {
 		turnsByID[t.TurnID] = t
 	}
 	capturedPromptCount := len(bundle.Turns)
 	changedRegions := parseChangedRegions(bundle.Diff)
+	actionsByID := indexActionsByID(bundle.AgentActions)
+
+	actionsTruncated := bundle.Truncated.AgentActionsDropped > 0
+	trajectoriesByActionID := indexTrajectoriesByActionID(DetectEditRevertTrajectories(bundle))
 
 	accepted := make([]json.RawMessage, 0, len(arr))
 	for _, raw := range arr {
-		dropReason, drop := shouldDropFinding(raw, turnsByID, capturedPromptCount, changedRegions)
+		dropReason, drop := shouldDropFinding(raw, turnsByID, capturedPromptCount, changedRegions, actionsByID, bundle.AgentActions, actionsTruncated, trajectoriesByActionID)
 		if drop {
 			res.DroppedCount++
 			res.DroppedReasons[dropReason]++
@@ -68,13 +72,22 @@ func FilterFindingsByCitations(findings json.RawMessage, bundle Bundle) (CiteOrD
 }
 
 // shouldDropFinding validates the evidence required by one finding kind.
-func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, capturedPromptCount int, changedRegions map[string][]lineRange) (string, bool) {
+func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, capturedPromptCount int, changedRegions map[string][]lineRange, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction, actionsTruncated bool, trajectoriesByActionID map[string]*TrajectoryCandidate) (string, bool) {
 	var probe struct {
 		Kind      string `json:"kind"`
 		FindingID string `json:"finding_id"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return "malformed_json", true
+	}
+
+	// Optional action-evidence citations. The validator runs for every
+	// kind and verifies the cited action exists, the scope matches the
+	// action's recorded file and line range, and negative citations are
+	// not present under truncation. Kind-specific rules (e.g. trajectory
+	// alignment for deferred) live in the kind branches below.
+	if reason, drop := validateOptionalActionCitations(raw, actionsByID, actions, actionsTruncated); drop {
+		return reason, true
 	}
 
 	switch probe.Kind {
@@ -127,6 +140,9 @@ func shouldDropFinding(raw json.RawMessage, turnsByID map[string]BundleTurn, cap
 			return reason, true
 		}
 		if reason, drop := validateRegionInDiff(fileRegion{File: f.CurrentState.File, Lines: []lineRange{f.CurrentState.LineRange}}, changedRegions); drop {
+			return reason, true
+		}
+		if reason, drop := validateDeferredTrajectoryCitation(raw, f.CurrentState.File, trajectoriesByActionID); drop {
 			return reason, true
 		}
 		return "", false
@@ -209,6 +225,248 @@ func validateRegionInDiff(fr fileRegion, changedRegions map[string][]lineRange) 
 		}
 	}
 	return "", false
+}
+
+// agentActionCitation is the optional citation an analyzer attaches
+// to a finding to anchor it to a captured tool invocation. Cited by
+// ActionID; Scope is the file or line range the finding references.
+// Validated against the bundle's AgentActions list.
+type agentActionCitation struct {
+	ActionID string         `json:"action_id"`
+	Scope    *citationScope `json:"scope,omitempty"`
+}
+
+// noActionCitation is the optional citation a negative finding
+// attaches to anchor "no captured action touched this scope" to a
+// concrete, bounded region. Negative citations without a scope cannot
+// be verified deterministically.
+type noActionCitation struct {
+	Scope *citationScope `json:"scope"`
+}
+
+// citationScope is a file or file+line target. A zero LineRange
+// indicates a file-level scope; a non-zero LineRange narrows the
+// scope to those lines.
+type citationScope struct {
+	File      string    `json:"file"`
+	LineRange lineRange `json:"line_range"`
+}
+
+// validateAgentActionCitation verifies that a positive action
+// citation refers to a real captured action whose file path (and
+// line range, when known) overlap the cited scope. The action's
+// own fields may carry partial data: a missing FilePath or zero
+// LineRange means the bundle doesn't have that precision, and the
+// validator falls back to less strict matching.
+func validateAgentActionCitation(cit agentActionCitation, actionsByID map[string]BundleAgentAction) (string, bool) {
+	if cit.ActionID == "" {
+		return "missing_action_id", true
+	}
+	a, ok := actionsByID[cit.ActionID]
+	if !ok {
+		return "unknown_action_id", true
+	}
+	if cit.Scope == nil {
+		return "", false
+	}
+	if cit.Scope.File == "" {
+		return "scope_missing_file", true
+	}
+	// FilePath is best-effort. If the action recorded a path,
+	// require an exact match; if not, the scope file is uncheckable
+	// here and the validator falls back to the other finding anchors.
+	if a.FilePath != "" && a.FilePath != cit.Scope.File {
+		return "action_file_mismatch", true
+	}
+	// Line-range check is gated on both the action and the citation
+	// carrying ranges. Zero on either side means "not asserted at this
+	// granularity," which is a documented fallback.
+	if a.LineRangeStart > 0 && a.LineRangeEnd > 0 &&
+		cit.Scope.LineRange[0] > 0 && cit.Scope.LineRange[1] > 0 {
+		if !lineRangeIntersects(cit.Scope.LineRange, []lineRange{{a.LineRangeStart, a.LineRangeEnd}}) {
+			return "action_line_range_mismatch", true
+		}
+	}
+	return "", false
+}
+
+// validateNoActionCitation verifies that a negative citation's
+// resolved scope has empty intersection with the bundle's actions.
+// The scope must be concrete (file required; line range optional).
+//
+// When the citation's scope is file-level, any action recorded on
+// that file invalidates the negative citation. When the citation narrows
+// to a line range, the action must overlap on lines too.
+//
+// Two best-effort fallbacks are handled conservatively, because the
+// validator must be able to *prove* non-overlap before accepting:
+//
+//   - Actions with an unknown FilePath (e.g. a Bash invocation whose
+//     command did not parse into a concrete path) might have touched
+//     the cited file. They block any file-scoped negative.
+//   - Actions whose own line range is unknown might overlap the cited
+//     lines. They block line-narrowed negatives on the same file.
+//
+// Both rules reject negative citations when available action data is too
+// coarse to prove non-overlap.
+func validateNoActionCitation(cit noActionCitation, actions []BundleAgentAction) (string, bool) {
+	if cit.Scope == nil || cit.Scope.File == "" {
+		return "negative_citation_requires_scope", true
+	}
+	fileOnly := cit.Scope.LineRange[0] == 0 && cit.Scope.LineRange[1] == 0
+	for _, a := range actions {
+		// Unknown FilePath: cannot prove the action did not touch the
+		// cited file, so the negative cannot be verified.
+		if a.FilePath == "" {
+			return "action_touched_negative_scope", true
+		}
+		if a.FilePath != cit.Scope.File {
+			continue
+		}
+		if fileOnly {
+			return "action_touched_negative_scope", true
+		}
+		if a.LineRangeStart == 0 || a.LineRangeEnd == 0 {
+			// Unknown line range: cannot prove non-overlap with the
+			// cited lines.
+			return "action_touched_negative_scope", true
+		}
+		if lineRangeIntersects(cit.Scope.LineRange, []lineRange{{a.LineRangeStart, a.LineRangeEnd}}) {
+			return "action_touched_negative_scope", true
+		}
+	}
+	return "", false
+}
+
+// indexActionsByID returns the bundle actions keyed by ActionID for
+// O(1) positive-citation lookups.
+func indexActionsByID(actions []BundleAgentAction) map[string]BundleAgentAction {
+	out := make(map[string]BundleAgentAction, len(actions))
+	for _, a := range actions {
+		out[a.ActionID] = a
+	}
+	return out
+}
+
+// indexTrajectoriesByActionID maps every ActionID participating in a
+// detected revert trajectory back to the candidate it belongs to. The
+// pointer is shared across IDs from the same candidate so consumers
+// can read the trajectory's file and line range alongside the
+// membership check.
+func indexTrajectoriesByActionID(trajectories []TrajectoryCandidate) map[string]*TrajectoryCandidate {
+	out := map[string]*TrajectoryCandidate{}
+	for i := range trajectories {
+		c := &trajectories[i]
+		for _, id := range c.ActionIDs {
+			out[id] = c
+		}
+	}
+	return out
+}
+
+// validateDeferredTrajectoryCitation runs after the deferred finding's
+// turn and diff citations have validated. Deferred findings require:
+//
+//   - An agent_action_citation field naming a captured action. A
+//     deferred classification rests on a mechanical add-then-remove
+//     sequence in the captured actions; without the citation there is
+//     nothing to verify against.
+//   - The cited action must belong to a detected revert trajectory.
+//   - The trajectory's file must match the finding's current_state
+//     file. Without this bound, a reverted edit elsewhere in the PR
+//     could validate any deferred finding regardless of where the
+//     finding says the deferred work would live.
+//
+// Line-range alignment is intentionally not enforced. A deferred
+// finding's current_state usually references surviving code in the
+// diff (validated by validateRegionInDiff), while the trajectory range
+// covers reverted lines that are absent from the final diff. Requiring
+// overlap would reject valid same-file deferred findings.
+func validateDeferredTrajectoryCitation(raw json.RawMessage, currentFile string, trajectoriesByActionID map[string]*TrajectoryCandidate) (string, bool) {
+	var probe struct {
+		Cit *agentActionCitation `json:"agent_action_citation"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return "", false
+	}
+	if probe.Cit == nil || probe.Cit.ActionID == "" {
+		return "deferred_missing_action_citation", true
+	}
+	cand, ok := trajectoriesByActionID[probe.Cit.ActionID]
+	if !ok {
+		return "deferred_action_not_in_trajectory", true
+	}
+	if cand.File != currentFile {
+		return "deferred_trajectory_scope_mismatch", true
+	}
+	return "", false
+}
+
+// validateOptionalActionCitations inspects a finding for the optional
+// agent_action_citation and no_action_citation fields and runs the
+// corresponding validators when present. Findings that omit both
+// fields pass through unchanged, preserving the existing behavior
+// for producers that have not yet adopted the new citation shape.
+//
+// The lookup is two-phase. First the raw JSON is probed for field
+// presence; only then is each present field decoded into its typed
+// shape. This separation lets the validator distinguish "field
+// absent" from "field present but malformed," so a producer that
+// emits agent_action_citation as the wrong JSON type (string, array,
+// number, etc.) is rejected explicitly instead of passing
+// through as if the field were omitted. That preserves the
+// invariant: if action citation fields appear, they are verified or
+// dropped.
+func validateOptionalActionCitations(raw json.RawMessage, actionsByID map[string]BundleAgentAction, actions []BundleAgentAction, actionsTruncated bool) (string, bool) {
+	var presence struct {
+		AgentActionCitation json.RawMessage `json:"agent_action_citation"`
+		NoActionCitation    json.RawMessage `json:"no_action_citation"`
+	}
+	if err := json.Unmarshal(raw, &presence); err != nil {
+		// The kind-specific parsers below produce a precise reason
+		// for malformed findings; treat this layer as no-op on parse
+		// failure so the error surfaces from the right location.
+		return "", false
+	}
+
+	if isJSONFieldPresent(presence.AgentActionCitation) {
+		var cit agentActionCitation
+		if err := json.Unmarshal(presence.AgentActionCitation, &cit); err != nil {
+			return "malformed_action_citation", true
+		}
+		if reason, drop := validateAgentActionCitation(cit, actionsByID); drop {
+			return reason, true
+		}
+	}
+	if isJSONFieldPresent(presence.NoActionCitation) {
+		// A truncated action list cannot prove non-overlap. An older
+		// action that was dropped at the size cap might have touched
+		// the cited scope, so the negative citation is unverifiable from
+		// the data the validator can see.
+		if actionsTruncated {
+			return "actions_truncated_negative_unverifiable", true
+		}
+		var cit noActionCitation
+		if err := json.Unmarshal(presence.NoActionCitation, &cit); err != nil {
+			return "malformed_no_action_citation", true
+		}
+		if reason, drop := validateNoActionCitation(cit, actions); drop {
+			return reason, true
+		}
+	}
+	return "", false
+}
+
+// isJSONFieldPresent reports whether a raw-message field is set to a
+// non-null value. Absent fields decode to a nil slice; explicit JSON
+// nulls decode to the four-byte literal `null`. Both forms are
+// treated as "omitted" so a producer can clear a citation by sending
+// null without paying a drop penalty.
+func isJSONFieldPresent(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return string(raw) != "null"
 }
 
 // lineRangeIntersects reports whether [lr.Start, lr.End] overlaps any

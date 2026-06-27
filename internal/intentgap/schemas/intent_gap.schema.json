@@ -29,7 +29,15 @@
     "data_gaps": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Honest notes about what could not be verified - e.g. 'redaction stripped the cap value' or 'no playbook for commit Y'."
+      "description": "Notes about what could not be verified - e.g. 'redaction stripped the cap value' or 'no playbook for commit Y'."
+    },
+    "agent_action_citation": {
+      "$ref": "#/$defs/agentActionCitation",
+      "description": "Optional citation anchoring this finding to a captured agent tool invocation. When present, Semantica verifies the cited action exists and any cited scope matches the action's recorded file and line range."
+    },
+    "no_action_citation": {
+      "$ref": "#/$defs/noActionCitation",
+      "description": "Optional citation for findings that state no captured action touched a specific scope. The cited scope must not intersect any captured action; actions with unknown file or line data cannot prove non-overlap."
     }
   },
   "oneOf": [
@@ -71,6 +79,35 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/lineRange" }
         }
+      }
+    },
+    "citationScope": {
+      "type": "object",
+      "required": ["file"],
+      "description": "Scope covered by a citation. A file alone is a file-level scope; line_range narrows the scope to specific lines.",
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line_range": { "$ref": "#/$defs/lineRange" }
+      }
+    },
+    "agentActionCitation": {
+      "type": "object",
+      "required": ["action_id"],
+      "description": "Anchors a finding to a captured agent tool invocation. action_id references an action in the analyzer bundle's agent_actions; scope optionally narrows the citation to a file or line range.",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "pattern": "^a_[0-9a-f]{16}$"
+        },
+        "scope": { "$ref": "#/$defs/citationScope" }
+      }
+    },
+    "noActionCitation": {
+      "type": "object",
+      "required": ["scope"],
+      "description": "Anchors a finding that states no captured action touched a concrete, bounded scope. A citation without scope cannot be verified and is rejected.",
+      "properties": {
+        "scope": { "$ref": "#/$defs/citationScope" }
       }
     },
     "underImplFinding": {

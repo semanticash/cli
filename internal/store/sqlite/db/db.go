@@ -129,6 +129,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.insertSessionCheckpointStmt, err = db.PrepareContext(ctx, insertSessionCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionCheckpoint: %w", err)
 	}
+	if q.listAgentActionsForCommitStmt, err = db.PrepareContext(ctx, listAgentActionsForCommit); err != nil {
+		return nil, fmt.Errorf("error preparing query ListAgentActionsForCommit: %w", err)
+	}
 	if q.listAgentEventsBySessionStmt, err = db.PrepareContext(ctx, listAgentEventsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAgentEventsBySession: %w", err)
 	}
@@ -459,6 +462,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing insertSessionCheckpointStmt: %w", cerr)
 		}
 	}
+	if q.listAgentActionsForCommitStmt != nil {
+		if cerr := q.listAgentActionsForCommitStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listAgentActionsForCommitStmt: %w", cerr)
+		}
+	}
 	if q.listAgentEventsBySessionStmt != nil {
 		if cerr := q.listAgentEventsBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listAgentEventsBySessionStmt: %w", cerr)
@@ -783,6 +791,7 @@ type Queries struct {
 	insertCommitLinkStmt                         *sql.Stmt
 	insertRepositoryStmt                         *sql.Stmt
 	insertSessionCheckpointStmt                  *sql.Stmt
+	listAgentActionsForCommitStmt                *sql.Stmt
 	listAgentEventsBySessionStmt                 *sql.Stmt
 	listAgentEventsBySessionPagedStmt            *sql.Stmt
 	listAgentSessionsByProviderSessionIDStmt     *sql.Stmt
@@ -874,6 +883,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		insertCommitLinkStmt:                         q.insertCommitLinkStmt,
 		insertRepositoryStmt:                         q.insertRepositoryStmt,
 		insertSessionCheckpointStmt:                  q.insertSessionCheckpointStmt,
+		listAgentActionsForCommitStmt:                q.listAgentActionsForCommitStmt,
 		listAgentEventsBySessionStmt:                 q.listAgentEventsBySessionStmt,
 		listAgentEventsBySessionPagedStmt:            q.listAgentEventsBySessionPagedStmt,
 		listAgentSessionsByProviderSessionIDStmt:     q.listAgentSessionsByProviderSessionIDStmt,

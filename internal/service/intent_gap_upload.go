@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,14 +26,31 @@ const (
 	UploadStatusDuplicate IntentGapUploadStatus = "duplicate"
 	UploadStatusSkipped   IntentGapUploadStatus = "skipped"
 	UploadStatusError     IntentGapUploadStatus = "error"
+	// UploadStatusAnalyzed marks a local run that produced findings
+	// without uploading them.
+	UploadStatusAnalyzed IntentGapUploadStatus = "analyzed"
 )
 
+// RunOptions controls one call to Run.
+type RunOptions struct {
+	// Upload toggles the API record step. When false, the analyzer
+	// still runs (or a cached result is reused) and findings come back
+	// in the result for local rendering, but nothing is uploaded.
+	Upload bool
+}
+
 // IntentGapUploadResult records transport and analysis outcomes separately.
+//
+// Findings and CoverageSummary are populated whenever the analyzer
+// produced a result (fresh run or cache hit) so the command layer can
+// render them locally; they are also what the API received when
+// Upload is true.
 type IntentGapUploadResult struct {
 	Status     IntentGapUploadStatus
 	Reason     string
 	PRNumber   int32
 	HeadSHA    string
+	BaseSHA    string
 	UploadID   string
 	ReceivedAt string
 	Provider   string
@@ -41,6 +59,15 @@ type IntentGapUploadResult struct {
 	Analysis AnalysisOutcome
 	// AnalysisReason contains a sanitized code for errored analysis.
 	AnalysisReason string
+	// Findings and CoverageSummary are the analyzer output, populated
+	// for both fresh runs and cache hits. Nil only when execution
+	// stopped before analysis (skip / pre-analysis error).
+	Findings              json.RawMessage
+	CoverageSummary       json.RawMessage
+	PromptTemplateVersion string
+	// UsedCache is true when the analyzer step was skipped because a
+	// matching cache entry was found for the current head_sha.
+	UsedCache bool
 }
 
 // AnalysisOutcome reports whether local analysis completed or errored.
@@ -50,6 +77,10 @@ const (
 	AnalysisAnalyzed AnalysisOutcome = "analyzed"
 	AnalysisErrored  AnalysisOutcome = "errored"
 )
+
+// errNoLLMInstalled marks a cache miss that cannot run fresh analysis
+// because no local LLM CLI is available.
+var errNoLLMInstalled = errors.New("intent-gap: no LLM CLI installed for fresh analysis")
 
 // IntentGapUploadDeps provides optional collaborators for the upload service.
 type IntentGapUploadDeps struct {
@@ -81,9 +112,12 @@ func NewIntentGapUploadService(deps IntentGapUploadDeps) *IntentGapUploadService
 	return &IntentGapUploadService{deps: deps}
 }
 
-// Run analyzes the current PR and records the result. Expected skip outcomes
-// are returned in Status; infrastructure failures are returned as errors.
-func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*IntentGapUploadResult, error) {
+// Run analyzes the current PR and optionally records the result. With
+// opts.Upload=false the analyzer (or a cache hit) produces findings and
+// the function returns; with opts.Upload=true the same findings are
+// posted to the API. Expected skip outcomes come back in Status;
+// infrastructure failures are returned as errors.
+func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string, opts RunOptions) (*IntentGapUploadResult, error) {
 	repo, err := git.OpenRepo(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
@@ -142,15 +176,6 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 		return nil, fmt.Errorf("PR lookup: %w", err)
 	}
 
-	registry := s.deps.LLMRegistry
-	if registry == nil {
-		registry = providers.NewWriterRegistry()
-	}
-	provider, err := intentgap.PickInstalledProvider(registry)
-	if err != nil {
-		return skipped(semDir, "no LLM CLI installed; nothing to record"), nil
-	}
-
 	deviceID := s.deps.DeviceID
 	if deviceID == "" {
 		deviceID, err = intentgap.LoadOrCreateDeviceID()
@@ -165,17 +190,38 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 		now = s.deps.Now
 	}
 
+	// Provider/Model are populated by obtainAnalysis once it knows whether
+	// the run is a cache hit (use cached values) or a fresh analysis
+	// (use the picked provider). Leaving them empty here defers the
+	// "must have an LLM CLI" check until cache lookup misses.
 	in := intentgap.UploadInput{
 		RepositoryID:     settings.ConnectedRepoID,
 		PRNumber:         pr.PRNumber,
 		HeadSHA:          headSHA,
 		BaseSHA:          "",
-		Provider:         provider.Name,
-		Model:            provider.Model,
 		ProducerDeviceID: deviceID,
 	}
 
-	analysis, err := s.runAnalysisAndBuildBody(ctx, semDir, in, pr, repoRoot, now)
+	// If no cache file exists, fresh analysis is required, so resolve
+	// the provider before bundle assembly. If a cache file exists,
+	// defer provider lookup until after the freshness check.
+	if !intentgap.CacheFileExists(semDir, headSHA) {
+		registry := s.deps.LLMRegistry
+		if registry == nil {
+			registry = providers.NewWriterRegistry()
+		}
+		provider, providerErr := intentgap.PickInstalledProvider(registry)
+		if providerErr != nil {
+			return skipped(semDir, "no LLM CLI installed; nothing to record"), nil
+		}
+		in.Provider = provider.Name
+		in.Model = provider.Model
+	}
+
+	analysis, usedCache, err := s.obtainAnalysis(ctx, semDir, in, pr, repoRoot, now)
+	if errors.Is(err, errNoLLMInstalled) {
+		return skipped(semDir, "no LLM CLI installed; nothing to record"), nil
+	}
 	if err != nil {
 		util.AppendActivityLog(semDir, "intent-gap error: build body: %v", err)
 		return nil, fmt.Errorf("build body: %w", err)
@@ -189,18 +235,42 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 	}
 	in.BaseSHA = analysis.BaseSHA
 
+	// Local mode returns findings to the caller without uploading them.
+	// Errored analyses surface through AnalysisReason.
+	if !opts.Upload {
+		return &IntentGapUploadResult{
+			Status:                UploadStatusAnalyzed,
+			PRNumber:              pr.PRNumber,
+			HeadSHA:               headSHA,
+			BaseSHA:               in.BaseSHA,
+			Provider:              in.Provider,
+			Model:                 in.Model,
+			Analysis:              analysis.Outcome,
+			AnalysisReason:        analysis.Reason,
+			Findings:              analysis.Findings,
+			CoverageSummary:       analysis.CoverageSummary,
+			PromptTemplateVersion: analysis.PromptTemplateVersion,
+			UsedCache:             usedCache,
+		}, nil
+	}
+
 	uploadRes, err := intentgap.PostUpload(ctx, s.deps.HTTPClient, endpoint, token, in, analysis.Body, analysis.Hash)
 	if err != nil {
 		util.AppendActivityLog(semDir, "intent-gap upload error PR #%d: %v", pr.PRNumber, err)
 		return &IntentGapUploadResult{
-			Status:         UploadStatusError,
-			Reason:         err.Error(),
-			PRNumber:       pr.PRNumber,
-			HeadSHA:        headSHA,
-			Provider:       in.Provider,
-			Model:          in.Model,
-			Analysis:       analysis.Outcome,
-			AnalysisReason: analysis.Reason,
+			Status:                UploadStatusError,
+			Reason:                err.Error(),
+			PRNumber:              pr.PRNumber,
+			HeadSHA:               headSHA,
+			BaseSHA:               in.BaseSHA,
+			Provider:              in.Provider,
+			Model:                 in.Model,
+			Analysis:              analysis.Outcome,
+			AnalysisReason:        analysis.Reason,
+			Findings:              analysis.Findings,
+			CoverageSummary:       analysis.CoverageSummary,
+			PromptTemplateVersion: analysis.PromptTemplateVersion,
+			UsedCache:             usedCache,
 		}, nil
 	}
 
@@ -217,50 +287,63 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string) (*Int
 		util.AppendActivityLog(semDir, "intent-gap %s PR #%d upload_id=%s", status, pr.PRNumber, uploadRes.UploadID)
 	}
 	return &IntentGapUploadResult{
-		Status:         status,
-		PRNumber:       pr.PRNumber,
-		HeadSHA:        headSHA,
-		UploadID:       uploadRes.UploadID,
-		ReceivedAt:     uploadRes.ReceivedAt,
-		Provider:       in.Provider,
-		Model:          in.Model,
-		Analysis:       analysis.Outcome,
-		AnalysisReason: analysis.Reason,
+		Status:                status,
+		PRNumber:              pr.PRNumber,
+		HeadSHA:               headSHA,
+		BaseSHA:               in.BaseSHA,
+		UploadID:              uploadRes.UploadID,
+		ReceivedAt:            uploadRes.ReceivedAt,
+		Provider:              in.Provider,
+		Model:                 in.Model,
+		Analysis:              analysis.Outcome,
+		AnalysisReason:        analysis.Reason,
+		Findings:              analysis.Findings,
+		CoverageSummary:       analysis.CoverageSummary,
+		PromptTemplateVersion: analysis.PromptTemplateVersion,
+		UsedCache:             usedCache,
 	}, nil
 }
 
 // analysisProduct contains a prepared upload and its analysis metadata.
+//
+// Findings and CoverageSummary mirror what was uploaded; they let the
+// command layer render results without re-parsing the wire body, and
+// they feed the on-disk cache so a subsequent --upload can replay the
+// same analysis without invoking the LLM again.
 type analysisProduct struct {
-	Body     []byte
-	Hash     string
-	Outcome  AnalysisOutcome
-	Reason   string
-	Provider string
-	Model    string
-	BaseSHA  string
+	Body                  []byte
+	Hash                  string
+	Outcome               AnalysisOutcome
+	Reason                string
+	Provider              string
+	Model                 string
+	BaseSHA               string
+	Findings              json.RawMessage
+	CoverageSummary       json.RawMessage
+	PromptTemplateVersion string
+	AnalyzedAt            time.Time
 }
 
-// runAnalysisAndBuildBody prepares either an analyzed or errored upload.
-func (s *IntentGapUploadService) runAnalysisAndBuildBody(
+// assembleBundle runs the bundle assembler and returns the bundle on
+// success. On failure it returns an errored analysisProduct ready for
+// upload (hadErrored=true) without attempting analysis or cache
+// lookup. A non-nil error means infrastructure-level failure that the
+// caller should surface up the stack.
+func (s *IntentGapUploadService) assembleBundle(
 	ctx context.Context,
 	semDir string,
 	in intentgap.UploadInput,
 	pr *intentgap.OpenPR,
 	repoRoot string,
 	now func() time.Time,
-) (analysisProduct, error) {
+) (intentgap.Bundle, analysisProduct, bool, error) {
 	assembler := s.deps.BundleAssembler
 	if assembler == nil {
-		assembler = intentgap.NewGitBundleAssembler(defaultGitOpener, newSQLiteTurnLoader(repoRoot))
-	}
-	analyzer := s.deps.Analyzer
-	if analyzer == nil {
-		// Use the same fallback chain used for provider selection.
-		registry := s.deps.LLMRegistry
-		if registry == nil {
-			registry = providers.NewWriterRegistry()
-		}
-		analyzer = intentgap.NewLLMAnalyzer(registry)
+		assembler = intentgap.NewGitBundleAssembler(
+			defaultGitOpener,
+			newSQLiteTurnLoader(repoRoot),
+			newSQLiteAgentActionLoader(repoRoot),
+		)
 	}
 
 	bundle, bundleErr := assembler.Assemble(ctx, intentgap.BundleInput{
@@ -280,7 +363,39 @@ func (s *IntentGapUploadService) runAnalysisAndBuildBody(
 			reason = string(intentgap.ReasonRedactionFailed)
 		}
 		body, hash, err := intentgap.BuildErroredBody(in, reason, intentgap.PromptTemplateVersion, now())
-		return analysisProduct{Body: body, Hash: hash, Outcome: AnalysisErrored, Reason: reason}, err
+		// Preserve Provider/Model so errored results name the
+		// selected writer.
+		return intentgap.Bundle{}, analysisProduct{
+			Body:     body,
+			Hash:     hash,
+			Outcome:  AnalysisErrored,
+			Reason:   reason,
+			Provider: in.Provider,
+			Model:    in.Model,
+		}, true, err
+	}
+	return bundle, analysisProduct{}, false, nil
+}
+
+// runAnalyzerOnBundle invokes the analyzer against a pre-assembled
+// bundle and packages the result for upload or local rendering. On
+// analyzer failure it returns an errored product whose BaseSHA is
+// still populated so the upload can surface the resolved base.
+func (s *IntentGapUploadService) runAnalyzerOnBundle(
+	ctx context.Context,
+	semDir string,
+	in intentgap.UploadInput,
+	pr *intentgap.OpenPR,
+	bundle intentgap.Bundle,
+	now func() time.Time,
+) (analysisProduct, error) {
+	analyzer := s.deps.Analyzer
+	if analyzer == nil {
+		registry := s.deps.LLMRegistry
+		if registry == nil {
+			registry = providers.NewWriterRegistry()
+		}
+		analyzer = intentgap.NewLLMAnalyzer(registry)
 	}
 
 	result, analyzerErr := analyzer.Analyze(ctx, intentgap.AnalysisInput{
@@ -296,23 +411,166 @@ func (s *IntentGapUploadService) runAnalysisAndBuildBody(
 		erroredIn := in
 		erroredIn.BaseSHA = bundle.BaseSHA
 		body, hash, err := intentgap.BuildErroredBody(erroredIn, reason, intentgap.PromptTemplateVersion, now())
-		return analysisProduct{Body: body, Hash: hash, Outcome: AnalysisErrored, Reason: reason, BaseSHA: bundle.BaseSHA}, err
+		// Preserve Provider/Model so errored results name the
+		// selected writer.
+		return analysisProduct{
+			Body:     body,
+			Hash:     hash,
+			Outcome:  AnalysisErrored,
+			Reason:   reason,
+			Provider: in.Provider,
+			Model:    in.Model,
+			BaseSHA:  bundle.BaseSHA,
+		}, err
 	}
 
+	// Surface structural schema-or-drop diagnostics locally without
+	// uploading raw finding bodies.
+	for _, sample := range result.SchemaDiagnostics {
+		util.AppendActivityLog(semDir, "intent-gap schema-dropped finding PR #%d: %s", pr.PRNumber, sample)
+	}
+
+	analyzedAt := now()
 	body, hash, err := intentgap.BuildAnalyzedBody(intentgap.AnalyzedBodyInput{
 		UploadInput:           withProviderModel(in, result.Provider, result.Model, bundle.BaseSHA),
 		PromptTemplateVersion: result.PromptTemplateVersion,
 		Findings:              result.Findings,
 		CoverageSummary:       result.CoverageSummary,
-	}, now())
+	}, analyzedAt)
 	return analysisProduct{
-		Body:     body,
-		Hash:     hash,
-		Outcome:  AnalysisAnalyzed,
-		Provider: result.Provider,
-		Model:    result.Model,
-		BaseSHA:  bundle.BaseSHA,
+		Body:                  body,
+		Hash:                  hash,
+		Outcome:               AnalysisAnalyzed,
+		Provider:              result.Provider,
+		Model:                 result.Model,
+		BaseSHA:               bundle.BaseSHA,
+		Findings:              result.Findings,
+		CoverageSummary:       result.CoverageSummary,
+		PromptTemplateVersion: result.PromptTemplateVersion,
+		AnalyzedAt:            analyzedAt,
 	}, err
+}
+
+// obtainAnalysis returns an analysisProduct ready to upload or render.
+//
+// Bundle assembly runs before cache lookup so the key can include the
+// resolved BaseSHA. A cache hit skips provider lookup and LLM analysis;
+// a bundle error is returned directly instead of serving stale cached
+// findings.
+//
+// The cache is never used for errored outcomes: an errored row carries
+// no findings to replay, and re-running may succeed where the cached
+// run failed.
+func (s *IntentGapUploadService) obtainAnalysis(
+	ctx context.Context,
+	semDir string,
+	in intentgap.UploadInput,
+	pr *intentgap.OpenPR,
+	repoRoot string,
+	now func() time.Time,
+) (analysisProduct, bool, error) {
+	bundle, erroredProduct, hadErrored, err := s.assembleBundle(ctx, semDir, in, pr, repoRoot, now)
+	if err != nil {
+		return analysisProduct{}, false, err
+	}
+	if hadErrored {
+		return erroredProduct, false, nil
+	}
+
+	cacheKey := intentgap.AnalysisCacheKey{
+		HeadSHA:               in.HeadSHA,
+		BaseSHA:               bundle.BaseSHA,
+		PromptTemplateVersion: intentgap.PromptTemplateVersion,
+		FindingSchemaVersion:  intentgap.FindingSchemaVersion,
+		RepositoryID:          in.RepositoryID,
+		PRNumber:              pr.PRNumber,
+		RequestedBase:         s.deps.BaseRef,
+	}
+	if cached, hit, readErr := intentgap.ReadAnalysisCache(semDir, cacheKey); readErr == nil && hit {
+		if product, ok := s.rebuildFromCache(cached, in, now); ok {
+			return product, true, nil
+		}
+	} else if readErr != nil {
+		util.AppendActivityLog(semDir, "intent-gap cache read failed for head=%s: %v", in.HeadSHA, readErr)
+	}
+
+	// Cache miss: ensure a provider is available before invoking the
+	// analyzer.
+	if in.Provider == "" {
+		registry := s.deps.LLMRegistry
+		if registry == nil {
+			registry = providers.NewWriterRegistry()
+		}
+		provider, providerErr := intentgap.PickInstalledProvider(registry)
+		if providerErr != nil {
+			return analysisProduct{}, false, errNoLLMInstalled
+		}
+		in.Provider = provider.Name
+		in.Model = provider.Model
+	}
+
+	product, err := s.runAnalyzerOnBundle(ctx, semDir, in, pr, bundle, now)
+	if err != nil {
+		return product, false, err
+	}
+	if product.Outcome == AnalysisAnalyzed {
+		cacheEntry := &intentgap.AnalysisCache{
+			SchemaVersion:         intentgap.AnalysisCacheSchemaVersion,
+			FindingSchemaVersion:  intentgap.FindingSchemaVersion,
+			HeadSHA:               in.HeadSHA,
+			BaseSHA:               product.BaseSHA,
+			RequestedBase:         s.deps.BaseRef,
+			PRNumber:              pr.PRNumber,
+			RepositoryID:          in.RepositoryID,
+			PromptTemplateVersion: product.PromptTemplateVersion,
+			Provider:              product.Provider,
+			Model:                 product.Model,
+			AnalyzedAt:            product.AnalyzedAt,
+			Findings:              product.Findings,
+			CoverageSummary:       product.CoverageSummary,
+		}
+		if cacheErr := intentgap.WriteAnalysisCache(semDir, cacheEntry); cacheErr != nil {
+			util.AppendActivityLog(semDir, "intent-gap cache write failed for head=%s: %v", in.HeadSHA, cacheErr)
+		}
+	}
+	return product, false, nil
+}
+
+// rebuildFromCache turns a cached analysis back into an analysisProduct
+// suitable for upload or local rendering. Returns (_, false) when the
+// cache entry cannot rebuild a canonical upload body; the caller then
+// falls back to running the analyzer fresh.
+func (s *IntentGapUploadService) rebuildFromCache(
+	cached *intentgap.AnalysisCache,
+	in intentgap.UploadInput,
+	now func() time.Time,
+) (analysisProduct, bool) {
+	uploadIn := withProviderModel(in, cached.Provider, cached.Model, cached.BaseSHA)
+	producedAt := cached.AnalyzedAt
+	if producedAt.IsZero() {
+		producedAt = now()
+	}
+	body, hash, err := intentgap.BuildAnalyzedBody(intentgap.AnalyzedBodyInput{
+		UploadInput:           uploadIn,
+		PromptTemplateVersion: cached.PromptTemplateVersion,
+		Findings:              cached.Findings,
+		CoverageSummary:       cached.CoverageSummary,
+	}, producedAt)
+	if err != nil {
+		return analysisProduct{}, false
+	}
+	return analysisProduct{
+		Body:                  body,
+		Hash:                  hash,
+		Outcome:               AnalysisAnalyzed,
+		Provider:              cached.Provider,
+		Model:                 cached.Model,
+		BaseSHA:               cached.BaseSHA,
+		Findings:              cached.Findings,
+		CoverageSummary:       cached.CoverageSummary,
+		PromptTemplateVersion: cached.PromptTemplateVersion,
+		AnalyzedAt:            producedAt,
+	}, true
 }
 
 // withProviderModel applies analyzer attribution without clearing preselected
