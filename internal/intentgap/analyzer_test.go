@@ -269,15 +269,183 @@ func TestLLMAnalyzer_LLMCallFailsSurfacesAsUnavailable(t *testing.T) {
 	}
 }
 
-// Schema-invalid findings produce a schema failure.
-func TestLLMAnalyzer_BadSchemaSurfacesAsSchemaError(t *testing.T) {
-	bad := `[{"whatever": true}]`
-	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad)}}
+// When every finding in the initial response is dropped for schema
+// violations, the analyzer asks for one repair pass. The repair embeds
+// minimal valid shapes per kind so the model can copy them directly.
+func TestLLMAnalyzer_RetryOnSchemaFailure(t *testing.T) {
+	bad := `[{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"s","turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"s","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"n"}
+	}]`
+	good := `[` + underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14}) + `]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad), canned(good)}}
 	a := NewLLMAnalyzer(runner)
 
-	_, err := a.Analyze(context.Background(), sampleInput())
-	if !errors.Is(err, ErrAnalyzerSchemaFailed) {
-		t.Fatalf("err should wrap ErrAnalyzerSchemaFailed; got %v", err)
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should repair schema-invalid response: %v", err)
+	}
+	if runner.calls != 2 {
+		t.Errorf("calls = %d, want 2 (initial + schema repair)", runner.calls)
+	}
+	if !strings.Contains(runner.prompts[1], "dropped because it failed the intent-gap finding schema") ||
+		!strings.Contains(runner.prompts[1], "ai_authored_regions_checked is an ARRAY") {
+		t.Errorf("schema repair prompt missing schema guidance; got: %q", runner.prompts[1])
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(res.Findings, &arr); err != nil {
+		t.Fatalf("findings not parseable: %v", err)
+	}
+	if len(arr) != 1 {
+		t.Errorf("findings len = %d, want 1", len(arr))
+	}
+}
+
+// When every finding fails schema validation across both the initial
+// response and the repair retry, the analyzer succeeds with an empty
+// findings array plus a diagnostic coverage_summary. A single
+// malformed finding does not turn the whole analysis into an errored
+// row.
+func TestLLMAnalyzer_AllFindingsInvalidYieldsEmptyArrayWithDiagnostics(t *testing.T) {
+	bad := `[{"whatever": true}]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(bad), canned(bad)}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed with [] when all findings invalid; got %v", err)
+	}
+	if string(res.Findings) != "[]" {
+		t.Errorf("findings = %s, want []", string(res.Findings))
+	}
+	var cov map[string]any
+	if err := json.Unmarshal(res.CoverageSummary, &cov); err != nil {
+		t.Fatalf("coverage not object: %v", err)
+	}
+	if cov["findings_dropped"] == nil {
+		t.Errorf("coverage_summary missing findings_dropped: %v", cov)
+	}
+	reasons, _ := cov["drop_reasons"].(map[string]any)
+	if reasons == nil || len(reasons) == 0 {
+		t.Errorf("coverage_summary missing drop_reasons: %v", cov)
+	}
+	if len(res.SchemaDiagnostics) == 0 {
+		t.Errorf("SchemaDiagnostics should carry structural details for the activity log")
+	}
+}
+
+// When the repair retry's LLM call fails, the analyzer still succeeds
+// with an empty findings array but records schema_repair_call_failed
+// in coverage so an all-invalid run with a failed repair is
+// distinguishable from one where the repair simply produced more
+// invalid findings.
+func TestLLMAnalyzer_SchemaRepairCallFailureRecordedInCoverage(t *testing.T) {
+	bad := `[{"whatever": true}]`
+	runner := &fakeLLMRunner{
+		responses: []*llm.GenerateTextResult{canned(bad), nil},
+		errs:      []error{nil, errors.New("provider down")},
+	}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed when repair retry fails; got %v", err)
+	}
+	if string(res.Findings) != "[]" {
+		t.Errorf("findings = %s, want []", string(res.Findings))
+	}
+	var cov map[string]any
+	_ = json.Unmarshal(res.CoverageSummary, &cov)
+	failures, _ := cov["schema_repair_failures"].(map[string]any)
+	if failures["schema_repair_call_failed"] == nil {
+		t.Errorf("coverage_summary.schema_repair_failures missing schema_repair_call_failed: %v", failures)
+	}
+	reasons, _ := cov["drop_reasons"].(map[string]any)
+	if reasons["schema_repair_call_failed"] != nil {
+		t.Errorf("coverage_summary.drop_reasons should not include repair failures: %v", reasons)
+	}
+}
+
+// The dropped-finding diagnostic carries kind, schema error, and the
+// top-level key list - never the raw finding bytes. This guards
+// against prompt excerpts, file paths, or code snippets leaking
+// through the local activity log.
+func TestFilterFindingsBySchema_DiagnosticIsStructuralOnly(t *testing.T) {
+	// Invalid because ai_authored_regions_checked must be an array.
+	bad := `[{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"SECRET SUMMARY","turn_id":"t-1","prompt_excerpt":"PRIVATE PROMPT","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"another secret","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"do not leak"}
+	}]`
+	result := FilterFindingsBySchema(json.RawMessage(bad))
+	if len(result.DroppedSamples) != 1 {
+		t.Fatalf("DroppedSamples len = %d, want 1", len(result.DroppedSamples))
+	}
+	sample := result.DroppedSamples[0]
+	for _, leak := range []string{"SECRET SUMMARY", "PRIVATE PROMPT", "another secret", "do not leak"} {
+		if strings.Contains(sample, leak) {
+			t.Errorf("diagnostic leaked %q: %s", leak, sample)
+		}
+	}
+	if !strings.Contains(sample, "kind=under_impl") {
+		t.Errorf("diagnostic missing kind: %s", sample)
+	}
+	if !strings.Contains(sample, "keys=[") {
+		t.Errorf("diagnostic missing top-level keys list: %s", sample)
+	}
+}
+
+// A response with one valid finding and one schema-invalid finding
+// keeps the valid one and drops the other. The repair retry is skipped
+// because at least one finding survived the initial filter.
+func TestLLMAnalyzer_MixedSchemaValidityKeepsValidFindings(t *testing.T) {
+	good := underImplFinding("t-1", "add input validation", "h-1", "handler.go", lineRange{12, 14})
+	badShape := `{
+		"schema_version":"1",
+		"finding_id":"f_0000000000000000",
+		"kind":"under_impl",
+		"title":"t",
+		"confidence":"medium",
+		"expected_intent":{"summary":"s","turn_id":"t-1","prompt_excerpt":"add input validation","prompt_excerpt_hash":"h-1"},
+		"observed_diff_evidence":{"summary":"s","ai_authored_regions_checked":true},
+		"missing_or_partial_area":{"note":"n"}
+	}`
+	body := `[` + good + `,` + badShape + `]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{canned(body)}}
+	a := NewLLMAnalyzer(runner)
+
+	res, err := a.Analyze(context.Background(), sampleInput())
+	if err != nil {
+		t.Fatalf("Analyze should succeed when one finding is valid: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Errorf("calls = %d, want 1 (no repair retry when any finding survives)", runner.calls)
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(res.Findings, &arr); err != nil {
+		t.Fatalf("findings not parseable: %v", err)
+	}
+	if len(arr) != 1 {
+		t.Errorf("findings len = %d, want 1 (one bad finding dropped)", len(arr))
+	}
+	var cov map[string]any
+	_ = json.Unmarshal(res.CoverageSummary, &cov)
+	if cov["findings_dropped"] == nil {
+		t.Errorf("coverage_summary missing findings_dropped: %v", cov)
+	}
+	if len(res.SchemaDiagnostics) != 1 {
+		t.Errorf("SchemaDiagnostics len = %d, want 1 (one dropped finding recorded)", len(res.SchemaDiagnostics))
 	}
 }
 
@@ -534,6 +702,8 @@ func TestRenderAnalyzerPrompt_DocumentsOptionalCitationFields(t *testing.T) {
 	for _, want := range []string{
 		"agent_action_citation",
 		"no_action_citation",
+		"ai_authored_regions_checked:[{file,lines:[[start,end]]}, ...]",
+		"NOT a yes/no boolean",
 		"Confidence guidance",
 		"unrequested",
 	} {

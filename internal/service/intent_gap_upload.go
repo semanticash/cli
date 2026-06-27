@@ -303,6 +303,12 @@ func (s *IntentGapUploadService) runAnalysisAndBuildBody(
 		return analysisProduct{Body: body, Hash: hash, Outcome: AnalysisErrored, Reason: reason, BaseSHA: bundle.BaseSHA}, err
 	}
 
+	// Surface structural schema-or-drop diagnostics locally without
+	// uploading raw finding bodies.
+	for _, sample := range result.SchemaDiagnostics {
+		util.AppendActivityLog(semDir, "intent-gap schema-dropped finding PR #%d: %s", pr.PRNumber, sample)
+	}
+
 	body, hash, err := intentgap.BuildAnalyzedBody(intentgap.AnalyzedBodyInput{
 		UploadInput:           withProviderModel(in, result.Provider, result.Model, bundle.BaseSHA),
 		PromptTemplateVersion: result.PromptTemplateVersion,

@@ -54,11 +54,25 @@ Non-zero exit:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{BaseRef: base})
-			res, err := svc.Run(cmd.Context(), rootOpts.RepoPath)
+			out := cmd.OutOrStdout()
+
+			var res *service.IntentGapUploadResult
+			var err error
+			actionRan := false
+			action := func() {
+				actionRan = true
+				res, err = svc.Run(cmd.Context(), rootOpts.RepoPath)
+			}
+			// Run the analysis at most once. If spinner setup fails before
+			// the action starts, fall back to a direct foreground run.
+			_ = runWithOptionalSpinner(out, quiet, "Analyzing pull request for intent gaps...", action)
+			if !actionRan {
+				action()
+			}
 			if err != nil {
 				return err
 			}
-			return renderAnalyzeResult(cmd.OutOrStdout(), quiet, res)
+			return renderAnalyzeResult(out, quiet, res)
 		},
 	}
 

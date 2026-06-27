@@ -32,12 +32,17 @@ type AnalysisInput struct {
 
 // AnalysisResult contains validated findings, coverage metadata, and the
 // provider that produced the response.
+//
+// SchemaDiagnostics lists structural details for findings rejected by
+// schema-or-drop. It is intended for local activity-log output and is
+// not uploaded.
 type AnalysisResult struct {
 	Findings              json.RawMessage
 	CoverageSummary       json.RawMessage
 	Provider              string
 	Model                 string
 	PromptTemplateVersion string
+	SchemaDiagnostics     []string
 }
 
 // IntentGapAnalyzer produces findings for one pull request bundle.
@@ -180,8 +185,63 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 	}
 	findings = stamped
 
-	if err := ValidateFindings(findings); err != nil {
-		return AnalysisResult{}, fmt.Errorf("%w: %v", ErrAnalyzerSchemaFailed, err)
+	schemaFilter := FilterFindingsBySchema(findings)
+	if schemaFilter.ArrayErr != nil {
+		return AnalysisResult{}, fmt.Errorf("%w: %v", ErrAnalyzerSchemaFailed, schemaFilter.ArrayErr)
+	}
+	findings = schemaFilter.Kept
+	repairFailures := map[string]int{}
+
+	// Repair retry fires only when the initial response had findings but
+	// every one was dropped. Mixed responses keep the valid findings and
+	// move on; this matches the cite-or-drop pattern. Each repair
+	// sub-step failure records a distinct reason code so coverage can
+	// distinguish "repair never ran" from "repair produced nothing
+	// valid"; without that, both look like an all-invalid outcome.
+	if schemaFilter.KeptCount == 0 && schemaFilter.DroppedCount > 0 {
+		retry, retryErr := a.runner.GenerateText(ctx, schemaRepairPrompt(res.Text, schemaFilter.DroppedSamples))
+		switch {
+		case retryErr != nil:
+			repairFailures["schema_repair_call_failed"]++
+			schemaFilter.DroppedSamples = append(schemaFilter.DroppedSamples,
+				fmt.Sprintf("schema-repair: call failed: %v", retryErr))
+		default:
+			repaired, parseErr := extractFindingsArray(retry.Text)
+			switch {
+			case parseErr != nil:
+				repairFailures["schema_repair_parse_failed"]++
+				schemaFilter.DroppedSamples = append(schemaFilter.DroppedSamples,
+					fmt.Sprintf("schema-repair: parse failed: %v", parseErr))
+			default:
+				reStamped, stErr := stampFindingIDs(repaired, in.RepositoryID, in.PRNumber)
+				switch {
+				case stErr != nil:
+					repairFailures["schema_repair_stamp_failed"]++
+					schemaFilter.DroppedSamples = append(schemaFilter.DroppedSamples,
+						fmt.Sprintf("schema-repair: stamp failed: %v", stErr))
+				default:
+					repairFilter := FilterFindingsBySchema(reStamped)
+					if repairFilter.ArrayErr != nil {
+						repairFailures["schema_repair_array_failed"]++
+						schemaFilter.DroppedSamples = append(schemaFilter.DroppedSamples,
+							fmt.Sprintf("schema-repair: array invalid: %v", repairFilter.ArrayErr))
+						break
+					}
+					// Repair filter ran. Kept findings come from the
+					// retry; drop counts are merged so coverage_summary
+					// reflects both attempts.
+					findings = repairFilter.Kept
+					mergeIntoCounter(schemaFilter.DroppedReasons, repairFilter.DroppedReasons)
+					schemaFilter.DroppedCount += repairFilter.DroppedCount
+					schemaFilter.DroppedSamples = append(schemaFilter.DroppedSamples, repairFilter.DroppedSamples...)
+					schemaFilter.KeptCount = repairFilter.KeptCount
+					if repairFilter.KeptCount > 0 {
+						// A repair retry may succeed through a different provider in the fallback chain.
+						res = retry
+					}
+				}
+			}
+		}
 	}
 
 	// Schema validation checks shape; citation filtering checks evidence.
@@ -192,11 +252,18 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 	findings = filtered.Findings
 
 	coverage := buildCoverageSummary(in.Bundle)
-	if filtered.DroppedCount > 0 {
-		coverage = mergeCoverage(coverage, map[string]any{
-			"findings_dropped": filtered.DroppedCount,
-			"drop_reasons":     filtered.DroppedReasons,
-		})
+	totalDropped := schemaFilter.DroppedCount + filtered.DroppedCount
+	dropReasons := mergeReasonCounters(schemaFilter.DroppedReasons, filtered.DroppedReasons)
+	coverageExtras := map[string]any{}
+	if totalDropped > 0 {
+		coverageExtras["findings_dropped"] = totalDropped
+		coverageExtras["drop_reasons"] = dropReasons
+	}
+	if len(repairFailures) > 0 {
+		coverageExtras["schema_repair_failures"] = repairFailures
+	}
+	if len(coverageExtras) > 0 {
+		coverage = mergeCoverage(coverage, coverageExtras)
 	}
 	// Map local provider names to the API's wire values.
 	wireProvider := res.Provider
@@ -209,6 +276,7 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 		Provider:              wireProvider,
 		Model:                 res.Model,
 		PromptTemplateVersion: PromptTemplateVersion,
+		SchemaDiagnostics:     schemaFilter.DroppedSamples,
 	}, nil
 }
 
@@ -237,8 +305,13 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	b.WriteString("  confidence:     one of [\"low\", \"medium\", \"high\"]\n")
 	b.WriteString("\nKind-specific required fields:\n")
 	b.WriteString("  under_impl:  expected_intent {summary,turn_id,prompt_excerpt,prompt_excerpt_hash},\n")
-	b.WriteString("               observed_diff_evidence {summary,ai_authored_regions_checked},\n")
-	b.WriteString("               missing_or_partial_area {note}\n")
+	b.WriteString("               observed_diff_evidence {summary,\n")
+	b.WriteString("                 ai_authored_regions_checked:[{file,lines:[[start,end]]}, ...]}\n")
+	b.WriteString("                 (ai_authored_regions_checked is an ARRAY of regions you\n")
+	b.WriteString("                  inspected inside the PR diff - at least one required;\n")
+	b.WriteString("                  it is NOT a yes/no boolean),\n")
+	b.WriteString("               missing_or_partial_area {note,\n")
+	b.WriteString("                 closest_match? {file,lines:[start,end]}}\n")
 	b.WriteString("  unrequested: delivered {file,line_range:[start,end],evidence_class,summary},\n")
 	b.WriteString("               captured_intent_search {prompts_considered,result,qualifier}\n")
 	b.WriteString("  deferred:    originally_requested_in {turn_id,prompt_excerpt,prompt_excerpt_hash},\n")
@@ -428,6 +501,91 @@ func reformatPrompt(previous string) string {
 	b.WriteString("Previous response:\n")
 	b.WriteString(previous)
 	return b.String()
+}
+
+// schemaRepairPrompt requests one JSON-only correction after every
+// finding in the prior response was dropped for schema violations. The
+// prompt embeds a minimal valid example per kind so the model can copy
+// the exact shape rather than guess from field names.
+func schemaRepairPrompt(previous string, droppedSamples []string) string {
+	var b strings.Builder
+	b.WriteString("Every finding in your previous response was dropped because it failed the intent-gap finding schema.\n")
+	b.WriteString("Reply with ONLY a corrected JSON array - no markdown code fences, no prose, no comments.\n")
+	b.WriteString("If there are no valid findings, reply with the literal text: []\n\n")
+
+	b.WriteString("Minimal valid shapes (copy these exactly and substitute real values):\n\n")
+	b.WriteString("under_impl:\n")
+	b.WriteString(`{
+  "schema_version":"1",
+  "finding_id":"f_0000000000000000",
+  "kind":"under_impl",
+  "title":"short summary",
+  "confidence":"medium",
+  "expected_intent":{"summary":"...","turn_id":"t-1","prompt_excerpt":"...","prompt_excerpt_hash":"h-..."},
+  "observed_diff_evidence":{"summary":"...","ai_authored_regions_checked":[{"file":"path/to/file.go","lines":[[12,14]]}]},
+  "missing_or_partial_area":{"note":"..."}
+}` + "\n")
+	b.WriteString("Note: ai_authored_regions_checked is an ARRAY of region objects, not a boolean.\n\n")
+
+	b.WriteString("deferred (requires agent_action_citation pointing at a detected trajectory action):\n")
+	b.WriteString(`{
+  "schema_version":"1",
+  "finding_id":"f_0000000000000000",
+  "kind":"deferred",
+  "title":"short summary",
+  "confidence":"medium",
+  "originally_requested_in":{"turn_id":"t-1","prompt_excerpt":"...","prompt_excerpt_hash":"h-..."},
+  "trajectory_note":"...",
+  "agent_action_citation":{"action_id":"a_0123456789abcdef"},
+  "current_state":{"file":"path/to/file.go","line_range":[12,14],"summary":"..."}
+}` + "\n\n")
+
+	b.WriteString("unrequested:\n")
+	b.WriteString(`{
+  "schema_version":"1",
+  "finding_id":"f_0000000000000000",
+  "kind":"unrequested",
+  "title":"short summary",
+  "confidence":"medium",
+  "delivered":{"file":"path/to/file.go","line_range":[12,14],"evidence_class":"ai_exact","summary":"..."},
+  "captured_intent_search":{"prompts_considered":N,"result":"none","qualifier":"..."}
+}` + "\n\n")
+
+	if len(droppedSamples) > 0 {
+		b.WriteString("Why your previous findings were dropped:\n")
+		for _, s := range droppedSamples {
+			b.WriteString("- ")
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Previous response:\n")
+	b.WriteString(previous)
+	return b.String()
+}
+
+// mergeIntoCounter adds the counts from src into dst in place. Used to
+// fold a follow-up filter's drop totals into the running tally.
+func mergeIntoCounter(dst, src map[string]int) {
+	for k, v := range src {
+		dst[k] += v
+	}
+}
+
+// mergeReasonCounters returns a fresh map combining two reason->count
+// maps. Used to build the coverage_summary.drop_reasons value without
+// mutating either input.
+func mergeReasonCounters(a, b map[string]int) map[string]int {
+	out := make(map[string]int, len(a)+len(b))
+	for k, v := range a {
+		out[k] += v
+	}
+	for k, v := range b {
+		out[k] += v
+	}
+	return out
 }
 
 // codeFencePattern captures optional Markdown wrappers around JSON output.
