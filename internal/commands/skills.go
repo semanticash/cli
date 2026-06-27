@@ -187,10 +187,9 @@ func newSkillsExplainCmd(rootOpts *RootOptions) *cobra.Command {
 
 // newSkillsIntentGapCmd is the hidden backing command for the
 // semantica-intent-gap SKILL.md body. It mirrors what
-// `semantica intent-gap analyze` does for terminal users: runs the
-// upload service in the foreground and prints the same one-line
-// status the user-facing command produces, so the SKILL.md body
-// can print stdout verbatim. --base mirrors the user-facing flag.
+// `semantica intent-gap analyze --upload` does for terminal users:
+// runs the upload service in the foreground and prints the same
+// one-line status. --base mirrors the user-facing flag.
 func newSkillsIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 	var base string
 	cmd := &cobra.Command{
@@ -202,7 +201,9 @@ func newSkillsIntentGapCmd(rootOpts *RootOptions) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := service.NewIntentGapUploadService(service.IntentGapUploadDeps{BaseRef: base})
-			res, err := svc.Run(cmd.Context(), rootOpts.RepoPath)
+			// Keep skill output aligned with
+			// `semantica intent-gap analyze --upload`.
+			res, err := svc.Run(cmd.Context(), rootOpts.RepoPath, service.RunOptions{Upload: true})
 			if err != nil {
 				return err
 			}
