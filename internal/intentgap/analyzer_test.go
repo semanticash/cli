@@ -332,7 +332,7 @@ func TestLLMAnalyzer_AllFindingsInvalidYieldsEmptyArrayWithDiagnostics(t *testin
 		t.Errorf("coverage_summary missing findings_dropped: %v", cov)
 	}
 	reasons, _ := cov["drop_reasons"].(map[string]any)
-	if reasons == nil || len(reasons) == 0 {
+	if len(reasons) == 0 {
 		t.Errorf("coverage_summary missing drop_reasons: %v", cov)
 	}
 	if len(res.SchemaDiagnostics) == 0 {
