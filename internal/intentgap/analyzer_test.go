@@ -7,9 +7,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/semanticash/cli/internal/llm"
 )
+
+// truncatePromptExcerpt must back off to a rune boundary when the
+// byte cap falls inside a multi-byte UTF-8 sequence. Cutting mid-rune
+// produces invalid bytes that the LLM CLIs misbehave on (codex errors
+// explicitly, claude silently stalls until its deadline).
+func TestTruncatePromptExcerpt_BacksOffToRuneBoundary(t *testing.T) {
+	// Smart-quote runes (three bytes each in UTF-8). Pad with ASCII so
+	// the byte cap falls inside one of the multi-byte runes.
+	prefix := strings.Repeat("a", 398)
+	in := prefix + "“”" // " then "
+	got := truncatePromptExcerpt(in)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated excerpt is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Errorf("missing truncation marker; got %q", got)
+	}
+}
 
 // fakeLLMRunner returns a canned sequence of responses, one per call.
 // Each call advances the cursor; tests pin which response shape the
@@ -713,10 +732,13 @@ func TestRenderAnalyzerPrompt_DocumentsOptionalCitationFields(t *testing.T) {
 	}
 }
 
-// Captured actions are rendered with their action_id, tool name, and
-// file path so the LLM has a citable list. Line ranges only appear
-// when known, and unknown file paths are shown explicitly.
-func TestRenderAnalyzerPrompt_ListsCapturedActions(t *testing.T) {
+// Actions whose file is in the PR diff are rendered for the LLM with
+// their action_id, tool name, and line range. Actions that touched
+// unrelated files (or have no resolvable file at all) are filtered out
+// of the prompt and kept only in the bundle for validation. The
+// canonical bundle's diff covers handler.go, so the handler.go edit is
+// shown; an unrelated Edit on extras.go is filtered.
+func TestRenderAnalyzerPrompt_RendersOnlyDiffRelevantActions(t *testing.T) {
 	in := sampleInput()
 	in.Bundle.AgentActions = []BundleAgentAction{
 		{
@@ -724,9 +746,8 @@ func TestRenderAnalyzerPrompt_ListsCapturedActions(t *testing.T) {
 			FilePath: "handler.go", LineRangeStart: 42, LineRangeEnd: 58,
 		},
 		{
-			ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Bash",
-			// Bash with no derivable path is shown explicitly.
-			FilePath: "",
+			ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Edit",
+			FilePath: "extras.go", LineRangeStart: 10, LineRangeEnd: 20,
 		},
 	}
 	prompt := renderAnalyzerPrompt(in)
@@ -735,13 +756,54 @@ func TestRenderAnalyzerPrompt_ListsCapturedActions(t *testing.T) {
 		"tool=Edit",
 		"file=handler.go",
 		"lines=42-58",
-		"action_id=a_2222222222222222",
-		"tool=Bash",
-		"file=(unknown)",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q; got:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "a_2222222222222222") {
+		t.Errorf("prompt must not list actions on files outside the diff; got extras.go action in:\n%s", prompt)
+	}
+}
+
+// Hidden actions with an unknown FilePath force a no_action_citation
+// guard: validation cannot prove non-overlap when at least one action
+// it would check against has no file information, so the LLM is told
+// not to emit negative citations at all.
+func TestRenderAnalyzerPrompt_WarnsWhenHiddenActionHasUnknownPath(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{
+			ActionID: "a_1111111111111111", TurnID: "t-1", ToolName: "Edit",
+			FilePath: "handler.go", LineRangeStart: 42, LineRangeEnd: 58,
+		},
+		{
+			ActionID: "a_2222222222222222", TurnID: "t-1", ToolName: "Bash",
+			// Bash with no derivable path: kept in the bundle for
+			// validation, hidden from the prompt by the filter.
+			FilePath: "",
+		},
+	}
+	prompt := renderAnalyzerPrompt(in)
+	if strings.Contains(prompt, "a_2222222222222222") {
+		t.Errorf("hidden action_id leaked into prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Do NOT emit no_action_citation") {
+		t.Errorf("prompt missing no_action_citation guard; got:\n%s", prompt)
+	}
+}
+
+// When the bundle has actions but none touch a file in the diff and
+// none are part of a trajectory, the listing explains the empty
+// result so the LLM does not invent action_ids to cite.
+func TestRenderAnalyzerPrompt_AllActionsFilteredHasExplicitMessage(t *testing.T) {
+	in := sampleInput()
+	in.Bundle.AgentActions = []BundleAgentAction{
+		{ActionID: "a_1111111111111111", ToolName: "Edit", FilePath: "unrelated.go", LineRangeStart: 5, LineRangeEnd: 10},
+	}
+	prompt := renderAnalyzerPrompt(in)
+	if !strings.Contains(prompt, "No captured agent actions touched a file in the PR diff") {
+		t.Errorf("prompt should explain the empty filtered listing; got:\n%s", prompt)
 	}
 }
 

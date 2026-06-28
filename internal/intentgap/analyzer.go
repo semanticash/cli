@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/semanticash/cli/internal/llm"
 )
@@ -36,13 +38,36 @@ type AnalysisInput struct {
 // SchemaDiagnostics lists structural details for findings rejected by
 // schema-or-drop. It is intended for local activity-log output and is
 // not uploaded.
+//
+// ProviderFallbackErrors lists per-writer failures the LLM registry
+// silently absorbed before a downstream writer succeeded. Each entry
+// is "writer_name: truncated_error_message" in fallback order. The
+// registry walks the chain serially, so each failed attempt blocked
+// for its own timeout; this slice is the only local record of why a
+// less-preferred writer ended up producing the result.
+//
+// PromptBadByteCount and PromptBadByteOffsets aggregate UTF-8
+// sanitization stats across every GenerateText call this analysis
+// made. A non-zero count means upstream rendering produced invalid
+// UTF-8 that the registry replaced before sending it to the LLM; the
+// offsets point into the per-call prompt and are the fastest way to
+// find the offending renderer.
+//
+// PromptSectionBytes records the size of each major section in the
+// rendered analyzer prompt (total / diff / actions / turns /
+// trajectories) so the service can log a quick breakdown and a
+// developer can tell which section is dominating without guessing.
 type AnalysisResult struct {
-	Findings              json.RawMessage
-	CoverageSummary       json.RawMessage
-	Provider              string
-	Model                 string
-	PromptTemplateVersion string
-	SchemaDiagnostics     []string
+	Findings               json.RawMessage
+	CoverageSummary        json.RawMessage
+	Provider               string
+	Model                  string
+	PromptTemplateVersion  string
+	SchemaDiagnostics      []string
+	ProviderFallbackErrors []string
+	PromptBadByteCount     int
+	PromptBadByteOffsets   []int
+	PromptSectionBytes     map[string]int
 }
 
 // IntentGapAnalyzer produces findings for one pull request bundle.
@@ -143,7 +168,8 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 
 	// Without captured prompts, intent-based findings would be unsupported.
 	if len(in.Bundle.Turns) == 0 {
-		coverage := mergeCoverage(buildCoverageSummary(in.Bundle), map[string]any{
+		// No prompt rendered, so no actions were shown to a model.
+		coverage := mergeCoverage(buildCoverageSummary(in.Bundle, 0, 0), map[string]any{
 			"skipped":     true,
 			"skip_reason": "no_captured_prompts",
 		})
@@ -157,10 +183,33 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 	}
 
 	prompt := renderAnalyzerPrompt(in)
+	// Capture the same prompt-side action view used by the renderer so
+	// coverage_summary can report exactly how many actions reached the
+	// model versus how many were kept for validation only.
+	actionsView := filterActionsForPrompt(in.Bundle, DetectEditRevertTrajectories(in.Bundle))
+	sectionBytes := promptSectionBytes(prompt)
+	// Dump the rendered prompt to disk when the developer opts in via
+	// SEMANTICA_INTENTGAP_DUMP_PROMPT. The value is treated as a file
+	// path; on any IO error we just skip the dump - the env var is a
+	// diagnostic aid, not a hard requirement. Best-effort and silent
+	// by design so a stale path never blocks an analysis.
+	if dumpPath := os.Getenv("SEMANTICA_INTENTGAP_DUMP_PROMPT"); dumpPath != "" {
+		_ = os.WriteFile(dumpPath, []byte(prompt), 0o644)
+	}
 	res, err := a.runner.GenerateText(ctx, prompt)
 	if err != nil {
 		return AnalysisResult{}, fmt.Errorf("%w: %v", ErrAnalyzerLLMUnavailable, err)
 	}
+	// Capture provider fallback diagnostics across every GenerateText
+	// call so the service layer can log which writers silently failed
+	// before the winning one. The registry walks serially, so each
+	// fallback adds wall-clock time.
+	fallbackErrors := append([]string(nil), res.FallbackErrors...)
+	// Track UTF-8 sanitization across calls. The first call's offsets
+	// pinpoint where invalid bytes lived in the rendered prompt; that
+	// is the most useful single signal for finding the bad renderer.
+	badByteCount := res.PromptBadByteCount
+	badByteOffsets := append([]int(nil), res.PromptBadByteOffsets...)
 
 	findings, parseErr := extractFindingsArray(res.Text)
 	if parseErr != nil {
@@ -170,6 +219,8 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 			return AnalysisResult{}, fmt.Errorf("%w (initial parse: %v; retry call: %v)",
 				ErrAnalyzerParseFailed, parseErr, retryErr)
 		}
+		fallbackErrors = append(fallbackErrors, retry.FallbackErrors...)
+		badByteCount += retry.PromptBadByteCount
 		findings, parseErr = extractFindingsArray(retry.Text)
 		if parseErr != nil {
 			return AnalysisResult{}, fmt.Errorf("%w: %v", ErrAnalyzerParseFailed, parseErr)
@@ -200,6 +251,10 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 	// valid"; without that, both look like an all-invalid outcome.
 	if schemaFilter.KeptCount == 0 && schemaFilter.DroppedCount > 0 {
 		retry, retryErr := a.runner.GenerateText(ctx, schemaRepairPrompt(res.Text, schemaFilter.DroppedSamples))
+		if retry != nil {
+			fallbackErrors = append(fallbackErrors, retry.FallbackErrors...)
+			badByteCount += retry.PromptBadByteCount
+		}
 		switch {
 		case retryErr != nil:
 			repairFailures["schema_repair_call_failed"]++
@@ -251,7 +306,7 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 	}
 	findings = filtered.Findings
 
-	coverage := buildCoverageSummary(in.Bundle)
+	coverage := buildCoverageSummary(in.Bundle, len(actionsView.Rendered), actionsView.OmittedFromPrompt)
 	totalDropped := schemaFilter.DroppedCount + filtered.DroppedCount
 	dropReasons := mergeReasonCounters(schemaFilter.DroppedReasons, filtered.DroppedReasons)
 	coverageExtras := map[string]any{}
@@ -271,12 +326,16 @@ func (a *LLMAnalyzer) Analyze(ctx context.Context, in AnalysisInput) (AnalysisRe
 		wireProvider = mapped
 	}
 	return AnalysisResult{
-		Findings:              findings,
-		CoverageSummary:       coverage,
-		Provider:              wireProvider,
-		Model:                 res.Model,
-		PromptTemplateVersion: PromptTemplateVersion,
-		SchemaDiagnostics:     schemaFilter.DroppedSamples,
+		Findings:               findings,
+		CoverageSummary:        coverage,
+		Provider:               wireProvider,
+		Model:                  res.Model,
+		PromptTemplateVersion:  PromptTemplateVersion,
+		SchemaDiagnostics:      schemaFilter.DroppedSamples,
+		ProviderFallbackErrors: fallbackErrors,
+		PromptBadByteCount:     badByteCount,
+		PromptBadByteOffsets:   badByteOffsets,
+		PromptSectionBytes:     sectionBytes,
 	}, nil
 }
 
@@ -390,8 +449,12 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 		b.WriteString("and a qualifier acknowledging the absence of captured intent.\n")
 	}
 
-	renderAgentActions(&b, in.Bundle)
-	renderRevertTrajectories(&b, DetectEditRevertTrajectories(in.Bundle))
+	// Trajectories are detected over the full bundle.AgentActions so
+	// reverted-edit clusters survive the prompt-side filter below.
+	trajectories := DetectEditRevertTrajectories(in.Bundle)
+	actionsView := filterActionsForPrompt(in.Bundle, trajectories)
+	renderAgentActions(&b, actionsView, in.Bundle.Truncated.AgentActionsDropped)
+	renderRevertTrajectories(&b, trajectories)
 
 	b.WriteString("\nCumulative diff base..head:\n")
 	b.WriteString("```diff\n")
@@ -408,12 +471,78 @@ func renderAnalyzerPrompt(in AnalysisInput) string {
 	return b.String()
 }
 
-// renderAgentActions writes the captured tool-invocation listing. The
-// listing is the ground truth the LLM cites with agent_action_citation;
-// without it, the LLM has no verifiable source for ATTEMPT evidence and
-// must stay at low confidence on activity that requires action evidence.
-func renderAgentActions(b *strings.Builder, bundle Bundle) {
+// promptActionsView is the slice of agent-action data the prompt
+// renderer needs. Rendered is the subset of bundle.AgentActions that
+// survived the diff-and-trajectory filter and gets listed in the
+// prompt. OmittedFromPrompt counts actions present in the bundle but
+// hidden from the LLM; HiddenHasUnknownPath records whether any of
+// those hidden actions has an empty FilePath, which is the case
+// no_action_citation cannot be disproved against.
+type promptActionsView struct {
+	Total                 int
+	Rendered              []BundleAgentAction
+	OmittedFromPrompt     int
+	HiddenHasUnknownPath  bool
+}
+
+// filterActionsForPrompt selects the actions worth showing the LLM.
+// The full bundle.AgentActions list is still used by trajectory
+// detection (DetectEditRevertTrajectories) and by cite-or-drop
+// validation; this filter only shapes the prompt-side view so the
+// model is not buried in actions that touched files unrelated to the
+// PR's diff.
+//
+// Inclusion rules (kept):
+//   - Action whose FilePath appears as a changed file in the diff.
+//   - Action whose ActionID is part of a detected revert trajectory
+//     (these touch scopes the diff records nothing for, but are
+//     exactly the deferred-finding evidence).
+//
+// Everything else is omitted from the rendered listing. The cite-or-
+// drop layer still verifies negative citations against the full
+// bundle.AgentActions slice, so hiding actions from the prompt cannot
+// produce false acceptances; the model just makes fewer claims it
+// could not have verified anyway.
+func filterActionsForPrompt(bundle Bundle, trajectories []TrajectoryCandidate) promptActionsView {
+	view := promptActionsView{Total: len(bundle.AgentActions)}
 	if len(bundle.AgentActions) == 0 {
+		return view
+	}
+	diffFiles := parseChangedRegions(bundle.Diff)
+	trajectoryIDs := map[string]bool{}
+	for _, c := range trajectories {
+		for _, id := range c.ActionIDs {
+			trajectoryIDs[id] = true
+		}
+	}
+	for _, a := range bundle.AgentActions {
+		keep := false
+		if a.FilePath != "" {
+			if _, ok := diffFiles[a.FilePath]; ok {
+				keep = true
+			}
+		}
+		if !keep && trajectoryIDs[a.ActionID] {
+			keep = true
+		}
+		if keep {
+			view.Rendered = append(view.Rendered, a)
+			continue
+		}
+		view.OmittedFromPrompt++
+		if a.FilePath == "" {
+			view.HiddenHasUnknownPath = true
+		}
+	}
+	return view
+}
+
+// renderAgentActions writes the captured tool-invocation listing the
+// LLM is allowed to cite. The listing reflects view.Rendered (filtered
+// to diff-relevant or trajectory-member actions); other captured
+// actions stay in the bundle for validation but are not shown.
+func renderAgentActions(b *strings.Builder, view promptActionsView, truncatedAtCap int) {
+	if view.Total == 0 {
 		b.WriteString("\nNo captured agent actions are available for this PR's\n")
 		b.WriteString("commits. Mechanical evidence about what the agent attempted\n")
 		b.WriteString("cannot be verified from this bundle. Avoid agent_action_citation\n")
@@ -421,29 +550,43 @@ func renderAgentActions(b *strings.Builder, bundle Bundle) {
 		b.WriteString("is not proof the agent did not act.\n")
 		return
 	}
-	b.WriteString("\nCaptured agent actions (oldest first). These are the tool\n")
-	b.WriteString("invocations recorded inside the analyzed commit window. Cite\n")
-	b.WriteString("an action_id with agent_action_citation when a finding references\n")
-	b.WriteString("mechanical activity on a file. Do NOT cite action_ids not\n")
-	b.WriteString("listed here.\n")
-	for _, a := range bundle.AgentActions {
-		b.WriteString("- ")
-		fmt.Fprintf(b, "action_id=%s turn_id=%s tool=%s", a.ActionID, a.TurnID, a.ToolName)
-		if a.FilePath != "" {
-			fmt.Fprintf(b, " file=%s", a.FilePath)
-		} else {
-			b.WriteString(" file=(unknown)")
+	if len(view.Rendered) == 0 {
+		b.WriteString("\nNo captured agent actions touched a file in the PR diff or\n")
+		b.WriteString("a detected revert trajectory. Other captured actions exist but\n")
+		b.WriteString("are not listed here because they cannot anchor evidence for\n")
+		b.WriteString("any kind of finding under the current rules.\n")
+	} else {
+		b.WriteString("\nCaptured agent actions (oldest first). These are tool\n")
+		b.WriteString("invocations recorded inside the analyzed commit window that\n")
+		b.WriteString("either touched a file in the PR diff or belong to a detected\n")
+		b.WriteString("revert trajectory below. Cite an action_id with\n")
+		b.WriteString("agent_action_citation when a finding references mechanical\n")
+		b.WriteString("activity on a file. Do NOT cite action_ids not listed here.\n")
+		for _, a := range view.Rendered {
+			b.WriteString("- ")
+			fmt.Fprintf(b, "action_id=%s turn_id=%s tool=%s", a.ActionID, a.TurnID, a.ToolName)
+			if a.FilePath != "" {
+				fmt.Fprintf(b, " file=%s", a.FilePath)
+			} else {
+				b.WriteString(" file=(unknown)")
+			}
+			if a.LineRangeStart > 0 && a.LineRangeEnd > 0 {
+				fmt.Fprintf(b, " lines=%d-%d", a.LineRangeStart, a.LineRangeEnd)
+			}
+			b.WriteString("\n")
 		}
-		if a.LineRangeStart > 0 && a.LineRangeEnd > 0 {
-			fmt.Fprintf(b, " lines=%d-%d", a.LineRangeStart, a.LineRangeEnd)
-		}
-		b.WriteString("\n")
 	}
-	if bundle.Truncated.AgentActionsDropped > 0 {
-		fmt.Fprintf(b, "(...%d older actions omitted due to size cap)\n",
-			bundle.Truncated.AgentActionsDropped)
+	if truncatedAtCap > 0 {
+		fmt.Fprintf(b, "(...%d older actions omitted due to size cap)\n", truncatedAtCap)
 		b.WriteString("Do NOT emit no_action_citation while older actions are omitted.\n")
 		b.WriteString("The listing above is incomplete and cannot prove non-overlap.\n")
+		return
+	}
+	if view.HiddenHasUnknownPath {
+		b.WriteString("Do NOT emit no_action_citation. Some captured actions are not\n")
+		b.WriteString("shown above (filtered to actions in the diff or in a trajectory)\n")
+		b.WriteString("and at least one hidden action has an unknown file path, so\n")
+		b.WriteString("non-overlap cannot be proved against the cited scope.\n")
 	}
 }
 
@@ -484,12 +627,19 @@ func renderRevertTrajectories(b *strings.Builder, candidates []TrajectoryCandida
 }
 
 // truncatePromptExcerpt bounds one prompt's contribution to model context.
+// The cut is backed off to the nearest rune start so a multi-byte UTF-8
+// sequence is never sliced mid-character. Several LLM CLIs (codex
+// explicitly, claude silently) misbehave on invalid UTF-8 input.
 func truncatePromptExcerpt(s string) string {
 	const maxExcerpt = 400
 	if len(s) <= maxExcerpt {
 		return s
 	}
-	return s[:maxExcerpt] + "...(truncated)"
+	cut := maxExcerpt
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...(truncated)"
 }
 
 // reformatPrompt requests a JSON-only retry after a parse failure.
@@ -666,27 +816,76 @@ func firstJSONArray(s string) (string, bool) {
 }
 
 // buildCoverageSummary records analyzed and truncated input counts.
-func buildCoverageSummary(b Bundle) json.RawMessage {
+//
+// AgentActionsRendered and AgentActionsOmittedFromPrompt describe the
+// prompt-side filter: actions that did not touch a file in the diff
+// and are not part of a detected trajectory are present in the bundle
+// (so validation still sees them) but hidden from the LLM listing.
+// AgentActionsDropped continues to mean "dropped at the bundle cap"
+// (i.e. removed from the bundle entirely).
+func buildCoverageSummary(b Bundle, actionsRendered, actionsOmittedFromPrompt int) json.RawMessage {
 	type cov struct {
-		Commits             int `json:"commits"`
-		CommitsDropped      int `json:"commits_dropped"`
-		DiffBytes           int `json:"diff_bytes"`
-		DiffBytesDropped    int `json:"diff_bytes_dropped"`
-		Turns               int `json:"turns"`
-		TurnsDropped        int `json:"turns_dropped"`
-		AgentActions        int `json:"agent_actions_count"`
-		AgentActionsDropped int `json:"agent_actions_dropped"`
+		Commits                       int `json:"commits"`
+		CommitsDropped                int `json:"commits_dropped"`
+		DiffBytes                     int `json:"diff_bytes"`
+		DiffBytesDropped              int `json:"diff_bytes_dropped"`
+		Turns                         int `json:"turns"`
+		TurnsDropped                  int `json:"turns_dropped"`
+		AgentActions                  int `json:"agent_actions_count"`
+		AgentActionsDropped           int `json:"agent_actions_dropped"`
+		AgentActionsRendered          int `json:"agent_actions_rendered"`
+		AgentActionsOmittedFromPrompt int `json:"agent_actions_omitted_from_prompt"`
 	}
 	c := cov{
-		Commits:             len(b.Commits),
-		CommitsDropped:      b.Truncated.CommitsDropped,
-		DiffBytes:           len(b.Diff),
-		DiffBytesDropped:    b.Truncated.DiffBytesDropped,
-		Turns:               len(b.Turns),
-		TurnsDropped:        b.Truncated.TurnsDropped,
-		AgentActions:        len(b.AgentActions),
-		AgentActionsDropped: b.Truncated.AgentActionsDropped,
+		Commits:                       len(b.Commits),
+		CommitsDropped:                b.Truncated.CommitsDropped,
+		DiffBytes:                     len(b.Diff),
+		DiffBytesDropped:              b.Truncated.DiffBytesDropped,
+		Turns:                         len(b.Turns),
+		TurnsDropped:                  b.Truncated.TurnsDropped,
+		AgentActions:                  len(b.AgentActions),
+		AgentActionsDropped:           b.Truncated.AgentActionsDropped,
+		AgentActionsRendered:          actionsRendered,
+		AgentActionsOmittedFromPrompt: actionsOmittedFromPrompt,
 	}
 	out, _ := json.Marshal(c)
+	return out
+}
+
+// promptSectionBytes measures how many bytes each major section of a
+// rendered analyzer prompt consumes. Returns a map keyed by section
+// name with a "total" entry holding len(prompt). Missing sections are
+// not reported. Used by the service-side debug log so a developer can
+// see which section is dominating the prompt (and is therefore the
+// right target for size optimization) instead of guessing.
+func promptSectionBytes(prompt string) map[string]int {
+	markers := []struct {
+		key, marker string
+	}{
+		{"turns", "\nCaptured user prompts"},
+		{"actions", "\nCaptured agent actions"},
+		{"trajectories", "\nDetected revert trajectories"},
+		{"diff", "\nCumulative diff base..head"},
+	}
+	out := map[string]int{"total": len(prompt)}
+	starts := make([]int, len(markers))
+	for i, m := range markers {
+		starts[i] = strings.Index(prompt, m.marker)
+	}
+	for i, m := range markers {
+		if starts[i] < 0 {
+			continue
+		}
+		end := len(prompt)
+		for j := range markers {
+			if j == i || starts[j] < 0 {
+				continue
+			}
+			if starts[j] > starts[i] && starts[j] < end {
+				end = starts[j]
+			}
+		}
+		out[m.key] = end - starts[i]
+	}
 	return out
 }

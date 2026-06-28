@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/semanticash/cli/internal/auth"
@@ -206,11 +207,7 @@ func (s *IntentGapUploadService) Run(ctx context.Context, repoPath string, opts 
 	// the provider before bundle assembly. If a cache file exists,
 	// defer provider lookup until after the freshness check.
 	if !intentgap.CacheFileExists(semDir, headSHA) {
-		registry := s.deps.LLMRegistry
-		if registry == nil {
-			registry = providers.NewWriterRegistry()
-		}
-		provider, providerErr := intentgap.PickInstalledProvider(registry)
+		provider, providerErr := intentgap.PickInstalledProvider(s.intentGapRegistry())
 		if providerErr != nil {
 			return skipped(semDir, "no LLM CLI installed; nothing to record"), nil
 		}
@@ -391,11 +388,7 @@ func (s *IntentGapUploadService) runAnalyzerOnBundle(
 ) (analysisProduct, error) {
 	analyzer := s.deps.Analyzer
 	if analyzer == nil {
-		registry := s.deps.LLMRegistry
-		if registry == nil {
-			registry = providers.NewWriterRegistry()
-		}
-		analyzer = intentgap.NewLLMAnalyzer(registry)
+		analyzer = intentgap.NewLLMAnalyzer(s.intentGapRegistry())
 	}
 
 	result, analyzerErr := analyzer.Analyze(ctx, intentgap.AnalysisInput{
@@ -428,6 +421,36 @@ func (s *IntentGapUploadService) runAnalyzerOnBundle(
 	// uploading raw finding bodies.
 	for _, sample := range result.SchemaDiagnostics {
 		util.AppendActivityLog(semDir, "intent-gap schema-dropped finding PR #%d: %s", pr.PRNumber, sample)
+	}
+
+	// Surface silent LLM-provider failures so the user can see which
+	// writers wasted wall-clock time before the winning one returned.
+	// The registry chain walks serially, so each line below is a
+	// blocked timeout or subprocess error that contributed to the
+	// total analyzer latency.
+	for _, fb := range result.ProviderFallbackErrors {
+		util.AppendActivityLog(semDir, "intent-gap llm fallback PR #%d: %s", pr.PRNumber, fb)
+	}
+
+	// Surface UTF-8 sanitization stats. A non-zero count means upstream
+	// rendering produced invalid bytes; the offsets pinpoint where to
+	// look in the prompt. Set SEMANTICA_INTENTGAP_DUMP_PROMPT=/path to
+	// dump the rendered prompt and inspect the offending bytes.
+	if result.PromptBadByteCount > 0 {
+		util.AppendActivityLog(semDir,
+			"intent-gap prompt sanitized PR #%d: replaced %d invalid UTF-8 byte(s); first offsets=%v",
+			pr.PRNumber, result.PromptBadByteCount, result.PromptBadByteOffsets)
+	}
+	// Surface a per-section breakdown of the rendered prompt so the
+	// next dogfood run can see at a glance which section dominates
+	// (diff vs. actions vs. turns vs. trajectories). Useful when
+	// chasing latency: a 200KB prompt with a 100KB diff is a very
+	// different optimization problem than a 200KB prompt where
+	// actions are 100KB.
+	if len(result.PromptSectionBytes) > 0 {
+		util.AppendActivityLog(semDir,
+			"intent-gap prompt stats PR #%d: %s",
+			pr.PRNumber, formatPromptSectionStats(result.PromptSectionBytes))
 	}
 
 	analyzedAt := now()
@@ -497,11 +520,7 @@ func (s *IntentGapUploadService) obtainAnalysis(
 	// Cache miss: ensure a provider is available before invoking the
 	// analyzer.
 	if in.Provider == "" {
-		registry := s.deps.LLMRegistry
-		if registry == nil {
-			registry = providers.NewWriterRegistry()
-		}
-		provider, providerErr := intentgap.PickInstalledProvider(registry)
+		provider, providerErr := intentgap.PickInstalledProvider(s.intentGapRegistry())
 		if providerErr != nil {
 			return analysisProduct{}, false, errNoLLMInstalled
 		}
@@ -635,4 +654,53 @@ func skipped(semDir, reason string) *IntentGapUploadResult {
 		}
 	}
 	return &IntentGapUploadResult{Status: UploadStatusSkipped, Reason: reason}
+}
+
+// intentGapRegistry resolves the LLM registry the intent-gap analyzer
+// will use, honoring three layers of override in order:
+//
+//  1. s.deps.LLMRegistry (set by tests; takes precedence so injection
+//     is total).
+//  2. SEMANTICA_INTENTGAP_FORCE_WRITER (debug knob: restrict the chain
+//     to one writer with its default 120s timeout so a developer can
+//     dogfood that writer specifically). Falls through to (3) when
+//     the env var names an unknown writer.
+//  3. providers.NewIntentGapWriterRegistry (production default:
+//     codex-first with per-writer timeouts so a slow writer cannot
+//     dominate the wall-clock).
+func (s *IntentGapUploadService) intentGapRegistry() *llm.WriterRegistry {
+	if s.deps.LLMRegistry != nil {
+		return s.deps.LLMRegistry
+	}
+	if forced := os.Getenv("SEMANTICA_INTENTGAP_FORCE_WRITER"); forced != "" {
+		if r := providers.NewIntentGapWriterRegistryRestrictedTo(forced); r != nil {
+			return r
+		}
+	}
+	return providers.NewIntentGapWriterRegistry()
+}
+
+// formatPromptSectionStats renders the section-byte map as
+// "total=200KB diff=98KB actions=57KB turns=12KB trajectories=2KB" with
+// a stable key ordering so log readers can diff successive runs.
+func formatPromptSectionStats(m map[string]int) string {
+	order := []string{"total", "diff", "actions", "turns", "trajectories"}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		if v, ok := m[k]; ok {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, humanBytes(v)))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func humanBytes(n int) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%dKB", n/1024)
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }

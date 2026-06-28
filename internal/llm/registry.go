@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // Writer is the per-LLM CLI integration that the WriterRegistry walks
@@ -39,9 +41,15 @@ type Writer interface {
 // redactor field is unexported and seamable from tests in the same
 // package; callers outside the package always get the production
 // redactPrompt.
+//
+// timeouts is a per-writer override of the shared 120s shell timeout.
+// A workload that wants tighter caps (e.g. intent-gap, where Claude
+// timing out at 120s blocks a faster downstream writer) sets these
+// per-name; everything not in the map uses the writer's own default.
 type WriterRegistry struct {
 	writers  []Writer
 	redactor func(string) (string, error)
+	timeouts map[string]time.Duration
 }
 
 // NewWriterRegistry constructs a registry over the given writers in
@@ -52,6 +60,19 @@ func NewWriterRegistry(writers ...Writer) *WriterRegistry {
 	return &WriterRegistry{
 		writers:  writers,
 		redactor: redactPrompt,
+	}
+}
+
+// NewWriterRegistryWithTimeouts is like NewWriterRegistry but applies a
+// per-writer-name shell timeout override. Names not in the map fall
+// back to the writer's own default (currently the shared 120s cap).
+// Used by workload-specific registries that want to bound how long a
+// failing writer can hold up the fallback chain.
+func NewWriterRegistryWithTimeouts(writers []Writer, timeouts map[string]time.Duration) *WriterRegistry {
+	return &WriterRegistry{
+		writers:  writers,
+		redactor: redactPrompt,
+		timeouts: timeouts,
 	}
 }
 
@@ -78,9 +99,18 @@ func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*Gene
 	if err != nil {
 		return nil, fmt.Errorf("egress redaction failed: %w", err)
 	}
+	// Several writer CLIs (codex, cursor, claude) misbehave on
+	// non-UTF-8 input: codex prints an explicit "input is not valid
+	// UTF-8" error and exits; cursor exits silently; claude reads the
+	// stream and stalls until the deadline. Normalize once here so a
+	// stray byte from upstream rendering cannot turn into minutes of
+	// silent fallback latency.
+	sanitized, badCount, badOffsets := sanitizeUTF8(redacted)
+	redacted = sanitized
 
 	var lastErr error
 	var tried int
+	var fallbackErrors []string
 
 	for _, w := range r.writers {
 		binPath := w.Find()
@@ -89,16 +119,20 @@ func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*Gene
 		}
 		tried++
 
-		text, err := w.Generate(ctx, binPath, redacted)
+		text, err := r.callWriter(ctx, w, binPath, redacted)
 		if err != nil {
 			lastErr = chainErr(lastErr, w.Name(), err)
+			fallbackErrors = append(fallbackErrors, formatFallbackError(w.Name(), err))
 			continue
 		}
 
 		return &GenerateTextResult{
-			Text:     text,
-			Provider: w.Name(),
-			Model:    w.Model(),
+			Text:                 text,
+			Provider:             w.Name(),
+			Model:                w.Model(),
+			FallbackErrors:       fallbackErrors,
+			PromptBadByteCount:   badCount,
+			PromptBadByteOffsets: badOffsets,
 		}, nil
 	}
 
@@ -106,6 +140,20 @@ func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*Gene
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
 	return nil, r.notInstalledError()
+}
+
+// callWriter applies any per-writer timeout override before invoking
+// the writer's Generate. The override is enforced via ctx.WithTimeout,
+// so the writer's own internal timeout becomes the cap when no
+// override is configured. Names not in the timeouts map keep their
+// default behavior.
+func (r *WriterRegistry) callWriter(ctx context.Context, w Writer, binPath, prompt string) (string, error) {
+	if t, ok := r.timeouts[w.Name()]; ok && t > 0 {
+		callCtx, cancel := context.WithTimeout(ctx, t)
+		defer cancel()
+		return w.Generate(callCtx, binPath, prompt)
+	}
+	return w.Generate(ctx, binPath, prompt)
 }
 
 // Generate is the narrative variant: same fallback contract as
@@ -130,7 +178,7 @@ func (r *WriterRegistry) Generate(ctx context.Context, prompt string) (*Generate
 		}
 		tried++
 
-		text, err := w.Generate(ctx, binPath, redacted)
+		text, err := r.callWriter(ctx, w, binPath, redacted)
 		if err != nil {
 			lastErr = chainErr(lastErr, w.Name(), err)
 			continue
@@ -163,6 +211,54 @@ func chainErr(prev error, writerName string, err error) error {
 		return fmt.Errorf("%s: %w (after %v)", writerName, err, prev)
 	}
 	return fmt.Errorf("%s: %w", writerName, err)
+}
+
+// formatFallbackError builds the per-writer diagnostic line surfaced in
+// GenerateTextResult.FallbackErrors. The error text is truncated so a
+// chatty subprocess message does not bloat the local activity log.
+func formatFallbackError(writerName string, err error) string {
+	const maxErrBytes = 300
+	msg := err.Error()
+	if len(msg) > maxErrBytes {
+		msg = msg[:maxErrBytes] + "...(truncated)"
+	}
+	return writerName + ": " + msg
+}
+
+// sanitizeUTF8 replaces every invalid UTF-8 byte in the prompt with the
+// Unicode replacement character U+FFFD. Returns the normalized prompt,
+// the total number of bytes replaced, and the byte offsets of the
+// first 10 replacements so a downstream caller can locate the source
+// renderer producing the bad input.
+//
+// The function never errors: a prompt that is already valid UTF-8 is
+// returned unchanged with zero counts. The offsets are reported in the
+// original (pre-replacement) input so a developer can index into the
+// raw rendered prompt to find the offending byte.
+func sanitizeUTF8(s string) (string, int, []int) {
+	if utf8.ValidString(s) {
+		return s, 0, nil
+	}
+	const maxOffsets = 10
+	var out strings.Builder
+	out.Grow(len(s))
+	offsets := make([]int, 0, maxOffsets)
+	count := 0
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			if len(offsets) < maxOffsets {
+				offsets = append(offsets, i)
+			}
+			count++
+			out.WriteRune(utf8.RuneError)
+			i++
+			continue
+		}
+		out.WriteString(s[i : i+size])
+		i += size
+	}
+	return out.String(), count, offsets
 }
 
 // notInstalledError builds the terminal error returned when no

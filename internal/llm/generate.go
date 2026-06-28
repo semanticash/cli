@@ -46,10 +46,28 @@ type GenerateResult struct {
 }
 
 // GenerateTextResult holds a raw text response plus metadata.
+//
+// FallbackErrors lists the providers that errored before the winning
+// writer succeeded, in the order they were tried. Each entry is shaped
+// as "writer_name: truncated_error_message". The slice is nil when the
+// first installed writer succeeded with no fallthrough. Callers use it
+// for diagnostics so silent fallback latency can be traced back to the
+// providers that timed out or refused.
+//
+// PromptBadByteCount and PromptBadByteOffsets describe invalid UTF-8
+// bytes the registry replaced before sending the prompt to the
+// subprocess. Several writer CLIs (codex, cursor, claude) misbehave
+// or silently stall on non-UTF-8 input, so the registry normalizes
+// them. PromptBadByteOffsets carries up to the first 10 offsets so a
+// developer can locate the offending renderer; PromptBadByteCount is
+// the full count.
 type GenerateTextResult struct {
-	Text     string
-	Provider string
-	Model    string
+	Text                 string
+	Provider             string
+	Model                string
+	FallbackErrors       []string
+	PromptBadByteCount   int
+	PromptBadByteOffsets []int
 }
 
 // --- Provider runners ---
