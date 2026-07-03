@@ -68,13 +68,15 @@ type ScopedVerifierRunner interface {
 	GenerateText(ctx context.Context, prompt string) (*llm.GenerateTextResult, error)
 }
 
-// VerifierInput contains the data needed for one verifier call.
+// VerifierInput contains data for one verifier call.
+// NeighboringTurns is used only by expander re-verification.
 type VerifierInput struct {
-	Candidate Candidate
-	Intent    IntentItem
-	Change    ChangeLedger
-	Action    ActionLedger
-	Bundle    Bundle
+	Candidate        Candidate
+	Intent           IntentItem
+	Change           ChangeLedger
+	Action           ActionLedger
+	Bundle           Bundle
+	NeighboringTurns []BundleTurn
 }
 
 // RunScopedVerifier performs one verifier LLM call. Failures return a
@@ -108,6 +110,14 @@ func renderVerifierPrompt(in VerifierInput) string {
 	fmt.Fprintf(&b, "  kind: %s\n", intent.Kind)
 	fmt.Fprintf(&b, "  summary: %s\n", intent.Summary)
 	fmt.Fprintf(&b, "  excerpt: %s\n", intent.Excerpt)
+
+	if len(in.NeighboringTurns) > 0 {
+		b.WriteString("\nNeighboring captured prompts (context only; do not cite\n")
+		b.WriteString("these turn_ids in acceptance):\n")
+		for _, t := range in.NeighboringTurns {
+			fmt.Fprintf(&b, "- turn_id=%s\n  excerpt: %s\n", t.TurnID, t.PromptExcerpt)
+		}
+	}
 
 	switch c.Kind {
 	case CandUnderImplPartialScope:
