@@ -17,7 +17,7 @@ func newSampleCache(head string) *AnalysisCache {
 		RequestedBase:         "origin/main",
 		PRNumber:              42,
 		RepositoryID:          "repo-1",
-		PromptTemplateVersion: "0.2.0",
+		PromptTemplateVersion: PromptTemplateVersion,
 		Provider:              "claude_code",
 		Model:                 "claude-opus-4-7",
 		AnalyzedAt:            time.Unix(1_700_000_000, 0).UTC(),
@@ -30,7 +30,7 @@ func sampleKey(head string) AnalysisCacheKey {
 	return AnalysisCacheKey{
 		HeadSHA:               head,
 		BaseSHA:               "base-sha",
-		PromptTemplateVersion: "0.2.0",
+		PromptTemplateVersion: PromptTemplateVersion,
 		FindingSchemaVersion:  FindingSchemaVersion,
 		RepositoryID:          "repo-1",
 		PRNumber:              42,
@@ -69,14 +69,14 @@ func TestAnalysisCache_RoundTrip(t *testing.T) {
 
 // A different prompt template version invalidates the cache so a CLI
 // upgrade that changes prompt phrasing forces a re-analysis instead
-// of replaying a stale result.
+// of replaying an outdated result.
 func TestAnalysisCache_PromptTemplateMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteAnalysisCache(dir, newSampleCache("deadbeef")); err != nil {
 		t.Fatalf("WriteAnalysisCache: %v", err)
 	}
 	key := sampleKey("deadbeef")
-	key.PromptTemplateVersion = "0.3.0"
+	key.PromptTemplateVersion = "different-template-version"
 	got, hit, err := ReadAnalysisCache(dir, key)
 	if err != nil {
 		t.Fatalf("ReadAnalysisCache: %v", err)
@@ -87,7 +87,8 @@ func TestAnalysisCache_PromptTemplateMismatchIsMiss(t *testing.T) {
 }
 
 // Finding IDs are stamped with repository_id, so reusing a cache
-// entry under a different connected repo would upload stale IDs.
+// entry under a different connected repo would upload IDs for the
+// different repository.
 // The reader treats a mismatch as a miss to force a fresh stamp.
 func TestAnalysisCache_RepositoryMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
@@ -103,7 +104,7 @@ func TestAnalysisCache_RepositoryMismatchIsMiss(t *testing.T) {
 }
 
 // Same rule as repository_id: finding IDs are PR-scoped so a different
-// PR number must miss even when head_sha is shared.
+// PR number should miss even when head_sha is shared.
 func TestAnalysisCache_PRNumberMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteAnalysisCache(dir, newSampleCache("deadbeef")); err != nil {
@@ -118,7 +119,7 @@ func TestAnalysisCache_PRNumberMismatchIsMiss(t *testing.T) {
 }
 
 // --base changes the diff regions the analyzer considered. A cached
-// run produced against the default base must not be reused when the
+// run produced against the default base should not be reused when the
 // caller asked for a different base, even at the same head SHA.
 func TestAnalysisCache_RequestedBaseMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
@@ -134,7 +135,7 @@ func TestAnalysisCache_RequestedBaseMismatchIsMiss(t *testing.T) {
 }
 
 // Base SHA captures merge-base movement. When origin/main advances
-// between runs the cache must miss even if head_sha and the requested
+// between runs the cache should miss even if head_sha and the requested
 // base ref are unchanged - the diff the analyzer would see is different.
 func TestAnalysisCache_BaseSHAMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
@@ -149,7 +150,7 @@ func TestAnalysisCache_BaseSHAMismatchIsMiss(t *testing.T) {
 	}
 }
 
-// Finding schema version mismatch must miss so a future schema bump
+// Finding schema version mismatch should miss so a future schema bump
 // cannot replay findings shaped for an older wire contract.
 func TestAnalysisCache_FindingSchemaVersionMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
@@ -191,7 +192,7 @@ func TestAnalysisCache_MissingFileIsCleanMiss(t *testing.T) {
 }
 
 // A cache-schema mismatch is also a miss; a future bump to the cache
-// file format must not surface as a hit.
+// file format should not surface as a hit.
 func TestAnalysisCache_SchemaVersionMismatchIsMiss(t *testing.T) {
 	dir := t.TempDir()
 	src := newSampleCache("deadbeef")

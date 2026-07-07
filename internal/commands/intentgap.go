@@ -306,10 +306,13 @@ func renderCoverageLine(out io.Writer, raw json.RawMessage) {
 		return
 	}
 	parts := []string{}
-	if v, ok := numberFromCoverage(cov, "pr_commits_total"); ok {
+	// Accept either the candidate-first coverage keys ("commits",
+	// "turns") or earlier analyzer keys ("pr_commits_total",
+	// "total_prompt_count") so cached coverage still renders.
+	if v, ok := firstNumberFromCoverage(cov, "commits", "pr_commits_total"); ok {
 		parts = append(parts, fmt.Sprintf("%d commit(s) analyzed", v))
 	}
-	if v, ok := numberFromCoverage(cov, "total_prompt_count"); ok {
+	if v, ok := firstNumberFromCoverage(cov, "turns", "total_prompt_count"); ok {
 		parts = append(parts, fmt.Sprintf("%d turn(s) captured", v))
 	}
 	if v, ok := numberFromCoverage(cov, "agent_actions_count"); ok {
@@ -354,6 +357,19 @@ func numberFromCoverage(m map[string]any, key string) (int, bool) {
 		return int(n), true
 	case int:
 		return n, true
+	}
+	return 0, false
+}
+
+// firstNumberFromCoverage returns the first key in keys that
+// resolves to a numeric coverage value. Used by the renderer to
+// accept multiple key names for the same conceptual value across
+// analyzer versions.
+func firstNumberFromCoverage(m map[string]any, keys ...string) (int, bool) {
+	for _, k := range keys {
+		if v, ok := numberFromCoverage(m, k); ok {
+			return v, true
+		}
 	}
 	return 0, false
 }

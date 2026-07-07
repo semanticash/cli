@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -835,8 +836,8 @@ func TestIntentGapUploadService_UploadErrorWritesActivityLog(t *testing.T) {
 }
 
 // prLookupOnlyServer answers the PR-discovery call and fails the test
-// on any other path. Local mode may discover PR context, but must not
-// upload findings.
+// on any other path. Local mode may discover PR context, but it does
+// not upload findings.
 func prLookupOnlyServer(t *testing.T, discoveryBody string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -981,7 +982,7 @@ func TestIntentGapUploadService_UploadReusesCachedAnalysis(t *testing.T) {
 	}
 }
 
-// Changing --base between runs must invalidate the cache: the diff
+// Changing --base between runs should invalidate the cache: the diff
 // the analyzer saw is different, so a cached result against the
 // default base cannot stand in for an analysis against a release
 // branch.
@@ -1029,7 +1030,7 @@ func TestIntentGapUploadService_CacheMissOnBaseRefChange(t *testing.T) {
 	}
 }
 
-// Changing the connected repository between runs must invalidate the
+// Changing the connected repository between runs should invalidate the
 // cache: finding IDs are scoped to (repository_id, pr_number), so
 // replaying findings stamped under repo-A as a record for repo-B would
 // upload mismatched IDs.
@@ -1098,5 +1099,132 @@ func TestIntentGapUploadService_CacheMissOnRepositoryChange(t *testing.T) {
 	}
 	if depsB.Analyzer.(*stubAnalyzer).calls != priorCalls+1 {
 		t.Errorf("repo-B analyzer should have run; calls before=%d after=%d", priorCalls, depsB.Analyzer.(*stubAnalyzer).calls)
+	}
+}
+
+// stubTextWriter is an llm.Writer that returns a canned text response.
+// The candidate-first pipeline runs through the WriterRegistry; a stub
+// writer is the least-invasive way to exercise the default analyzer
+// path without instantiating a real CLI.
+type stubTextWriter struct {
+	name, model, binPath, response string
+	err                            error
+}
+
+func (w *stubTextWriter) Name() string  { return w.name }
+func (w *stubTextWriter) Model() string { return w.model }
+func (w *stubTextWriter) Find() string  { return w.binPath }
+func (w *stubTextWriter) Generate(context.Context, string, string) (string, error) {
+	return w.response, w.err
+}
+
+// With no analyzer injected, the service runs the candidate-first
+// pipeline. The classifier's first call sees unparseable text, so the
+// pipeline surfaces intent_classification_failed. This exercises both
+// the default wiring and the classifier failure reason code in one run.
+func TestIntentGapUploadService_DefaultAnalyzerIsCandidateFirstClassifierFailure(t *testing.T) {
+	srv := orchestratorStubServer(t,
+		`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`,
+		http.StatusOK,
+		http.StatusCreated,
+		`{"error":false,"message":"ok","payload":{"upload_id":"u-classify-fail","received_at":"2026-06-27T12:00:00Z"}}`)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+	})
+
+	// A bundle with a real captured turn drives the classifier through
+	// its LLM call; the stub writer returns unparseable text so the
+	// classifier fails.
+	bundle := minimalBundle()
+	bundle.Turns = []intentgap.BundleTurn{{
+		TurnID:            "t-1",
+		CommitHash:        "c1",
+		PromptExcerpt:     "add input validation",
+		PromptExcerptHash: "h-1",
+	}}
+	reg := llm.NewWriterRegistry(&stubTextWriter{
+		name: "claude_code", model: "claude-opus-4-7", binPath: "/fake/claude",
+		response: "definitely not JSON",
+	})
+
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint:        srv.URL,
+		Token:           "tok",
+		LLMRegistry:     reg,
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: bundle},
+	})
+	got, err := svc.Run(context.Background(), repo, RunOptions{Upload: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.Analysis != AnalysisErrored {
+		t.Fatalf("Analysis = %s, want errored", got.Analysis)
+	}
+	if got.AnalysisReason != string(intentgap.ReasonIntentClassificationFailed) {
+		t.Errorf("AnalysisReason = %q, want %q", got.AnalysisReason, string(intentgap.ReasonIntentClassificationFailed))
+	}
+}
+
+// The candidate-first pipeline stamps every analyzed body with
+// PromptTemplateVersion. A no-turns bundle short-circuits the pipeline
+// to an empty findings array without any LLM calls, keeping the test
+// focused on the wire template version.
+func TestIntentGapUploadService_DefaultAnalyzerStampsCandidateFirstTemplateVersion(t *testing.T) {
+	var capturedBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prs/by-head-branch"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"pull_requests":[{"pr_number":42,"state":"open","head_sha":"deadbeef","head_branch":"feat/x"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/intent_gap/findings"):
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"error":false,"message":"ok","payload":{"upload_id":"u-tpl","received_at":"2026-06-27T12:00:00Z"}}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	repo := initEnabledRepo(t, settingsOpts{
+		Branch:           "feat/x",
+		SemanticaEnabled: true,
+		Connected:        true,
+		ConnectedRepoID:  "11111111-2222-3333-4444-555555555555",
+	})
+
+	// No captured turns triggers the pipeline's fast path: empty
+	// findings, no LLM calls, PromptTemplateVersion stamped.
+	svc := NewIntentGapUploadService(IntentGapUploadDeps{
+		Endpoint: srv.URL,
+		Token:    "tok",
+		LLMRegistry: llm.NewWriterRegistry(&stubTextWriter{
+			name: "claude_code", model: "claude-opus-4-7", binPath: "/fake/claude",
+			err: errors.New("must not be called on empty-turns fast path"),
+		}),
+		DeviceID:        "dev-1",
+		Now:             func() time.Time { return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC) },
+		BundleAssembler: &stubBundleAssembler{bundle: minimalBundle()},
+	})
+	if _, err := svc.Run(context.Background(), repo, RunOptions{Upload: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	if got := parsed["prompt_template_version"]; got != intentgap.PromptTemplateVersion {
+		t.Errorf("wire prompt_template_version = %v, want %q", got, intentgap.PromptTemplateVersion)
+	}
+	if got := parsed["prompt_template_version"]; got != "0.3.0-candidate-first-v1" {
+		t.Errorf("wire prompt_template_version = %v, want 0.3.0-candidate-first-v1", got)
 	}
 }

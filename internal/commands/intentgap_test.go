@@ -162,6 +162,33 @@ func TestRenderAnalyzeResult_AnalyzedLocalMode(t *testing.T) {
 	}
 }
 
+// The renderer accepts the candidate-first coverage keys ("commits",
+// "turns") as first-class inputs. This pins the regression where
+// renderer and analyzer used different key names, so commit and turn
+// counts were omitted from the coverage line.
+func TestRenderAnalyzeResult_AcceptsCandidateFirstCoverageKeys(t *testing.T) {
+	var buf bytes.Buffer
+	res := &service.IntentGapUploadResult{
+		Status:          service.UploadStatusAnalyzed,
+		PRNumber:        42,
+		Findings:        json.RawMessage(`[]`),
+		CoverageSummary: json.RawMessage(`{"commits":3,"turns":5,"agent_actions_count":7}`),
+	}
+	if err := renderAnalyzeResult(&buf, false, res); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"3 commit(s) analyzed",
+		"5 turn(s) captured",
+		"7 action(s) captured",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("candidate-first-key render missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
 // In local-only mode an errored analysis surfaces as an error and
 // makes clear that nothing was uploaded - distinct from the upload
 // path which records an errored row server-side.
