@@ -187,8 +187,55 @@ func TestRunCandidateFirstAnalyzer_TrackAAcceptSurfacesInCoverageOnly(t *testing
 	}
 }
 
-// The classifier failing hard (LLM unavailable) surfaces as an error
-// so the service records an errored row upstream.
+// A run where the pre-filter drops some turns and one batch fails
+// surfaces every batching counter in coverage_summary. The pipeline
+// otherwise completes so the wire body still uploads.
+func TestRunCandidateFirstAnalyzer_BatchingCoverageSurfaced(t *testing.T) {
+	// Build a bundle with 5 acknowledgement turns (all prefiltered)
+	// plus enough substantive turns to force two classifier batches.
+	total := IntentClassifierBatchSize + 2
+	turns := []BundleTurn{
+		{TurnID: "ack-1", PromptExcerpt: "ok", PromptExcerptHash: "ha1"},
+		{TurnID: "ack-2", PromptExcerpt: "yes", PromptExcerptHash: "ha2"},
+	}
+	for i := 0; i < total; i++ {
+		turns = append(turns, BundleTurn{
+			TurnID:            "sub-" + strings.Repeat("x", 1) + "-" + itoaBatched(i),
+			PromptExcerpt:     "a substantive prompt that is long enough to bypass prefilter " + itoaBatched(i),
+			PromptExcerptHash: "hh-" + itoaBatched(i),
+		})
+	}
+	// One batch of the two returns non-JSON text so BatchesFailed=1 lands.
+	runner := &splitClassifierRunner{
+		failIndex:      1,
+		goodResponders: &syntheticClassifierRunner{},
+	}
+	got, err := RunCandidateFirstAnalyzer(context.Background(),
+		AnalysisInput{Bundle: Bundle{Turns: turns}, RepositoryID: "repo", PRNumber: 42}, runner)
+	if err != nil {
+		t.Fatalf("RunCandidateFirstAnalyzer: %v", err)
+	}
+	var cov map[string]any
+	if err := json.Unmarshal(got.CoverageSummary, &cov); err != nil {
+		t.Fatalf("coverage_summary not JSON: %v", err)
+	}
+	if cov["intent_turns_prefiltered"] != float64(2) {
+		t.Errorf("intent_turns_prefiltered = %v, want 2", cov["intent_turns_prefiltered"])
+	}
+	if cov["intent_batches_total"] != float64(2) {
+		t.Errorf("intent_batches_total = %v, want 2", cov["intent_batches_total"])
+	}
+	if cov["intent_batches_failed"] != float64(1) {
+		t.Errorf("intent_batches_failed = %v, want 1", cov["intent_batches_failed"])
+	}
+}
+
+func itoaBatched(i int) string {
+	return string(rune('a'+i%26)) + string(rune('0'+(i/10)%10)) + string(rune('0'+i%10))
+}
+
+// A classifier failure (LLM unavailable) surfaces as an error so the
+// service records an errored row upstream.
 func TestRunCandidateFirstAnalyzer_ClassifierFailureIsHardError(t *testing.T) {
 	runner := &pipelineRunner{responses: []*llm.GenerateTextResult{
 		nil, // classifier returns nil

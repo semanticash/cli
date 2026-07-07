@@ -2,8 +2,12 @@ package intentgap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/semanticash/cli/internal/llm"
@@ -17,6 +21,90 @@ func turnIDsOf(items []IntentItem) []string {
 		out = append(out, it.TurnID)
 	}
 	return out
+}
+
+// classifierTurnIDRegex extracts the list of turn_ids visible in a
+// rendered classifier prompt. Synthetic runners read this to produce
+// a matching JSON response without duplicating the prompt renderer.
+var classifierTurnIDRegex = regexp.MustCompile(`turn_id=([^\s\n]+)`)
+
+func turnIDsInPrompt(prompt string) []string {
+	matches := classifierTurnIDRegex.FindAllStringSubmatch(prompt, -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// syntheticClassifierRunner produces a valid classifier response for
+// whichever turns are present in the prompt. Used by batching tests
+// that don't care about the specific classification, just the shape.
+type syntheticClassifierRunner struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *syntheticClassifierRunner) GenerateText(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	ids := turnIDsInPrompt(prompt)
+	type item struct {
+		TurnID  string `json:"turn_id"`
+		Kind    string `json:"kind"`
+		Summary string `json:"summary"`
+	}
+	items := make([]item, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, item{TurnID: id, Kind: "request", Summary: "user asks for " + id})
+	}
+	body, _ := json.Marshal(items)
+	return &llm.GenerateTextResult{Text: string(body), Provider: "claude_code", Model: "claude-opus-4-7"}, nil
+}
+
+// splitClassifierRunner selectively fails specific batches based on
+// call index. failIndex names one batch to fail (single-failure
+// tests); failEveryExcept names one batch to succeed (majority-fail
+// tests). goodResponders handles the "success" side.
+type splitClassifierRunner struct {
+	mu              sync.Mutex
+	calls           int
+	failIndex       int
+	failEveryExcept int
+	goodResponders  *syntheticClassifierRunner
+}
+
+func (s *splitClassifierRunner) GenerateText(ctx context.Context, prompt string) (*llm.GenerateTextResult, error) {
+	s.mu.Lock()
+	call := s.calls
+	s.calls++
+	s.mu.Unlock()
+	shouldFail := false
+	if s.failEveryExcept > 0 {
+		shouldFail = call != s.failEveryExcept
+	} else if s.failIndex >= 0 {
+		shouldFail = call == s.failIndex
+	}
+	if shouldFail {
+		return &llm.GenerateTextResult{Text: "definitely not JSON"}, nil
+	}
+	return s.goodResponders.GenerateText(ctx, prompt)
+}
+
+// constantResponseRunner returns a fixed response for every call.
+// Used for "all batches fail" tests.
+type constantResponseRunner struct {
+	mu    sync.Mutex
+	calls int
+	text  string
+}
+
+func (r *constantResponseRunner) GenerateText(_ context.Context, _ string) (*llm.GenerateTextResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	return &llm.GenerateTextResult{Text: r.text}, nil
 }
 
 // turnsForLedger produces a small canonical set of BundleTurns used by
@@ -167,8 +255,8 @@ func TestBuildIntentLedger_UnreliableBelowRatioThreshold(t *testing.T) {
 	}
 }
 
-// The classifier's call failing entirely (no parseable response) is
-// a hard error: candidate generation has no ledger to work from.
+// A classifier call with no parseable response returns an error:
+// candidate generation has no ledger to work from.
 func TestBuildIntentLedger_ClassifierFailureIsHardError(t *testing.T) {
 	runner := &fakeLLMRunner{
 		responses: []*llm.GenerateTextResult{nil},
@@ -203,8 +291,8 @@ func TestBuildIntentLedger_DropsTurnsWithoutTurnID(t *testing.T) {
 	}
 }
 
-// A classifier hallucinating a turn_id that wasn't in the input is
-// ignored entirely — the hallucinated row never reaches the ledger
+// A classifier response with a turn_id that wasn't in the input is
+// ignored entirely — the extra row never reaches the ledger
 // and the corresponding input turn shows up as malformed for the
 // repair pass.
 func TestBuildIntentLedger_IgnoresHallucinatedTurnIDs(t *testing.T) {
@@ -225,7 +313,7 @@ func TestBuildIntentLedger_IgnoresHallucinatedTurnIDs(t *testing.T) {
 	}
 	for _, it := range got.Items {
 		if it.TurnID == "t-IMAGINED" {
-			t.Errorf("hallucinated turn_id leaked into the ledger: %+v", it)
+			t.Errorf("unexpected turn_id reached the ledger: %+v", it)
 		}
 	}
 }
@@ -297,6 +385,301 @@ func TestBuildIntentLedger_DuplicateTurnIDInvalidatesAndRepairs(t *testing.T) {
 	}
 	if runner.calls != 2 {
 		t.Errorf("calls = %d, want 2 (repair retry must fire for the duplicated turn)", runner.calls)
+	}
+}
+
+// The pre-filter drops the exact-match acknowledgement list and keeps
+// everything else, including intent-reversing short phrases like
+// "no" or "stop wait" that should reach the classifier.
+func TestBuildIntentLedger_PrefilterDropsAcknowledgementsOnly(t *testing.T) {
+	turns := []BundleTurn{
+		{TurnID: "ack-ok", PromptExcerpt: "ok", PromptExcerptHash: "h1", TS: 1},
+		{TurnID: "ack-yes", PromptExcerpt: "  Yes  ", PromptExcerptHash: "h2", TS: 2},
+		{TurnID: "ack-thankyou", PromptExcerpt: "thank you", PromptExcerptHash: "h3", TS: 3},
+		{TurnID: "keep-no", PromptExcerpt: "no", PromptExcerptHash: "h4", TS: 4},
+		{TurnID: "keep-actually", PromptExcerpt: "actually revert that change", PromptExcerptHash: "h5", TS: 5},
+		{TurnID: "keep-stop", PromptExcerpt: "stop", PromptExcerptHash: "h6", TS: 6},
+		{TurnID: "keep-wait", PromptExcerpt: "wait one moment", PromptExcerptHash: "h7", TS: 7},
+	}
+	// Classifier only sees the 4 kept turns.
+	resp := `[
+		{"turn_id":"keep-no","kind":"correction","summary":"user rejects the prior direction"},
+		{"turn_id":"keep-actually","kind":"correction","summary":"user reverses direction"},
+		{"turn_id":"keep-stop","kind":"correction","summary":"user halts current work"},
+		{"turn_id":"keep-wait","kind":"context","summary":"user pauses"}
+	]`
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{{Text: resp}}}
+
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v", err)
+	}
+	if got.PrefilteredCount != 3 {
+		t.Errorf("PrefilteredCount = %d, want 3 (ok, yes, thank you)", got.PrefilteredCount)
+	}
+	if len(got.Items) != 4 {
+		t.Fatalf("Items len = %d, want 4 (all non-acked turns should reach the classifier)", len(got.Items))
+	}
+	// Classifier prompt should not include acknowledgement turn_ids so
+	// the LLM budget goes to the substantive prompts only.
+	prompt := runner.prompts[0]
+	for _, id := range []string{"ack-ok", "ack-yes", "ack-thankyou"} {
+		if strings.Contains(prompt, id) {
+			t.Errorf("prefiltered turn %q leaked into classifier prompt:\n%s", id, prompt)
+		}
+	}
+	for _, id := range []string{"keep-no", "keep-actually", "keep-stop", "keep-wait"} {
+		if !strings.Contains(prompt, id) {
+			t.Errorf("substantive turn %q missing from classifier prompt", id)
+		}
+	}
+}
+
+// A bundle whose turns are all acknowledgements skips the LLM
+// entirely. The ledger returns cleanly (no error) with an empty item
+// slice and the pre-filter count carried into coverage.
+func TestBuildIntentLedger_AllAcknowledgementsSkipsClassifier(t *testing.T) {
+	turns := []BundleTurn{
+		{TurnID: "a", PromptExcerpt: "ok", PromptExcerptHash: "h1", TS: 1},
+		{TurnID: "b", PromptExcerpt: "continue", PromptExcerptHash: "h2", TS: 2},
+	}
+	runner := &fakeLLMRunner{responses: []*llm.GenerateTextResult{{Text: "must not be called"}}}
+
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v", err)
+	}
+	if len(got.Items) != 0 {
+		t.Errorf("Items len = %d, want 0", len(got.Items))
+	}
+	if got.PrefilteredCount != 2 {
+		t.Errorf("PrefilteredCount = %d, want 2", got.PrefilteredCount)
+	}
+	if runner.calls != 0 {
+		t.Errorf("calls = %d, want 0 (classifier must not run when nothing survives the pre-filter)", runner.calls)
+	}
+}
+
+// A long bundle chunks into multiple batches. All batches produce
+// items and the merged ledger stays in original input order.
+func TestBuildIntentLedger_BatchesLargeBundleInInputOrder(t *testing.T) {
+	// Two full batches plus a tail so we exercise both boundary paths.
+	total := IntentClassifierBatchSize*2 + 5
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt number %d that is long enough to skip prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	// Each batch echoes a valid classification for every turn it was
+	// given. Because runOneClassifierBatch reads the prompt to know
+	// which turns to answer, use a canned-response synthesizer.
+	runner := &syntheticClassifierRunner{}
+
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v", err)
+	}
+	if got.BatchesTotal != 3 {
+		t.Errorf("BatchesTotal = %d, want 3", got.BatchesTotal)
+	}
+	if got.BatchesFailed != 0 {
+		t.Errorf("BatchesFailed = %d, want 0", got.BatchesFailed)
+	}
+	if len(got.Items) != total {
+		t.Fatalf("Items len = %d, want %d", len(got.Items), total)
+	}
+	for i, it := range got.Items {
+		want := fmt.Sprintf("t-%03d", i)
+		if it.TurnID != want {
+			t.Errorf("Items[%d].TurnID = %q, want %q (batches must merge in input order)", i, it.TurnID, want)
+			break
+		}
+	}
+}
+
+// A batch that fails LLM parsing does not fail the whole run. The
+// surviving batches contribute their items; BatchesFailed records the
+// failed batch.
+func TestBuildIntentLedger_PartialBatchFailureKeepsSurvivors(t *testing.T) {
+	total := IntentClassifierBatchSize + 5 // 2 batches
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt %d that survives prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	// One batch parses cleanly; the other returns non-JSON text.
+	runner := &splitClassifierRunner{
+		failIndex:      1, // second batch (5-turn tail) returns non-JSON text
+		goodResponders: &syntheticClassifierRunner{},
+	}
+
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v (partial failure must not abort the run)", err)
+	}
+	if got.BatchesTotal != 2 {
+		t.Errorf("BatchesTotal = %d, want 2", got.BatchesTotal)
+	}
+	if got.BatchesFailed != 1 {
+		t.Errorf("BatchesFailed = %d, want 1", got.BatchesFailed)
+	}
+	if len(got.Items) == 0 {
+		t.Errorf("Items empty; the good batch should still have produced items")
+	}
+	// The 5-turn tail is where all invalid items concentrate.
+	if got.InvalidCount < 5 {
+		t.Errorf("InvalidCount = %d, want >= 5 (all turns in the failed batch are invalid)", got.InvalidCount)
+	}
+}
+
+// Every batch failing surfaces as ErrIntentClassifierFailed only when
+// no items survived. The error wraps the sentinel so ReasonCodeFor can
+// map it to intent_classification_failed.
+func TestBuildIntentLedger_AllBatchesFailReturnsClassifierErr(t *testing.T) {
+	total := IntentClassifierBatchSize + 1 // 2 batches
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt %d that survives prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	// Every batch returns non-JSON text so no valid items land.
+	runner := &constantResponseRunner{text: "definitely not JSON"}
+	_, err := BuildIntentLedger(context.Background(), runner, turns)
+	if !errors.Is(err, ErrIntentClassifierFailed) {
+		t.Errorf("err = %v, want wrapping ErrIntentClassifierFailed", err)
+	}
+}
+
+// When over half the batches fail, Unreliable is set even if items
+// survived. Coverage consumers use this bit to mark a run as
+// degraded regardless of the per-item ratio.
+func TestBuildIntentLedger_UnreliableWhenMajorityOfBatchesFail(t *testing.T) {
+	total := IntentClassifierBatchSize*3 + 1 // 4 batches
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt %d that survives prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	// Three of four batches fail; the last one produces items.
+	runner := &splitClassifierRunner{
+		failIndex:       -1, // sentinel unused
+		failEveryExcept: 3,  // batch index 3 (the tail) is the only success
+		goodResponders:  &syntheticClassifierRunner{},
+	}
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v", err)
+	}
+	if !got.Unreliable {
+		t.Errorf("Unreliable should be true when %d/%d batches failed", got.BatchesFailed, got.BatchesTotal)
+	}
+	if len(got.Items) == 0 {
+		t.Errorf("Items should still carry the one successful batch's classifications")
+	}
+}
+
+// Every batch returns parseable JSON, but every item inside is
+// invalid (unknown kind), and repair returns more of the same. The
+// ledger reports the run as unreliable so coverage consumers can
+// distinguish this from a successful empty result.
+func TestBuildIntentLedger_ZeroValidItemsIsUnreliable(t *testing.T) {
+	total := IntentClassifierBatchSize + 1 // 2 batches, both parse fine
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt %d that survives prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	// Response has one entry per turn but every kind is invalid so
+	// classifyAndValidate drops all of them; repair returns the same
+	// shape and also drops. Batches themselves are batchOK because
+	// their LLM calls succeeded and their JSON parsed.
+	runner := &invalidKindClassifierRunner{}
+	got, err := BuildIntentLedger(context.Background(), runner, turns)
+	if err != nil {
+		t.Fatalf("BuildIntentLedger: %v (batches parsed, so this should return a degraded ledger)", err)
+	}
+	if len(got.Items) != 0 {
+		t.Fatalf("Items len = %d, want 0 (every item was invalid)", len(got.Items))
+	}
+	if got.BatchesFailed != 0 {
+		t.Errorf("BatchesFailed = %d, want 0 (batches parsed even though items were rejected)", got.BatchesFailed)
+	}
+	if got.InvalidCount != len(turns) {
+		t.Errorf("InvalidCount = %d, want %d", got.InvalidCount, len(turns))
+	}
+	if !got.Unreliable {
+		t.Errorf("Unreliable should be true when 0 valid items survive; got %+v", got)
+	}
+}
+
+// invalidKindClassifierRunner returns one item per prompted turn but
+// with a kind classifyAndValidate rejects on both the initial call
+// and the repair retry. This simulates a classifier that produces
+// well-formed JSON with unusable items.
+type invalidKindClassifierRunner struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *invalidKindClassifierRunner) GenerateText(_ context.Context, prompt string) (*llm.GenerateTextResult, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	ids := turnIDsInPrompt(prompt)
+	type item struct {
+		TurnID  string `json:"turn_id"`
+		Kind    string `json:"kind"`
+		Summary string `json:"summary"`
+	}
+	items := make([]item, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, item{TurnID: id, Kind: "NOT_A_KIND", Summary: "bad"})
+	}
+	body, _ := json.Marshal(items)
+	return &llm.GenerateTextResult{Text: string(body), Provider: "claude_code", Model: "claude-opus-4-7"}, nil
+}
+
+// A ctx that expires before batches launch marks every batch as
+// deadline-missed. No items survive, so the error surfaces; the
+// counter records the reason so coverage distinguishes it from a
+// provider failure.
+func TestBuildIntentLedger_DeadlineExceededBeforeStart(t *testing.T) {
+	total := IntentClassifierBatchSize + 1
+	turns := make([]BundleTurn, total)
+	for i := range turns {
+		turns[i] = BundleTurn{
+			TurnID:            fmt.Sprintf("t-%03d", i),
+			PromptExcerpt:     fmt.Sprintf("substantive prompt %d that survives prefilter", i),
+			PromptExcerptHash: fmt.Sprintf("h-%03d", i),
+			TS:                int64(1000 + i),
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // deadline exceeded before any batch runs
+	runner := &constantResponseRunner{text: "must not be called"}
+	_, err := BuildIntentLedger(ctx, runner, turns)
+	if !errors.Is(err, ErrIntentClassifierFailed) {
+		t.Errorf("err = %v, want ErrIntentClassifierFailed when the deadline expired before start", err)
 	}
 }
 

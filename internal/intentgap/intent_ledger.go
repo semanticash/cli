@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/semanticash/cli/internal/llm"
@@ -61,21 +62,64 @@ type IntentItem struct {
 }
 
 // IntentLedger is the structured view of captured turns the candidate
-// pipeline consumes. InvalidCount counts turns the classifier could
-// not produce a well-formed item for (even after one repair retry);
-// Unreliable is set when the valid ratio fell below
-// MinValidIntentRatio so downstream coverage can surface the
-// degradation.
+// pipeline consumes.
+//
+// InvalidCount counts kept (post-prefilter) turns that did not
+// produce a valid item — either their batch failed / was
+// deadline-missed, or the classifier's response for that turn was
+// rejected by classifyAndValidate (unknown kind, empty summary,
+// duplicate, unexpected turn_id) even after any per-batch repair
+// retry. Turns dropped by the pre-filter are counted separately in
+// PrefilteredCount and are not classifier failures.
+//
+// BatchesTotal is the total number of batches produced by the
+// post-prefilter chunking. It includes batches that were never
+// dispatched because the deadline had already fired; those show up
+// in BatchesDeadlineMissed.
+//
+// BatchesFailed is batches that were dispatched to the LLM but did
+// not contribute any items — either the LLM call errored, the
+// initial response could not be parsed as a JSON array, or every
+// item was rejected by classifyAndValidate and the per-item repair
+// retry did not recover any of them.
+//
+// BatchesDeadlineMissed is batches skipped because the pipeline's
+// hard deadline expired before they could start (or the ctx was
+// cancelled mid-run). A dispatched batch whose LLM call errored
+// with ctx.Err() also lands here rather than in BatchesFailed.
+//
+// Unreliable is a compound flag: true when the valid-item ratio
+// across kept turns drops below MinValidIntentRatio OR when more
+// than half of the batches failed / were deadline-missed. The
+// candidate-first pipeline surfaces this as
+// intent_classification_unreliable in the coverage summary.
 type IntentLedger struct {
-	Items        []IntentItem
-	InvalidCount int
-	Unreliable   bool
+	Items                 []IntentItem
+	InvalidCount          int
+	PrefilteredCount      int
+	BatchesTotal          int
+	BatchesFailed         int
+	BatchesDeadlineMissed int
+	Unreliable            bool
 }
 
 // MinValidIntentRatio is the floor for "we got enough good intents
 // to trust the rest of the pipeline." Below this, the run still
 // proceeds but coverage records intent_classification_unreliable.
 const MinValidIntentRatio = 0.6
+
+// IntentClassifierBatchSize bounds the number of turns sent in a
+// single classifier LLM call. The classifier emits one output object
+// per input turn, so large batches can exceed provider timeouts on
+// long branches. 30 keeps output bounded while still amortizing the
+// instruction preamble across many turns.
+const IntentClassifierBatchSize = 30
+
+// IntentClassifierMaxWorkers caps concurrent classifier LLM calls.
+// The candidate-first pipeline already shares the LLM registry with
+// the verifier pool; three workers here leaves headroom for the
+// verifier and bounds concurrent provider subprocesses.
+const IntentClassifierMaxWorkers = 3
 
 // ErrIntentClassifierFailed wraps the underlying LLM failure when
 // the classifier call (and its repair retry) cannot produce any
@@ -90,35 +134,274 @@ type IntentClassifierRunner interface {
 	GenerateText(ctx context.Context, prompt string) (*llm.GenerateTextResult, error)
 }
 
-// BuildIntentLedger runs one classifier call over the bundle's turns
-// and constructs an IntentLedger from the validated items. Items the
-// classifier produced in malformed shape get one repair retry. Items
-// still malformed after retry are dropped and counted in
-// InvalidCount; if the resulting valid ratio is below
-// MinValidIntentRatio, Unreliable is set.
+// BuildIntentLedger classifies the bundle's usable turns into
+// IntentItems using batched, deadline-aware LLM calls.
 //
-// turns whose own TurnID is empty are excluded up front so the
-// classifier is not asked to classify a prompt that cannot be cited.
+// Pipeline:
+//  1. filterUsableTurns drops turns without a TurnID (nothing for
+//     cite-or-drop to verify).
+//  2. prefilterAcknowledgements drops trivial user acknowledgements
+//     ("ok", "continue", "thanks") that carry no work intent.
+//  3. The remaining turns are chunked into IntentClassifierBatchSize
+//     batches and classified in parallel under
+//     IntentClassifierMaxWorkers. Each batch runs the same
+//     classify + per-item repair-retry logic the single-call path
+//     used previously.
+//  4. Results merge by TurnID and are reordered to match the original
+//     input order so downstream code can rely on turn order.
+//
+// Fail-hard semantics: ErrIntentClassifierFailed is returned only
+// when every batch failed AND no valid items survived. A run where
+// even one batch produced parseable output is considered a success
+// with degraded coverage; the batch counters and Unreliable flag
+// carry the degradation into the coverage_summary.
 func BuildIntentLedger(ctx context.Context, runner IntentClassifierRunner, turns []BundleTurn) (IntentLedger, error) {
 	usable := filterUsableTurns(turns)
 	if len(usable) == 0 {
 		return IntentLedger{}, nil
 	}
 
-	prompt := renderIntentClassifierPrompt(usable)
+	kept, prefiltered := prefilterAcknowledgements(usable)
+	if len(kept) == 0 {
+		return IntentLedger{PrefilteredCount: prefiltered}, nil
+	}
+
+	batches := chunkTurns(kept, IntentClassifierBatchSize)
+	results := runClassifierBatches(ctx, runner, batches)
+
+	var valid []IntentItem
+	batchesFailed := 0
+	batchesDeadlineMissed := 0
+	for _, r := range results {
+		switch r.Status {
+		case batchOK:
+			valid = mergeValidByTurnID(valid, r.Items)
+		case batchDeadlineMissed:
+			batchesDeadlineMissed++
+		case batchFailed:
+			batchesFailed++
+		}
+	}
+
+	// mergeValidByTurnID preserves per-batch order but batches were
+	// scheduled by index across parallel workers. Restore the caller's
+	// input order so downstream code that reads Items sequentially
+	// (verifier, expander) sees turns in the same order they were
+	// captured.
+	valid = sortByInputOrder(valid, kept)
+
+	ledger := IntentLedger{
+		Items:                 valid,
+		PrefilteredCount:      prefiltered,
+		BatchesTotal:          len(batches),
+		BatchesFailed:         batchesFailed,
+		BatchesDeadlineMissed: batchesDeadlineMissed,
+		InvalidCount:          len(kept) - len(valid),
+	}
+
+	// Compound unreliable rule: either too few turns produced valid
+	// items, OR too many batches never contributed. The
+	// ratio branch fires even when len(valid) == 0 so a run where
+	// every batch parsed but every item was rejected (unknown kinds,
+	// empty summaries, duplicates) surfaces as unreliable instead of
+	// as a normal empty ledger.
+	failedOrMissed := batchesFailed + batchesDeadlineMissed
+	if len(kept) > 0 {
+		validRatio := float64(len(valid)) / float64(len(kept))
+		if validRatio < MinValidIntentRatio {
+			ledger.Unreliable = true
+		}
+	}
+	if len(batches) > 0 && float64(failedOrMissed)/float64(len(batches)) > 0.5 {
+		ledger.Unreliable = true
+	}
+
+	// Fail hard only when nothing survived AND no batch even produced
+	// parseable output. A partial success — one good batch out of many
+	// — is still a valid analysis with degraded coverage.
+	if len(valid) == 0 && failedOrMissed == len(batches) {
+		return IntentLedger{}, fmt.Errorf("%w: all %d classifier batches failed", ErrIntentClassifierFailed, len(batches))
+	}
+
+	return ledger, nil
+}
+
+// intentTrivialAcknowledgements is an exact-match, lowercased set of
+// short user utterances that carry no work intent. Intentionally
+// small so intent-reversing phrases ("no", "stop", "wait",
+// "actually", "one more thing") never land in the filter. Anything
+// not in this set (or longer than intentTrivialMaxLen) reaches the
+// classifier and is scored by kind normally.
+var intentTrivialAcknowledgements = map[string]bool{
+	"ok":          true,
+	"okay":        true,
+	"yes":         true,
+	"yep":         true,
+	"sure":        true,
+	"thanks":      true,
+	"thank you":   true,
+	"continue":    true,
+	"go ahead":    true,
+	"proceed":     true,
+	"sounds good": true,
+	"great":       true,
+	"nice":        true,
+	"do it":       true,
+	"carry on":    true,
+}
+
+// intentTrivialMaxLen guards the exact-match filter against ever
+// dropping a substantive prompt. Every entry above is well under this
+// cap; the length check keeps future additions from matching a real
+// request.
+const intentTrivialMaxLen = 30
+
+// prefilterAcknowledgements removes trivial acknowledgements before
+// the classifier sees them. The comparison is case-insensitive with
+// leading/trailing whitespace trimmed, but no punctuation stripping —
+// a punctuated "ok." reaches the classifier and gets classified as
+// context normally.
+func prefilterAcknowledgements(turns []BundleTurn) ([]BundleTurn, int) {
+	kept := make([]BundleTurn, 0, len(turns))
+	dropped := 0
+	for _, t := range turns {
+		normalized := strings.ToLower(strings.TrimSpace(t.PromptExcerpt))
+		if normalized != "" && len(normalized) <= intentTrivialMaxLen && intentTrivialAcknowledgements[normalized] {
+			dropped++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, dropped
+}
+
+// chunkTurns splits turns into contiguous slices of at most size. The
+// last chunk may be smaller. Empty input yields nil so the caller can
+// use len() to short-circuit.
+func chunkTurns(turns []BundleTurn, size int) [][]BundleTurn {
+	if len(turns) == 0 || size <= 0 {
+		return nil
+	}
+	out := make([][]BundleTurn, 0, (len(turns)+size-1)/size)
+	for start := 0; start < len(turns); start += size {
+		end := start + size
+		if end > len(turns) {
+			end = len(turns)
+		}
+		out = append(out, turns[start:end])
+	}
+	return out
+}
+
+// batchStatus classifies a single batch's outcome. Only batchOK
+// contributes items to the merged ledger; the other two just
+// contribute counters so the coverage summary can surface the
+// degradation.
+type batchStatus int
+
+const (
+	batchOK batchStatus = iota
+	batchFailed
+	batchDeadlineMissed
+)
+
+// batchResult is the per-batch outcome the merge step reads. Items is
+// nil unless Status == batchOK.
+type batchResult struct {
+	Items  []IntentItem
+	Status batchStatus
+}
+
+// runClassifierBatches fans batches out to a bounded worker pool and
+// waits for every worker to finish. The scheduler mirrors
+// RunVerifierPool: a buffered queue of batch indices is closed
+// upfront, workers select on ctx.Done() so no new classifier calls
+// launch after the deadline fires, and a mutex-guarded results slice
+// keeps output ordered by batch index. Batches the workers never
+// reached (queue not drained before ctx cancellation) are reported
+// as batchDeadlineMissed so the coverage counters reflect the actual
+// dispatch state.
+func runClassifierBatches(ctx context.Context, runner IntentClassifierRunner, batches [][]BundleTurn) []batchResult {
+	if len(batches) == 0 {
+		return nil
+	}
+
+	workQueue := make(chan int, len(batches))
+	for i := range batches {
+		workQueue <- i
+	}
+	close(workQueue)
+
+	results := make([]batchResult, len(batches))
+	processed := make([]bool, len(batches))
+	var resultsMu sync.Mutex
+
+	workers := IntentClassifierMaxWorkers
+	if workers > len(batches) {
+		workers = len(batches)
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case idx, ok := <-workQueue:
+					if !ok {
+						return
+					}
+					// Re-check after receive: select may fire the queue
+					// case even when ctx.Done() is also ready.
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					result := runOneClassifierBatch(ctx, runner, batches[idx])
+					resultsMu.Lock()
+					results[idx] = result
+					processed[idx] = true
+					resultsMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	for i := range batches {
+		if !processed[i] {
+			results[i] = batchResult{Status: batchDeadlineMissed}
+		}
+	}
+	return results
+}
+
+// runOneClassifierBatch runs the classifier + per-item repair against
+// one batch. Any LLM failure that surfaced because the pipeline
+// deadline expired is reported as batchDeadlineMissed so the ledger
+// can distinguish provider failures from deadline misses.
+func runOneClassifierBatch(ctx context.Context, runner IntentClassifierRunner, batch []BundleTurn) batchResult {
+	if ctx.Err() != nil {
+		return batchResult{Status: batchDeadlineMissed}
+	}
+	prompt := renderIntentClassifierPrompt(batch)
 	res, err := runner.GenerateText(ctx, prompt)
 	if err != nil {
-		return IntentLedger{}, fmt.Errorf("%w: %v", ErrIntentClassifierFailed, err)
+		if ctx.Err() != nil {
+			return batchResult{Status: batchDeadlineMissed}
+		}
+		return batchResult{Status: batchFailed}
 	}
-
 	rawItems, parseErr := extractIntentRawItems(res.Text)
 	if parseErr != nil {
-		return IntentLedger{}, fmt.Errorf("%w: %v", ErrIntentClassifierFailed, parseErr)
+		return batchResult{Status: batchFailed}
 	}
-
-	valid, malformed := classifyAndValidate(rawItems, usable)
-
-	if len(malformed) > 0 {
+	valid, malformed := classifyAndValidate(rawItems, batch)
+	if len(malformed) > 0 && ctx.Err() == nil {
 		repairPrompt := renderIntentRepairPrompt(malformed)
 		retry, retryErr := runner.GenerateText(ctx, repairPrompt)
 		if retryErr == nil {
@@ -129,23 +412,7 @@ func BuildIntentLedger(ctx context.Context, runner IntentClassifierRunner, turns
 			}
 		}
 	}
-
-	// Restore input turn order. mergeValidByTurnID appends repaired
-	// items after first-pass items; without this sort, a turn that
-	// validated only on repair lands after later turns that
-	// validated on the initial pass. The classifier prompt asks for
-	// turn order, so the ledger should keep it.
-	valid = sortByInputOrder(valid, usable)
-
-	ledger := IntentLedger{Items: valid}
-	ledger.InvalidCount = len(usable) - len(valid)
-	if len(usable) > 0 {
-		validRatio := float64(len(valid)) / float64(len(usable))
-		if validRatio < MinValidIntentRatio {
-			ledger.Unreliable = true
-		}
-	}
-	return ledger, nil
+	return batchResult{Items: valid, Status: batchOK}
 }
 
 // sortByInputOrder reorders items so they match the position of their
@@ -269,7 +536,7 @@ func classifyAndValidate(rawItems []rawIntentItem, inputs []BundleTurn) ([]Inten
 		}
 		turn, ok := byTurnID[r.TurnID]
 		if !ok {
-			// Classifier hallucinated a turn_id; ignore it.
+			// Classifier returned a turn_id not present in the input.
 			continue
 		}
 		if occurrences[r.TurnID] > 1 {
@@ -332,8 +599,8 @@ func buildIntentItem(raw rawIntentItem, turn BundleTurn) (IntentItem, bool) {
 
 // maxIntentSummaryRunes caps the classifier's summary at the
 // documented 200-rune limit. Counting runes (not bytes) so a
-// summary full of non-ASCII characters does not silently truncate
-// halfway through a multi-byte sequence.
+// summary with non-ASCII characters cannot be cut in the middle of
+// a multi-byte sequence.
 const maxIntentSummaryRunes = 200
 
 func parseIntentKind(s string) (IntentKind, bool) {

@@ -212,6 +212,18 @@ func buildPipelineCoverage(
 	if intentLedger.Unreliable {
 		summary["intent_classification_unreliable"] = true
 	}
+	if intentLedger.PrefilteredCount > 0 {
+		summary["intent_turns_prefiltered"] = intentLedger.PrefilteredCount
+	}
+	if intentLedger.BatchesTotal > 0 {
+		summary["intent_batches_total"] = intentLedger.BatchesTotal
+	}
+	if intentLedger.BatchesFailed > 0 {
+		summary["intent_batches_failed"] = intentLedger.BatchesFailed
+	}
+	if intentLedger.BatchesDeadlineMissed > 0 {
+		summary["intent_batches_deadline_missed"] = intentLedger.BatchesDeadlineMissed
+	}
 	if pool.DeadlineExceeded {
 		summary["analyzer_deadline_exceeded"] = true
 	}
