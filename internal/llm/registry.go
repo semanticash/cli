@@ -64,19 +64,34 @@ func (r *WriterRegistry) List() []Writer {
 	return out
 }
 
-// GenerateText sends a redacted prompt to the first available writer
-// and returns its raw text response. The redaction step runs exactly
-// once regardless of how many writers are tried. Writers whose Find()
-// returns empty are skipped (no subprocess attempt). Writers whose
-// Generate returns an error fall through to the next writer; their
-// error is appended to a chained message returned only when every
-// writer fails. When no writer is even installed, returns a single-
-// line "no AI CLI found" message that enumerates every registered
-// writer so the install hint stays honest as the registry grows.
-func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*GenerateTextResult, error) {
+// prepPrompt runs the redactor and normalizes invalid UTF-8. Both
+// steps happen exactly once at the registry chokepoint so every
+// downstream writer receives the same egress-safe bytes regardless
+// of which fallback slot it occupies. Sanitizing here (not in each
+// writer) means an upstream renderer that produces invalid UTF-8
+// cannot make one provider stall while another errors out.
+func (r *WriterRegistry) prepPrompt(prompt string) (string, error) {
 	redacted, err := r.redactor(prompt)
 	if err != nil {
-		return nil, fmt.Errorf("egress redaction failed: %w", err)
+		return "", fmt.Errorf("egress redaction failed: %w", err)
+	}
+	return sanitizeUTF8(redacted), nil
+}
+
+// GenerateText sends a redacted, UTF-8-safe prompt to the first
+// available writer and returns its raw text response. Prompt prep
+// runs exactly once regardless of how many writers are tried.
+// Writers whose Find() returns empty are skipped (no subprocess
+// attempt). Writers whose Generate returns an error fall through
+// to the next writer; their error is appended to a chained message
+// returned only when every writer fails. When no writer is even
+// installed, returns a single-line "no AI CLI found" message that
+// enumerates every registered writer so the install hint stays
+// honest as the registry grows.
+func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*GenerateTextResult, error) {
+	prepped, err := r.prepPrompt(prompt)
+	if err != nil {
+		return nil, err
 	}
 
 	var lastErr error
@@ -89,7 +104,7 @@ func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*Gene
 		}
 		tried++
 
-		text, err := w.Generate(ctx, binPath, redacted)
+		text, err := w.Generate(ctx, binPath, prepped)
 		if err != nil {
 			lastErr = chainErr(lastErr, w.Name(), err)
 			continue
@@ -115,9 +130,9 @@ func (r *WriterRegistry) GenerateText(ctx context.Context, prompt string) (*Gene
 // failure (falls through to the next writer); the parse error is
 // chained into the final message.
 func (r *WriterRegistry) Generate(ctx context.Context, prompt string) (*GenerateResult, error) {
-	redacted, err := r.redactor(prompt)
+	prepped, err := r.prepPrompt(prompt)
 	if err != nil {
-		return nil, fmt.Errorf("egress redaction failed: %w", err)
+		return nil, err
 	}
 
 	var lastErr error
@@ -130,7 +145,7 @@ func (r *WriterRegistry) Generate(ctx context.Context, prompt string) (*Generate
 		}
 		tried++
 
-		text, err := w.Generate(ctx, binPath, redacted)
+		text, err := w.Generate(ctx, binPath, prepped)
 		if err != nil {
 			lastErr = chainErr(lastErr, w.Name(), err)
 			continue
