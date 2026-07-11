@@ -163,8 +163,8 @@ semantica suggest pr --copy
 
 Performs safe housekeeping on transient Semantica state. It can prune stale
 broker registry entries, remove abandoned capture state files, mark old
-incomplete checkpoints as failed, and remove orphan playbook FTS rows. By
-default it runs in dry-run mode and reports what would change.
+incomplete checkpoints as failed, and report what would change. By default it
+runs in dry-run mode.
 
 ```bash
 semantica tidy

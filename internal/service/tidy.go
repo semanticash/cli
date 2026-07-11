@@ -155,7 +155,7 @@ func isCaptureStale(st *hooks.CaptureState, thresholdMs int64) bool {
 	return isConfirmedMissing(st.TranscriptRef)
 }
 
-// tidyRepo handles per-repo cleanup: pending checkpoints and orphan FTS rows.
+// tidyRepo handles per-repo cleanup for stale pending checkpoints.
 func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyResult) error {
 	repoPath := in.RepoPath
 	if repoPath == "" {

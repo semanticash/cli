@@ -376,5 +376,5 @@ Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider 
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.
 - The background worker runs a reconciliation pass to flush any sessions with pending capture state, ensuring no events are lost if a hook invocation was interrupted.
-- `semantica tidy --apply` can remove abandoned capture state, stale broker entries, and orphan playbook FTS rows, and mark old pending checkpoints as failed without touching complete checkpoint history.
+- `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending checkpoints as failed without touching complete checkpoint history.
 - Capture is per-machine - activity from a different machine using the same repo is not captured unless that machine also has Semantica enabled.

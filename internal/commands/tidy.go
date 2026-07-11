@@ -23,7 +23,6 @@ Cleans up:
   - Stale broker registry entries (repos whose .semantica was deleted)
   - Abandoned capture state files (older than 24h with missing transcript)
   - Pending checkpoints that never completed (marked as failed)
-  - Orphan playbook FTS index rows
 
 Does NOT delete checkpoints, sessions, events, or blob objects.
 
@@ -84,9 +83,9 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 				}
 			}
 
-				if res.Errors > 0 {
-					_, _ = fmt.Fprintf(out, "\n%d action(s) failed\n", res.Errors)
-				}
+			if res.Errors > 0 {
+				_, _ = fmt.Fprintf(out, "\n%d action(s) failed\n", res.Errors)
+			}
 
 			return nil
 		},
