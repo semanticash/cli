@@ -217,10 +217,6 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	// recovered events are included in this checkpoint.
 	reconcileActiveSessions(ctx, s.registry)
 
-	// Process pending implementation observations. Errors are logged so the
-	// worker can continue with checkpoint enrichment.
-	reconcileImplementations(ctx, in.RepoRoot)
-
 	// Build the manifest, link sessions, update stats, and compute AI%.
 	er, err := enrichCheckpoint(ctx, wctx, in)
 	if err != nil {

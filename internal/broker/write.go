@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/doctor"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -66,7 +66,6 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		sessionStartedAt  int64
 		sessionMetaJSON   string
 		sourceRepoPath    string // set when session originated from a different repo
-		sourceProjectPath string // raw SourceProjectPath (always set, for implementation observations)
 		model             string // LLM model name
 		latestEventTs     int64  // most recent event timestamp in this group
 	}
@@ -94,7 +93,6 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				sessionStartedAt:  ev.SessionStartedAt,
 				sessionMetaJSON:   ev.SessionMetaJSON,
 				sourceRepoPath:    sourceRepoPath,
-				sourceProjectPath: ev.SourceProjectPath,
 				model:             ev.Model,
 			}
 			groups[key] = g
@@ -281,55 +279,6 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		return sessionIDs, fmt.Errorf("commit tx: %w", err)
 	}
 	dbDuration := time.Since(dbStart)
-
-	// Emit implementation observations (fail-open, best-effort).
-	// One observation per unique (provider, provider_session_id) in this batch.
-	// Aggregate across groups that share the same session (different source_keys)
-	// to get the latest event_ts and prefer non-empty parent/source fields.
-	type obsAgg struct {
-		provider          string
-		providerSessionID string
-		parentSessionID   string
-		sourceProjectPath string
-		latestEventTs     int64
-	}
-	obsMap := make(map[string]*obsAgg)
-	for _, key := range groupOrder {
-		g := groups[key]
-		dedup := g.events[0].Provider + "|" + g.providerSessionID
-		agg, ok := obsMap[dedup]
-		if !ok {
-			obsMap[dedup] = &obsAgg{
-				provider:          g.events[0].Provider,
-				providerSessionID: g.providerSessionID,
-				parentSessionID:   g.parentSessionID,
-				sourceProjectPath: g.sourceProjectPath,
-				latestEventTs:     g.latestEventTs,
-			}
-			continue
-		}
-		if g.latestEventTs > agg.latestEventTs {
-			agg.latestEventTs = g.latestEventTs
-		}
-		if agg.parentSessionID == "" && g.parentSessionID != "" {
-			agg.parentSessionID = g.parentSessionID
-		}
-		if agg.sourceProjectPath == "" && g.sourceProjectPath != "" {
-			agg.sourceProjectPath = g.sourceProjectPath
-		}
-	}
-	var observations []Observation
-	for _, agg := range obsMap {
-		observations = append(observations, Observation{
-			Provider:          agg.provider,
-			ProviderSessionID: agg.providerSessionID,
-			ParentSessionID:   agg.parentSessionID,
-			SourceProjectPath: agg.sourceProjectPath,
-			TargetRepoPath:    repoPath,
-			EventTs:           agg.latestEventTs,
-		})
-	}
-	EmitObservations(ctx, observations)
 
 	doctor.AddBenchStats(ctx, repoPath, doctor.BenchStats{
 		RowsWritten:  rowsWritten,

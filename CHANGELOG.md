@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- Removed `semantica implementations` / `semantica impl`, the related `close`, `link`, and `merge` controls, `semantica suggest implementations`, and the `auto-implementation-summary` setting and background command. Semantica no longer reads or writes `~/.semantica/implementations.db`; you can safely delete that file. Broker event routing is unchanged.
 - Removed `semantica intent-gap analyze`, the `semantica-intent-gap` agent skill, the local intent-gap analyzer package, health checks, and the intent-gap upload wire path. Findings were not reliable enough on real branches to keep as a shipped surface. Captured turns and actions remain in `.semantica/lineage.db` for future review-time tooling. If you previously installed the `semantica-intent-gap` agent skill, run `semantica skills uninstall` to remove the SKILL.md file left behind by the earlier release.
 - `semantica skills install` now skips any Semantica-named skill this CLI build does not back with a hidden subcommand, recording a `not supported by this CLI version` row per detected agent target instead of installing a SKILL.md whose backing command has been removed.
 

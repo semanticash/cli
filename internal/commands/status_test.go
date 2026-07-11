@@ -21,7 +21,6 @@ func TestRenderStatusCard(t *testing.T) {
 		UpdateAvailable:    true,
 		LatestVersion:      "v0.2.0",
 		AutoPlaybook:       true,
-		AutoImplSummary:    true,
 		GitTrailers:        true,
 		Providers:          []string{"claude-code"},
 		LastCheckpoint: &service.LastCheckpointInfo{
@@ -52,7 +51,6 @@ func TestRenderStatusCard(t *testing.T) {
 		"Settings",
 		"Remote: github",
 		"Auto-playbook: enabled",
-		"Auto-implementation-summary: enabled",
 		"Git Trailers: enabled",
 		"Agents: claude-code",
 		"Update available",

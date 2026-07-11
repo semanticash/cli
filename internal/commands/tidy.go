@@ -53,8 +53,7 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 			}
 
 			total := res.BrokerEntriesPruned + res.CaptureStatesRemoved +
-				res.CheckpointsMarked + res.ImplStale + res.ImplConflicts +
-				res.ImplFailedObs + res.ImplObsPruned
+				res.CheckpointsMarked
 
 			if total == 0 {
 				_, _ = fmt.Fprintln(out, "Nothing to clean up.")
@@ -71,7 +70,6 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 				{"Broker entries", "broker", res.BrokerEntriesPruned, "pruned"},
 				{"Capture states", "capture", res.CaptureStatesRemoved, "removed"},
 				{"Pending checkpoints", "checkpoint", res.CheckpointsMarked, "marked failed"},
-				{"Implementations", "implementation", res.ImplStale + res.ImplConflicts + res.ImplFailedObs + res.ImplObsPruned, "findings"},
 			}
 
 			for _, c := range categories {
