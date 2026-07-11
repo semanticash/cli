@@ -31,7 +31,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 - **Git** - Semantica hooks into the Git commit lifecycle
 - **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
 - **At least one supported AI provider** for capture (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
-- **At least one supported AI CLI** for LLM-backed features such as suggestions, playbooks, and intent-gap analysis (`claude`, `codex`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
+- **At least one supported AI CLI** for LLM-backed features such as suggestions and playbooks (`claude`, `codex`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
 
 ---
 
@@ -173,32 +173,6 @@ semantica set trailers enabled
 semantica set trailers disabled    # checkpoint-only commits
 ```
 
-### Intent-gap analysis
-
-For connected repositories, Semantica can compare captured user prompts with
-the committed pull request diff using an installed AI CLI. The result is an
-advisory review signal for requested work that may be incomplete, deferred
-work, or changed code without supporting captured intent.
-
-Run it from the terminal when you want a fresh analysis recorded for the
-current PR head:
-
-```bash
-semantica intent-gap analyze
-semantica intent-gap analyze --base origin/main
-semantica doctor
-```
-
-The `semantica-intent-gap` agent skill triggers the same analysis from a
-supported AI agent through natural language ("run intent-gap analysis",
-"did this PR miss anything from my prompts").
-
-Findings are generated locally, validated against captured prompt citations
-and changed diff regions, then recorded for hosted review. They are not proof
-that an implementation is correct or complete. See the
-[feature guide](docs/features.md#intent-gap-analysis) and
-[known limitations](docs/limitations.md#intent-gap-analysis).
-
 ### Cross-repo implementations
 
 Agent work often becomes one story that spans more than one repository: an API
@@ -305,7 +279,6 @@ remember exact command syntax. The current skills cover:
 
 - **`semantica-handoff`** - prepare a redacted `.semantica/handoff.md` bundle so a fresh same-agent or cross-agent session can continue the work.
 - **`semantica-explain`** - explain a commit using local provenance, hosted playbooks when connected, or a redacted git-only fallback.
-- **`semantica-intent-gap`** - run intent-gap analysis on the current PR; surfaces requested-but-missing work, unrequested code, or deferred trajectories using your installed AI CLI.
 
 After installation, use natural language in the agent, for example "handoff
 this session" or "explain this commit with Semantica." The skills call hidden
@@ -385,7 +358,6 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `implementations [id]` | List or inspect cross-repo implementation stories |
 | `suggest commit` | Generate a commit message from uncommitted changes |
 | `suggest pr` | Generate a PR title and body from the current branch diff |
-| `intent-gap analyze` | Analyze captured PR intent and record advisory findings |
 | `suggest implementations` | Suggest titles, summaries, and merge candidates for implementations |
 | `tidy` | Preview or remove stale local Semantica state |
 | `checkpoint` | Manually create a checkpoint |

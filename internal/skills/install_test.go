@@ -167,8 +167,8 @@ func TestInstall_RefusesUnmanagedDestinationWithoutForce(t *testing.T) {
 	}
 	// Pre-populate destination with a SKILL.md the user wrote
 	// themselves (no Semantica marker).
-	hostile := "# user's own SKILL.md\n"
-	if err := os.WriteFile(filepath.Join(dstDir, SkillFileName), []byte(hostile), 0o644); err != nil {
+	userSkill := "# user's own SKILL.md\n"
+	if err := os.WriteFile(filepath.Join(dstDir, SkillFileName), []byte(userSkill), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +183,7 @@ func TestInstall_RefusesUnmanagedDestinationWithoutForce(t *testing.T) {
 		t.Errorf("skip reason should call out the unmanaged file: %q", rep.Actions[0].Reason)
 	}
 	preserved, _ := os.ReadFile(filepath.Join(dstDir, SkillFileName))
-	if string(preserved) != hostile {
+	if string(preserved) != userSkill {
 		t.Errorf("unmanaged file was overwritten without --force:\n%s", preserved)
 	}
 }
@@ -198,10 +198,12 @@ func TestInstall_RejectsSourceWithDirNameMismatch(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, "")
 	t.Setenv(CodexSkillsDirEnv, "")
 
-	// Directory name does not match frontmatter `name`.
-	skillDir := filepath.Join(srcRoot, "wrong-dirname")
+	// Supported dir, different supported frontmatter name. The
+	// allowlist passes, and installOne catches the mismatch.
+	src := strings.Replace(sampleSkill, "name: semantica-handoff", "name: semantica-explain", 1)
+	skillDir := filepath.Join(srcRoot, "semantica-handoff")
 	_ = os.MkdirAll(skillDir, 0o755)
-	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(sampleSkill), 0o644)
+	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(src), 0o644)
 
 	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrSkillNameMismatch) {
@@ -336,11 +338,11 @@ func TestUninstall_PreservesUnmanagedFiles(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, "")
 	t.Setenv(CodexSkillsDirEnv, "")
 
-	// User-written SKILL.md inside a Semantica-shaped directory name.
+	// User-written SKILL.md inside a Semantica-prefixed directory.
 	dir := filepath.Join(dstRoot, "semantica-handoff")
 	_ = os.MkdirAll(dir, 0o755)
-	hostile := "# user's own\n"
-	_ = os.WriteFile(filepath.Join(dir, SkillFileName), []byte(hostile), 0o644)
+	userSkill := "# user's own\n"
+	_ = os.WriteFile(filepath.Join(dir, SkillFileName), []byte(userSkill), 0o644)
 
 	rep, err := Uninstall(false)
 	if err != nil {
@@ -350,7 +352,7 @@ func TestUninstall_PreservesUnmanagedFiles(t *testing.T) {
 		t.Errorf("expected ActionSkipped for unmanaged file, got %v", rep.Actions[0].Action)
 	}
 	preserved, _ := os.ReadFile(filepath.Join(dir, SkillFileName))
-	if string(preserved) != hostile {
+	if string(preserved) != userSkill {
 		t.Errorf("unmanaged file was modified:\n%s", preserved)
 	}
 }
@@ -431,9 +433,9 @@ func TestUninstall_ForceLeavesUnmanagedFilesInPrefixScope(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hostile := "# user authored under our prefix; no marker\n"
+	userSkill := "# user authored under our prefix; no marker\n"
 	path := filepath.Join(dir, SkillFileName)
-	if err := os.WriteFile(path, []byte(hostile), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(userSkill), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -445,7 +447,7 @@ func TestUninstall_ForceLeavesUnmanagedFilesInPrefixScope(t *testing.T) {
 		t.Fatalf("expected single ActionSkipped, got %+v", rep.Actions)
 	}
 	preserved, _ := os.ReadFile(path)
-	if string(preserved) != hostile {
+	if string(preserved) != userSkill {
 		t.Errorf("--force deleted an unmanaged file under our prefix:\n%s", preserved)
 	}
 }
@@ -459,11 +461,10 @@ func TestInstall_RejectsNonPrefixedSkillName(t *testing.T) {
 	t.Setenv(CursorSkillsDirEnv, "")
 	t.Setenv(CodexSkillsDirEnv, "")
 
-	// SKILL.md whose frontmatter `name` does not carry the
-	// Semantica prefix. Both source dir name and frontmatter name
-	// match, so the only failure is the prefix check itself.
+	// Supported dir, unprefixed frontmatter name. This reaches
+	// installOne and returns the prefix-specific error.
 	src := strings.Replace(sampleSkill, "name: semantica-handoff", "name: handoff", 1)
-	skillDir := filepath.Join(srcRoot, "handoff")
+	skillDir := filepath.Join(srcRoot, "semantica-handoff")
 	_ = os.MkdirAll(skillDir, 0o755)
 	_ = os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(src), 0o644)
 
@@ -610,6 +611,126 @@ func TestInstall_NoAgentsDetectedErrors(t *testing.T) {
 	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
 	if !errors.Is(err, ErrNoAgentsDetected) {
 		t.Errorf("expected ErrNoAgentsDetected, got %v", err)
+	}
+}
+
+// TestInstall_SkipsSkillsNotSupportedByThisCLI covers the skills
+// allowlist. Unsupported Semantica skills are reported as skipped
+// instead of being installed with a missing backing command.
+func TestInstall_SkipsSkillsNotSupportedByThisCLI(t *testing.T) {
+	srcRoot := filepath.Join(t.TempDir(), "src")
+	dstRoot := filepath.Join(t.TempDir(), "claude-skills")
+	disableAllAgentTargets(t)
+	t.Setenv(ClaudeSkillsDirEnv, dstRoot)
+
+	// Supported skill: the canonical sample writes semantica-handoff.
+	writeSampleSkill(t, srcRoot)
+
+	// Unsupported Semantica skill. The body is irrelevant because the
+	// allowlist check runs before installOne.
+	intentDir := filepath.Join(srcRoot, "semantica-intent-gap")
+	if err := os.MkdirAll(intentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(intentDir, SkillFileName), []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(rep.Actions) != 2 {
+		t.Fatalf("expected 2 actions (1 installed + 1 skipped), got %+v", rep.Actions)
+	}
+
+	byName := map[string]SkillAction{}
+	for _, a := range rep.Actions {
+		byName[a.Skill] = a
+	}
+
+	handoff, ok := byName["semantica-handoff"]
+	if !ok {
+		t.Fatalf("missing semantica-handoff row: %+v", rep.Actions)
+	}
+	if handoff.Action != ActionInstalled {
+		t.Errorf("semantica-handoff = %v, want ActionInstalled", handoff.Action)
+	}
+
+	intentGap, ok := byName["semantica-intent-gap"]
+	if !ok {
+		t.Fatalf("missing semantica-intent-gap row: %+v", rep.Actions)
+	}
+	if intentGap.Action != ActionSkipped {
+		t.Errorf("semantica-intent-gap = %v, want ActionSkipped", intentGap.Action)
+	}
+	if intentGap.Reason != "not supported by this CLI version" {
+		t.Errorf("semantica-intent-gap reason = %q, want stable reason string", intentGap.Reason)
+	}
+	if intentGap.Target != "claude-code" {
+		t.Errorf("semantica-intent-gap target = %q, want claude-code", intentGap.Target)
+	}
+
+	// No SKILL.md should land at the unsupported skill's destination.
+	if _, err := os.Stat(filepath.Join(dstRoot, "semantica-intent-gap", SkillFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("unsupported skill leaked to disk: err=%v", err)
+	}
+}
+
+// TestInstall_NonSemanticaDirIsNotSkippedAsUnsupported ensures the
+// allowlist only applies to Semantica-prefixed skill names.
+func TestInstall_NonSemanticaDirIsNotSkippedAsUnsupported(t *testing.T) {
+	srcRoot := filepath.Join(t.TempDir(), "src")
+	dstRoot := filepath.Join(t.TempDir(), "claude-skills")
+	disableAllAgentTargets(t)
+	t.Setenv(ClaudeSkillsDirEnv, dstRoot)
+
+	// Safe dir name, no semantica- prefix.
+	src := strings.Replace(sampleSkill, "name: semantica-handoff", "name: review", 1)
+	skillDir := filepath.Join(srcRoot, "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, SkillFileName), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	if !errors.Is(err, ErrSkillNameNotPrefixed) {
+		t.Fatalf("expected ErrSkillNameNotPrefixed for non-Semantica dir, got %v", err)
+	}
+}
+
+// TestInstall_ArchiveWithOnlyUnsupportedSkillsReturnsReportNotError
+// keeps unsupported Semantica skills distinct from an empty source.
+func TestInstall_ArchiveWithOnlyUnsupportedSkillsReturnsReportNotError(t *testing.T) {
+	srcRoot := filepath.Join(t.TempDir(), "src")
+	dstRoot := filepath.Join(t.TempDir(), "claude-skills")
+	disableAllAgentTargets(t)
+	t.Setenv(ClaudeSkillsDirEnv, dstRoot)
+
+	// Two unsupported skills, no supported ones.
+	for _, name := range []string{"semantica-intent-gap", "semantica-future-skill"} {
+		dir := filepath.Join(srcRoot, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, SkillFileName), []byte("stub"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep, err := Install(context.Background(), InstallOptions{Source: srcRoot, CLIVersion: "v0.3.9"})
+	if err != nil {
+		t.Fatalf("Install: %v (unsupported-only source must not surface ErrSourceNoSkills)", err)
+	}
+	if len(rep.Actions) != 2 {
+		t.Fatalf("expected 2 skipped actions, got %+v", rep.Actions)
+	}
+	for _, a := range rep.Actions {
+		if a.Action != ActionSkipped {
+			t.Errorf("action = %v, want ActionSkipped for %+v", a.Action, a)
+		}
 	}
 }
 

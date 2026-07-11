@@ -193,8 +193,6 @@ func categoryTitle(cat string) string {
 		return "Provider configuration"
 	case "diagnostics":
 		return "Diagnostics"
-	case "intent-gap":
-		return "Intent-gap"
 	default:
 		return cat
 	}
@@ -208,8 +206,7 @@ var doctorCategoryOrder = map[string]int{
 	"events":      4,
 	"manifests":   5,
 	"footguns":    6,
-	"intent-gap":  7,
-	"diagnostics": 8,
+	"diagnostics": 7,
 }
 
 func orderedCategoriesForCard(checks []health.Check) []string {

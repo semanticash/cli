@@ -59,22 +59,6 @@ semantica workspace requests
 
 Connecting a repo does not disable or replace any of the local workflows.
 
-## Intent-gap analysis
-
-Intent-gap analysis runs locally through a supported AI CLI. The CLI builds the
-analysis bundle from committed Git history and captured prompts, redacts prompt
-text before the model call, validates the result, and records the structured
-outcome in the connected workspace.
-
-The intent-gap upload includes accepted findings, coverage and truncation
-metadata, provider/model attribution, and the cited redacted prompt excerpts
-needed to explain a finding. The raw cumulative diff and uncited full prompt
-bundle are not uploaded through this endpoint.
-
-Run `semantica intent-gap analyze` (or trigger the `semantica-intent-gap`
-agent skill) when you want to record an analysis for the current PR head.
-Use `semantica doctor` to inspect the most recent local outcome.
-
 ## Authentication
 
 `semantica auth login` authenticates you globally. It does not connect any repos by itself.
