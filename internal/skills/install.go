@@ -65,6 +65,15 @@ const SkillFileName = "SKILL.md"
 // regardless of the --force flag.
 const SemanticaSkillNamePrefix = "semantica-"
 
+// supportedSkillNames lists Semantica skills this CLI can run. The
+// public skills repo may contain skills added before this build
+// supports them, or skills whose backing command was removed.
+// Unsupported Semantica skills are skipped during install.
+var supportedSkillNames = map[string]struct{}{
+	"semantica-handoff": {},
+	"semantica-explain": {},
+}
+
 // safeSkillName matches the on-disk identifier shape: a leading
 // letter, lowercase alnum and hyphens after, length capped. Anchored
 // so any path separator, traversal, or whitespace fails before any
@@ -224,6 +233,23 @@ func Install(ctx context.Context, opts InstallOptions) (*Report, error) {
 		}
 		found++
 
+		// Skip Semantica skills this build cannot run. Other names
+		// continue through installOne so existing validation errors
+		// stay precise.
+		if safeSkillName.MatchString(dirName) && strings.HasPrefix(dirName, SemanticaSkillNamePrefix) {
+			if _, ok := supportedSkillNames[dirName]; !ok {
+				for _, target := range targets {
+					rep.Actions = append(rep.Actions, SkillAction{
+						Skill:  dirName,
+						Target: target.Name,
+						Action: ActionSkipped,
+						Reason: "not supported by this CLI version",
+					})
+				}
+				continue
+			}
+		}
+
 		for _, target := range targets {
 			action, actErr := installOne(opts, dirName, srcPath, target)
 			if actErr != nil {
@@ -240,11 +266,10 @@ func Install(ctx context.Context, opts InstallOptions) (*Report, error) {
 	return &rep, nil
 }
 
-// installOne performs the integrity checks and write for a single
-// skill into a single agent target. The directory name must match
-// the frontmatter name; destination paths are derived from the
-// validated frontmatter name only, so an attacker-controlled
-// directory name cannot push content outside the skills root.
+// installOne performs the integrity checks and write for one skill
+// into one agent target. The directory name must match the
+// frontmatter name; destination paths are derived only from the
+// validated frontmatter name.
 func installOne(opts InstallOptions, dirName, srcPath string, target agentTarget) (SkillAction, error) {
 	src, err := os.ReadFile(srcPath)
 	if err != nil {
@@ -397,10 +422,8 @@ func uninstallOne(target agentTarget, force bool, rep *Report) error {
 		ok, vErr := Verify(body)
 		switch {
 		case errors.Is(vErr, ErrManagedMarkerMissing):
-			// Prefix matches but no marker: refuse to delete under
-			// any flag. The user could have authored a SKILL.md
-			// here themselves; --force should never let us delete
-			// content we never marked as ours.
+			// Prefix matches but no marker: preserve the file under
+			// all flags because Semantica did not mark it as managed.
 			rep.Actions = append(rep.Actions, SkillAction{
 				Skill: name, Target: target.Name, Path: path, Action: ActionSkipped,
 				Reason: "not Semantica-managed (marker missing); refusing to remove",

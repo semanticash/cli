@@ -5,6 +5,13 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- Removed `semantica intent-gap analyze`, the `semantica-intent-gap` agent skill, the local intent-gap analyzer package, health checks, and the intent-gap upload wire path. Findings were not reliable enough on real branches to keep as a shipped surface. Captured turns and actions remain in `.semantica/lineage.db` for future review-time tooling. If you previously installed the `semantica-intent-gap` agent skill, run `semantica skills uninstall` to remove the SKILL.md file left behind by the earlier release.
+- `semantica skills install` now skips any Semantica-named skill this CLI build does not back with a hidden subcommand, recording a `not supported by this CLI version` row per detected agent target instead of installing a SKILL.md whose backing command has been removed.
+
 ## [0.5.4] - 2026-06-13
 
 ### Added

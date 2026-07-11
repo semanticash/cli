@@ -662,42 +662,6 @@ func (r *Repo) CommitSubjectsBetween(ctx context.Context, base, head string, lim
 	return strings.Split(raw, "\n"), nil
 }
 
-// CommitMetaBetween is one row of CommitSummariesBetween: the commit
-// hash with its subject. Returned chronologically (oldest first).
-type CommitMetaBetween struct {
-	Hash    string
-	Subject string
-}
-
-// CommitSummariesBetween returns commit hashes and subjects for
-// commits reachable from head but not from base, in chronological
-// order (oldest first). Capped at limit. Differs from
-// CommitSubjectsBetween in returning paired hash + subject and
-// chronological order, both of which the intent-gap bundle needs to
-// correlate captured turns to specific commits.
-func (r *Repo) CommitSummariesBetween(ctx context.Context, base, head string, limit int) ([]CommitMetaBetween, error) {
-	const sep = "\x1f" // ASCII unit separator: never appears in hashes or normal subjects.
-	cmd := r.gitCmd(ctx, "log", "--reverse", "--format=%H"+sep+"%s",
-		fmt.Sprintf("-%d", limit), base+".."+head)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("log %s..%s: %w", base, head, err)
-	}
-	raw := cleanGitOutput(out)
-	if raw == "" {
-		return nil, nil
-	}
-	var rows []CommitMetaBetween
-	for _, line := range strings.Split(raw, "\n") {
-		hash, subj, ok := strings.Cut(line, sep)
-		if !ok {
-			return nil, fmt.Errorf("malformed log line: %q", line)
-		}
-		rows = append(rows, CommitMetaBetween{Hash: hash, Subject: subj})
-	}
-	return rows, nil
-}
-
 // CountCommitsBetween returns the exact number of commits reachable
 // from head but not from base. Used by callers that need an honest
 // "dropped N commits" report when truncating: a limit-clamped log

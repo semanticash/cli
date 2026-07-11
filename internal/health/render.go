@@ -18,8 +18,7 @@ var categoryOrder = map[string]int{
 	"events":      4,
 	"manifests":   5,
 	"footguns":    6,
-	"intent-gap":  7,
-	"diagnostics": 8,
+	"diagnostics": 7,
 }
 
 // categoryTitle is the human-readable label for each category.
@@ -31,7 +30,6 @@ var categoryTitle = map[string]string{
 	"events":      "Recent events",
 	"manifests":   "Manifests",
 	"footguns":    "Provider configuration",
-	"intent-gap":  "Intent-gap",
 	"diagnostics": "Diagnostics",
 }
 

@@ -434,26 +434,6 @@ semantica set trailers disabled            # Checkpoint-only commits
 | `auto-playbook` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable auto-playbook generation after each commit |
 | `trailers` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable `Semantica-Attribution` and `Semantica-Diagnostics` trailers (`Semantica-Checkpoint` is always included) |
 
-### `semantica intent-gap analyze`
-
-Analyze the committed pull request range with an installed local AI CLI and
-record advisory findings in the connected workspace.
-
-```bash
-semantica intent-gap analyze
-semantica intent-gap analyze --base origin/main
-semantica intent-gap analyze --quiet
-```
-
-The command requires Semantica to be enabled, an authenticated and connected
-repository, and an open pull request for the current branch. It runs in the
-foreground so analysis or upload failures are visible immediately.
-
-| Flag | Description |
-|------|-------------|
-| `--base <ref>` | Override automatic base-branch detection |
-| `--quiet`, `-q` | Suppress successful and skipped output; errors remain non-zero |
-
 ### `semantica auth`
 
 Manage authentication for optional hosted features.
