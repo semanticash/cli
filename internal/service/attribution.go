@@ -216,14 +216,6 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	fileProvider := cands.FileProvider
 	providerModel := cands.ProviderModel
 
-	// Derive aiTouchedFiles from ProviderTouchedFiles keys.
-	// ProviderTouchedFiles includes all touched paths: provider file-touch,
-	// line-level Claude writes/edits, and bash deletion paths.
-	aiTouchedFiles := make(map[string]bool, len(providerTouchedFiles))
-	for fp := range providerTouchedFiles {
-		aiTouchedFiles[fp] = true
-	}
-
 	var diag AttributionDiagnostics
 	diag.EventsConsidered = evStats.EventsConsidered
 	diag.EventsAssistant = evStats.EventsAssistant
@@ -236,6 +228,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	}
 
 	dr := parseDiff(diffBytes)
+
+	// Bash `rm -rf <dir>` records the directory, while git diff reports
+	// the deleted files under it. Expand the directory-level provider
+	// signal onto those deleted files before deriving touched-file maps.
+	expandDirectoryDeletionProviders(providerTouchedFiles, dr.filesDeleted)
+
+	// Derive aiTouchedFiles from ProviderTouchedFiles keys after the
+	// directory expansion. The carry-forward path below may add more
+	// entries as it merges historical candidates; those additions land
+	// on this same map.
+	aiTouchedFiles := make(map[string]bool, len(providerTouchedFiles))
+	for fp := range providerTouchedFiles {
+		aiTouchedFiles[fp] = true
+	}
 
 	// Per-file carry-forward: for created files with 0 AI in the current
 	// window that exist in the previous checkpoint's manifest, query
@@ -345,7 +351,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	// Build per-file touch origins for evidence classification.
 	touchOrigins := deriveFileTouchOrigins(aiTouchedFiles, aiLines, providerTouchedFiles, fileProvider)
 
-	// Narrow carry-forward set to files that actually scored AI lines.
+	// Narrow carry-forward set to files with scored AI lines.
 	// needsCF is the set of files that needed historical retry; some may
 	// still have zero AI lines after carry-forward if the historical window
 	// also had no matching candidates.
@@ -359,7 +365,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	}
 
 	// Derive the per-file provider list from scored data so each file
-	// surfaces the providers that actually own its matched diff lines.
+	// surfaces the providers that own its matched diff lines.
 	// Sorted desc by matched line count: the dominant provider leads,
 	// secondary providers follow. Files with no scored line-level
 	// evidence (provider-touch only, deletions) fall back to
@@ -861,6 +867,39 @@ func fileScoreHasAttribution(fs *fileScore) bool {
 		fs.formattedLines > 0 ||
 		fs.modifiedLines > 0 ||
 		fs.providerOnlyLines > 0
+}
+
+// expandDirectoryDeletionProviders maps directory-level deletion
+// signals onto deleted files reported by git diff.
+//
+// A match requires a path boundary: file == dir or file has dir + "/"
+// as a prefix. The longest matching directory wins, and existing
+// per-file entries keep precedence.
+func expandDirectoryDeletionProviders(providerTouchedFiles map[string]string, deletedFiles []string) {
+	if len(providerTouchedFiles) == 0 || len(deletedFiles) == 0 {
+		return
+	}
+	for _, file := range deletedFiles {
+		if _, hit := providerTouchedFiles[file]; hit {
+			continue
+		}
+		var bestDir, bestProv string
+		for dir, prov := range providerTouchedFiles {
+			if dir == "" || dir == file {
+				continue
+			}
+			if !strings.HasPrefix(file, dir+"/") {
+				continue
+			}
+			if len(dir) > len(bestDir) {
+				bestDir = dir
+				bestProv = prov
+			}
+		}
+		if bestDir != "" {
+			providerTouchedFiles[file] = bestProv
+		}
+	}
 }
 
 // buildCommitResultInput converts local types to the reporting package's
