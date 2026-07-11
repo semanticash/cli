@@ -1249,3 +1249,182 @@ func TestRegression_FileChangeAI_BashDeletionZeroScored(t *testing.T) {
 		t.Errorf("AIPercentage = %.1f, want 0 (deleted file only)", result.AIPercentage)
 	}
 }
+
+// Directory-level Bash deletion should attribute every deleted file
+// under that directory to the provider that ran the command.
+func TestRegression_FileChangeAI_BashRecursiveDirectoryDeletion(t *testing.T) {
+	dir, _ := setupGoldenRepo(t)
+	ctx := context.Background()
+
+	// Set up a package with two files, commit it.
+	pkgDir := filepath.Join(dir, "internal", "doomedpkg")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir doomedpkg: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(pkgDir, "a.go"), []byte("package doomedpkg\n"))
+	mustWriteFile(t, filepath.Join(pkgDir, "b.go"), []byte("package doomedpkg\n"))
+	mustRunGit(t, dir, "add", ".")
+	mustRunGit(t, dir, "commit", "-m", "add doomedpkg")
+
+	// Delete the whole directory and commit.
+	if err := os.RemoveAll(pkgDir); err != nil {
+		t.Fatalf("remove doomedpkg: %v", err)
+	}
+	mustRunGit(t, dir, "add", "-A")
+	mustRunGit(t, dir, "commit", "-m", "remove doomedpkg")
+	deleteCommit := mustGitOutput(t, dir, "rev-parse", "HEAD")
+
+	// Insert a Bash event whose command targets the directory, not
+	// the individual files.
+	repo := mustOpenRepo(t, dir)
+	repoRoot := repo.Root()
+	dbPath := filepath.Join(repoRoot, ".semantica", "lineage.db")
+	objectsDir := filepath.Join(repoRoot, ".semantica", "objects")
+	h := mustOpenSQLStore(t, ctx, dbPath)
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
+	if err != nil {
+		t.Fatalf("get repository row: %v", err)
+	}
+	bs, err := blobs.NewStore(objectsDir)
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
+
+	srcID := insertSource(t, h, repoRow.RepositoryID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoRow.RepositoryID, srcID, "sess-rm-rf")
+
+	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm -rf %s/internal/doomedpkg"}}]}}`, filepath.ToSlash(repoRoot))
+	payloadHash, _, err := bs.Put(ctx, []byte(payload))
+	if err != nil {
+		t.Fatalf("store bash payload: %v", err)
+	}
+	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: uuid.NewString(), SessionID: sessID, RepositoryID: repoRow.RepositoryID,
+		Ts: 450_000, Kind: "assistant", Role: sqlstore.NullStr("assistant"),
+		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
+		PayloadHash: sqlstore.NullStr(payloadHash),
+	}); err != nil {
+		t.Fatalf("insert bash event: %v", err)
+	}
+
+	cpID := uuid.NewString()
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+		CheckpointID: cpID, RepositoryID: repoRow.RepositoryID,
+		CreatedAt: 500_000, Kind: "auto", Status: "complete",
+		CompletedAt: sql.NullInt64{Int64: 500_000, Valid: true},
+	}); err != nil {
+		t.Fatalf("insert checkpoint: %v", err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: deleteCommit, RepositoryID: repoRow.RepositoryID,
+		CheckpointID: cpID, LinkedAt: 500_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = sqlstore.Close(h)
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{RepoPath: dir, CommitHash: deleteCommit})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+
+	// Each deleted leaf should inherit the directory-level provider.
+	wantAI := map[string]bool{
+		"internal/doomedpkg/a.go": true,
+		"internal/doomedpkg/b.go": true,
+	}
+	seen := make(map[string]bool)
+	for _, fc := range result.FilesDeleted {
+		if !wantAI[fc.Path] {
+			continue
+		}
+		seen[fc.Path] = true
+		if !fc.AI {
+			t.Errorf("%s FilesDeleted.AI = false, want true (directory rm should propagate)", fc.Path)
+		}
+	}
+	for path := range wantAI {
+		if !seen[path] {
+			t.Errorf("%s missing from FilesDeleted", path)
+		}
+	}
+}
+
+// Unit-level coverage for path-boundary and longest-match behavior.
+func TestExpandDirectoryDeletionProviders(t *testing.T) {
+	cases := []struct {
+		name     string
+		provTF   map[string]string
+		deleted  []string
+		wantFile map[string]string // per-file provider we expect after expansion
+	}{
+		{
+			name:     "directory expands to leaves",
+			provTF:   map[string]string{"internal/intentgap": "claude_code"},
+			deleted:  []string{"internal/intentgap/a.go", "internal/intentgap/b.go"},
+			wantFile: map[string]string{"internal/intentgap/a.go": "claude_code", "internal/intentgap/b.go": "claude_code"},
+		},
+		{
+			name:     "existing per-file entry is not overwritten",
+			provTF:   map[string]string{"internal/intentgap": "claude_code", "internal/intentgap/a.go": "codex"},
+			deleted:  []string{"internal/intentgap/a.go", "internal/intentgap/b.go"},
+			wantFile: map[string]string{"internal/intentgap/a.go": "codex", "internal/intentgap/b.go": "claude_code"},
+		},
+		{
+			name:     "longest matching parent wins",
+			provTF:   map[string]string{"a": "claude_code", "a/b": "codex"},
+			deleted:  []string{"a/b/leaf.go", "a/other/leaf.go"},
+			wantFile: map[string]string{"a/b/leaf.go": "codex", "a/other/leaf.go": "claude_code"},
+		},
+		{
+			name:     "path boundary match: 'foo' does not inherit from 'f'",
+			provTF:   map[string]string{"f": "claude_code"},
+			deleted:  []string{"foo.go"},
+			wantFile: map[string]string{},
+		},
+		{
+			name:     "no directory match leaves file unattributed",
+			provTF:   map[string]string{"other/pkg": "claude_code"},
+			deleted:  []string{"internal/intentgap/a.go"},
+			wantFile: map[string]string{},
+		},
+		{
+			name:     "empty inputs are a no-op",
+			provTF:   map[string]string{},
+			deleted:  []string{"a.go"},
+			wantFile: map[string]string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ptf := make(map[string]string, len(tc.provTF))
+			for k, v := range tc.provTF {
+				ptf[k] = v
+			}
+			expandDirectoryDeletionProviders(ptf, tc.deleted)
+			for file, wantProv := range tc.wantFile {
+				gotProv, ok := ptf[file]
+				if !ok {
+					t.Errorf("%q missing from providerTouchedFiles after expansion", file)
+					continue
+				}
+				if gotProv != wantProv {
+					t.Errorf("%q provider = %q, want %q", file, gotProv, wantProv)
+				}
+			}
+			// Deleted paths not expected or seeded should stay absent.
+			for _, file := range tc.deleted {
+				if _, expected := tc.wantFile[file]; expected {
+					continue
+				}
+				if _, seeded := tc.provTF[file]; seeded {
+					continue
+				}
+				if _, leaked := ptf[file]; leaked {
+					t.Errorf("%q was not expected to gain an entry but did", file)
+				}
+			}
+		})
+	}
+}
