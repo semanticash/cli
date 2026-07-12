@@ -2,7 +2,7 @@ package carryforward
 
 import "testing"
 
-func TestIdentifyCandidates(t *testing.T) {
+func TestIdentifyCreatedCandidates(t *testing.T) {
 	tests := []struct {
 		name         string
 		filesCreated []string
@@ -43,7 +43,52 @@ func TestIdentifyCandidates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := IdentifyCandidates(tt.filesCreated, tt.manifest)
+			got := IdentifyCreatedCandidates(tt.filesCreated, tt.manifest)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for k := range tt.want {
+				if !got[k] {
+					t.Errorf("missing key %q", k)
+				}
+			}
+		})
+	}
+}
+
+// Modified-file eligibility relies on scoring to reject stale evidence.
+func TestIdentifyModifiedCandidates(t *testing.T) {
+	tests := []struct {
+		name        string
+		filesEdited []string
+		want        map[string]bool
+	}{
+		{
+			name:        "single edited file",
+			filesEdited: []string{"a.go"},
+			want:        map[string]bool{"a.go": true},
+		},
+		{
+			name:        "multiple edited files",
+			filesEdited: []string{"a.go", "b.go", "c.go"},
+			want:        map[string]bool{"a.go": true, "b.go": true, "c.go": true},
+		},
+		{
+			name:        "empty input returns nil",
+			filesEdited: nil,
+			want:        nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IdentifyModifiedCandidates(tt.filesEdited)
 			if tt.want == nil {
 				if got != nil {
 					t.Errorf("expected nil, got %v", got)

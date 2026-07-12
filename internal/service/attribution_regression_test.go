@@ -543,6 +543,88 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	}
 }
 
+// Covers modified-file carry-forward when the AI edit happened before the
+// previous commit-linked checkpoint.
+func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoID, srcID, "sess-modified")
+
+	// Content stays quote-free because insertEventWithPayload does not
+	// escape inner quotes when composing tool_use JSON.
+	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot,
+		150_000, "utils.go", "package utils\nfunc Helper() { return 42 }\n")
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Modified-file diff: the added line matches the historical payload.
+	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	if cfr.noEvents {
+		t.Error("noEvents should be false; historical window has the edit")
+	}
+	if cfr.result.AILines == 0 {
+		t.Errorf("AILines = 0, want > 0 (historical AI evidence should carry forward to modified file)")
+	}
+	if cfr.result.Percent == 0 {
+		t.Errorf("Percent = 0, want > 0 (deferred modified-file attribution should not fall back to human)")
+	}
+}
+
+// Historical evidence on the same file must still match the current diff.
+func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing.T) {
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoID, srcID, "sess-stale")
+
+	// Historical AI output differs from the current added line.
+	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot,
+		150_000, "utils.go", "package utils\nfunc OldImpl() { return 1 }\n")
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Historical candidates are loaded, but line matching should reject them.
+	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,3 @@\n package utils\n+func Handler() { return 42 }\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (historical lines must match the current diff)", cfr.result.AILines)
+	}
+}
+
 func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
@@ -822,7 +904,7 @@ func TestRegression_AttributeCommit_EvidenceFields(t *testing.T) {
 
 func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
 	// A file goes through carry-forward but the historical window has no
-	// matching events either. The file should NOT get carry_forward evidence
+	// matching events either. It should not get carry_forward evidence
 	// because it scored zero AI lines.
 	h := testDB(t)
 	ctx := context.Background()
@@ -832,14 +914,14 @@ func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
 	repoID := insertRepo(t, h, 100_000)
 	repoRoot := "/test/repo/" + repoID
 
-	// CP1 has a manifest with utils.go but NO events with matching content.
+	// CP1 has a manifest with utils.go but no matching events.
 	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
 	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
 	}); err != nil {
 		t.Fatalf("insert commit link: %v", err)
 	}
-	// CP2: current window, also no matching events.
+	// CP2 is the current window, also with no matching events.
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
 	// Diff creates utils.go. Carry-forward will attempt historical lookup

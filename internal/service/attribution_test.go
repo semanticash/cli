@@ -840,9 +840,9 @@ func TestScanForTrailers_OldFormatNotDetected(t *testing.T) {
 	}
 }
 
-// carryForwardCandidates tests.
+// createdCarryForwardCandidates tests.
 
-func TestCarryForwardCandidates(t *testing.T) {
+func TestCreatedCarryForwardCandidates(t *testing.T) {
 	tests := []struct {
 		name         string
 		filesCreated []string
@@ -884,7 +884,7 @@ func TestCarryForwardCandidates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dr := diffResult{filesCreated: tt.filesCreated}
-			got := carryForwardCandidates(dr, tt.manifest)
+			got := createdCarryForwardCandidates(dr, tt.manifest)
 			if tt.want == nil {
 				if got != nil {
 					t.Errorf("expected nil, got %v", got)
@@ -1546,10 +1546,8 @@ func TestCarryForward_ProviderMerge(t *testing.T) {
 		t.Errorf("Providers count = %d, want >= 2 (claude_code + cursor)", len(cfr.result.Providers))
 	}
 
-	// Track both line-level AILines and ProviderOnlyLines so the
-	// carry-forward path's per-provider split is checked
-	// honestly: claude contributes line-level, cursor contributes
-	// provider-only via carry-forward.
+	// Check both line-level and provider-only counts in the
+	// carry-forward provider split.
 	type pcounts struct{ ll, po int }
 	provMap := map[string]pcounts{}
 	for _, p := range cfr.result.Providers {
@@ -1991,6 +1989,226 @@ func TestAttributeCommit_CarryForward(t *testing.T) {
 	}
 	if !foundInCreated {
 		t.Error("create.go should appear in FilesCreated")
+	}
+}
+
+// TestAttributeCommit_CarryForward_ModifiedFile covers the public blame path:
+// an AI edit happens before an intermediate commit checkpoint, then lands in a
+// later commit as a modified file.
+func TestAttributeCommit_CarryForward_ModifiedFile(t *testing.T) {
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	ctx := context.Background()
+
+	gitInit := exec.Command("git", "init", dir)
+	gitInit.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	gitCmd := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// Baseline for utils.go.
+	if err := os.WriteFile(filepath.Join(dir, "utils.go"),
+		[]byte("package utils\nfunc Helper() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "utils.go")
+	gitCmd("commit", "-m", "initial")
+
+	// Intermediate commit becomes the previous commit-linked checkpoint.
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.go"),
+		[]byte("package unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "unrelated.go")
+	gitCmd("commit", "-m", "intermediate: unrelated change")
+	commit1Hash := gitCmd("rev-parse", "HEAD")
+
+	// Later commit lands the earlier AI-written content.
+	if err := os.WriteFile(filepath.Join(dir, "utils.go"),
+		[]byte("package utils\nfunc Helper() { return 42 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "utils.go")
+	gitCmd("commit", "-m", "deferred edit lands")
+	commit2Hash := gitCmd("rev-parse", "HEAD")
+
+	// Set up .semantica and lineage.
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	objectsDir := filepath.Join(semDir, "objects")
+	bs, err := blobs.NewStore(objectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{BusyTimeout: 200, Synchronous: "NORMAL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: dir, CreatedAt: 50_000, EnabledAt: 50_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srcRow, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID:     uuid.NewString(),
+		RepositoryID: repoID,
+		SourceKey:    "/fake/source.jsonl",
+		Provider:     "claude_code",
+		LastSeenAt:   50_000,
+		CreatedAt:    50_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessRow, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID:         uuid.NewString(),
+		ProviderSessionID: "sess-deferred",
+		RepositoryID:      repoID,
+		Provider:          "claude_code",
+		SourceID:          srcRow.SourceID,
+		StartedAt:         50_000,
+		LastSeenAt:        50_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessID := sessRow.SessionID
+
+	insertEvt := func(ts int64, filePath, content string) {
+		t.Helper()
+		payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/%s","content":"%s"}}]}}`,
+			filepath.ToSlash(dir), filePath, strings.ReplaceAll(content, "\n", "\\n"))
+		payloadHash, _, _ := bs.Put(ctx, []byte(payload))
+		tuJSON := fmt.Sprintf(`{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"%s","file_op":"write"}]}`, filePath)
+		if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+			EventID:      uuid.NewString(),
+			SessionID:    sessID,
+			RepositoryID: repoID,
+			Ts:           ts,
+			Kind:         "assistant",
+			Role:         sqlstore.NullStr("assistant"),
+			ToolUses:     sql.NullString{String: tuJSON, Valid: true},
+			PayloadHash:  sqlstore.NullStr(payloadHash),
+			Summary:      sqlstore.NullStr("Wrote " + filePath),
+		}); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
+	}
+	insertCP := func(createdAt int64, manifestFiles []string) string {
+		t.Helper()
+		var files []blobs.ManifestFile
+		for _, p := range manifestFiles {
+			files = append(files, blobs.ManifestFile{Path: p, Blob: "fakehash-" + p, Size: 100})
+		}
+		manifest := blobs.Manifest{Version: 1, CreatedAt: createdAt, Files: files}
+		raw, _ := json.Marshal(manifest)
+		manifestHash, _, _ := bs.Put(ctx, raw)
+		cpID := uuid.NewString()
+		if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+			CheckpointID: cpID,
+			RepositoryID: repoID,
+			CreatedAt:    createdAt,
+			Kind:         "auto",
+			Trigger:      sqlstore.NullStr("test"),
+			Message:      sqlstore.NullStr(fmt.Sprintf("cp at %d", createdAt)),
+			ManifestHash: sqlstore.NullStr(manifestHash),
+			SizeBytes:    sql.NullInt64{Int64: 100, Valid: true},
+			Status:       "complete",
+			CompletedAt:  sql.NullInt64{Int64: createdAt, Valid: true},
+		}); err != nil {
+			t.Fatalf("insert checkpoint: %v", err)
+		}
+		return cpID
+	}
+
+	// AI writes utils.go before the previous commit-linked checkpoint.
+	insertEvt(100_000, "utils.go", "package utils\nfunc Helper() { return 42 }\n")
+
+	// cp1 links to the intermediate commit; utils.go exists in its manifest.
+	cp1ID := insertCP(200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: commit1Hash, RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// cp2 links to the deferred commit. The current window has no utils.go
+	// events, so attribution depends on modified-file carry-forward.
+	cp2ID := insertCP(300_000, []string{"utils.go", "unrelated.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: commit2Hash, RepositoryID: repoID, CheckpointID: cp2ID, LinkedAt: 300_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewAttributionService()
+	result, err := svc.AttributeCommit(ctx, AttributionInput{
+		RepoPath:   dir,
+		CommitHash: commit2Hash,
+	})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+
+	// utils.go should be attributed via historical evidence matched to
+	// the current diff.
+	if result.AILines == 0 {
+		t.Fatal("AILines = 0, want > 0 (modified-file carry-forward should credit the deferred edit)")
+	}
+	foundEditAI := false
+	for _, f := range result.Files {
+		if f.Path != "utils.go" {
+			continue
+		}
+		if f.AIExactLines+f.AIFormattedLines+f.AIModifiedLines > 0 {
+			foundEditAI = true
+		}
+	}
+	if !foundEditAI {
+		t.Error("utils.go should have AI attribution via modified-file carry-forward; got 0 AI lines")
+	}
+
+	// FilesEdited drives the `[ai:provider]` tag in blame output.
+	foundInEdited := false
+	for _, fc := range result.FilesEdited {
+		if fc.Path == "utils.go" {
+			foundInEdited = true
+			if !fc.AI {
+				t.Error("utils.go in FilesEdited should have AI=true after modified-file carry-forward")
+			}
+		}
+	}
+	if !foundInEdited {
+		t.Error("utils.go should appear in FilesEdited")
 	}
 }
 

@@ -243,17 +243,16 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		aiTouchedFiles[fp] = true
 	}
 
-	// Per-file carry-forward: for created files with 0 AI in the current
-	// window that exist in the previous checkpoint's manifest, query
-	// historical events and merge their AI candidates.
+	// Carry forward older evidence for created or modified files that
+	// have no current-window AI attribution. Both sets share one
+	// historical query; scoring against the current diff remains the gate.
 	var needsCF map[string]bool
 	if prevErr == nil {
 		manifestFiles := loadManifestForCheckpoint(ctx, bs, prev.ManifestHash, semDir)
-		cfCandidates := carryForwardCandidates(dr, manifestFiles)
-		if len(cfCandidates) > 0 {
-			// Score candidate files against the diff using current-window
-			// candidates. Only carry-forward files that score 0 AI lines,
-			// matching the gate logic in attributeWithCarryForward.
+		createdCands := createdCarryForwardCandidates(dr, manifestFiles)
+		modifiedCands := modifiedCarryForwardCandidates(dr)
+		if len(createdCands) > 0 || len(modifiedCands) > 0 {
+			// Only files with zero current-window AI lines need lookback.
 			currentCands := aiCandidates{
 				aiLines:              aiLines,
 				lineProviders:        lineProviders,
@@ -269,14 +268,28 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				}
 			}
 			needsCF = make(map[string]bool)
-			for path := range cfCandidates {
+			var createdDeferred, modifiedDeferred int
+			for path := range createdCands {
 				if !scoredAI[path] {
 					needsCF[path] = true
+					createdDeferred++
+				}
+			}
+			for path := range modifiedCands {
+				if !scoredAI[path] {
+					needsCF[path] = true
+					modifiedDeferred++
 				}
 			}
 			if len(needsCF) > 0 {
-				util.AppendActivityLog(semDir,
-					"carry-forward: retrying historical attribution for %d deferred created file(s)", len(needsCF))
+				if createdDeferred > 0 {
+					util.AppendActivityLog(semDir,
+						"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
+				}
+				if modifiedDeferred > 0 {
+					util.AppendActivityLog(semDir,
+						"carry-forward: retrying historical attribution for %d deferred modified file(s)", modifiedDeferred)
+				}
 				histInput := ComputeAIPercentInput{
 					RepoRoot: repoRoot,
 					RepoID:   cp.RepositoryID,
@@ -784,14 +797,38 @@ func aggregateFileScores(scores []fileScore, providerModel map[string]string, fi
 	}
 }
 
-// carryForwardCandidates delegates to attrcf.IdentifyCandidates and maps
-// blobs.ManifestFile to the carryforward-local ManifestEntry type.
-func carryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
+// createdCarryForwardCandidates maps manifest entries and applies the
+// created-file lookback rule.
+func createdCarryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
 	entries := make([]attrcf.ManifestEntry, len(manifestFiles))
 	for i, mf := range manifestFiles {
 		entries[i] = attrcf.ManifestEntry{Path: mf.Path}
 	}
-	return attrcf.IdentifyCandidates(dr.filesCreated, entries)
+	return attrcf.IdentifyCreatedCandidates(dr.filesCreated, entries)
+}
+
+// modifiedCarryForwardCandidates derives modified paths as
+// files - created - deleted. ParseDiff includes deleted paths in files
+// using the old-side path, so deletions must be excluded explicitly.
+func modifiedCarryForwardCandidates(dr diffResult) map[string]bool {
+	if len(dr.files) == 0 {
+		return nil
+	}
+	excluded := make(map[string]bool, len(dr.filesCreated)+len(dr.filesDeleted))
+	for _, p := range dr.filesCreated {
+		excluded[p] = true
+	}
+	for _, p := range dr.filesDeleted {
+		excluded[p] = true
+	}
+	edited := make([]string, 0, len(dr.files))
+	for _, fd := range dr.files {
+		if excluded[fd.path] {
+			continue
+		}
+		edited = append(edited, fd.path)
+	}
+	return attrcf.IdentifyModifiedCandidates(edited)
 }
 
 // loadManifestForCheckpoint loads the manifest for a checkpoint's manifest hash.
@@ -1162,9 +1199,9 @@ func attributeWithCarryForward(
 	// Load previous manifest for candidate identification.
 	manifestFiles := loadManifestForCheckpoint(ctx, bs, prevCP.ManifestHash, semDir)
 
-	// Identify carry-forward candidates: created in diff and present in the
-	// previous manifest.
-	cfCandidates := carryForwardCandidates(dr, manifestFiles)
+	// Created and modified paths share one historical query.
+	createdCands := createdCarryForwardCandidates(dr, manifestFiles)
+	modifiedCands := modifiedCarryForwardCandidates(dr)
 
 	// Filter to files that scored 0 AI in the current window.
 	currentByPath := make(map[string]*fileScore, len(currentScores))
@@ -1173,14 +1210,30 @@ func attributeWithCarryForward(
 	}
 
 	needsCF := make(map[string]bool)
-	for path := range cfCandidates {
+	var createdDeferred, modifiedDeferred int
+	addIfDeferred := func(path string, isCreated bool) {
+		if needsCF[path] {
+			return
+		}
 		if fs, ok := currentByPath[path]; ok && fileScoreAILines(fs) == 0 {
 			needsCF[path] = true
 		} else if !ok {
-			// No current score means this file had no attributable current-window
-			// output, even if the window contained other events.
+			// No score means no current-window attribution for this file.
 			needsCF[path] = true
+		} else {
+			return
 		}
+		if isCreated {
+			createdDeferred++
+		} else {
+			modifiedDeferred++
+		}
+	}
+	for path := range createdCands {
+		addIfDeferred(path, true)
+	}
+	for path := range modifiedCands {
+		addIfDeferred(path, false)
 	}
 
 	// Run historical scoring for eligible files.
@@ -1189,8 +1242,14 @@ func attributeWithCarryForward(
 	var histCands aiCandidates
 
 	if len(needsCF) > 0 {
-		util.AppendActivityLog(semDir,
-			"carry-forward: retrying historical attribution for %d deferred created file(s)", len(needsCF))
+		if createdDeferred > 0 {
+			util.AppendActivityLog(semDir,
+				"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
+		}
+		if modifiedDeferred > 0 {
+			util.AppendActivityLog(semDir,
+				"carry-forward: retrying historical attribution for %d deferred modified file(s)", modifiedDeferred)
+		}
 
 		histInput := ComputeAIPercentInput{
 			RepoRoot: in.RepoRoot,

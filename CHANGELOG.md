@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.5] - 2026-07-12
 
 ### Removed
 
@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `semantica blame` now attributes files deleted by an agent-run recursive directory removal, such as `rm -rf path/to/dir`, to the agent that ran the command instead of showing those deleted files as human-authored.
+- `semantica blame` now carries forward historical edit evidence for modified files when the agent edited a file before an intermediate commit checkpoint and the change landed in a later commit.
 
 ## [0.5.4] - 2026-06-13
 
