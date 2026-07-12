@@ -91,9 +91,9 @@ func linkSessionsToCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpoin
 	return seen
 }
 
-// enrichCheckpoint builds the manifest, links sessions, attaches the commit
-// to its implementation, computes stats, and computes AI percentage. All
-// required enrichment must finish before the checkpoint is marked complete.
+// enrichCheckpoint builds the manifest, links sessions, computes stats, and
+// computes AI percentage. Required enrichment must finish before the checkpoint
+// is marked complete.
 func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) (enrichResult, error) {
 	h := wctx.h
 	repo := wctx.repo
@@ -115,13 +115,8 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	// Windows.
 	windows := resolveWorkerWindows(ctx, h, cp)
 
-	// Session linking (must happen before implementation attach).
+	// Session linking.
 	seen := linkSessionsToCheckpoint(ctx, h, in.CheckpointID, cp, windows.sessionAfterTs)
-
-	// Implementation attach (depends on session_checkpoints written above).
-	if in.CommitHash != "" {
-		handleImplementationPostCommit(ctx, wctx.semDir, in.RepoRoot, in.CommitHash)
-	}
 
 	// Stats.
 	filesChanged := countChangedFiles(prevManifest, mr.Manifest.Files)

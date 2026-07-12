@@ -23,7 +23,6 @@ Cleans up:
   - Stale broker registry entries (repos whose .semantica was deleted)
   - Abandoned capture state files (older than 24h with missing transcript)
   - Pending checkpoints that never completed (marked as failed)
-  - Orphan playbook FTS index rows
 
 Does NOT delete checkpoints, sessions, events, or blob objects.
 
@@ -53,8 +52,7 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 			}
 
 			total := res.BrokerEntriesPruned + res.CaptureStatesRemoved +
-				res.CheckpointsMarked + res.ImplStale + res.ImplConflicts +
-				res.ImplFailedObs + res.ImplObsPruned
+				res.CheckpointsMarked
 
 			if total == 0 {
 				_, _ = fmt.Fprintln(out, "Nothing to clean up.")
@@ -71,7 +69,6 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 				{"Broker entries", "broker", res.BrokerEntriesPruned, "pruned"},
 				{"Capture states", "capture", res.CaptureStatesRemoved, "removed"},
 				{"Pending checkpoints", "checkpoint", res.CheckpointsMarked, "marked failed"},
-				{"Implementations", "implementation", res.ImplStale + res.ImplConflicts + res.ImplFailedObs + res.ImplObsPruned, "findings"},
 			}
 
 			for _, c := range categories {
@@ -86,9 +83,9 @@ By default runs in dry-run mode. Use --apply to perform changes.`,
 				}
 			}
 
-				if res.Errors > 0 {
-					_, _ = fmt.Fprintf(out, "\n%d action(s) failed\n", res.Errors)
-				}
+			if res.Errors > 0 {
+				_, _ = fmt.Fprintf(out, "\n%d action(s) failed\n", res.Errors)
+			}
 
 			return nil
 		},

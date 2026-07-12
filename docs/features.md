@@ -271,68 +271,6 @@ semantica suggest pr --copy
 
 ---
 
-## Implementations
-
-Implementations are Semantica's concrete local record for agent work that often
-feels like a single story across repositories.
-
-For the dedicated guide to commands, states, boundaries, and JSON output, see
-[implementations.md](implementations.md).
-
-An agent can start in one repo, touch files in another, and produce commits in
-both. Semantica maps those related changes under the implementation umbrella so
-you can inspect the repos, sessions, commits, and timeline as one unit of work.
-
-### What you see
-
-```bash
-semantica implementations
-semantica impl <implementation_id>
-semantica suggest impl
-semantica suggest impl <implementation_id>
-semantica implementations link <implementation_id> --session <session_id>
-semantica implementations merge <target_id> <source_id>
-semantica implementations close <implementation_id>
-```
-
-### How it works
-
-- The broker records lightweight cross-repo observations whenever routed agent
-  activity is written to a repo.
-- The background worker reconciles those observations into implementations using
-  deterministic attach rules such as session identity, parent-child session
-  relationships, and active branch context.
-- Each implementation tracks related repos, repo-local sessions, branches, and
-  commits in a global local index.
-- When `auto-implementation-summary` is enabled, the worker also generates a
-  title and summary once an implementation spans multiple repos and refreshes
-  them when the repo scope grows.
-- Semantica keeps implementation state as `active`, `dormant`, or `closed`.
-  Dormant implementations can still resume when later activity matches strong
-  identity signals.
-- `semantica suggest impl` adds an advisory layer for titles,
-  summaries, review-priority hints, and possible merge candidates.
-
-### Story framing
-
-The word **implementation** is the product object. In practice, it is also the
-closest thing to the story of a cross-repo agent effort: one logical piece of
-work with a beginning, related edits, and resulting commits spread across one
-or more repositories.
-
-### Caveats
-
-- Implementations are local-first and depend on Semantica capture on the
-  current machine.
-- Cross-repo grouping only works for repositories that are enabled and visible
-  to the broker on that machine.
-- Manual `link`, `merge`, and `close` commands exist because some long-lived
-  sessions and branch patterns are ambiguous by nature.
-- Suggestions are advisory only. They do not silently rewrite implementation
-  history.
-
----
-
 ## Optional repo connection
 
 Semantica works fully offline by default. If you want hosted features for a repo, authenticate once and then connect that repo:
@@ -438,5 +376,5 @@ Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider 
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.
 - The background worker runs a reconciliation pass to flush any sessions with pending capture state, ensuring no events are lost if a hook invocation was interrupted.
-- `semantica tidy --apply` can remove abandoned capture state, stale broker entries, and orphan playbook FTS rows, and mark old pending checkpoints as failed without touching complete checkpoint history.
+- `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending checkpoints as failed without touching complete checkpoint history.
 - Capture is per-machine - activity from a different machine using the same repo is not captured unless that machine also has Semantica enabled.

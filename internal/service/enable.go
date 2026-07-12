@@ -212,8 +212,7 @@ func (s *EnableService) initLocalState(
 		Enabled: false,
 		Version: 1,
 		Automations: &util.Automations{
-			Playbook:              util.PlaybookAutomation{Enabled: true},
-			ImplementationSummary: util.ImplementationSummaryAutomation{Enabled: true},
+			Playbook: util.PlaybookAutomation{Enabled: true},
 		},
 	}); err != nil {
 		return nil, fmt.Errorf("write settings.json: %w", err)
