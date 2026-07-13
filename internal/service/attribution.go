@@ -244,13 +244,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	}
 
 	// Carry forward older evidence for created or modified files that
-	// have no current-window AI attribution. Both sets share one
-	// historical query; scoring against the current diff remains the gate.
+	// have no current-window AI attribution. Created and modified paths
+	// share one historical query. Modified-file candidates require a
+	// matching provider in the current window.
 	var needsCF map[string]bool
 	if prevErr == nil {
 		manifestFiles := loadManifestForCheckpoint(ctx, bs, prev.ManifestHash, semDir)
 		createdCands := createdCarryForwardCandidates(dr, manifestFiles)
 		modifiedCands := modifiedCarryForwardCandidates(dr)
+		currentProviders := providersInWindow(windowRows)
+		// Skip modified-file carry-forward entirely when the current
+		// window has no providers to anchor the gate against.
+		if len(currentProviders) == 0 {
+			modifiedCands = nil
+		}
 		if len(createdCands) > 0 || len(modifiedCands) > 0 {
 			// Only files with zero current-window AI lines need lookback.
 			currentCands := aiCandidates{
@@ -268,6 +275,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				}
 			}
 			needsCF = make(map[string]bool)
+			modifiedInNeedsCF := make(map[string]bool)
 			var createdDeferred, modifiedDeferred int
 			for path := range createdCands {
 				if !scoredAI[path] {
@@ -278,6 +286,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 			for path := range modifiedCands {
 				if !scoredAI[path] {
 					needsCF[path] = true
+					modifiedInNeedsCF[path] = true
 					modifiedDeferred++
 				}
 			}
@@ -299,6 +308,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				if histEvents, histErr := loadWindowEvents(ctx, h, histInput); histErr == nil {
 					histRows := toEventRows(ctx, bs, histEvents)
 					histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, repoRoot, needsCF)
+					filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
 					// Merge historical candidates into the main maps.
 					var cfLines int
 					for fp, lines := range histNewCands.AILines {
@@ -797,6 +807,75 @@ func aggregateFileScores(scores []fileScore, providerModel map[string]string, fi
 	}
 }
 
+// providersInWindow returns providers seen in the current attribution
+// window. Modified-file carry-forward uses this to avoid carrying older
+// evidence from providers that are not active in the current window.
+func providersInWindow(rows []sqldb.ListEventsInWindowRow) map[string]bool {
+	if len(rows) == 0 {
+		return nil
+	}
+	set := make(map[string]bool)
+	for _, r := range rows {
+		if r.Provider != "" {
+			set[r.Provider] = true
+		}
+	}
+	return set
+}
+
+// filterModifiedCarryForwardCandidates trims historical candidates for
+// modified files so that only line-level evidence from providers active
+// in the current window survives. Provider-touch-only history is dropped
+// for modified files because it cannot be matched against the current
+// diff. Created files pass through unchanged.
+func filterModifiedCarryForwardCandidates(
+	cands attrevents.Candidates,
+	modifiedSet map[string]bool,
+	currentProviders map[string]bool,
+) {
+	if len(modifiedSet) == 0 {
+		return
+	}
+	for fp := range modifiedSet {
+		if lineProvs, ok := cands.LineProviders[fp]; ok {
+			for line, provs := range lineProvs {
+				keep := false
+				for p := range provs {
+					if currentProviders[p] {
+						keep = true
+						break
+					}
+				}
+				if !keep {
+					delete(lineProvs, line)
+					if lines := cands.AILines[fp]; lines != nil {
+						delete(lines, line)
+					}
+				}
+			}
+			if len(lineProvs) == 0 {
+				delete(cands.LineProviders, fp)
+			}
+		}
+		lineEvidence := len(cands.AILines[fp]) > 0
+		if !lineEvidence {
+			delete(cands.AILines, fp)
+			// Modified-file carry-forward requires line-level
+			// evidence; a same-provider file touch alone would
+			// otherwise surface as ProviderOnlyLines.
+			delete(cands.ProviderTouchedFiles, fp)
+			delete(cands.FileProvider, fp)
+			continue
+		}
+		if prov, ok := cands.ProviderTouchedFiles[fp]; ok && !currentProviders[prov] {
+			delete(cands.ProviderTouchedFiles, fp)
+		}
+		if prov, ok := cands.FileProvider[fp]; ok && !currentProviders[prov] {
+			delete(cands.FileProvider, fp)
+		}
+	}
+}
+
 // createdCarryForwardCandidates maps manifest entries and applies the
 // created-file lookback rule.
 func createdCarryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
@@ -1167,6 +1246,7 @@ func attributeWithCarryForward(
 	currentNoEvents := false
 	var currentScores []fileScore
 	var currentCands aiCandidates
+	var currentProviders map[string]bool
 
 	events, err := loadWindowEvents(ctx, h, in)
 	if errors.Is(err, ErrNoEventsInWindow) {
@@ -1181,6 +1261,7 @@ func attributeWithCarryForward(
 			providerTouchedFiles: newCands.ProviderTouchedFiles,
 			fileProvider:         newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
+		currentProviders = providersInWindow(events)
 		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
 			currentScores, _ = scoreDiffPerFile(dr, currentCands)
 		}
@@ -1203,6 +1284,12 @@ func attributeWithCarryForward(
 	createdCands := createdCarryForwardCandidates(dr, manifestFiles)
 	modifiedCands := modifiedCarryForwardCandidates(dr)
 
+	// Skip modified-file carry-forward entirely when the current window
+	// has no providers to anchor the same-provider gate against.
+	if len(currentProviders) == 0 {
+		modifiedCands = nil
+	}
+
 	// Filter to files that scored 0 AI in the current window.
 	currentByPath := make(map[string]*fileScore, len(currentScores))
 	for i := range currentScores {
@@ -1210,6 +1297,7 @@ func attributeWithCarryForward(
 	}
 
 	needsCF := make(map[string]bool)
+	modifiedInNeedsCF := make(map[string]bool)
 	var createdDeferred, modifiedDeferred int
 	addIfDeferred := func(path string, isCreated bool) {
 		if needsCF[path] {
@@ -1226,6 +1314,7 @@ func attributeWithCarryForward(
 		if isCreated {
 			createdDeferred++
 		} else {
+			modifiedInNeedsCF[path] = true
 			modifiedDeferred++
 		}
 	}
@@ -1262,6 +1351,7 @@ func attributeWithCarryForward(
 			historicalNoEvents = false
 			histRows := toEventRows(ctx, bs, histEvents)
 			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
+			filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
 			histCands = aiCandidates{
 				aiLines: histNewCands.AILines, lineProviders: histNewCands.LineProviders,
 				providerTouchedFiles: histNewCands.ProviderTouchedFiles,

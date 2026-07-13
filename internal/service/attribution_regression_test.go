@@ -543,8 +543,9 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	}
 }
 
-// Covers modified-file carry-forward when the AI edit happened before the
-// previous commit-linked checkpoint.
+// Covers modified-file carry-forward when the edit predates the previous
+// commit-linked checkpoint and the same provider appears in the current
+// window.
 func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
@@ -568,6 +569,9 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
+	// Same-provider activity in the current window allows lookback for utils.go.
+	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
+
 	// Modified-file diff: the added line matches the historical payload.
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
@@ -589,6 +593,8 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 }
 
 // Historical evidence on the same file must still match the current diff.
+// Same-provider activity admits the historical candidates; line matching
+// rejects stale content.
 func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
@@ -611,6 +617,9 @@ func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing
 	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
+	// Same-provider activity admits the historical candidates for scoring.
+	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
+
 	// Historical candidates are loaded, but line matching should reject them.
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,3 @@\n package utils\n+func Handler() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
@@ -622,6 +631,141 @@ func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing
 	}
 	if cfr.result.AILines != 0 {
 		t.Errorf("AILines = %d, want 0 (historical lines must match the current diff)", cfr.result.AILines)
+	}
+}
+
+// With no current-window events, modified-file carry-forward stays disabled.
+func TestRegression_CarryForward_Modified_ZeroCurrentWindowEvents(t *testing.T) {
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoID, srcID, "sess-zero-window")
+
+	// Historical AI evidence exists and matches the current diff.
+	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot,
+		150_000, "utils.go", "package utils\nfunc Helper() { return 42 }\n")
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// No current-window events.
+	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+	if err != nil && !errors.Is(err, ErrNoEventsInWindow) {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	// Historical modified-file evidence must not be considered.
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (no current-window activity: historical claude_code must not carry forward)",
+			cfr.result.AILines)
+	}
+}
+
+// Cross-provider historical evidence must not carry forward. When the
+// current window has only codex activity, older claude_code evidence for
+// the same file must be dropped, even if lines would match.
+func TestRegression_CarryForward_Modified_CrossProviderRejected(t *testing.T) {
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
+
+	// Historical: claude_code produced content that will match the diff.
+	claudeSess := insertSession(t, h, repoID, srcID, "sess-claude-hist")
+	_ = insertEventWithPayload(t, h, bs, claudeSess, repoID, repoRoot,
+		150_000, "utils.go", "package utils\nfunc Helper() { return 42 }\n")
+
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Current window has codex activity only.
+	codexSess := insertSessionWithProvider(t, h, repoID, srcID, "sess-codex-cur", "codex")
+	_ = insertProviderFileTouchEvent(t, h, codexSess, repoID, "codex", "Edit", 250_000, "unrelated.go")
+
+	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (claude_code history absent from current window must not carry forward)",
+			cfr.result.AILines)
+	}
+	// The aggregated provider list should not include claude_code AI lines.
+	for _, p := range cfr.result.Providers {
+		if p.Provider == "claude_code" && p.AILines > 0 {
+			t.Errorf("Providers contains claude_code with AILines=%d; expected same-provider gate to drop it",
+				p.AILines)
+		}
+	}
+}
+
+// Provider-touch-only history is not enough for modified-file carry-forward,
+// even when the provider appears in the current window.
+func TestRegression_CarryForward_Modified_ProviderTouchOnlyRejected(t *testing.T) {
+	h := testDB(t)
+	ctx := context.Background()
+	bs, _ := blobs.NewStore(t.TempDir())
+	semDir := t.TempDir()
+
+	repoID := insertRepo(t, h, 100_000)
+	repoRoot := "/test/repo/" + repoID
+	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
+	sessID := insertSession(t, h, repoID, srcID, "sess-touch-only")
+
+	// Historical provider touch with no line-level payload.
+	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 150_000, "utils.go")
+
+	cp1ID := insertCheckpointWithManifest(t, h, bs, repoID, 200_000, []string{"utils.go"})
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "commit1", RepositoryID: repoID, CheckpointID: cp1ID, LinkedAt: 200_000,
+	}); err != nil {
+		t.Fatalf("insert commit link: %v", err)
+	}
+	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
+
+	// Current window has the same provider, satisfying the outer gate.
+	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
+
+	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
+	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
+		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+	}, &cp1, semDir)
+	if err != nil {
+		t.Fatalf("attributeWithCarryForward: %v", err)
+	}
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (historical provider-touch-only must not carry forward to a modified file)",
+			cfr.result.AILines)
+	}
+	if cfr.result.ProviderOnlyLines != 0 {
+		t.Errorf("ProviderOnlyLines = %d, want 0 (modified carry-forward must not surface historical provider-touch as ProviderOnlyLines)",
+			cfr.result.ProviderOnlyLines)
 	}
 }
 

@@ -2161,6 +2161,9 @@ func TestAttributeCommit_CarryForward_ModifiedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Same-provider activity in the current window enables modified-file lookback.
+	insertEvt(250_000, "unrelated.go", "package unrelated\n")
+
 	// cp2 links to the deferred commit. The current window has no utils.go
 	// events, so attribution depends on modified-file carry-forward.
 	cp2ID := insertCP(300_000, []string{"utils.go", "unrelated.go"})
