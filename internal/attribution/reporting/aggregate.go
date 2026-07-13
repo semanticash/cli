@@ -204,7 +204,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	}
 
 	r.FilesTotal = len(r.FilesCreated) + len(r.FilesEdited)
-	r.FilesAITouched = len(filesWithAI)
+	r.FilesAITouched = countAIFileChanges(r.FilesCreated) + countAIFileChanges(r.FilesEdited)
 	if r.TotalLines > 0 {
 		r.AIPercentage = float64(r.AILines) / float64(r.TotalLines) * 100
 	}
@@ -212,7 +212,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	// Provider breakdown over the union of line-level and
 	// provider-only attribution. A provider that contributed
 	// only provider-only lines still appears so the breakdown
-	// is honest about who touched what.
+	// still shows who touched what.
 	provSet := make(map[string]struct{})
 	for prov := range providerLines {
 		provSet[prov] = struct{}{}
@@ -250,6 +250,16 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	r.Evidence, r.FallbackCount = CommitEvidence(r.Files)
 
 	return r
+}
+
+func countAIFileChanges(files []FileChangeOutput) int {
+	var n int
+	for _, f := range files {
+		if f.AI {
+			n++
+		}
+	}
+	return n
 }
 
 // BuildCheckpointResult assembles a checkpoint-only attribution result.
