@@ -26,7 +26,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Attribution fidelity
 
-- Attribution is anchored to captured session data within the checkpoint delta window. Deferred created files can carry forward AI attribution from earlier history when they were already present in the previous commit-linked manifest but committed later.
+- Attribution is anchored to captured session data within the checkpoint delta window. Deferred created or modified files can carry forward AI attribution from earlier history when matching AI output lands in a later commit.
 - **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata. Those weaker provider-touch signals are preserved as evidence and `ai_provider_only_lines`, but excluded from the headline AI percentage instead of being treated as equivalent to line-level matches.
 - **Shell side effects are limited.** Bash and shell-tool events are captured as command provenance, but Semantica currently extracts file-touch evidence only for recognized deletion commands such as `rm`. Shell writes such as `echo > file`, `tee`, or `cp` do not synthesize file-touch or line-level attribution unless the provider also emits a file-edit hook for the affected file.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
