@@ -16,7 +16,7 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "blame [ref]",
-		Short: "Show AI attribution for a commit or checkpoint",
+		Short: "Show AI attribution for a commit or lineage record",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := resolveRef(cmd.Context(), rootOpts.RepoPath, args)

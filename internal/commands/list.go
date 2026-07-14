@@ -22,7 +22,7 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List checkpoints for this repository",
+		Short: "List lineage records for this repository",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON && asJSONL {
 				return fmt.Errorf("flags --json and --jsonl are mutually exclusive")
@@ -77,7 +77,7 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 				return s
 			}
 
-			// Shared JSON shape for a checkpoint
+			// Shared JSON shape for a lineage record.
 			type jsonCheckpoint struct {
 				ID            string `json:"id"`
 				CreatedAt     string `json:"created_at"`      // RFC3339
@@ -91,7 +91,7 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 				ManifestHash  string `json:"manifest_hash,omitempty"`
 			}
 
-			// JSONL mode: one object per line
+			// JSONL mode: one object per line.
 			if asJSONL {
 				enc := json.NewEncoder(out) // Encode adds a trailing \n each call
 				for _, it := range res.Items {
@@ -115,7 +115,7 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 				return nil
 			}
 
-			// JSON mode: one pretty-printed object with {count, items}
+			// JSON mode: one pretty-printed object with {count, items}.
 			if asJSON {
 				type jsonOut struct {
 					Count int              `json:"count"`
@@ -149,13 +149,13 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 				return enc.Encode(payload)
 			}
 
-			// Human/table mode
+			// Human/table mode.
 			if len(res.Items) == 0 {
-				_, _ = fmt.Fprintln(out, "No checkpoints found")
+				_, _ = fmt.Fprintln(out, "No lineage records found")
 				return nil
 			}
 
-			_, _ = fmt.Fprintf(out, "Checkpoints (%d)\n\n", len(res.Items))
+			_, _ = fmt.Fprintf(out, "Lineage (%d)\n\n", len(res.Items))
 
 			rows := make([][]string, 0, len(res.Items))
 			for _, it := range res.Items {
@@ -215,7 +215,7 @@ func NewListCmd(rootOpts *RootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int64VarP(&limit, "limit", "n", 20, "Maximum number of checkpoints to list")
+	cmd.Flags().Int64VarP(&limit, "limit", "n", 20, "Maximum number of lineage records to list")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&asJSONL, "jsonl", false, "Output as JSONL (one JSON object per line)")
 

@@ -18,8 +18,8 @@ func NewShowCmd(rootOpts *RootOptions) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "show [checkpoint_id]",
-		Short: "Show details of a checkpoint",
+		Use:   "show [id]",
+		Short: "Show details of a lineage record",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON && asJSONL {

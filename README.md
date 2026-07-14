@@ -9,7 +9,7 @@ Semantica tracks AI coding activity in your repositories and ties it to your Git
 
 It answers the question Git cannot: **who or what wrote this code, and how did it happen?**
 
-It works by installing lightweight Git hooks that capture checkpoints, ingest AI agent data, and compute attribution locally.
+It works by installing lightweight Git hooks that record commit lineage, ingest AI agent data, and compute attribution locally.
 Core capture works with zero configuration beyond `semantica enable`.
 
 Website: [semantica.sh](https://www.semantica.sh)
@@ -86,14 +86,14 @@ semantica completion fish | source     # fish
 
 ```bash
 cd /path/to/your/repo
-semantica enable        # installs hooks, detects AI providers, creates baseline checkpoint
+semantica enable        # installs hooks, detects AI providers, creates a baseline lineage record
 ```
 <p align="left">
   <img src="docs/images/semantica-enable-view-screen.png" alt="semantica enable output" width="600">
 </p>
 That's it. Every commit now automatically:
 
-1. Creates a checkpoint (file manifest snapshot)
+1. Records a lineage snapshot (file manifest plus provenance metadata)
 2. Ingests agent session data from detected providers
 3. Computes AI attribution (how much of the commit is AI-attributed)
 4. Links everything to the commit hash
@@ -137,7 +137,7 @@ If a repo is already connected through a shared workspace, `semantica connect`
 will offer to request access. Workspace owners and admins can review pending
 requests with `semantica workspace requests`.
 
-The CLI works fully offline without any remote configuration. Connecting a repo only affects optional hosted sync. Local capture, checkpoints, attribution, rewind, and playbooks continue to work the same way.
+The CLI works fully offline without any remote configuration. Connecting a repo only affects optional hosted sync. Local capture, attribution, and playbooks continue to work the same way.
 Before prompt content or remote sync payloads leave the machine, Semantica redacts likely secrets and normalizes known provenance path fields to repo-relative form where possible. If outbound redaction cannot complete for an artifact, that upload fails closed instead of sending raw content. This applies only to outbound sync artifacts. Local raw capture in `.semantica/` is left unchanged.
 
 ---
@@ -152,7 +152,7 @@ See what percentage of a commit was AI-attributed, broken down by file:
 semantica blame HEAD
 semantica blame HEAD --json      # per-file breakdown
 ```
-If you run `semantica blame` without a ref in a terminal, Semantica shows an interactive checkpoint picker. In non-interactive use, pass a ref explicitly.
+If you run `semantica blame` without a ref in a terminal, Semantica shows an interactive lineage record picker. In non-interactive use, pass a ref explicitly.
 <p align="left">
   <img src="docs/images/semantica-blame-view-screen.png" alt="semantica blame output" width="600">
 </p>
@@ -169,7 +169,7 @@ Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 
 ```bash
 semantica set trailers enabled
-semantica set trailers disabled    # checkpoint-only commits
+semantica set trailers disabled    # keep only the checkpoint trailer
 ```
 
 ### Explain commits
@@ -216,19 +216,6 @@ semantica handoff --write
 
 The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat. The bundle includes redacted prompt context, the last assistant response, touched files, recent commits, and working-tree context when available. If multiple providers are active in an interactive terminal, Semantica asks which provider to hand off from. Use `--from <provider>` to hand off from a specific recent provider session, for example `semantica handoff --write --from claude-code`.
 
-### Checkpoints and rewind
-
-Every commit creates a checkpoint, and you can create checkpoints manually too.
-Rewind restores the working tree to a previous checkpointed state, including
-non-commit states and untracked, non-ignored files, without rewriting Git
-history:
-
-```bash
-semantica list                   # show checkpoints
-semantica rewind <checkpoint>    # restore files (creates safety checkpoint first)
-semantica rewind <id> --exact    # also delete files not in the checkpoint
-```
-
 ### Agent skills
 
 Semantica also ships agent skills for natural-language workflows inside
@@ -266,7 +253,7 @@ semantica skills install --source /path/to/semanticash/skills/skills
 
 ### Playbooks
 
-Generate and revisit checkpoint playbooks directly from commit explanations:
+Generate and revisit commit playbooks directly from commit explanations:
 
 ```bash
 semantica explain HEAD --generate
@@ -331,8 +318,6 @@ Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. 
 | `suggest commit` | Generate a commit message from uncommitted changes |
 | `suggest pr` | Generate a PR title and body from the current branch diff |
 | `tidy` | Preview or remove stale local Semantica state |
-| `checkpoint` | Manually create a checkpoint |
-| `rewind <id>` | Restore working tree to a checkpoint |
 | `sessions` | List or view agent sessions |
 | `skills install` / `skills uninstall` | Install or remove Semantica agent skills |
 | `launcher` | Manage the optional OS-backed worker launcher |
@@ -348,7 +333,7 @@ Most commands support `--json` for structured output. See [help.md](help.md) for
 ```
 .semantica/
   settings.json       # configuration
-  lineage.db          # SQLite (checkpoints, sessions, events, attribution, playbooks)
+  lineage.db          # SQLite (lineage records, sessions, events, attribution, playbooks)
   objects/            # content-addressed blob store (SHA-256, zstd compressed)
   activity.log        # hook and lifecycle warnings / activity log
   worker.log          # background worker logs
