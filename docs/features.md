@@ -37,7 +37,7 @@ The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_pro
 
 ### Caveats
 
-- Attribution is anchored to the delta window between commit-linked checkpoints. Deferred created or modified files can still pick up AI attribution from earlier history when matching AI output lands in a later commit.
+- Attribution is anchored to the delta window between commit lineage records. Deferred created or modified files can still pick up AI attribution from earlier history when matching AI output lands in a later commit.
 - Lines that a developer manually edits after AI generation may count as "modified" rather than "exact."
 - Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
 - Provider-level attribution (file touched by AI) is available for all providers. When a provider reports only file-touch metadata, those lines are reported as `ai_provider_only_lines` and excluded from the headline AI percentage.
@@ -52,43 +52,15 @@ the packaged bundle, and mixed metadata paths are reduced to visible repo paths.
 
 ---
 
-## Checkpoints and Rewind
+## Commit Lineage
 
-Checkpoints are point-in-time snapshots of every file in the repo. Rewind restores the working tree to any previous checkpoint.
+Semantica records lineage during each Git commit. Each record links the commit,
+file manifest, captured sessions, attribution, and optional playbook data.
 
-### How it works
-
-**Automatic checkpoints** are created on every `git commit`:
-1. The pre-commit hook creates a pending checkpoint stub (UUID, timestamp)
-2. The background worker completes it by hashing every tracked file plus untracked, non-ignored files (SHA-256, zstd compressed) and writing a manifest (path -> blob hash mapping)
-
-**Manual checkpoints** can be created at any time:
-```bash
-semantica checkpoint -m "Before big refactor"
-```
-
-**Rewind** restores files from a checkpoint's manifest:
-```bash
-semantica rewind <checkpoint_id>            # restore files, create safety checkpoint first
-semantica rewind <checkpoint_id> --exact    # also delete files not in the checkpoint
-semantica rewind <checkpoint_id> --no-safety  # skip safety checkpoint (dangerous)
-```
-
-By default, rewind creates a safety checkpoint before restoring, so you can undo the rewind.
-
-### What you see
-
-```bash
-semantica list                  # checkpoints with ID, timestamp, commit hash, file count
-semantica show <id>             # full manifest with per-file blob hashes
-semantica rewind <id> --json    # files_restored, files_deleted, safety_checkpoint_id
-```
-
-### Caveats
-
-- Rewind operates on the working tree only - it does not modify git history, staged changes, or the index.
-- Manifests include git-tracked files plus untracked, non-ignored files. Ignored files are not captured or restored.
-- The `--exact` flag deletes files not present in the checkpoint manifest, but always protects `.semantica/`.
+Developers normally use Git commits and pull requests as the review surface.
+Commands such as `semantica blame`, `semantica explain`, `semantica list`,
+`semantica show`, and `semantica transcripts` read from the lineage records
+behind those commits.
 
 ---
 
@@ -110,7 +82,7 @@ Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 
 - **Checkpoint** - links the commit to its checkpoint ID
 - **Attribution** - per-provider AI percentage with line-level counts (one trailer per provider if multiple contributed). Provider-touch-only evidence is shown as `provider-touched N lines` instead of being mixed into the headline percentage. If no AI evidence matches the commit, this becomes `0% AI detected (0/N lines)`.
-- **Diagnostics** - aggregate match statistics. If no AI matches the commit, this explains whether no AI events existed in the checkpoint window, whether AI events existed but did not match the committed files, or whether only provider-touch evidence was available.
+- **Diagnostics** - aggregate match statistics. If no AI matches the commit, this explains whether no AI events existed in the commit lineage window, whether AI events existed but did not match the committed files, or whether only provider-touch evidence was available.
 
 When trailer emission is disabled:
 
@@ -118,12 +90,12 @@ When trailer emission is disabled:
 Semantica-Checkpoint: chk_abc123
 ```
 
-When no AI sessions exist in the checkpoint window:
+When no AI sessions exist in the commit lineage window:
 
 ```text
 Semantica-Checkpoint: chk_abc123
 Semantica-Attribution: 0% AI detected (0/141 lines)
-Semantica-Diagnostics: no AI events found in the checkpoint window
+Semantica-Diagnostics: no AI events found in the commit lineage window
 ```
 
 When AI sessions exist but do not modify the committed files:
@@ -376,5 +348,5 @@ Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider 
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.
 - The background worker runs a reconciliation pass to flush any sessions with pending capture state, ensuring no events are lost if a hook invocation was interrupted.
-- `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending checkpoints as failed without touching complete checkpoint history.
+- `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending commit snapshots as failed without touching complete lineage history.
 - Capture is per-machine - activity from a different machine using the same repo is not captured unless that machine also has Semantica enabled.

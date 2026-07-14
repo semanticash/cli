@@ -10,7 +10,6 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - `semantica launcher` is still experimental. It currently supports macOS (launchd), Linux (systemd user instance), and Windows (Task Scheduler). Other platforms keep using the default detached worker path.
 - Windows support requires Git for Windows, which provides the POSIX shell used by Git hooks.
 - Clipboard support for `semantica suggest commit` and `semantica suggest pr --copy` requires `pbcopy` (macOS), `wl-copy`/`xclip`/`xsel` (Linux), or `clip` (Windows). The commands still work without clipboard support - they print to stdout.
-- On Windows, `semantica rewind` cannot restore symlinks without Developer Mode enabled or administrator privileges.
 
 ## Capture scope
 
@@ -20,18 +19,17 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Git and repo boundaries
 
-- **Rewind only affects the working tree.** It does not rewrite Git history, modify the index, or unstage changes. Files are restored on disk only.
 - Checkpoint manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured or restored.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
 
 ## Attribution fidelity
 
-- Attribution is anchored to captured session data within the checkpoint delta window. Deferred created or modified files can carry forward AI attribution from earlier history when matching AI output lands in a later commit.
+- Attribution is anchored to captured session data within the commit lineage window. Deferred created or modified files can carry forward AI attribution from earlier history when matching AI output lands in a later commit.
 - **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata. Those weaker provider-touch signals are preserved as evidence and `ai_provider_only_lines`, but excluded from the headline AI percentage instead of being treated as equivalent to line-level matches.
 - **Shell side effects are limited.** Bash and shell-tool events are captured as command provenance, but Semantica currently extracts file-touch evidence only for recognized deletion commands such as `rm`. Shell writes such as `echo > file`, `tee`, or `cp` do not synthesize file-touch or line-level attribution unless the provider also emits a file-edit hook for the affected file.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
 - Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
-- Attribution is computed against the diff between checkpoints. Squashed or rebased commits that collapse multiple checkpoints may produce less precise results.
+- Attribution is computed against the diff between commit lineage records. Squashed or rebased commits that collapse multiple records may produce less precise results.
 
 ## Playbooks and suggestions
 

@@ -18,8 +18,9 @@ func NewCheckpointCmd(rootOpts *RootOptions) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "checkpoint",
-		Short: "Create a Semantica checkpoint",
+		Use:    "checkpoint",
+		Short:  "Create a Semantica checkpoint",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := service.CheckpointManual
 			if auto {

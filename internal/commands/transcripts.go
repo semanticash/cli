@@ -27,7 +27,7 @@ func NewTranscriptsCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "transcripts [ref]",
-		Short: "Show agent transcript(s) for a checkpoint or session",
+		Short: "Show agent transcript(s) for a lineage record or session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON && asJSONL {

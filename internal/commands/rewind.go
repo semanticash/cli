@@ -25,9 +25,10 @@ func NewRewindCmd(rootOpts *RootOptions) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "rewind [checkpoint_id]",
-		Short: "Restore the working tree to a checkpoint",
-		Args:  cobra.MaximumNArgs(1),
+		Use:    "rewind [checkpoint_id]",
+		Short:  "Restore the working tree to a checkpoint",
+		Hidden: true,
+		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			checkpointID, err := resolveRef(cmd.Context(), rootOpts.RepoPath, args)
 			if aborted, rerr := handleAbort(cmd.OutOrStdout(), err); aborted || rerr != nil {

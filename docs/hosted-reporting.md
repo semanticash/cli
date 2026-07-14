@@ -1,6 +1,6 @@
 # Hosted Features
 
-Semantica works fully offline by default. Local capture, attribution, checkpoints, rewind, and playbooks continue to work without any remote configuration.
+Semantica works fully offline by default. Local capture, attribution, transcripts, and playbooks continue to work without any remote configuration.
 
 If you want hosted features for a repo, authenticate once and then connect that repo:
 
@@ -69,7 +69,7 @@ You can also provide credentials through `SEMANTICA_API_KEY`, which is useful fo
 
 - Sync is best-effort.
 - Failures are logged to `.semantica/worker.log`.
-- Sync failures never block commits, checkpoints, or local CLI features.
+- Sync failures never block commits or local CLI features.
 - If some packaged turns cannot be synced, they stay local.
 
 ## Security and redaction

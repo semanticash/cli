@@ -18,7 +18,7 @@ Full command reference for the Semantica CLI. For an overview and quick start, s
 
 ### `semantica enable`
 
-Initializes Semantica in the current repo. Creates the `.semantica/` directory, installs Git hooks, detects AI agents, and creates a baseline checkpoint.
+Initializes Semantica in the current repo. Creates the `.semantica/` directory, installs Git hooks, detects AI agents, and creates a baseline lineage record.
 
 ```bash
 semantica enable                             # First-time setup (interactive provider selection)
@@ -49,7 +49,7 @@ semantica disable --json
 
 ### `semantica status`
 
-Shows an overview of AI activity in the repository - enabled state, authentication, workspace tier, repo connection state, endpoint, settings, last checkpoint, recent sessions, AI attribution trend, broker status, and update availability.
+Shows an overview of AI activity in the repository - enabled state, authentication, workspace tier, repo connection state, endpoint, settings, last lineage record, recent sessions, AI attribution trend, broker status, and update availability.
 
 ```bash
 semantica status
@@ -62,10 +62,10 @@ semantica status --json
 
 ### `semantica list`
 
-Lists checkpoints for the repo, most recent first.
+Lists commit lineage records for the repo, most recent first.
 
 ```bash
-semantica list              # Last 20 checkpoints
+semantica list              # Last 20 lineage records
 semantica list -n 50        # Last 50
 semantica list --json       # JSON output
 semantica list --jsonl      # JSONL output (one object per line)
@@ -73,15 +73,15 @@ semantica list --jsonl      # JSONL output (one object per line)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n, --limit` | `20` | Maximum number of checkpoints to list |
+| `-n, --limit` | `20` | Maximum number of lineage records to list |
 | `--json` | `false` | Output as JSON |
 | `--jsonl` | `false` | Output as JSONL (one JSON object per line) |
 
-### `semantica show <checkpoint_id>`
+### `semantica show <ref>`
 
-Shows details of a specific checkpoint - metadata, manifest hash, size, linked commit, and file list with blob hashes.
+Shows details of a lineage record - metadata, manifest hash, size, linked commit, and file list with blob hashes.
 
-Checkpoint IDs are prefix-matchable - you only need enough characters to be unique.
+Refs are prefix-matchable when they resolve to a stored lineage record.
 
 ```bash
 semantica show abc123
@@ -96,7 +96,7 @@ semantica show abc123 --jsonl     # metadata + one file per line
 
 ### `semantica blame <ref>`
 
-Shows AI attribution for a commit or checkpoint. Reports how much of the commit is AI-attributed, broken down by file.
+Shows AI attribution for a commit. Reports how much of the commit is AI-attributed, broken down by file.
 
 ```bash
 semantica blame HEAD           # Latest commit
@@ -104,7 +104,7 @@ semantica blame abc1234        # By commit hash
 semantica blame HEAD --json    # Full JSON with per-file detail
 ```
 
-If no ref is given and stdin is a TTY, an interactive checkpoint picker is shown.
+If no ref is given and stdin is a TTY, an interactive lineage record picker is shown.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -163,7 +163,7 @@ semantica suggest pr --copy
 
 Performs safe housekeeping on transient Semantica state. It can prune stale
 broker registry entries, remove abandoned capture state files, mark old
-incomplete checkpoints as failed, and report what would change. By default it
+incomplete commit snapshots as failed, and report what would change. By default it
 runs in dry-run mode.
 
 ```bash
@@ -211,19 +211,19 @@ semantica sessions <session_id> --transcript    # View session transcript (full 
 
 ### `semantica transcripts [ref]`
 
-Shows the agent transcript for a checkpoint or session - the sequence of user messages, assistant responses, and tool calls.
+Shows the agent transcript for a lineage record or session - the sequence of user messages, assistant responses, and tool calls.
 
-The ref argument is resolved as a checkpoint ID, commit hash, or session ID. Use `--checkpoint` or `--session` to force resolution mode.
+The ref argument is resolved as a lineage record ID, commit hash, or session ID. Use `--checkpoint` or `--session` to force resolution mode.
 
 ```bash
-semantica transcripts HEAD                  # Transcript for latest commit's checkpoint
-semantica transcripts abc123                # By checkpoint or commit ref
+semantica transcripts HEAD                  # Transcript for latest commit
+semantica transcripts abc123                # By lineage record, commit ref, or session
 semantica transcripts abc123 --commit       # Only sessions that touched files in the commit
 semantica transcripts abc123 --by-session   # Group events by session
-semantica transcripts abc123 --cumulative   # All events up to this checkpoint (not just delta)
+semantica transcripts abc123 --cumulative   # All events up to this lineage record
 semantica transcripts abc123 --raw          # Include full payload JSON from blob store
 semantica transcripts abc123 --verbose      # Show provider, tokens, etc.
-semantica transcripts abc123 --checkpoint   # Force resolution as checkpoint
+semantica transcripts abc123 --checkpoint   # Force resolution as a lineage record
 semantica transcripts abc123 --session      # Force resolution as session
 ```
 
@@ -231,47 +231,14 @@ semantica transcripts abc123 --session      # Force resolution as session
 |------|---------|-------------|
 | `--commit` | `false` | Show only sessions that touched files in the commit diff |
 | `--by-session` | `false` | Group events by session |
-| `--cumulative` | `false` | Show all events up to checkpoint (default: delta since previous) |
+| `--cumulative` | `false` | Show all events up to the lineage record (default: delta since previous) |
 | `--raw` | `false` | Include raw payload JSON (loads from blob store) |
 | `--verbose` | `false` | Show more fields (provider, tokens, etc.) |
-| `--filter-session` | | Filter to a specific session ID (checkpoint mode only) |
-| `--checkpoint` | `false` | Force resolution as checkpoint |
+| `--filter-session` | | Filter to a specific session ID (lineage mode only) |
+| `--checkpoint` | `false` | Force resolution as a lineage record |
 | `--session` | `false` | Force resolution as session |
 | `--json` | `false` | Output as JSON |
 | `--jsonl` | `false` | Output as JSONL (meta + one event per line) |
-
-### `semantica checkpoint`
-
-Manually creates a checkpoint (outside the normal commit flow).
-
-```bash
-semantica checkpoint -m "Before big refactor"
-semantica checkpoint --json
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-m, --message` | | Checkpoint message |
-| `--auto` | `false` | Auto checkpoint (used internally) |
-| `--trigger` | | Trigger label |
-| `--json` | `false` | Output as JSON |
-
-### `semantica rewind <checkpoint_id>`
-
-Restores the working tree to the state captured in a checkpoint. Creates a safety checkpoint first so you can undo the rewind.
-
-```bash
-semantica rewind abc123                  # Restore files to checkpoint state
-semantica rewind abc123 --exact          # Also delete files not present in the checkpoint
-semantica rewind abc123 --no-safety      # Skip safety checkpoint (dangerous)
-semantica rewind abc123 --json           # JSON output
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--exact` | `false` | Delete files not present in the checkpoint |
-| `--no-safety` | `false` | Skip creating a safety checkpoint before rewind |
-| `--json` | `false` | Output as JSON |
 
 ### `semantica agents`
 
@@ -383,8 +350,8 @@ semantica disconnect          # Stop syncing attribution from this repo
 `connect` verifies your account access and marks the current repo as connected in `.semantica/settings.json`. `disconnect` stops future sync attempts for that repo.
 `connect` also tries to sync a small batch of already-packaged provenance for
 that repo, plus historical commit attribution that Semantica already captured
-locally. Remaining history continues to drain on later checkpoints. Local
-capture, checkpoints, attribution, rewind, and playbook generation continue
+locally. Remaining history continues to drain on later commits. Local
+capture, attribution, transcripts, and playbook generation continue
 to run without any hosted connection.
 
 If the repo is already connected through a shared workspace, `semantica connect`
@@ -438,7 +405,7 @@ Settings live in `.semantica/settings.json`:
 ```
 .semantica/
   settings.json       # Configuration
-  lineage.db          # SQLite database (checkpoints, sessions, events, attribution, playbooks)
+  lineage.db          # SQLite database (lineage records, sessions, events, attribution, playbooks)
   objects/            # Content-addressed blob store (file snapshots, manifests)
   worker.log          # Background worker + auto-playbook logs
 ```
