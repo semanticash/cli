@@ -207,6 +207,100 @@ func TestTidy_DryRunDoesNotMutateBroker(t *testing.T) {
 	}
 }
 
+// TestTidy_ApplyPrunesNoRepoRowEntry covers a migrated lineage DB
+// without a repository row.
+func TestTidy_ApplyPrunesNoRepoRowEntry(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+
+	repo := t.TempDir()
+	semDir := filepath.Join(repo, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.MigratePath(ctx, filepath.Join(semDir, "lineage.db")); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// No repository row: CheckRepoState should report no-repo-row.
+
+	reg := struct {
+		Repos []broker.RegisteredRepo `json:"repos"`
+	}{
+		Repos: []broker.RegisteredRepo{{
+			RepoID:        "no-repo-row-entry",
+			Path:          repo,
+			CanonicalPath: repo,
+			EnabledAt:     time.Now().UnixMilli(),
+			Active:        true,
+		}},
+	}
+	regData, _ := json.Marshal(reg)
+	if err := os.WriteFile(filepath.Join(home, "repos.json"), regData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewTidyService()
+	res, err := svc.Tidy(ctx, TidyInput{Apply: true})
+	if err != nil {
+		t.Fatalf("Tidy apply: %v", err)
+	}
+	if res.BrokerEntriesPruned != 1 {
+		t.Errorf("BrokerEntriesPruned = %d, want 1", res.BrokerEntriesPruned)
+	}
+	if len(res.Actions) == 0 || res.Actions[0].Detail != string(broker.RepoStaleNoRepoRow) {
+		t.Errorf("Actions = %+v, want a single action with Detail=%q", res.Actions, broker.RepoStaleNoRepoRow)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(home, "repos.json"))
+	var after struct {
+		Repos []broker.RegisteredRepo `json:"repos"`
+	}
+	_ = json.Unmarshal(data, &after)
+	if len(after.Repos) != 0 {
+		t.Errorf("registry has %d entries after apply, want 0", len(after.Repos))
+	}
+}
+
+// A missing .semantica directory is pruned by --apply.
+func TestTidy_ApplyPrunesSemDirMissingEntry(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+
+	staleRepo := filepath.Join(t.TempDir(), "gone-repo")
+	reg := struct {
+		Repos []broker.RegisteredRepo `json:"repos"`
+	}{
+		Repos: []broker.RegisteredRepo{{
+			RepoID:        "sem-dir-missing-entry",
+			Path:          staleRepo,
+			CanonicalPath: staleRepo,
+			EnabledAt:     time.Now().UnixMilli(),
+			Active:        true,
+		}},
+	}
+	regData, _ := json.Marshal(reg)
+	if err := os.WriteFile(filepath.Join(home, "repos.json"), regData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewTidyService()
+	res, err := svc.Tidy(ctx, TidyInput{Apply: true})
+	if err != nil {
+		t.Fatalf("Tidy apply: %v", err)
+	}
+	if res.BrokerEntriesPruned != 1 {
+		t.Errorf("BrokerEntriesPruned = %d, want 1", res.BrokerEntriesPruned)
+	}
+	if len(res.Actions) == 0 || res.Actions[0].Detail != string(broker.RepoStaleSemDirMissing) {
+		t.Errorf("Actions = %+v, want Detail=%q", res.Actions, broker.RepoStaleSemDirMissing)
+	}
+}
+
 // TestTidy_EmptyTranscriptRefCaptureStatePreserved verifies that capture
 // states with an empty TranscriptRef are preserved even when old.
 func TestTidy_EmptyTranscriptRefCaptureStatePreserved(t *testing.T) {

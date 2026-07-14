@@ -28,7 +28,10 @@ type StatusInput struct {
 }
 
 type StatusResult struct {
-	Enabled            bool                   `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// StaleReason is set when local state exists but cannot receive
+	// broker-routed events.
+	StaleReason        string                 `json:"stale_reason,omitempty"`
 	RepoRoot           string                 `json:"repo_root"`
 	Connected          bool                   `json:"connected"`
 	HasRemote          bool                   `json:"has_remote"`
@@ -90,7 +93,17 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 	semDir := filepath.Join(repoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
-	// Check if semantica is enabled.
+	// Missing .semantica means "not enabled". Existing but unusable
+	// state gets a stale reason, except for intentionally disabled repos.
+	if _, err := os.Stat(semDir); err != nil {
+		return &StatusResult{Enabled: false, RepoRoot: repoRoot}, nil
+	}
+	switch state := broker.CheckRepoState(ctx, repoRoot); {
+	case state.Verdict == broker.RepoStateStale && state.Reason == broker.RepoStaleSettingsDisabled:
+		return &StatusResult{Enabled: false, RepoRoot: repoRoot}, nil
+	case state.Verdict == broker.RepoStateStale:
+		return &StatusResult{Enabled: false, RepoRoot: repoRoot, StaleReason: string(state.Reason)}, nil
+	}
 	if _, err := os.Stat(dbPath); err != nil {
 		return &StatusResult{Enabled: false, RepoRoot: repoRoot}, nil
 	}
@@ -107,12 +120,12 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 	}
 
 	result := &StatusResult{
-		Enabled:         true,
-		RepoRoot:        repoRoot,
-		Connected:       util.IsConnected(semDir),
-		HasRemote:       hasRemote,
-		Endpoint:        auth.EffectiveEndpoint(),
-		RepoProvider:    repoProvider,
+		Enabled:      true,
+		RepoRoot:     repoRoot,
+		Connected:    util.IsConnected(semDir),
+		HasRemote:    hasRemote,
+		Endpoint:     auth.EffectiveEndpoint(),
+		RepoProvider: repoProvider,
 		AutoPlaybook: util.IsPlaybookEnabled(semDir),
 		GitTrailers:  util.TrailersEnabled(semDir),
 	}

@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,13 @@ func tempRepoWithDB(t *testing.T, repoPath string) string {
 
 	semDir := filepath.Join(repoPath, ".semantica")
 	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Semantica gates the write path on the enabled marker to reject
+	// events routed to a disabled or half-provisioned repo. Test
+	// fixtures explicitly mark themselves enabled.
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -313,6 +321,71 @@ func TestWriteEventsToRepo_Empty(t *testing.T) {
 	}
 	if sids != nil {
 		t.Errorf("expected nil session IDs for empty events")
+	}
+}
+
+// Confirmed stale states return ErrRepoStale so the dispatcher can skip
+// them without recording a hook failure.
+func TestWriteEventsToRepo_ReturnsSentinel_SemDirMissing(t *testing.T) {
+	events := []RawEvent{{EventID: "e", Provider: "codex", Timestamp: 1}}
+	_, err := WriteEventsToRepo(context.Background(), t.TempDir()+"/never-existed", events, nil)
+	assertRepoStaleErr(t, err, RepoStaleSemDirMissing)
+}
+
+func TestWriteEventsToRepo_ReturnsSentinel_LineageDBMissing(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".semantica"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	events := []RawEvent{{EventID: "e", Provider: "codex", Timestamp: 1}}
+	_, err := WriteEventsToRepo(context.Background(), repo, events, nil)
+	assertRepoStaleErr(t, err, RepoStaleLineageDBMissing)
+}
+
+func TestWriteEventsToRepo_ReturnsSentinel_SettingsDisabled(t *testing.T) {
+	repo := t.TempDir()
+	semDir := filepath.Join(repo, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.MigratePath(context.Background(), filepath.Join(semDir, "lineage.db")); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Omit the enabled marker.
+	events := []RawEvent{{EventID: "e", Provider: "codex", Timestamp: 1}}
+	_, err := WriteEventsToRepo(context.Background(), repo, events, nil)
+	assertRepoStaleErr(t, err, RepoStaleSettingsDisabled)
+}
+
+func TestWriteEventsToRepo_ReturnsSentinel_NoRepoRow(t *testing.T) {
+	repo := t.TempDir()
+	semDir := filepath.Join(repo, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.MigratePath(context.Background(), filepath.Join(semDir, "lineage.db")); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Migrate the DB without inserting a repository row.
+	events := []RawEvent{{EventID: "e", Provider: "codex", Timestamp: 1}}
+	_, err := WriteEventsToRepo(context.Background(), repo, events, nil)
+	assertRepoStaleErr(t, err, RepoStaleNoRepoRow)
+}
+
+func assertRepoStaleErr(t *testing.T, err error, want RepoStateReason) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected ErrRepoStale(%s), got nil", want)
+	}
+	var stale *ErrRepoStale
+	if !errors.As(err, &stale) {
+		t.Fatalf("expected *ErrRepoStale, got %T: %v", err, err)
+	}
+	if stale.Reason != want {
+		t.Errorf("Reason = %q, want %q", stale.Reason, want)
 	}
 }
 

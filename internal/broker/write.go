@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -34,15 +35,28 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
+	// Keep stale-state detection in one place. Unknown errors return as
+	// normal write failures so doctor can report them.
+	switch state := CheckRepoState(ctx, repoPath); state.Verdict {
+	case RepoStateStale:
+		return nil, &ErrRepoStale{RepoPath: repoPath, Reason: state.Reason}
+	case RepoStateUnknown:
+		return nil, fmt.Errorf("check repo state %s: %w", repoPath, state.Err)
+	}
+
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
 	if err != nil {
 		return nil, fmt.Errorf("open lineage db %s: %w", repoPath, err)
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 
-	// Resolve repository_id.
+	// CheckRepoState already verified this row, but it may disappear
+	// before the write. Treat that as stale too.
 	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, &ErrRepoStale{RepoPath: repoPath, Reason: RepoStaleNoRepoRow}
+		}
 		return nil, fmt.Errorf("get repo %s: %w", repoPath, err)
 	}
 

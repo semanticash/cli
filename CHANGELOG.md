@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `semantica blame` now attributes files deleted by an agent-run recursive directory removal, such as `rm -rf path/to/dir`, to the agent that ran the command instead of showing those deleted files as human-authored.
 - `semantica blame` now carries forward historical edit evidence for modified files when the agent edited a file before an intermediate commit checkpoint and the change landed in a later commit.
 - `semantica blame` now counts provider-touch fallback evidence in the `AI touched` file total, matching the per-file `[ai:<provider>]` tags.
+- `semantica doctor`, `semantica status`, and `semantica tidy` now detect stale broker registry entries whose local `.semantica` state was deleted or reset. Confirmed stale entries can be pruned with `semantica tidy --apply`, and user-global hooks skip them without recording hook-error warnings.
 
 ## [0.5.4] - 2026-06-13
 
