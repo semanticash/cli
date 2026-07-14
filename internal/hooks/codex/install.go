@@ -13,13 +13,12 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// Codex hooks are user-global: a single ~/.codex/hooks.json covers every
-// Codex session on the machine. Per-session gating then runs at capture
-// time through ShouldCapture, which rejects sessions whose cwd does not
-// resolve to a registered repo. Other providers in this repo install
-// per-repo hook configs; Codex differs because the runtime is shared
-// across distributions (CLI binary + desktop app) that all read the
-// same user-global directory.
+// Codex hooks are user-global: a single ~/.codex/hooks.json covers
+// hook-capable Codex sessions on the machine. Per-session gating then
+// runs at capture time through ShouldCapture, which rejects sessions
+// whose cwd does not resolve to a registered repo. Other providers in
+// this repo install per-repo hook configs; Codex differs because the
+// hook configuration lives in the shared Codex state directory.
 
 const (
 	// semanticaMarker appears inside every hook command we install. It
