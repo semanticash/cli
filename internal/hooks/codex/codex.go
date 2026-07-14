@@ -160,17 +160,17 @@ func isCapturableTool(name string) bool {
 	return false
 }
 
-// TranscriptOffset returns 0 unconditionally. Codex's rollout files are
-// not used for capture today; hooks supply every event we need.
+// TranscriptOffset returns 0 unconditionally. Codex hook capture does
+// not read rollout files.
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
 	return 0, nil
 }
 
 // ReadFromOffset is a no-op. Codex rollout files (~/.codex/sessions/...)
 // are not a stable contract and have observed non-strict JSONL where
-// record strings embed raw newlines. The provider relies exclusively on
-// hook payloads. If a fallback read path becomes useful, it should use
-// a streaming JSON decoder rather than line-based splitting.
+// record strings embed raw newlines. This provider relies on hook
+// payloads. If a fallback read path becomes useful, it should use a
+// streaming JSON decoder rather than line-based splitting.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	return nil, offset, nil
 }
