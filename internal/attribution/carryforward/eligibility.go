@@ -1,8 +1,9 @@
 package carryforward
 
-// IdentifyCandidates returns files eligible for historical lookback:
-// created in the current diff AND present in the previous checkpoint's manifest.
-func IdentifyCandidates(filesCreated []string, manifestFiles []ManifestEntry) map[string]bool {
+// IdentifyCreatedCandidates returns created paths that were already present
+// in the previous checkpoint manifest. That means the commit is adding a file
+// the checkpoint had already seen on disk, so older events may apply.
+func IdentifyCreatedCandidates(filesCreated []string, manifestFiles []ManifestEntry) map[string]bool {
 	if len(filesCreated) == 0 || len(manifestFiles) == 0 {
 		return nil
 	}
@@ -20,6 +21,20 @@ func IdentifyCandidates(filesCreated []string, manifestFiles []ManifestEntry) ma
 			}
 			result[path] = true
 		}
+	}
+	return result
+}
+
+// IdentifyModifiedCandidates returns modified paths eligible for historical
+// lookback. Modified files need no manifest gate; the scorer later requires
+// historical lines to match the current diff before crediting them.
+func IdentifyModifiedCandidates(filesEdited []string) map[string]bool {
+	if len(filesEdited) == 0 {
+		return nil
+	}
+	result := make(map[string]bool, len(filesEdited))
+	for _, path := range filesEdited {
+		result[path] = true
 	}
 	return result
 }

@@ -61,8 +61,8 @@ func (s *TidyService) Tidy(ctx context.Context, in TidyInput) (*TidyResult, erro
 	return result, nil
 }
 
-// tidyBroker removes broker registry entries whose .semantica dir is
-// confirmed missing (ErrNotExist only, not permission or I/O errors).
+// tidyBroker removes confirmed-stale broker registry entries.
+// Unknown repo-state checks are reported but not pruned.
 func (s *TidyService) tidyBroker(ctx context.Context, apply bool, result *TidyResult) {
 	regPath, err := broker.DefaultRegistryPath()
 	if err != nil {
@@ -77,35 +77,39 @@ func (s *TidyService) tidyBroker(ctx context.Context, apply bool, result *TidyRe
 		return
 	}
 
-	// Identify stale entries for reporting.
 	all, _ := broker.ListAllRepos(ctx, bh)
-	var staleActions []TidyAction
+	stale := make(map[string]broker.RepoStateReason)
+	var actions []TidyAction
 	for _, r := range all {
-		semDir := filepath.Join(r.Path, ".semantica")
-		if isConfirmedMissing(semDir) {
-			staleActions = append(staleActions, TidyAction{
+		state := broker.CheckRepoState(ctx, r.Path)
+		switch state.Verdict {
+		case broker.RepoStateStale:
+			stale[r.CanonicalPath] = state.Reason
+			actions = append(actions, TidyAction{
 				Category: "broker",
 				ID:       r.Path,
-				Detail:   ".semantica directory missing",
+				Detail:   string(state.Reason),
 			})
+		case broker.RepoStateUnknown:
+			result.Errors++
 		}
 	}
 
-	if len(staleActions) == 0 {
+	if len(actions) == 0 {
 		return
 	}
 
 	if apply {
-		removed, err := broker.PruneConfirmedMissing(ctx, bh)
+		removed, err := broker.PruneStale(ctx, bh, stale)
 		if err != nil {
 			result.Errors++
 			return
 		}
 		result.BrokerEntriesPruned = removed
-		result.Actions = append(result.Actions, staleActions[:removed]...)
+		result.Actions = append(result.Actions, actions[:removed]...)
 	} else {
-		result.BrokerEntriesPruned = len(staleActions)
-		result.Actions = append(result.Actions, staleActions...)
+		result.BrokerEntriesPruned = len(actions)
+		result.Actions = append(result.Actions, actions...)
 	}
 }
 

@@ -123,7 +123,7 @@ Both paths end up in the same `WorkerService.Run` pipeline for each checkpoint.
 
 4. **Session linking** - Finds sessions with events in the time window between the previous and current checkpoint. Associates them with the checkpoint in the database.
 
-5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked checkpoint window, then applies bounded carry-forward for eligible created files that were already present in the previous commit-linked manifest but still scored 0 AI in the current window. For each changed line, it uses three match levels:
+5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked checkpoint window, then applies bounded carry-forward for eligible created or modified files that still scored 0 AI in the current window. Historical evidence must still match the current diff before it is credited. For each changed line, it uses three match levels:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)

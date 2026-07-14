@@ -1,10 +1,9 @@
 // Package codex provides hook-based capture for OpenAI Codex sessions.
 //
-// One provider covers both distributions of the product: the standalone
-// `codex` CLI (Homebrew, npm) and the Codex desktop app, which embeds the
-// same runtime over stdio JSON-RPC. Both honor user-global hook
-// configuration at ~/.codex/hooks.json and the `[features] hooks = true`
-// flag in ~/.codex/config.toml.
+// This provider captures Codex runtimes that emit the user-global hook
+// events configured in ~/.codex/hooks.json. Some desktop app tool
+// surfaces run through app-server or MCP paths that do not emit those
+// hooks and need a separate capture path.
 package codex
 
 import (
@@ -37,11 +36,9 @@ func New() *Provider { return &Provider{} }
 func (p *Provider) Name() string        { return providerName }
 func (p *Provider) DisplayName() string { return displayName }
 
-// IsAvailable reports whether Codex is present on this machine. The
-// standalone CLI installs `codex` on PATH; the desktop app drops a
-// bundle at /Applications/Codex.app on macOS plus a per-user state
-// directory at ~/.codex. Either signal is enough to surface Codex as a
-// known provider.
+// IsAvailable reports whether a Codex installation or state directory is
+// present. This only means Semantica can install Codex hooks; a specific
+// Codex surface may still execute tools without emitting hook events.
 func (p *Provider) IsAvailable() bool {
 	if util.ResolveExecutable([]string{"codex"}) != "" {
 		return true
@@ -116,9 +113,8 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		// PostToolUse fires for every tool name our matcher regex
 		// accepts, but only the four below carry data the scorer can
 		// turn into attribution evidence: apply_patch and Bash from
-		// the standalone CLI and desktop runtime, plus Write/Edit
-		// from any future Codex release that emits them in the
-		// Claude tool_input shape.
+		// hook-capable Codex runtimes, plus Write/Edit from any future
+		// Codex release that emits them in the Claude tool_input shape.
 		if !isCapturableTool(payload.ToolName) {
 			return nil, nil
 		}
@@ -164,17 +160,17 @@ func isCapturableTool(name string) bool {
 	return false
 }
 
-// TranscriptOffset returns 0 unconditionally. Codex's rollout files are
-// not used for capture today; hooks supply every event we need.
+// TranscriptOffset returns 0 unconditionally. Codex hook capture does
+// not read rollout files.
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
 	return 0, nil
 }
 
 // ReadFromOffset is a no-op. Codex rollout files (~/.codex/sessions/...)
 // are not a stable contract and have observed non-strict JSONL where
-// record strings embed raw newlines. The provider relies exclusively on
-// hook payloads. If a fallback read path becomes useful, it should use
-// a streaming JSON decoder rather than line-based splitting.
+// record strings embed raw newlines. This provider relies on hook
+// payloads. If a fallback read path becomes useful, it should use a
+// streaming JSON decoder rather than line-based splitting.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	return nil, offset, nil
 }

@@ -172,19 +172,6 @@ semantica set trailers enabled
 semantica set trailers disabled    # checkpoint-only commits
 ```
 
-### Checkpoints and rewind
-
-Every commit creates a checkpoint, and you can create checkpoints manually too.
-Rewind restores the working tree to a previous checkpointed state, including
-non-commit states and untracked, non-ignored files, without rewriting Git
-history:
-
-```bash
-semantica list                   # show checkpoints
-semantica rewind <checkpoint>    # restore files (creates safety checkpoint first)
-semantica rewind <id> --exact    # also delete files not in the checkpoint
-```
-
 ### Explain commits
 
 Get a structured breakdown of what happened in a commit, including AI attribution,
@@ -228,6 +215,19 @@ semantica handoff --write
 ```
 
 The command writes `.semantica/handoff.md` and prints instructions for starting a new session without reprinting the bundle into the current chat. The bundle includes redacted prompt context, the last assistant response, touched files, recent commits, and working-tree context when available. If multiple providers are active in an interactive terminal, Semantica asks which provider to hand off from. Use `--from <provider>` to hand off from a specific recent provider session, for example `semantica handoff --write --from claude-code`.
+
+### Checkpoints and rewind
+
+Every commit creates a checkpoint, and you can create checkpoints manually too.
+Rewind restores the working tree to a previous checkpointed state, including
+non-commit states and untracked, non-ignored files, without rewriting Git
+history:
+
+```bash
+semantica list                   # show checkpoints
+semantica rewind <checkpoint>    # restore files (creates safety checkpoint first)
+semantica rewind <id> --exact    # also delete files not in the checkpoint
+```
 
 ### Agent skills
 

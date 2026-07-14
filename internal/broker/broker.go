@@ -8,7 +8,6 @@ package broker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -132,7 +131,7 @@ func Register(ctx context.Context, h *Handle, repoPath, canonicalPath string) er
 // Prune removes registry entries whose .semantica directory no longer exists.
 // Called best-effort during status checks to clean up after manual deletions.
 // Note: drops entries on any os.Stat error, not just ErrNotExist. For
-// conservative cleanup, use PruneConfirmedMissing instead.
+// conservative cleanup, use PruneStale instead.
 func Prune(ctx context.Context, h *Handle) error {
 	return h.mutate(func(repos []RegisteredRepo) []RegisteredRepo {
 		var kept []RegisteredRepo
@@ -146,21 +145,24 @@ func Prune(ctx context.Context, h *Handle) error {
 	})
 }
 
-// PruneConfirmedMissing removes registry entries only when their .semantica
-// directory is confirmed missing (os.ErrNotExist). Permission errors and
-// transient I/O failures keep the entry. Returns the number of entries removed.
-func PruneConfirmedMissing(ctx context.Context, h *Handle) (int, error) {
+// PruneStale removes registry entries the caller has already classified
+// as confirmed-stale. The stale map is keyed by canonical path so it
+// survives symlink normalisation; entries missing from the map are
+// preserved. Callers must build the map from CheckRepoState so
+// RepoStateUnknown verdicts are never pruned.
+func PruneStale(ctx context.Context, h *Handle, stale map[string]RepoStateReason) (int, error) {
+	if len(stale) == 0 {
+		return 0, nil
+	}
 	var removed int
 	err := h.mutate(func(repos []RegisteredRepo) []RegisteredRepo {
 		var kept []RegisteredRepo
 		for _, r := range repos {
-			semDir := filepath.Join(r.Path, ".semantica")
-			_, statErr := os.Stat(semDir)
-			if errors.Is(statErr, os.ErrNotExist) {
+			if _, ok := stale[r.CanonicalPath]; ok {
 				removed++
-			} else {
-				kept = append(kept, r)
+				continue
 			}
+			kept = append(kept, r)
 		}
 		return kept
 	})

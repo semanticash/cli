@@ -68,7 +68,11 @@ func renderStatusPlain(res *service.StatusResult, authState auth.AuthState) stri
 	var b strings.Builder
 
 	if !view.Enabled {
-		b.WriteString("Semantica: not enabled\n")
+		if reason := staleReasonLabel(res.StaleReason); reason != "" {
+			b.WriteString("Semantica: not enabled (stale local state: " + reason + ")\n")
+		} else {
+			b.WriteString("Semantica: not enabled\n")
+		}
 		b.WriteString(renderStatusFieldPlain(statusField{Label: "Authenticated", Value: view.Authenticated}) + "\n")
 		if view.WorkspaceTier != "" {
 			b.WriteString(renderStatusFieldPlain(statusField{Label: "Workspace tier", Value: view.WorkspaceTier}) + "\n")
@@ -332,6 +336,9 @@ func formatPendingProvenanceValue(info *service.PendingProvenanceInfo) string {
 
 func statusHint(res *service.StatusResult) string {
 	if !res.Enabled {
+		if res.StaleReason != "" {
+			return "Run `semantica enable --force` to re-provision, or `semantica tidy --apply` to clear the stale registry entry."
+		}
 		return "Run `semantica enable` to get started."
 	}
 	if res.LastCheckpoint == nil && len(res.RecentSessions) == 0 {
@@ -433,9 +440,30 @@ func authStateValue(s auth.AuthState) string {
 
 func statusHeaderValue(res *service.StatusResult) string {
 	if !res.Enabled {
+		if reason := staleReasonLabel(res.StaleReason); reason != "" {
+			return "Not enabled (stale local state: " + reason + ")"
+		}
 		return "Not enabled"
 	}
 	return "Enabled in " + res.RepoRoot
+}
+
+// staleReasonLabel renders a broker stale reason for status output.
+func staleReasonLabel(reason string) string {
+	switch reason {
+	case "sem-dir-missing":
+		return ".semantica directory missing"
+	case "lineage-db-missing":
+		return "lineage.db missing"
+	case "no-repo-row":
+		return "no local repository row"
+	case "settings-disabled":
+		return "disabled locally"
+	case "":
+		return ""
+	default:
+		return reason
+	}
 }
 
 func statusConnectedValue(res *service.StatusResult) string {

@@ -1265,21 +1265,71 @@ func TestBuildTurnContext_PopulatesFields(t *testing.T) {
 	}
 }
 
-// TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors
-// verifies that broker write failures are recorded in the global
-// hook-errors.log for doctor diagnostics. The fixture routes to a
-// repo path without .semantica/lineage.db so sqlstore.Open fails.
-func TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors(t *testing.T) {
-	// Isolate the global config dir so the test writes to a
-	// temp hook-errors.log rather than the developer's real one.
+// TestRouteAndWriteEventsToRepos_SilentDropOnStaleRepo verifies that
+// stale repo writes do not produce hook-errors.log entries.
+func TestRouteAndWriteEventsToRepos_SilentDropOnStaleRepo(t *testing.T) {
+	// Isolate the global config dir so the test never touches the
+	// developer's real hook-errors.log.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	// Repo path exists on disk but has no .semantica/lineage.db,
-	// so the broker's sqlstore.Open will fail.
+	// Repo path exists but has no .semantica/.
 	repoDir := t.TempDir()
 	canonical := repoDir
 	if resolved, err := filepath.EvalSymlinks(repoDir); err == nil {
 		canonical = resolved
+	}
+
+	ev := broker.RawEvent{
+		EventID:   "evt-1",
+		SourceKey: "default",
+		Provider:  "codex",
+		Timestamp: time.Now().UnixMilli(),
+		Kind:      "user",
+		Role:      "user",
+		FilePaths: []string{filepath.Join(canonical, "src", "foo.go")},
+	}
+	repos := []broker.RegisteredRepo{{
+		RepoID:        "test-repo",
+		Path:          canonical,
+		CanonicalPath: canonical,
+		Active:        true,
+	}}
+
+	if err := routeAndWriteEventsToRepos(context.Background(), []broker.RawEvent{ev}, repos, nil); err != nil {
+		t.Errorf("expected silent drop, got error: %v", err)
+	}
+
+	entries, readErr := util.ReadHookErrorTail(10)
+	if readErr != nil {
+		t.Fatalf("read hook-errors.log: %v", readErr)
+	}
+	for _, e := range entries {
+		if e.Hook == "broker-write" {
+			t.Errorf("stale-repo drop must not touch hook-errors.log; got entry: %+v", e)
+		}
+	}
+}
+
+// Non-stale write failures should still surface through hook-errors.log.
+func TestRouteAndWriteEventsToRepos_LogsRealFailureToHookErrors(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// Corrupt lineage DB produces RepoStateUnknown, not ErrRepoStale.
+	repoDir := t.TempDir()
+	canonical := repoDir
+	if resolved, err := filepath.EvalSymlinks(repoDir); err == nil {
+		canonical = resolved
+	}
+	semDir := filepath.Join(canonical, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write garbage at lineage.db to force a sqlite open error.
+	if err := os.WriteFile(filepath.Join(semDir, "lineage.db"), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	ev := broker.RawEvent{
@@ -1291,14 +1341,12 @@ func TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors(t *testin
 		Role:      "user",
 		FilePaths: []string{filepath.Join(canonical, "src", "foo.go")},
 	}
-	repos := []broker.RegisteredRepo{
-		{
-			RepoID:        "test-repo",
-			Path:          canonical,
-			CanonicalPath: canonical,
-			Active:        true,
-		},
-	}
+	repos := []broker.RegisteredRepo{{
+		RepoID:        "test-repo",
+		Path:          canonical,
+		CanonicalPath: canonical,
+		Active:        true,
+	}}
 
 	err := routeAndWriteEventsToRepos(context.Background(), []broker.RawEvent{ev}, repos, nil)
 	if err == nil {
@@ -1311,20 +1359,13 @@ func TestRouteAndWriteEventsToRepos_LogsBrokerWriteFailureToHookErrors(t *testin
 	}
 	var found bool
 	for _, e := range entries {
-		if e.Hook != "broker-write" {
-			continue
+		if e.Hook == "broker-write" && e.Provider == "claude-code" && strings.Contains(e.Message, canonical) {
+			found = true
+			break
 		}
-		if e.Provider != "claude-code" {
-			continue
-		}
-		if !strings.Contains(e.Message, canonical) {
-			continue
-		}
-		found = true
-		break
 	}
 	if !found {
-		t.Errorf("expected hook-errors.log entry hook=broker-write provider=claude-code "+
-			"referencing %q; got entries: %+v", canonical, entries)
+		t.Errorf("expected hook-errors.log entry hook=broker-write provider=claude-code referencing %q; got: %+v",
+			canonical, entries)
 	}
 }

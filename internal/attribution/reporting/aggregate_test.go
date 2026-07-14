@@ -280,7 +280,6 @@ func TestBuildCommitResult_FullAssembly(t *testing.T) {
 }
 
 func TestBuildCommitResult_AIFlagFromTouchedFiles(t *testing.T) {
-	// File has 0 AI scored lines but is in TouchedFiles -> AI=true.
 	in := CommitResultInput{
 		FileScores: []FileScoreInput{
 			{
@@ -289,20 +288,19 @@ func TestBuildCommitResult_AIFlagFromTouchedFiles(t *testing.T) {
 				HumanLines: 3,
 			},
 		},
-		FilesCreated: []string{"touched.go"},
 		TouchedFiles: map[string]bool{"touched.go": true},
 	}
 
 	r := BuildCommitResult(in)
 
-	if len(r.FilesCreated) != 1 {
-		t.Fatalf("FilesCreated = %d, want 1", len(r.FilesCreated))
+	if len(r.FilesEdited) != 1 {
+		t.Fatalf("FilesEdited = %d, want 1", len(r.FilesEdited))
 	}
-	if !r.FilesCreated[0].AI {
+	if !r.FilesEdited[0].AI {
 		t.Error("expected AI=true for touched file with 0 scored lines")
 	}
-	if r.FilesAITouched != 0 {
-		t.Errorf("FilesAITouched = %d, want 0 (only counts files with scored AI lines)", r.FilesAITouched)
+	if r.FilesAITouched != 1 {
+		t.Errorf("FilesAITouched = %d, want 1", r.FilesAITouched)
 	}
 }
 

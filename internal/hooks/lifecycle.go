@@ -743,11 +743,18 @@ func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, r
 	var writeFailed bool
 	for _, match := range matches {
 		if _, err := broker.WriteEventsToRepo(ctx, match.Repo.Path, match.Events, blobStore); err != nil {
+			// Confirmed-stale repo state is skipped here. Doctor and
+			// status report the stale entry with cleanup guidance.
+			var stale *broker.ErrRepoStale
+			if errors.As(err, &stale) {
+				slog.Debug("broker: skipping stale repo",
+					"repo", match.Repo.Path, "reason", string(stale.Reason))
+				continue
+			}
 			slog.Warn("write events to repo failed",
 				"repo", match.Repo.Path, "events", len(match.Events), "err", err)
-			// Also write broker failures to hook-errors.log so
-			// semantica doctor can surface capture losses that
-			// would otherwise only appear in developer logs.
+			// Other write failures may lose capture data, so record
+			// them for doctor diagnostics.
 			provider := ""
 			if len(match.Events) > 0 {
 				provider = match.Events[0].Provider
