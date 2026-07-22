@@ -1,6 +1,6 @@
 module github.com/semanticash/cli
 
-go 1.26
+go 1.26.5
 
 require (
 	charm.land/huh/v2 v2.0.3
