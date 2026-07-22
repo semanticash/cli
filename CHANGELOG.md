@@ -5,6 +5,12 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] - 2026-07-26
+
+### Security
+
+- Raised the minimum Go toolchain to Go 1.26.5 to pick up standard-library security fixes.
+
 ## [0.5.5] - 2026-07-14
 
 ### Removed
