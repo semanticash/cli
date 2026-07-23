@@ -47,7 +47,7 @@ CI runs `check-generated` on every PR - if it fails, run `make generate` and com
 cmd/semantica/          # CLI entrypoint
 internal/
   commands/             # cobra command definitions
-  service/              # core business logic (worker, rewind, explain, etc.)
+  service/              # core business logic (worker, attribution, explain, etc.)
   store/sqlite/         # SQLite storage layer (sqlc-generated)
   git/                  # Git operations (hooks, diff, log)
   hooks/                # AI provider hook integrations (Claude, Cursor, Gemini, Copilot)
@@ -80,7 +80,7 @@ This repository contains the CLI, local storage, hook capture, attribution engin
 
 ### Commit messages
 
-Use a short imperative subject line (e.g., "Add cursor transcript ingestion", "Fix rewind safety checkpoint race"). No strict format is enforced, but keep messages descriptive.
+Use a short imperative subject line (e.g., "Add cursor transcript ingestion", "Fix attribution window race"). No strict format is enforced, but keep messages descriptive.
 
 ## Code style
 

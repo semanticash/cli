@@ -66,11 +66,11 @@ behind those commits.
 
 ## Commit Trailers
 
-Semantica always appends a machine-readable checkpoint trailer during the commit-msg hook. Attribution and diagnostics trailers are enabled by default and can be toggled with `semantica set trailers enabled|disabled`.
+Semantica always appends a machine-readable lineage trailer during the commit-msg hook. Attribution and diagnostics trailers are enabled by default and can be toggled with `semantica set trailers enabled|disabled`.
 
 ### How it works
 
-The pre-commit hook writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the checkpoint ID and timestamp. The commit-msg hook reads this file and appends trailers to the commit message.
+The pre-commit hook writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the internal lineage record ID and timestamp. The commit-msg hook reads this file and appends trailers to the commit message.
 
 When trailer emission is enabled and AI is detected, the trailers look like this:
 
@@ -80,7 +80,7 @@ Semantica-Attribution: 42% claude_code (sonnet) (18/43 lines)
 Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 ```
 
-- **Checkpoint** - links the commit to its checkpoint ID
+- **Lineage ID** - `Semantica-Checkpoint` links the commit to Semantica's internal lineage record
 - **Attribution** - per-provider AI percentage with line-level counts (one trailer per provider if multiple contributed). Provider-touch-only evidence is shown as `provider-touched N lines` instead of being mixed into the headline percentage. If no AI evidence matches the commit, this becomes `0% AI detected (0/N lines)`.
 - **Diagnostics** - aggregate match statistics. If no AI matches the commit, this explains whether no AI events existed in the commit lineage window, whether AI events existed but did not match the committed files, or whether only provider-touch evidence was available.
 
@@ -124,8 +124,8 @@ Semantica-Diagnostics: 1 files, 12 provider-touched lines (no line-level evidenc
 
 - Trailers are skipped if the handoff file is missing (e.g., `git commit --no-verify` skips the pre-commit hook).
 - Duplicate trailers are prevented - if a `Semantica-Checkpoint` trailer already exists (e.g., `git commit --amend`), it won't be added again.
-- `Semantica-Checkpoint` is always appended when trailer insertion runs. `Semantica-Attribution` and `Semantica-Diagnostics` are controlled together by the `trailers` setting.
-- Attribution trailers are best-effort. If attribution cannot be computed at all (for example, the database is unavailable or the hook times out) and trailer emission is enabled, Semantica appends the checkpoint trailer plus `Semantica-Diagnostics: attribution unavailable`.
+- `Semantica-Checkpoint` is always appended when trailer insertion runs. It carries the internal lineage record ID. `Semantica-Attribution` and `Semantica-Diagnostics` are controlled together by the `trailers` setting.
+- Attribution trailers are best-effort. If attribution cannot be computed at all (for example, the database is unavailable or the hook times out) and trailer emission is enabled, Semantica appends the lineage trailer plus `Semantica-Diagnostics: attribution unavailable`.
 
 ---
 
