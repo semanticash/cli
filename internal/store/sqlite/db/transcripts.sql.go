@@ -101,6 +101,84 @@ func (q *Queries) ListEventsInWindow(ctx context.Context, arg ListEventsInWindow
 	return items, nil
 }
 
+const listEventsInWindowForAnnotations = `-- name: ListEventsInWindowForAnnotations :many
+select
+    e.event_id,
+    e.session_id,
+    s.provider,
+    e.ts,
+    e.role,
+    e.tool_uses,
+    e.turn_id,
+    e.tool_name,
+    e.payload_hash,
+    e.provenance_hash
+from agent_events e
+    join agent_sessions s on s.session_id = e.session_id
+where e.repository_id = ?
+    and e.ts > ?2
+    and e.ts <= ?3
+order by e.ts, e.event_id
+`
+
+type ListEventsInWindowForAnnotationsParams struct {
+	RepositoryID string `json:"repository_id"`
+	AfterTs      int64  `json:"after_ts"`
+	UpToTs       int64  `json:"up_to_ts"`
+}
+
+type ListEventsInWindowForAnnotationsRow struct {
+	EventID        string         `json:"event_id"`
+	SessionID      string         `json:"session_id"`
+	Provider       string         `json:"provider"`
+	Ts             int64          `json:"ts"`
+	Role           sql.NullString `json:"role"`
+	ToolUses       sql.NullString `json:"tool_uses"`
+	TurnID         sql.NullString `json:"turn_id"`
+	ToolName       sql.NullString `json:"tool_name"`
+	PayloadHash    sql.NullString `json:"payload_hash"`
+	ProvenanceHash sql.NullString `json:"provenance_hash"`
+}
+
+// Returns events for a repository within a time window with the turn and
+// provenance fields the timeline-annotation detector needs (turn_id and
+// provenance_hash) alongside the payload pointer. Ordered chronologically so
+// the detector can reason about authored-then-revised / authored-then-removed
+// sequences directly.
+func (q *Queries) ListEventsInWindowForAnnotations(ctx context.Context, arg ListEventsInWindowForAnnotationsParams) ([]ListEventsInWindowForAnnotationsRow, error) {
+	rows, err := q.query(ctx, q.listEventsInWindowForAnnotationsStmt, listEventsInWindowForAnnotations, arg.RepositoryID, arg.AfterTs, arg.UpToTs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEventsInWindowForAnnotationsRow{}
+	for rows.Next() {
+		var i ListEventsInWindowForAnnotationsRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.SessionID,
+			&i.Provider,
+			&i.Ts,
+			&i.Role,
+			&i.ToolUses,
+			&i.TurnID,
+			&i.ToolName,
+			&i.PayloadHash,
+			&i.ProvenanceHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTranscriptEvents = `-- name: ListTranscriptEvents :many
 select
     e.event_id, e.session_id, s.provider,

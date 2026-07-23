@@ -58,6 +58,9 @@ type remotePushPayload struct {
 	CLIVersion          string                 `json:"cli_version,omitempty"`
 	AttrVersion         string                 `json:"attribution_version"`
 	PushedAt            int64                  `json:"pushed_at"`
+	// Annotations carries CLI-derived timeline annotations for the PR audit
+	// map. Additive and optional: servers that predate it ignore the field.
+	Annotations []annotationPayload `json:"annotations,omitempty"`
 }
 
 // PushAction classifies the outcome of a push attempt.
@@ -153,6 +156,7 @@ func tryPushAttribution(ctx context.Context, repo *git.Repo, h *sqlstore.Handle,
 	subject, _ := repo.CommitSubject(ctx, commitHash)
 
 	payload := buildPushPayload(ctx, h, result, remoteURL, branch, commitHash, subject, checkpointID)
+	payload.Annotations = toAnnotationPayloads(detectCommitAnnotations(ctx, repo, h, commitHash))
 
 	payload.RemoteURL = redact.SanitizeURL(payload.RemoteURL)
 	if err := redactPushPayload(&payload); err != nil {
@@ -325,6 +329,19 @@ func redactPushPayload(p *remotePushPayload) error {
 			return redactErr
 		}
 		p.PlaybookJSON = redacted
+	}
+	// Annotation summaries are free text derived from multiple contributors'
+	// activity. Redact them fail-closed: a redaction error drops the whole
+	// push rather than shipping unredacted content.
+	for i := range p.Annotations {
+		if p.Annotations[i].Summary == "" {
+			continue
+		}
+		redacted, redactErr := redact.String(p.Annotations[i].Summary)
+		if redactErr != nil {
+			return redactErr
+		}
+		p.Annotations[i].Summary = redacted
 	}
 	return nil
 }
