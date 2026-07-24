@@ -44,9 +44,9 @@ const (
 // its assistant payload pre-loaded by the caller. Callers should pass events
 // ordered by (TS, EventID) for deterministic temporal comparisons.
 //
-// The detector reads the payload directly rather than reusing the attribution
-// candidate path, because it needs the Edit tool's old_string (the content
-// being replaced) which the candidate extractor discards.
+// The detector reads caller-loaded evidence directly instead of reusing the
+// attribution candidate path, because annotations need replaced-content
+// evidence that candidate extraction does not retain.
 type Event struct {
 	EventID        string
 	TurnID         string
@@ -56,6 +56,10 @@ type Event struct {
 	ToolUses       string // raw tool_uses JSON (fast pre-filter + provider touches)
 	Payload        []byte // pre-loaded assistant payload; nil if unavailable
 	ProvenanceHash string // CAS pointer, for supporting step refs
+	// ProvenanceBlob is caller-loaded provenance for providers that store
+	// replaced content outside the payload. Nil when unavailable; unknown
+	// blob shapes are ignored.
+	ProvenanceBlob []byte
 }
 
 // CommitDiff is the parsed commit under attribution, limited to what the

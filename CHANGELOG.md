@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.5.6] - 2026-07-26
 
+### Added
+
+- Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
+
+### Fixed
+
+- Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
+
 ### Security
 
 - Raised the minimum Go toolchain to Go 1.26.5 to pick up standard-library security fixes.

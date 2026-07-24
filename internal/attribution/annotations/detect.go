@@ -42,14 +42,14 @@ func Detect(in DetectInput) []Annotation {
 	return out
 }
 
-// detectRework finds files the agent authored and then revised: a later edit
-// (in a different turn) whose old_string overlaps content an earlier edit
-// authored. Only files present in the commit are considered, so the
-// annotation is tied to landed work rather than abandoned scratch edits.
+// detectRework finds files the agent authored and later revised in another
+// turn. Only files present in the commit are considered, so the annotation is
+// tied to landed work rather than abandoned scratch edits.
 //
-// The overlap signal requires the replaced content (an Edit's old_string), so
-// only line-level Edit events can trigger it. Provider file-touch events and
-// content-only writes have no replaced content, so they are left unclassified.
+// The overlap signal requires replaced content. Two sources supply it: a
+// Claude-shaped Edit payload old_string, and Codex apply_patch provenance
+// old_text. Provider file-touch events and content-only writes carry no
+// replaced content and are left unclassified.
 func detectRework(in DetectInput, projected []eventEdits) []Annotation {
 	var out []Annotation
 

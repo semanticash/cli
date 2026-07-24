@@ -90,6 +90,14 @@ func toAnnotationEvents(ctx context.Context, bs *blobs.Store, rows []sqldb.ListE
 			}
 		}
 
+		// Codex apply_patch stores replaced content in provenance. Load it
+		// only for Codex; the detector ignores unknown blob shapes.
+		if r.Provider == "codex" && r.ProvenanceHash.Valid && r.ProvenanceHash.String != "" && bs != nil {
+			if raw, err := bs.Get(ctx, r.ProvenanceHash.String); err == nil {
+				ev.ProvenanceBlob = raw
+			}
+		}
+
 		out = append(out, ev)
 	}
 	return out

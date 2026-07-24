@@ -378,6 +378,167 @@ func TestStatus_PartialWhenTurnIDMissing(t *testing.T) {
 	}
 }
 
+// --- codex canonical provenance ---------------------------------------------
+
+// codexEvent builds a per-file Codex apply_patch event: provider-touch
+// tool_uses naming the file, plus the shared canonical provenance blob.
+func codexEvent(t *testing.T, id, turn string, ts int64, filePath string, blob any) Event {
+	t.Helper()
+	tu, _ := json.Marshal(map[string]any{
+		"tools": []map[string]any{{"name": "codex_file_edit", "file_path": filePath}},
+	})
+	raw, err := json.Marshal(blob)
+	if err != nil {
+		t.Fatalf("marshal provenance blob: %v", err)
+	}
+	return Event{
+		EventID:        id,
+		TurnID:         turn,
+		Provider:       "codex",
+		TS:             ts,
+		Role:           "assistant",
+		ToolUses:       string(tu),
+		ProvenanceHash: "sha256:" + id,
+		ProvenanceBlob: raw,
+	}
+}
+
+func canonicalBlob(files ...map[string]any) map[string]any {
+	return map[string]any{"version": 1, "files": files}
+}
+
+func TestRework_CodexOldTextAcrossTurns(t *testing.T) {
+	path := "internal/auth/token.go"
+	in := DetectInput{
+		CommitSHA: "a13f92c",
+		RepoRoot:  repoRoot,
+		Events: []Event{
+			claudeEvent(t, "e1", "t1", 100, writeTool(path, revokeBlock)),
+			codexEvent(t, "e2", "t2", 200, path, canonicalBlob(
+				map[string]any{"path": path, "operation": "edit", "old_text": revokeBlock, "new_text": transactionalBlock},
+			)),
+		},
+		Commit: CommitDiff{Files: files(path)},
+	}
+	ann := only(t, Detect(in), KindPossibleRework)
+	if ann.FilePath != path {
+		t.Errorf("file_path = %q", ann.FilePath)
+	}
+	if len(ann.TurnIDs) != 2 {
+		t.Errorf("want both turns anchored, got %v", ann.TurnIDs)
+	}
+}
+
+func TestRework_CodexWriteShapedEvent(t *testing.T) {
+	// Production shape for a content-carrying Codex update: tool_uses names
+	// the tool "Write" (not codex_file_edit), and the event carries the
+	// synthesized Claude-shaped Write payload alongside the canonical
+	// provenance blob. Path filtering reads file_path regardless of tool
+	// name, so old_text must still attach.
+	path := "internal/auth/token.go"
+	tu, _ := json.Marshal(map[string]any{
+		"tools": []map[string]any{{"name": "Write", "file_path": path, "file_op": "edit"}},
+	})
+	blob, _ := json.Marshal(canonicalBlob(
+		map[string]any{"path": path, "operation": "edit", "old_text": revokeBlock, "new_text": transactionalBlock},
+	))
+	codexWrite := Event{
+		EventID:        "e2",
+		TurnID:         "t2",
+		Provider:       "codex",
+		TS:             200,
+		Role:           "assistant",
+		ToolUses:       string(tu),
+		Payload:        claudePayload(t, writeTool(path, transactionalBlock)),
+		ProvenanceHash: "sha256:e2",
+		ProvenanceBlob: blob,
+	}
+	in := DetectInput{
+		CommitSHA: "a13f92c",
+		RepoRoot:  repoRoot,
+		Events: []Event{
+			claudeEvent(t, "e1", "t1", 100, writeTool(path, revokeBlock)),
+			codexWrite,
+		},
+		Commit: CommitDiff{Files: files(path)},
+	}
+	ann := only(t, Detect(in), KindPossibleRework)
+	if ann.FilePath != path {
+		t.Errorf("file_path = %q", ann.FilePath)
+	}
+	if len(ann.SupportingStepRefs) != 2 {
+		t.Errorf("want both events as step refs, got %+v", ann.SupportingStepRefs)
+	}
+}
+
+func TestRework_Codex_NoSmearAcrossSiblingFiles(t *testing.T) {
+	// One patch touches two files and produces two per-file events sharing
+	// one canonical blob. fileB's old_text must only attach to fileB's
+	// event — the fileA event must not absorb it.
+	fileA, fileB := "internal/a.go", "internal/b.go"
+	blob := canonicalBlob(
+		map[string]any{"path": fileA, "operation": "edit", "old_text": "unrelated content here", "new_text": "x"},
+		map[string]any{"path": fileB, "operation": "edit", "old_text": revokeBlock, "new_text": transactionalBlock},
+	)
+	in := DetectInput{
+		CommitSHA: "a13f92c",
+		RepoRoot:  repoRoot,
+		Events: []Event{
+			// Agent authored revokeBlock in fileA (not fileB).
+			claudeEvent(t, "e1", "t1", 100, writeTool(fileA, revokeBlock)),
+			// The fileA per-file event: its blob contains fileB's old_text
+			// (which overlaps e1's authored lines), but filtered to fileA
+			// only the unrelated old_text applies -> no structural overlap.
+			codexEvent(t, "e2", "t2", 200, fileA, blob),
+		},
+		Commit: CommitDiff{Files: files(fileA, fileB)},
+	}
+	assertNone(t, Detect(in))
+}
+
+func TestRework_Codex_MoveAndDeleteEntriesIgnored(t *testing.T) {
+	// A rename's source half carries old_text; treating it as replaced
+	// content would manufacture rework from a pure move. v1 reads edit
+	// entries only.
+	path := "internal/auth/token.go"
+	in := DetectInput{
+		CommitSHA: "a13f92c",
+		RepoRoot:  repoRoot,
+		Events: []Event{
+			claudeEvent(t, "e1", "t1", 100, writeTool(path, revokeBlock)),
+			codexEvent(t, "e2", "t2", 200, path, canonicalBlob(
+				map[string]any{"path": path, "operation": "move", "old_text": revokeBlock},
+			)),
+		},
+		Commit: CommitDiff{Files: files(path)},
+	}
+	assertNone(t, Detect(in))
+}
+
+func TestRework_Codex_UnrecognizedBlobIgnored(t *testing.T) {
+	path := "internal/auth/token.go"
+	events := func(blob any) []Event {
+		return []Event{
+			claudeEvent(t, "e1", "t1", 100, writeTool(path, revokeBlock)),
+			codexEvent(t, "e2", "t2", 200, path, blob),
+		}
+	}
+	// Wrong version: not the recognized canonical shape.
+	in := DetectInput{
+		CommitSHA: "a13f92c",
+		RepoRoot:  repoRoot,
+		Events: events(map[string]any{"version": 2, "files": []map[string]any{
+			{"path": path, "operation": "edit", "old_text": revokeBlock},
+		}}),
+		Commit: CommitDiff{Files: files(path)},
+	}
+	assertNone(t, Detect(in))
+
+	// Arbitrary blob (e.g. a wrapped hook payload): ignored.
+	in.Events = events(map[string]any{"tool_input": "something", "tool_response": "else"})
+	assertNone(t, Detect(in))
+}
+
 // --- generic non-detection --------------------------------------------------
 
 func TestNotDetected_UnknownToolShape(t *testing.T) {

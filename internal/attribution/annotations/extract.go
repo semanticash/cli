@@ -69,12 +69,80 @@ func projectEvents(in DetectInput) []eventEdits {
 			}
 		}
 
+		// Some providers store replaced content in provenance instead of the
+		// payload. Recognized provenance shapes add replaced lines only for
+		// this event's own file.
+		if len(ev.ProvenanceBlob) > 0 {
+			mergeCanonicalProvenanceEdits(&e, ev, in.RepoRoot)
+		}
+
 		if len(e.touched) == 0 {
 			continue
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// canonicalProvenance is the Codex apply_patch canonical provenance shape:
+// one shared multi-file blob per patch envelope, referenced by every
+// per-file event the envelope produced.
+type canonicalProvenance struct {
+	Version int `json:"version"`
+	Files   []struct {
+		Path      string  `json:"path"`
+		Operation string  `json:"operation"`
+		OldText   *string `json:"old_text"`
+		NewText   *string `json:"new_text"`
+	} `json:"files"`
+}
+
+// mergeCanonicalProvenanceEdits reads replaced-content evidence from a Codex
+// apply_patch canonical provenance blob. It is intentionally narrow:
+//
+//   - unknown shapes are ignored;
+//   - only operation "edit" entries contribute old_text;
+//   - entries are filtered to this event's file path, because one patch blob
+//     can be shared by several per-file events.
+func mergeCanonicalProvenanceEdits(e *eventEdits, ev Event, repoRoot string) {
+	var cp canonicalProvenance
+	if err := json.Unmarshal(ev.ProvenanceBlob, &cp); err != nil {
+		return
+	}
+	if cp.Version != 1 || len(cp.Files) == 0 {
+		return
+	}
+
+	// The event's own file paths, from its tool_uses record.
+	eventPaths := make(map[string]struct{})
+	for _, fp := range events.ExtractProviderFileTouches(ev.ToolUses, repoRoot) {
+		eventPaths[fp] = struct{}{}
+	}
+	if len(eventPaths) == 0 {
+		return
+	}
+
+	for _, f := range cp.Files {
+		if f.Operation != "edit" || f.OldText == nil || *f.OldText == "" {
+			continue
+		}
+		rel := events.NormalizePath(f.Path, repoRoot)
+		if _, ok := eventPaths[rel]; !ok {
+			continue
+		}
+		fe := e.edits[rel]
+		if fe == nil {
+			fe = &fileEdit{added: make(map[string]struct{}), replaced: make(map[string]struct{})}
+			e.edits[rel] = fe
+		}
+		for _, line := range strings.Split(*f.OldText, "\n") {
+			t := strings.TrimSpace(line)
+			if substantive(t) {
+				fe.replaced[t] = struct{}{}
+			}
+		}
+		e.touched[rel] = struct{}{}
+	}
 }
 
 // extractClaudeEdits parses a Claude-shaped assistant payload into per-file
