@@ -165,6 +165,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listEventsInWindowStmt, err = db.PrepareContext(ctx, listEventsInWindow); err != nil {
 		return nil, fmt.Errorf("error preparing query ListEventsInWindow: %w", err)
 	}
+	if q.listEventsInWindowForAnnotationsStmt, err = db.PrepareContext(ctx, listEventsInWindowForAnnotations); err != nil {
+		return nil, fmt.Errorf("error preparing query ListEventsInWindowForAnnotations: %w", err)
+	}
 	if q.listFailedManifestReasonsStmt, err = db.PrepareContext(ctx, listFailedManifestReasons); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFailedManifestReasons: %w", err)
 	}
@@ -519,6 +522,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listEventsInWindowStmt: %w", cerr)
 		}
 	}
+	if q.listEventsInWindowForAnnotationsStmt != nil {
+		if cerr := q.listEventsInWindowForAnnotationsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listEventsInWindowForAnnotationsStmt: %w", cerr)
+		}
+	}
 	if q.listFailedManifestReasonsStmt != nil {
 		if cerr := q.listFailedManifestReasonsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFailedManifestReasonsStmt: %w", cerr)
@@ -795,6 +803,7 @@ type Queries struct {
 	listEventsByProviderInWindowStmt             *sql.Stmt
 	listEventsBySessionASCStmt                   *sql.Stmt
 	listEventsInWindowStmt                       *sql.Stmt
+	listEventsInWindowForAnnotationsStmt         *sql.Stmt
 	listFailedManifestReasonsStmt                *sql.Stmt
 	listPackagedManifestsStmt                    *sql.Stmt
 	listPendingManifestsStmt                     *sql.Stmt
@@ -886,6 +895,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listEventsByProviderInWindowStmt:             q.listEventsByProviderInWindowStmt,
 		listEventsBySessionASCStmt:                   q.listEventsBySessionASCStmt,
 		listEventsInWindowStmt:                       q.listEventsInWindowStmt,
+		listEventsInWindowForAnnotationsStmt:         q.listEventsInWindowForAnnotationsStmt,
 		listFailedManifestReasonsStmt:                q.listFailedManifestReasonsStmt,
 		listPackagedManifestsStmt:                    q.listPackagedManifestsStmt,
 		listPendingManifestsStmt:                     q.listPendingManifestsStmt,

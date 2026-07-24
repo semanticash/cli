@@ -157,7 +157,7 @@ If you run `semantica blame` without a ref in a terminal, Semantica shows an int
   <img src="docs/images/semantica-blame-view-screen.png" alt="semantica blame output" width="600">
 </p>
 
-Each commit gets a machine-readable checkpoint trailer, and can also append attribution and diagnostics trailers:
+Each commit gets a machine-readable lineage trailer, and can also append attribution and diagnostics trailers:
 
 ```text
 Semantica-Checkpoint: chk_abc123
@@ -165,11 +165,11 @@ Semantica-Attribution: 42% claude_code (18/43 lines)
 Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 ```
 
-`Semantica-Checkpoint` is always included. `Semantica-Attribution` and `Semantica-Diagnostics` can be toggled together with:
+`Semantica-Checkpoint` is the stable internal lineage record ID for the commit and is always included. `Semantica-Attribution` and `Semantica-Diagnostics` can be toggled together with:
 
 ```bash
 semantica set trailers enabled
-semantica set trailers disabled    # keep only the checkpoint trailer
+semantica set trailers disabled    # keep only the lineage trailer
 ```
 
 ### Explain commits

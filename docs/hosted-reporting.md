@@ -54,7 +54,7 @@ semantica workspace requests
 ## What stays local
 
 - Capture state and transcripts
-- Checkpoints and blob storage under `.semantica/`
+- Lineage records, checkpoint manifests, and blob storage under `.semantica/`
 - Attribution and playbooks stored in `lineage.db`
 
 Connecting a repo does not disable or replace any of the local workflows.

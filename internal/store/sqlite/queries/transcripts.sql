@@ -37,3 +37,27 @@ where e.repository_id = ?
     and e.ts > sqlc.arg(after_ts)
     and e.ts <= sqlc.arg(up_to_ts)
 order by e.ts, e.event_id;
+
+-- name: ListEventsInWindowForAnnotations :many
+-- Returns events for a repository within a time window with the turn and
+-- provenance fields the timeline-annotation detector needs (turn_id and
+-- provenance_hash) alongside the payload pointer. Ordered chronologically so
+-- the detector can reason about authored-then-revised / authored-then-removed
+-- sequences directly.
+select
+    e.event_id,
+    e.session_id,
+    s.provider,
+    e.ts,
+    e.role,
+    e.tool_uses,
+    e.turn_id,
+    e.tool_name,
+    e.payload_hash,
+    e.provenance_hash
+from agent_events e
+    join agent_sessions s on s.session_id = e.session_id
+where e.repository_id = ?
+    and e.ts > sqlc.arg(after_ts)
+    and e.ts <= sqlc.arg(up_to_ts)
+order by e.ts, e.event_id;

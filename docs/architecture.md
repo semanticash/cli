@@ -69,13 +69,13 @@ Semantica installs three Git hooks via `semantica enable`. Each hook invokes the
 
 ### pre-commit
 
-Creates a pending checkpoint in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the checkpoint ID and a timestamp. This file is how state is passed between the three hook phases.
+Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file is how state is passed between the three hook phases.
 
 The hook exits immediately - it never blocks the commit.
 
 ### commit-msg
 
-Reads the handoff file. Appends the checkpoint trailer, and appends attribution and diagnostics trailers when the `trailers` setting is enabled:
+Reads the handoff file. Appends the lineage trailer, and appends attribution and diagnostics trailers when the `trailers` setting is enabled:
 
 ```
 Semantica-Checkpoint: chk_abc123
@@ -83,13 +83,13 @@ Semantica-Attribution: 42% claude_code (18/43 lines)
 Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 ```
 
-If no AI matches the commit, the attribution trailer becomes `0% AI detected (0/N lines)` and the diagnostics trailer explains whether no AI events existed in the checkpoint window or whether events existed but did not match the committed files.
+If no AI matches the commit, the attribution trailer becomes `0% AI detected (0/N lines)` and the diagnostics trailer explains whether no AI events existed in the lineage window or whether events existed but did not match the committed files.
 
 Trailers are only appended if the handoff file exists and is fresh (written within the last few seconds, to guard against stale state from aborted commits).
 
 ### post-commit
 
-Reads the handoff file again. Links the commit hash to the pending checkpoint in the database. Deletes the handoff file.
+Reads the handoff file again. Links the commit hash to the pending lineage record in the database. Deletes the handoff file.
 
 By default, Semantica then spawns a detached background worker process:
 
@@ -105,36 +105,36 @@ discovers and processes pending markers across active repositories.
 
 ## Worker
 
-The worker completes the checkpoint created by pre-commit. It can run in two
+The worker completes the internal lineage record created by pre-commit. It can run in two
 ways:
 
 1. The default detached worker spawned directly by post-commit
 2. The optional OS-managed launcher worker that drains pending markers
 
-Both paths end up in the same `WorkerService.Run` pipeline for each checkpoint.
+Both paths end up in the same `WorkerService.Run` pipeline for each record.
 
 ### Processing pipeline
 
 1. **Session reconciliation** - Flushes any sessions that still have pending capture state (via `reconcileActiveSessions`). This is a catch-up mechanism - the primary capture path is the real-time `semantica capture` command triggered by provider hooks. The worker ensures no events are lost if a capture hook was interrupted or if the agent session outlived the hook call.
 
-2. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous checkpoint's manifest for incremental building.
+2. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous lineage record's manifest for incremental building.
 
-3. **Checkpoint completion** - Marks the pending checkpoint as complete with the manifest hash and size.
+3. **Lineage completion** - Marks the pending record as complete with the manifest hash and size.
 
-4. **Session linking** - Finds sessions with events in the time window between the previous and current checkpoint. Associates them with the checkpoint in the database.
+4. **Session linking** - Finds sessions with events in the time window between the previous and current lineage records. Associates them with the record in the database.
 
-5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked checkpoint window, then applies bounded carry-forward for eligible created or modified files that still scored 0 AI in the current window. Historical evidence must still match the current diff before it is credited. For each changed line, it uses three match levels:
+5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked lineage window, then applies bounded carry-forward for eligible created or modified files that still scored 0 AI in the current window. Historical evidence must still match the current diff before it is credited. For each changed line, it uses three match levels:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
-   Computes per-file and aggregate AI percentage and stores it on the checkpoint. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
+   Computes per-file and aggregate AI percentage and stores it on the lineage record. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
 6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
 7. **Auto-playbook** (optional) - If enabled, runs `semantica _auto-playbook`
    in the background to generate a structured summary (title, intent, outcome,
-   learnings, friction, keywords) and stores it on the checkpoint.
+   learnings, friction, keywords) and stores it on the lineage record.
 
 Steps 6 and 7 are best-effort - failures never cause the worker to fail.
 
@@ -147,14 +147,14 @@ Single-file database in `.semantica/`. Contains:
 | Table | Purpose |
 |-------|---------|
 | `repositories` | Repo records keyed by root path |
-| `checkpoints` | Checkpoint metadata (ID, kind, trigger, status, timestamps) |
-| `commit_links` | Maps commit hashes to checkpoint IDs |
+| `checkpoints` | Internal lineage record metadata (ID, kind, trigger, status, timestamps) |
+| `commit_links` | Maps commit hashes to lineage record IDs |
 | `agent_sources` | Provider source metadata keyed by provider and source key |
 | `agent_sessions` | AI agent sessions (provider, model, timestamps, parent linkage) |
 | `agent_events` | Captured prompt, assistant, tool, and provenance events |
 | `provenance_manifests` | Per-turn packaged transcript/bundle metadata and upload state |
-| `session_checkpoints` | Links sessions to the checkpoints they influenced |
-| `checkpoint_stats` | Cached checkpoint aggregates |
+| `session_checkpoints` | Links sessions to the lineage records they influenced |
+| `checkpoint_stats` | Cached lineage record aggregates |
 
 The schema is defined in `internal/store/sqlite/schema/` and queries in `internal/store/sqlite/queries/`. Both are processed by [sqlc](https://sqlc.dev) to generate type-safe Go code.
 
@@ -170,7 +170,7 @@ objects/
     ...
 ```
 
-Used for file snapshots (checkpoint manifests), event payloads, transcript
+Used for file snapshots (lineage manifests), event payloads, transcript
 slices, prompts, and packaged provenance blobs.
 
 ### Settings (`settings.json`)
@@ -189,7 +189,7 @@ slices, prompts, and packaged provenance blobs.
 }
 ```
 
-The `providers` field is a string array of installed hook provider names (not paths). `connected` controls whether the current repo attempts hosted sync. `connected_repo_id` is written when a repo is connected and stores the repo-local connection binding used by hosted features. The `trailers` field controls whether `Semantica-Attribution` and `Semantica-Diagnostics` are appended; `Semantica-Checkpoint` is always included. When omitted, `trailers` defaults to `true`.
+The `providers` field is a string array of installed hook provider names (not paths). `connected` controls whether the current repo attempts hosted sync. `connected_repo_id` is written when a repo is connected and stores the repo-local connection binding used by hosted features. The `trailers` field controls whether `Semantica-Attribution` and `Semantica-Diagnostics` are appended; `Semantica-Checkpoint`, the lineage record ID, is always included. When omitted, `trailers` defaults to `true`.
 
 ### Global paths
 
@@ -228,10 +228,10 @@ internal/
     pre-commit.go           Pre-commit hook handler
     post-commit.go          Post-commit hook handler
     hook_commit_msg.go      Commit-msg hook handler
-    rewind.go               Checkpoint rewind logic
+    rewind.go               Internal checkpoint restore support
     explain.go              Commit explanation and attribution
     sessions.go             Session listing and details
-    show.go                 Checkpoint detail display
+    show.go                 Lineage record detail display
     playbook.go             LLM playbook generation
     push.go                 Remote endpoint push
   store/sqlite/             Storage layer

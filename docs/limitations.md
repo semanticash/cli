@@ -19,7 +19,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Git and repo boundaries
 
-- Checkpoint manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured or restored.
+- Lineage manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured in manifests.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
 
 ## Attribution fidelity

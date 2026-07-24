@@ -312,7 +312,7 @@ semantica set                              # Show current settings
 semantica set auto-playbook enabled        # Enable auto-playbook generation
 semantica set auto-playbook disabled       # Disable auto-playbook generation
 semantica set trailers enabled             # Enable attribution and diagnostics trailers
-semantica set trailers disabled            # Checkpoint-only commits
+semantica set trailers disabled            # Keep only the lineage trailer
 ```
 
 #### Subcommands
@@ -320,7 +320,7 @@ semantica set trailers disabled            # Checkpoint-only commits
 | Subcommand | Arguments | Description |
 |------------|-----------|-------------|
 | `auto-playbook` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable auto-playbook generation after each commit |
-| `trailers` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable `Semantica-Attribution` and `Semantica-Diagnostics` trailers (`Semantica-Checkpoint` is always included) |
+| `trailers` | `enabled\|disabled\|on\|off\|true\|false` | Enable or disable `Semantica-Attribution` and `Semantica-Diagnostics` trailers (`Semantica-Checkpoint`, the lineage record ID, is always included) |
 
 ### `semantica auth`
 
@@ -395,7 +395,7 @@ Settings live in `.semantica/settings.json`:
 | `providers` | List of providers with hooks installed. |
 | `connected` | Whether this repo attempts hosted sync (set by `semantica connect`). |
 | `connected_repo_id` | Repo-local connection metadata written when hosted sync is enabled. |
-| `trailers` | Controls whether attribution and diagnostics trailers are appended. `Semantica-Checkpoint` is always included. Defaults to `true`. |
+| `trailers` | Controls whether attribution and diagnostics trailers are appended. `Semantica-Checkpoint`, the lineage record ID, is always included. Defaults to `true`. |
 | `automations.playbook.enabled` | Auto-generate LLM playbook summaries on every commit. |
 
 ---
