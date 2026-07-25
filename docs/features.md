@@ -169,6 +169,7 @@ semantica explain HEAD --generate
 - For auto-playbook, the provider must be authenticated and available non-interactively.
 - `semantica launcher enable` can move commit-driven background work under the OS launcher backend on supported platforms. This is optional; the default worker path still works without it.
 - The launcher is mainly useful when commits are often created through agent-driven workflows and the follow-up background work needs a more reliable execution path through launchd on macOS, systemd user units on Linux, or Task Scheduler on Windows.
+- After replacing the Semantica binary, `semantica launcher refresh` re-registers an enabled launcher against the current binary and drains queued work. The installer attempts this automatically when it is not running as root.
 
 ### Caveats
 

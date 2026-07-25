@@ -52,6 +52,33 @@ type StatusResult struct {
 
 	// LogPath is the launcher worker log path.
 	LogPath string
+
+	// Health carries OS daemon-manager spawn-health signals. Today the
+	// extra probe is darwin-only.
+	Health ServiceHealth
+
+	// BinaryStale reports that the registered binary no longer matches
+	// the identity recorded at enable time; BinaryStaleReason explains.
+	// Remediation for both this and Health.SpawnRefused is
+	// `semantica launcher refresh`.
+	BinaryStale       bool
+	BinaryStaleReason string
+}
+
+// ServiceHealth is the OS daemon manager's spawn-health view of the
+// worker service.
+type ServiceHealth struct {
+	// LastExitReason is the daemon's recorded last exit reason, when
+	// exposed (e.g. launchd's OS_REASON_CODESIGNING).
+	LastExitReason string
+
+	// NeedsLWCRUpdate reports launchd's "needs LWCR update" property:
+	// the pinned code requirement no longer matches the binary.
+	NeedsLWCRUpdate bool
+
+	// SpawnRefused reports that the service is registered but the OS
+	// daemon manager is refusing to run it.
+	SpawnRefused bool
 }
 
 // Status gathers launcher state from settings, the filesystem, and
@@ -65,6 +92,9 @@ func Status(ctx context.Context) (StatusResult, error) {
 		result.SettingsEnabled = s.Launcher.Enabled
 		result.InstalledUnitPath = s.Launcher.InstalledUnitPath
 		result.InstalledAt = s.Launcher.InstalledAt
+		if s.Launcher.Enabled {
+			result.BinaryStale, result.BinaryStaleReason = identityStale(s.Launcher)
+		}
 	} else {
 		result.SettingsError = err.Error()
 	}
@@ -102,6 +132,7 @@ func Status(ctx context.Context) (StatusResult, error) {
 	case err == nil && loaded:
 		result.LoadedInDaemon = true
 		result.ServiceState = "loaded"
+		result.Health = daemonServiceHealth(ctx)
 	case err == nil:
 		result.ServiceState = "not loaded"
 	case errors.Is(err, ErrUnsupportedOS):

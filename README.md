@@ -98,18 +98,16 @@ That's it. Every commit now automatically:
 3. Computes AI attribution (how much of the commit is AI-attributed)
 4. Links everything to the commit hash
 
-You can also opt into an OS-managed background worker:
+Optional: use the OS-managed launcher for more reliable background work when
+commits are created by agents or IDE-integrated tools.
 
 ```bash
-semantica launcher enable   # experimental
-semantica launcher status   # inspect settings / definition file / daemon-manager state
+semantica launcher enable
+semantica launcher status
 ```
 
-This is optional. Repos that do not enable the launcher keep using the
-default post-commit worker path. The launcher exists for workflows where
-agents or IDE-integrated tools may create commits on your behalf and you
-want the follow-up background work to run more reliably through launchd
-on macOS, systemd user units on Linux, or Task Scheduler on Windows.
+See [Background worker](#background-worker) for launcher management and upgrade
+notes.
 
 > **Note:** If an AI agent session is already active when you enable Semantica, restart
 > or reload the agent session so it picks up the new hooks. See
@@ -261,9 +259,9 @@ semantica explain HEAD
 ```
 
 Auto-playbook generation still runs in the background after each commit when
-enabled with `semantica set auto-playbook enabled`. `semantica launcher
-enable` can move that background work under the OS launcher backend on
-supported platforms.
+enabled with `semantica set auto-playbook enabled`. See
+[Background worker](#background-worker) for how commit-time background work is
+run.
 
 ### Background worker
 
@@ -275,15 +273,23 @@ OS-managed launcher:
 ```bash
 semantica launcher enable
 semantica launcher status
+semantica launcher refresh
 semantica launcher disable
 ```
 
-The launcher is experimental and currently supports macOS (launchd), Linux
+The launcher is optional and currently supports macOS (launchd), Linux
 (systemd user instance), and Windows (Task Scheduler). `launcher status`
 reports three separate views of state: user settings, the definition file on
-disk, and the OS daemon manager itself. Use it when commits are often created
-through agent-driven workflows and you want the post-commit work to run more
-reliably than the default detached worker path.
+disk, and the OS daemon manager itself. The default detached worker remains
+supported. Use the launcher when commits are often created by agents or
+IDE-integrated tools and you want post-commit work to run through the OS service
+manager.
+
+After upgrading or locally reinstalling Semantica, `semantica launcher refresh`
+re-registers the worker service against the current binary and drains any
+queued work. The official installer and `make install` attempt this
+automatically when they are not running as root; root installs print the exact
+user-scoped refresh command to run afterward.
 
 ---
 
