@@ -341,6 +341,38 @@ func (r *Repo) CommitSubject(ctx context.Context, commitHash string) (string, er
 	return cleanGitOutput(out), nil
 }
 
+// CommitSubjects resolves subjects for many commits in a single git
+// invocation. This keeps large lineage-record listings from spawning one
+// git process per row.
+//
+// Keys of the returned map are the full commit hashes as git prints them
+// (%H); callers that look up by input should pass full hashes. Unknown or
+// pruned hashes are skipped (--ignore-missing), not errors.
+func (r *Repo) CommitSubjects(ctx context.Context, commitHashes []string) (map[string]string, error) {
+	subjects := make(map[string]string, len(commitHashes))
+	if len(commitHashes) == 0 {
+		return subjects, nil
+	}
+
+	// %x1f (unit separator) cannot appear in a subject line, making the
+	// split unambiguous.
+	args := append([]string{"log", "--no-walk", "--ignore-missing", "--format=%H%x1f%s"}, commitHashes...)
+	cmd := r.gitCmd(ctx, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("batch commit subjects: %w", err)
+	}
+
+	for _, line := range strings.Split(cleanGitOutput(out), "\n") {
+		hash, subject, ok := strings.Cut(line, "\x1f")
+		if !ok || hash == "" {
+			continue
+		}
+		subjects[hash] = strings.TrimSpace(subject)
+	}
+	return subjects, nil
+}
+
 // CommitFormat runs `git show -s --format=<format> <commitHash>` and
 // returns the trimmed output. Callers compose multi-field formats
 // (e.g. "%H%n%an%n%ai%n%s") and parse the result by line. This is

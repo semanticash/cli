@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
+- Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 
 ### Fixed
 
 - Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
+- Batched commit-subject lookup for lineage-record listings, avoiding one git subprocess per row on large local histories.
 
 ### Security
 

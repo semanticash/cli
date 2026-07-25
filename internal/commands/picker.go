@@ -12,7 +12,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// resolveRef returns a ref from args, or shows an interactive checkpoint
+// resolveRef returns a ref from args, or shows an interactive lineage-record
 // picker if no arg is given and stdin is a TTY.
 func resolveRef(ctx context.Context, repoPath string, args []string) (string, error) {
 	if len(args) > 0 {
@@ -26,19 +26,31 @@ func resolveRef(ctx context.Context, repoPath string, args []string) (string, er
 	return pickCheckpoint(ctx, repoPath)
 }
 
-// pickCheckpoint shows an interactive select list of recent checkpoints.
+// pickerFetchLimit bounds how many lineage records the interactive picker
+// loads. This is a safety bound on a cheap local SQLite read, not a page
+// size: the select scrolls and filters across everything fetched, and
+// records older than the bound stay reachable by passing an explicit
+// <ref> argument.
+const pickerFetchLimit = 500
+
+// pickerHeight is the visible viewport of the select; the list scrolls
+// beyond it.
+const pickerHeight = 15
+
+// pickCheckpoint shows recent lineage records from the checkpoint-backed
+// store. The list scrolls past the viewport and can be filtered with "/".
 func pickCheckpoint(ctx context.Context, repoPath string) (string, error) {
 	svc := service.NewListService()
 	res, err := svc.ListCheckpoints(ctx, service.ListCheckpointsInput{
 		RepoPath: repoPath,
-		Limit:    20,
+		Limit:    pickerFetchLimit,
 	})
 	if err != nil {
 		return "", err
 	}
 
 	if len(res.Items) == 0 {
-		return "", fmt.Errorf("no checkpoints found")
+		return "", fmt.Errorf("no lineage records found")
 	}
 
 	options := make([]huh.Option[string], len(res.Items))
@@ -47,11 +59,18 @@ func pickCheckpoint(ctx context.Context, repoPath string) (string, error) {
 		options[i] = huh.NewOption(label, it.ID)
 	}
 
+	description := fmt.Sprintf("%d records - scroll with up/down - press / to filter", len(res.Items))
+	if len(res.Items) == pickerFetchLimit {
+		description += " - older records: pass a <ref> argument"
+	}
+
 	var selected string
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Select a checkpoint").
+				Title("Select a lineage record").
+				Description(description).
+				Height(pickerHeight).
 				Options(options...).
 				Value(&selected),
 		),
@@ -71,7 +90,7 @@ func pickCheckpoint(ctx context.Context, repoPath string) (string, error) {
 	return selected, nil
 }
 
-// formatCheckpointOption builds a compact one-line label for a checkpoint.
+// formatCheckpointOption builds a compact one-line lineage-record label.
 func formatCheckpointOption(it service.ListedCheckpoint) string {
 	id := util.ShortID(it.ID)
 	age := relativeAge(it.CreatedAt)
