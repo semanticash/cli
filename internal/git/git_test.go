@@ -829,3 +829,61 @@ func TestBuildSemanticaHookWrapperScript_RunsUserHookFirst(t *testing.T) {
 		t.Error("user hook should execute before semantica hook")
 	}
 }
+
+func TestCommitSubjects_Batch(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", dir)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	runGit := func(args ...string) string {
+		base := []string{"-C", dir, "-c", "user.email=t@t.t", "-c", "user.name=t"}
+		c := exec.Command("git", append(base, args...)...)
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "first subject")
+	first := runGit("rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "second subject")
+	second := runGit("rev-parse", "HEAD")
+
+	repo, err := OpenRepo(dir)
+	if err != nil {
+		t.Fatalf("OpenRepo: %v", err)
+	}
+
+	// Known commits are resolved, and unknown hashes are skipped.
+	unknown := strings.Repeat("d", 40)
+	subjects, err := repo.CommitSubjects(context.Background(), []string{first, second, unknown})
+	if err != nil {
+		t.Fatalf("CommitSubjects: %v", err)
+	}
+	if subjects[first] != "first subject" || subjects[second] != "second subject" {
+		t.Errorf("subjects = %#v", subjects)
+	}
+	if _, ok := subjects[unknown]; ok {
+		t.Error("unknown hash must be omitted, not present")
+	}
+
+	// Empty input returns an empty result.
+	empty, err := repo.CommitSubjects(context.Background(), nil)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty input: %v, %#v", err, empty)
+	}
+}

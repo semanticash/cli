@@ -85,8 +85,27 @@ func (s *ListService) ListCheckpoints(ctx context.Context, in ListCheckpointsInp
 		return nil, err
 	}
 
-	// In-memory cache so multiple checkpoints linked to same commit don't spawn repeated git calls.
-	subjectCache := make(map[string]string)
+	// Resolve commit subjects in one git invocation. A per-row lookup
+	// spawns one subprocess per record, which is noticeable on large local
+	// histories. Best-effort: a batch failure omits subjects, matching the
+	// previous behavior.
+	uniqueHashes := make([]string, 0, len(rows))
+	seenHashes := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if !r.CommitHash.Valid {
+			continue
+		}
+		h := strings.TrimSpace(r.CommitHash.String)
+		if h == "" || seenHashes[h] {
+			continue
+		}
+		seenHashes[h] = true
+		uniqueHashes = append(uniqueHashes, h)
+	}
+	subjects, err := repo.CommitSubjects(ctx, uniqueHashes)
+	if err != nil {
+		subjects = map[string]string{}
+	}
 
 	items := make([]ListedCheckpoint, 0, len(rows))
 	for _, r := range rows {
@@ -117,19 +136,7 @@ func (s *ListService) ListCheckpoints(ctx context.Context, in ListCheckpointsInp
 
 		commitSubject := ""
 		if commitHash != "" {
-			if cached, ok := subjectCache[commitHash]; ok {
-				commitSubject = cached
-			} else {
-				subj, err := repo.CommitSubject(ctx, commitHash)
-				if err == nil {
-					subj = strings.TrimSpace(subj)
-					commitSubject = subj
-					subjectCache[commitHash] = subj
-				} else {
-					// Do not fail list due to git plumbing issues; just omit subject.
-					subjectCache[commitHash] = ""
-				}
-			}
+			commitSubject = subjects[commitHash]
 		}
 
 		items = append(items, ListedCheckpoint{
