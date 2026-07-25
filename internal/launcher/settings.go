@@ -36,21 +36,38 @@ type LauncherSettings struct {
 
 	// InstalledAt is the enable-time Unix millisecond timestamp.
 	InstalledAt int64 `json:"installed_at,omitempty"`
+
+	// InstalledBinaryPath is the binary path the OS daemon manager was
+	// bound to at enable time.
+	InstalledBinaryPath string `json:"installed_binary_path,omitempty"`
+
+	// InstalledBinarySize and InstalledBinaryModMS fingerprint that
+	// binary so dispatch can detect in-place replacement (which leaves
+	// launchd holding stale code-signing state) and self-heal via
+	// Refresh.
+	InstalledBinarySize  int64 `json:"installed_binary_size,omitempty"`
+	InstalledBinaryModMS int64 `json:"installed_binary_mod_ms,omitempty"`
 }
 
 // MarshalJSON writes both install-path keys with the same value while
 // the legacy key is still supported.
 func (s LauncherSettings) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Enabled            bool   `json:"enabled"`
-		InstalledUnitPath  string `json:"installed_unit_path,omitempty"`
-		InstalledPlistPath string `json:"installed_plist_path,omitempty"`
-		InstalledAt        int64  `json:"installed_at,omitempty"`
+		Enabled              bool   `json:"enabled"`
+		InstalledUnitPath    string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath   string `json:"installed_plist_path,omitempty"`
+		InstalledAt          int64  `json:"installed_at,omitempty"`
+		InstalledBinaryPath  string `json:"installed_binary_path,omitempty"`
+		InstalledBinarySize  int64  `json:"installed_binary_size,omitempty"`
+		InstalledBinaryModMS int64  `json:"installed_binary_mod_ms,omitempty"`
 	}{
-		Enabled:            s.Enabled,
-		InstalledUnitPath:  s.InstalledUnitPath,
-		InstalledPlistPath: s.InstalledUnitPath,
-		InstalledAt:        s.InstalledAt,
+		Enabled:              s.Enabled,
+		InstalledUnitPath:    s.InstalledUnitPath,
+		InstalledPlistPath:   s.InstalledUnitPath,
+		InstalledAt:          s.InstalledAt,
+		InstalledBinaryPath:  s.InstalledBinaryPath,
+		InstalledBinarySize:  s.InstalledBinarySize,
+		InstalledBinaryModMS: s.InstalledBinaryModMS,
 	})
 }
 
@@ -64,16 +81,22 @@ func (s LauncherSettings) MarshalJSON() ([]byte, error) {
 // so the conflict cannot persist past one read/write cycle.
 func (s *LauncherSettings) UnmarshalJSON(data []byte) error {
 	var aux struct {
-		Enabled            bool    `json:"enabled"`
-		InstalledUnitPath  *string `json:"installed_unit_path,omitempty"`
-		InstalledPlistPath *string `json:"installed_plist_path,omitempty"`
-		InstalledAt        int64   `json:"installed_at,omitempty"`
+		Enabled              bool    `json:"enabled"`
+		InstalledUnitPath    *string `json:"installed_unit_path,omitempty"`
+		InstalledPlistPath   *string `json:"installed_plist_path,omitempty"`
+		InstalledAt          int64   `json:"installed_at,omitempty"`
+		InstalledBinaryPath  string  `json:"installed_binary_path,omitempty"`
+		InstalledBinarySize  int64   `json:"installed_binary_size,omitempty"`
+		InstalledBinaryModMS int64   `json:"installed_binary_mod_ms,omitempty"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	s.Enabled = aux.Enabled
 	s.InstalledAt = aux.InstalledAt
+	s.InstalledBinaryPath = aux.InstalledBinaryPath
+	s.InstalledBinarySize = aux.InstalledBinarySize
+	s.InstalledBinaryModMS = aux.InstalledBinaryModMS
 	switch {
 	case aux.InstalledUnitPath != nil:
 		s.InstalledUnitPath = *aux.InstalledUnitPath

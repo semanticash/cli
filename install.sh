@@ -97,3 +97,15 @@ install -m 0755 "${TMPDIR}/semantica" "${INSTALL_DIR}/semantica"
 
 echo "semantica v${VERSION} installed to ${INSTALL_DIR}/semantica"
 "${INSTALL_DIR}/semantica" --version
+
+# Refresh an enabled background worker launcher after replacing the binary.
+# Do not refresh as root: launcher state belongs to the login user.
+if [ "$(id -u)" = "0" ]; then
+  echo "Installed as root; if you use the background worker, run as your user:"
+  echo "  \"${INSTALL_DIR}/semantica\" launcher refresh"
+else
+  if ! "${INSTALL_DIR}/semantica" launcher refresh >/dev/null 2>&1; then
+    echo "Note: could not refresh the worker launcher automatically." >&2
+    echo "If commits stop reporting attribution, run: \"${INSTALL_DIR}/semantica\" launcher refresh" >&2
+  fi
+fi

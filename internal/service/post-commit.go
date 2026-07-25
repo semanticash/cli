@@ -191,9 +191,9 @@ func spawnWorker(ctx context.Context, semDir, checkpointID, commitHash, repoRoot
 // ErrLauncherNotEnabled reports that launcher dispatch is disabled.
 var ErrLauncherNotEnabled = errors.New("launcher not enabled")
 
-// dispatchViaLauncher writes a pending marker and kickstarts the
-// launchd worker. If kickstart fails, the marker stays on disk for a
-// later drain.
+// dispatchViaLauncher writes a pending marker and asks the OS launcher
+// to drain queued work. If dispatch fails, the marker stays on disk for
+// a later drain or fallback worker run.
 func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot string) error {
 	if !launcher.IsEnabled() {
 		return ErrLauncherNotEnabled
@@ -208,6 +208,14 @@ func dispatchViaLauncher(ctx context.Context, checkpointID, commitHash, repoRoot
 	if err := launcher.Write(marker); err != nil {
 		return fmt.Errorf("write pending marker: %w", err)
 	}
+
+	// Self-heal before kicking: if the registered binary was replaced
+	// since enable, re-register the service first. A failed refresh falls
+	// through to the caller's detached-spawn fallback.
+	if _, err := launcher.EnsureFreshBinary(ctx); err != nil {
+		return err
+	}
+
 	if err := launcher.Kickstart(ctx, launcher.UnitTarget()); err != nil {
 		return fmt.Errorf("kickstart: %w", err)
 	}

@@ -41,18 +41,91 @@ exit %d
 	return argvLogPath
 }
 
-// enableLauncherInSettings makes launcher.IsEnabled return true.
+// enableLauncherInSettings makes launcher.IsEnabled return true with a
+// fresh binary identity, so dispatch does not trigger the stale-binary
+// self-heal. Tests that exercise the self-heal seed legacy settings via
+// enableLauncherLegacySettings instead.
 func enableLauncherInSettings(t *testing.T) {
 	t.Helper()
+	bin := filepath.Join(t.TempDir(), "semantica")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	identity, err := launcher.StatBinaryIdentity(bin)
+	if err != nil {
+		t.Fatalf("stat fake binary: %v", err)
+	}
 	s := launcher.UserSettings{
 		Launcher: launcher.LauncherSettings{
-			Enabled:            true,
-			InstalledUnitPath: "/dummy/path.plist",
-			InstalledAt:        1,
+			Enabled:              true,
+			InstalledUnitPath:    "/dummy/path.plist",
+			InstalledAt:          1,
+			InstalledBinaryPath:  identity.Path,
+			InstalledBinarySize:  identity.Size,
+			InstalledBinaryModMS: identity.ModMS,
 		},
 	}
 	if err := launcher.WriteSettings(s); err != nil {
 		t.Fatalf("seed launcher settings: %v", err)
+	}
+}
+
+// enableLauncherLegacySettings seeds enabled settings with no recorded
+// binary identity — the shape written by pre-identity versions. Dispatch
+// treats this as stale and self-heals via refresh.
+func enableLauncherLegacySettings(t *testing.T) {
+	t.Helper()
+	s := launcher.UserSettings{
+		Launcher: launcher.LauncherSettings{
+			Enabled:           true,
+			InstalledUnitPath: "/dummy/path.plist",
+			InstalledAt:       1,
+		},
+	}
+	if err := launcher.WriteSettings(s); err != nil {
+		t.Fatalf("seed launcher settings: %v", err)
+	}
+}
+
+// TestDispatchViaLauncher_StaleBinarySelfHeals pins the incident fix: a
+// registered binary that changed since enable (or legacy settings with no
+// identity) must re-bootstrap the service before kicking, instead of
+// kickstarting a service launchd will refuse to spawn
+// (OS_REASON_CODESIGNING) while reporting success.
+func TestDispatchViaLauncher_StaleBinarySelfHeals(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip()
+	}
+	repo, _ := setupLauncherDispatchEnv(t)
+	enableLauncherLegacySettings(t)
+	argvLog := writeFakeLaunchctlForService(t, 0, "")
+
+	if err := dispatchViaLauncher(context.Background(), "cp-1", "commit-1", repo); err != nil {
+		t.Fatalf("dispatchViaLauncher: %v", err)
+	}
+
+	// Self-heal sequence: bootout, bootstrap, then the normal kickstart.
+	argv, _ := os.ReadFile(argvLog)
+	lines := strings.Split(strings.TrimRight(string(argv), "\n"), "\n")
+	if len(lines) != 3 ||
+		!strings.HasPrefix(lines[0], "bootout ") ||
+		!strings.HasPrefix(lines[1], "bootstrap ") ||
+		!strings.HasPrefix(lines[2], "kickstart ") {
+		t.Fatalf("launchctl calls = %v, want bootout, bootstrap, kickstart", lines)
+	}
+
+	// The marker was written and survives.
+	if _, err := os.Stat(launcher.MarkerPath(repo, "cp-1")); err != nil {
+		t.Errorf("marker missing after self-heal dispatch: %v", err)
+	}
+
+	// The refresh recorded an identity: the next dispatch is kickstart-only.
+	settings, err := launcher.ReadSettings()
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if _, ok := settings.Launcher.RecordedIdentity(); !ok {
+		t.Error("self-heal must record the binary identity")
 	}
 }
 

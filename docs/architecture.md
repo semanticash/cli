@@ -103,6 +103,12 @@ marker and asks the platform backend (launchd on macOS, systemd user units on
 Linux, or Task Scheduler on Windows) to run `semantica worker drain`, which
 discovers and processes pending markers across active repositories.
 
+The launcher records the binary identity at registration time. If a later
+commit runs through a replaced Semantica binary, dispatch re-registers the
+launcher before asking the OS backend to drain work. Users can also run
+`semantica launcher refresh` after upgrades or local installs to re-bind the
+worker immediately.
+
 ## Worker
 
 The worker completes the internal lineage record created by pre-commit. It can run in two

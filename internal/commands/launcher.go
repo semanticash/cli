@@ -16,7 +16,7 @@ import (
 func NewLauncherCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "launcher",
-		Short: "Manage the optional background worker agent (experimental)",
+		Short: "Manage the optional OS-backed background worker",
 		Long: `Opt in or out of the OS-managed post-commit worker.
 
 Enabling the launcher installs a service definition with the OS
@@ -30,16 +30,52 @@ and clears the settings flag. Commits fall back to the legacy
 detached-spawn path, which is the same path users who never
 opted in have always used.
 
-The launcher is currently experimental and supported on macOS,
-Linux (systemd user instance required), and Windows (Task
-Scheduler). Other platforms fall back to the legacy spawn path.
+The launcher is optional and supported on macOS, Linux (systemd
+user instance required), and Windows (Task Scheduler). Other
+platforms fall back to the legacy spawn path.
 Consider 'launcher enable' a follow-up to 'semantica enable'
 rather than a replacement.`,
 	}
 	cmd.AddCommand(newLauncherEnableCmd(rootOpts))
 	cmd.AddCommand(newLauncherDisableCmd(rootOpts))
 	cmd.AddCommand(newLauncherStatusCmd(rootOpts))
+	cmd.AddCommand(newLauncherRefreshCmd(rootOpts))
 	return cmd
+}
+
+func newLauncherRefreshCmd(rootOpts *RootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "refresh",
+		Short: "Re-bind the worker service to the current binary",
+		Long: `Re-register the worker service against the currently installed
+binary. A silent no-op when the launcher is disabled; when
+enabled, the service definition is booted out and re-registered
+(the same known-good path as 'launcher enable'), and the worker
+is kicked once to drain any queued work.
+
+Run this after replacing the semantica binary, such as after an
+upgrade or local 'make install'. Dispatch also self-heals stale
+launcher registrations on the next commit; refresh is the
+explicit, immediate repair.`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := launcher.Refresh(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if !result.Enabled {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Launcher is not enabled; nothing to refresh.")
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Re-bound worker service to %s\n", result.BinaryPath)
+			// Kick once so queued markers drain now rather than on the
+			// next commit.
+			if err := launcher.Kickstart(cmd.Context(), launcher.UnitTarget()); err != nil {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Warning: kickstart after refresh failed: %v\n", err)
+			}
+			return nil
+		},
+	}
 }
 
 func newLauncherEnableCmd(rootOpts *RootOptions) *cobra.Command {
@@ -180,6 +216,25 @@ func printLauncherStatus(w io.Writer, s launcher.StatusResult) {
 	_, _ = fmt.Fprintf(w, "Service target:    %s\n", s.UnitTarget)
 	_, _ = fmt.Fprintf(w, "Service state:     %s\n", s.ServiceState)
 	_, _ = fmt.Fprintf(w, "Log path:          %s\n", s.LogPath)
+
+	// Spawn-health problems are loud: these states can leave
+	// post-commit work queued until repaired.
+	if s.Health.SpawnRefused {
+		reason := s.Health.LastExitReason
+		if reason == "" {
+			reason = "needs LWCR update"
+		}
+		_, _ = fmt.Fprintf(w, "Service health:    REFUSING SPAWNS (%s)\n", reason)
+		_, _ = fmt.Fprintf(w, "                   The registered binary no longer passes the OS\n")
+		_, _ = fmt.Fprintf(w, "                   daemon manager's code requirement.\n")
+		_, _ = fmt.Fprintf(w, "                   Run: semantica launcher refresh\n")
+	} else if s.Health.LastExitReason != "" {
+		_, _ = fmt.Fprintf(w, "Last exit reason:  %s\n", s.Health.LastExitReason)
+	}
+	if s.BinaryStale {
+		_, _ = fmt.Fprintf(w, "Binary identity:   STALE (%s)\n", s.BinaryStaleReason)
+		_, _ = fmt.Fprintf(w, "                   Run: semantica launcher refresh\n")
+	}
 
 	// Show a single actionable hint when one applies. Daemon-
 	// manager states that prevent the launcher from operating

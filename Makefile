@@ -48,6 +48,13 @@ install: build
 	@mkdir -p "$(BINDIR)"
 	$(INSTALL) -m 0755 $(BINARY) $(BINDIR)/semantica
 	@echo "Installed semantica to $(BINDIR)/semantica"
+	@# Refresh an enabled launcher after replacing the binary. Do not
+	@# refresh as root: launcher state belongs to the login user.
+	@if [ "$$(id -u)" = "0" ]; then \
+		echo "Installed as root; run '\"$(BINDIR)/semantica\" launcher refresh' as your user to refresh the background worker."; \
+	else \
+		"$(BINDIR)/semantica" launcher refresh >/dev/null 2>&1 || true; \
+	fi
 
 test:
 	$(GO) test ./...

@@ -41,11 +41,22 @@ func Enable(ctx context.Context, binaryPath string) (*InstallResult, error) {
 		return nil, err
 	}
 
+	// Record the binary identity so dispatch can detect replacement
+	// later. Best-effort: if the binary cannot be statted, the missing
+	// identity reads as stale and self-heals on first use.
+	identity, idErr := StatBinaryIdentity(binaryPath)
+	if idErr != nil {
+		identity = BinaryIdentity{Path: binaryPath}
+	}
+
 	settings := UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:           true,
-			InstalledUnitPath: result.UnitPath,
-			InstalledAt:       time.Now().UnixMilli(),
+			Enabled:              true,
+			InstalledUnitPath:    result.UnitPath,
+			InstalledAt:          time.Now().UnixMilli(),
+			InstalledBinaryPath:  identity.Path,
+			InstalledBinarySize:  identity.Size,
+			InstalledBinaryModMS: identity.ModMS,
 		},
 	}
 	if err := WriteSettings(settings); err != nil {
