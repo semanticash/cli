@@ -12,6 +12,8 @@ import (
 
 	"github.com/semanticash/cli/internal/agents/api"
 	"github.com/semanticash/cli/internal/broker"
+	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
+	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -1367,5 +1369,129 @@ func TestRouteAndWriteEventsToRepos_LogsRealFailureToHookErrors(t *testing.T) {
 	if !found {
 		t.Errorf("expected hook-errors.log entry hook=broker-write provider=claude-code referencing %q; got: %+v",
 			canonical, entries)
+	}
+}
+
+func TestTurnCWD_FallsBackToCaptureState(t *testing.T) {
+	if got := turnCWD(&Event{CWD: "/from-event"}, &CaptureState{CWD: "/from-state"}); got != "/from-event" {
+		t.Errorf("event CWD must win, got %q", got)
+	}
+	if got := turnCWD(&Event{}, &CaptureState{CWD: "/from-state"}); got != "/from-state" {
+		t.Errorf("empty event CWD must fall back to state, got %q", got)
+	}
+	if got := turnCWD(&Event{}, nil); got != "" {
+		t.Errorf("nil state with empty event must yield empty, got %q", got)
+	}
+	if got := turnCWD(&Event{}, &CaptureState{}); got != "" {
+		t.Errorf("both empty must yield empty, got %q", got)
+	}
+}
+
+func TestBuildTurnContext_CWDFallback(t *testing.T) {
+	preState := &CaptureState{
+		TurnID:            "turn-456",
+		TranscriptRef:     "/tmp/t.jsonl",
+		PromptSubmittedAt: 123,
+		CWD:               "/enabled-repo",
+	}
+	event := &Event{SessionID: "s-1"}
+
+	ctx := buildTurnContext(preState, event, "gemini-cli")
+	if ctx.CWD != "/enabled-repo" {
+		t.Fatalf("cwd: got %q, want fallback to state CWD", ctx.CWD)
+	}
+	if ctx.TurnID != "turn-456" {
+		t.Fatalf("turn id: got %q", ctx.TurnID)
+	}
+}
+
+func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
+	ctx := context.Background()
+
+	repoDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	semDir := filepath.Join(repoDir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the repository and session records required by PackageTurn.
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: "repo-1", RootPath: repoDir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+	if _, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: "src-1", RepositoryID: "repo-1", Provider: "fake-prov",
+		SourceKey: "key-1", LastSeenAt: 1, CreatedAt: 1,
+	}); err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if _, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: "sess-1", ProviderSessionID: "ps-1", RepositoryID: "repo-1",
+		Provider: "fake-prov", SourceID: "src-1", StartedAt: 1, LastSeenAt: 1,
+		MetadataJson: "{}",
+	}); err != nil {
+		t.Fatalf("upsert session: %v", err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatalf("open broker: %v", err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+	if err := broker.Register(ctx, bh, repoDir, repoDir); err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+
+	provider := &fakeProvider{name: "fake-prov"}
+	preState := &CaptureState{
+		TurnID:            "turn-cwd-fallback",
+		TranscriptRef:     "",
+		PromptSubmittedAt: 1,
+		CWD:               repoDir,
+	}
+	event := &Event{SessionID: "ps-1"}
+
+	packageTurnFromState(ctx, provider, event, bh, preState)
+
+	manifestCount := func(turnID string) int {
+		h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+		if err != nil {
+			t.Fatalf("reopen db: %v", err)
+		}
+		defer func() { _ = sqlstore.Close(h) }()
+		var n int
+		if err := h.DB.QueryRowContext(ctx,
+			"select count(*) from provenance_manifests where turn_id = ?", turnID,
+		).Scan(&n); err != nil {
+			t.Fatalf("count manifests: %v", err)
+		}
+		return n
+	}
+
+	if got := manifestCount("turn-cwd-fallback"); got != 1 {
+		t.Fatalf("packaging did not reach the enabled repo: %d manifests for turn, want 1", got)
+	}
+
+	// Packaging requires a CWD from either the event or capture state.
+	packageTurnFromState(ctx, provider, &Event{SessionID: "ps-1"}, bh, &CaptureState{
+		TurnID: "turn-no-cwd", PromptSubmittedAt: 1,
+	})
+	if got := manifestCount("turn-no-cwd"); got != 0 {
+		t.Fatalf("packaging ran without any CWD: %d manifests, want 0", got)
 	}
 }

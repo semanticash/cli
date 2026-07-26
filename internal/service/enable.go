@@ -23,16 +23,7 @@ import (
 
 type EnableServiceOptions struct {
 	RepoPath string
-	// Registry is the hook-provider registry used by Enable.
-	// Production callers must pass providers.NewHookRegistry()
-	// (the enable cobra command does so). A nil Registry collapses
-	// the production provider set to empty: validateProviderNames
-	// rejects every name as unknown, and installProviderHooks
-	// installs nothing, so `semantica enable` would succeed but
-	// silently capture nothing. This is the explicit-registry
-	// architecture's main footgun; documented as test-only so a
-	// future direct caller treats it as a programming error rather
-	// than a valid production path.
+	// Registry contains the providers available for hook installation.
 	Registry *hooks.Registry
 }
 
@@ -42,6 +33,9 @@ type EnableService struct {
 }
 
 func NewEnableService(opts EnableServiceOptions) (*EnableService, error) {
+	if opts.Registry == nil {
+		return nil, fmt.Errorf("enable: hook registry is required")
+	}
 	return &EnableService{repoPath: opts.RepoPath, registry: opts.Registry}, nil
 }
 
@@ -321,7 +315,7 @@ func ensureSemanticaGitignore(repoRoot string) error {
 var ProviderGitignorePaths = map[string]string{
 	"claude-code": ".claude/settings.local.json",
 	"cursor":      ".cursor/hooks.json",
-	"gemini":      ".gemini/settings.json",
+	"gemini-cli":  ".gemini/settings.json",
 	"copilot":     ".github/hooks/semantica.json",
 	"kiro-ide":    ".kiro/hooks/",
 	"kiro-cli":    ".kiro/agents/semantica.json",
