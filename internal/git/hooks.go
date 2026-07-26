@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -49,6 +51,20 @@ func (r *Repo) HooksDir(ctx context.Context) (string, error) {
 	return hooksPath, nil
 }
 
+// Filesystem seams overridden by fault-injection tests.
+var (
+	hookCreateTemp = os.CreateTemp
+	hookTempWrite  = (*os.File).Write
+	hookChmod      = os.Chmod
+	hookRename     = platform.ReplaceFile
+	hookCreateExcl = func(path string) (*os.File, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
+	hookReadFile  = os.ReadFile
+	hookWriteFile = os.WriteFile
+	hookSymlink   = os.Symlink
+)
+
 func (r *Repo) InstallSemanticaHook(ctx context.Context, opts HookInstallOptions) error {
 	if opts.Name == "" || opts.Subcommand == "" {
 		return fmt.Errorf("hook opts missing Name/Subcommand")
@@ -66,11 +82,17 @@ func (r *Repo) InstallSemanticaHook(ctx context.Context, opts HookInstallOptions
 	desired := buildSemanticaHookScript(opts.Name, opts.Subcommand, opts.PassArgs)
 
 	// If no hook exists, write ours.
-	existing, err := os.ReadFile(hookPath)
+	info, err := os.Lstat(hookPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return writeExecutableFile(hookPath, desired)
 		}
+		return fmt.Errorf("stat existing hook %s: %w", opts.Name, err)
+	}
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+
+	existing, err := os.ReadFile(hookPath)
+	if err != nil {
 		return fmt.Errorf("read existing hook %s: %w", opts.Name, err)
 	}
 
@@ -78,34 +100,194 @@ func (r *Repo) InstallSemanticaHook(ctx context.Context, opts HookInstallOptions
 	// wrapper must stay a wrapper so any preserved user hook remains
 	// in the execution chain across re-enable or upgrade.
 	if bytes.Contains(existing, []byte(semanticaHookMarker)) {
+		// Semantica installs regular files, never symlinks.
+		if isSymlink {
+			return fmt.Errorf("hook %s is a symlink to a Semantica hook; inspect %s manually", opts.Name, hookPath)
+		}
 		userHookFile := parsePreservedUserHook(existing)
 		if userHookFile == "" {
 			// Plain Semantica hook (no preserved wrapper). Safe to
 			// regenerate as the plain form.
-			return writeExecutableFile(hookPath, desired)
+			return replaceHookFile(hookPath, desired, existing, info.Mode().Perm())
 		}
 		// The parsed filename is written back into the wrapper
 		// script. Only accept the generated backup filename shape;
 		// damaged or hand-edited wrappers are left untouched.
 		if !isValidPreservedHookName(userHookFile, opts.Name) {
 			return fmt.Errorf("hook %s appears to be a damaged or hand-edited Semantica wrapper "+
-				"(preserved-hook reference %q does not match the generated shape <hook>.user.<unix-ms>); "+
+				"(preserved-hook reference %q does not match the generated shape <hook>.user.<digits>); "+
 				"inspect %s manually before retrying", opts.Name, userHookFile, hookPath)
 		}
 		wrapper := buildSemanticaHookWrapperScript(opts.Name, userHookFile, opts.Subcommand, opts.PassArgs)
-		return writeExecutableFile(hookPath, wrapper)
+		return replaceHookFile(hookPath, wrapper, existing, info.Mode().Perm())
 	}
 
-	// Otherwise, preserve existing hook and install wrapper.
-	backupName := fmt.Sprintf("%s.user.%d", opts.Name, time.Now().UnixMilli())
-	backupPath := filepath.Join(hooksDir, backupName)
+	return wrapExistingHook(hookPath, hooksDir, info, existing, opts)
+}
 
-	if err := os.Rename(hookPath, backupPath); err != nil {
-		return fmt.Errorf("backup existing hook %s: %w", opts.Name, err)
+// wrapExistingHook installs a wrapper over a non-Semantica hook.
+// Ordering: the old hook stays active until a verified backup copy
+// exists, then the prepared wrapper is promoted atomically.
+func wrapExistingHook(hookPath, hooksDir string, info os.FileInfo, existing []byte, opts HookInstallOptions) error {
+	isSymlink := info.Mode()&os.ModeSymlink != 0
+	var linkTarget string
+	if isSymlink {
+		t, err := os.Readlink(hookPath)
+		if err != nil {
+			return fmt.Errorf("readlink hook %s: %w", opts.Name, err)
+		}
+		linkTarget = t
 	}
 
-	wrapper := buildSemanticaHookWrapperScript(opts.Name, backupName, opts.Subcommand, opts.PassArgs)
-	return writeExecutableFile(hookPath, wrapper)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		backupName := fmt.Sprintf("%s.user.%d", opts.Name, time.Now().UnixNano())
+		backupPath := filepath.Join(hooksDir, backupName)
+
+		wrapper := buildSemanticaHookWrapperScript(opts.Name, backupName, opts.Subcommand, opts.PassArgs)
+		tmpPath, err := prepareHookFile(hookPath, wrapper)
+		if err != nil {
+			return err
+		}
+
+		var backupErr error
+		if isSymlink {
+			backupErr = hookSymlink(linkTarget, backupPath)
+		} else {
+			backupErr = writeBackupCopy(backupPath, existing, info.Mode().Perm())
+		}
+		if backupErr != nil {
+			_ = os.Remove(tmpPath)
+			if errors.Is(backupErr, fs.ErrExist) {
+				lastErr = backupErr
+				continue // name taken: retry with a fresh one
+			}
+			return fmt.Errorf("back up hook %s: %w", opts.Name, backupErr)
+		}
+
+		if err := validateBackup(backupPath, existing, info, isSymlink, linkTarget); err != nil {
+			_ = os.Remove(tmpPath)
+			_ = os.Remove(backupPath)
+			return fmt.Errorf("validate hook backup %s: %w", backupName, err)
+		}
+
+		return promoteWrapper(tmpPath, hookPath, backupPath, wrapper, existing, info, isSymlink, linkTarget, opts)
+	}
+	return fmt.Errorf("allocate unique backup name for hook %s: %w", opts.Name, lastErr)
+}
+
+// writeBackupCopy writes content to a fresh file at path (failing if
+// it exists) with the original hook's permissions.
+func writeBackupCopy(path string, content []byte, mode os.FileMode) error {
+	f, err := hookCreateExcl(path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := hookChmod(path, mode); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// validateBackup confirms the backup preserves the original hook's
+// content and permissions (or symlink target) before promotion.
+func validateBackup(backupPath string, content []byte, info os.FileInfo, isSymlink bool, linkTarget string) error {
+	if isSymlink {
+		got, err := os.Readlink(backupPath)
+		if err != nil {
+			return err
+		}
+		if got != linkTarget {
+			return fmt.Errorf("backup symlink points to %q, want %q", got, linkTarget)
+		}
+		return nil
+	}
+	got, err := hookReadFile(backupPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, content) {
+		return fmt.Errorf("backup content differs from original")
+	}
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(backupPath)
+		if err != nil {
+			return err
+		}
+		if st.Mode().Perm() != info.Mode().Perm() {
+			return fmt.Errorf("backup mode %v, want %v", st.Mode().Perm(), info.Mode().Perm())
+		}
+	}
+	return nil
+}
+
+// promoteWrapper replaces the active hook with the prepared wrapper.
+// ReplaceFile never removes the destination first. After a failure the
+// destination is classified by content: exact original (old hook still
+// active), exact wrapper (late error after a successful install),
+// missing (restore the original), or unrecognized (report explicitly,
+// never overwrite).
+func promoteWrapper(tmpPath, hookPath, backupPath string, wrapper, existing []byte, info os.FileInfo, isSymlink bool, linkTarget string, opts HookInstallOptions) error {
+	err := hookRename(tmpPath, hookPath)
+	if err == nil {
+		return nil
+	}
+	_ = os.Remove(tmpPath)
+	if destMatchesOriginal(hookPath, existing, isSymlink, linkTarget) {
+		// Old hook still active; drop the unreferenced backup.
+		_ = os.Remove(backupPath)
+		return fmt.Errorf("promote hook %s: %w", opts.Name, err)
+	}
+	if fileMatches(hookPath, wrapper) {
+		// The wrapper landed despite the error. Keep its backup.
+		return fmt.Errorf("promote hook %s: %w (wrapper installed; backup retained at %s)", opts.Name, err, backupPath)
+	}
+	if _, statErr := os.Lstat(hookPath); statErr == nil {
+		// Unrecognized content: something else wrote the hook.
+		// Overwriting could destroy it; leave recovery to the user.
+		return fmt.Errorf("promote hook %s failed (%v) and the hook now has unrecognized content; "+
+			"no verified hook is active — inspect %s, backup retained at %s",
+			opts.Name, err, hookPath, backupPath)
+	}
+	var restoreErr error
+	if isSymlink {
+		restoreErr = hookSymlink(linkTarget, hookPath)
+	} else {
+		restoreErr = hookWriteFile(hookPath, existing, info.Mode().Perm())
+	}
+	if restoreErr != nil {
+		return fmt.Errorf("promote hook %s failed (%v) and the original hook could not be restored (%v); "+
+			"no %s hook is active — restore it manually from %s",
+			opts.Name, err, restoreErr, opts.Name, backupPath)
+	}
+	_ = os.Remove(backupPath)
+	return fmt.Errorf("promote hook %s: %w (original hook restored)", opts.Name, err)
+}
+
+// destMatchesOriginal reports whether the hook at path is still the
+// original being wrapped.
+func destMatchesOriginal(path string, content []byte, isSymlink bool, linkTarget string) bool {
+	if isSymlink {
+		got, err := os.Readlink(path)
+		return err == nil && got == linkTarget
+	}
+	return fileMatches(path, content)
+}
+
+// fileMatches reports whether path holds exactly want.
+func fileMatches(path string, want []byte) bool {
+	got, err := os.ReadFile(path)
+	return err == nil && bytes.Equal(got, want)
 }
 
 func buildSemanticaHookScript(hookName, subcommand string, passArgs bool) []byte {
@@ -229,7 +411,7 @@ exit 0
 }
 
 // preservedHookNamePattern matches the backup filename shape
-// generated for preserved user hooks: <hook-name>.user.<unix-ms>.
+// generated for preserved user hooks: <hook-name>.user.<digits>.
 // The restricted character set excludes path separators,
 // whitespace, quotes, and shell metacharacters.
 var preservedHookNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*\.user\.[0-9]+$`)
@@ -280,40 +462,87 @@ func hookOutputRedirect(hookName, subcommand string) string {
 	return " >/dev/null 2>&1"
 }
 
-// writeExecutableFile writes through a temp file in the hooks
-// directory, then replaces the target with platform.SafeRename.
-// This avoids in-place truncation and partial writes if the
-// process is interrupted. On Windows, replacement is best-effort
-// because the platform cannot atomically rename over an existing
-// file.
-func writeExecutableFile(path string, content []byte) error {
+// prepareHookFile renders content into a validated executable temp
+// file next to path and returns the temp path. The temp file is
+// removed on any failure.
+func prepareHookFile(path string, content []byte) (string, error) {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".semantica-hook-*")
+	tmp, err := hookCreateTemp(dir, ".semantica-hook-*")
 	if err != nil {
-		return fmt.Errorf("create temp hook %s: %w", path, err)
+		return "", fmt.Errorf("create temp hook %s: %w", path, err)
 	}
 	tmpPath := tmp.Name()
-	renamed := false
-	defer func() {
-		if !renamed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmp.Write(content); err != nil {
+	fail := func(step string, err error) (string, error) {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("%s temp hook %s: %w", step, path, err)
+	}
+	if _, err := hookTempWrite(tmp, content); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write temp hook %s: %w", path, err)
+		return fail("write", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp hook %s: %w", path, err)
+		return fail("close", err)
 	}
 	// os.CreateTemp creates with mode 0o600; hooks need 0o755.
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
-		return fmt.Errorf("chmod temp hook %s: %w", path, err)
+	if err := hookChmod(tmpPath, 0o755); err != nil {
+		return fail("chmod", err)
 	}
-	if err := platform.SafeRename(tmpPath, path); err != nil {
+	st, err := os.Stat(tmpPath)
+	if err != nil {
+		return fail("stat", err)
+	}
+	if !st.Mode().IsRegular() {
+		return fail("validate", fmt.Errorf("not a regular file"))
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0o111 == 0 {
+		return fail("validate", fmt.Errorf("not executable (mode %v)", st.Mode().Perm()))
+	}
+	return tmpPath, nil
+}
+
+// writeExecutableFile installs content at path via a validated temp
+// file and platform.ReplaceFile, avoiding in-place truncation and
+// destination removal.
+func writeExecutableFile(path string, content []byte) error {
+	tmpPath, err := prepareHookFile(path, content)
+	if err != nil {
+		return err
+	}
+	if err := hookRename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename hook %s: %w", path, err)
 	}
-	renamed = true
 	return nil
+}
+
+// replaceHookFile is writeExecutableFile for a path with existing
+// content. After a failure the destination is classified the same way
+// as promoteWrapper: previous content (still active), new content
+// (late error), missing (restore), or unrecognized (report, never
+// overwrite).
+func replaceHookFile(path string, content, prev []byte, prevMode os.FileMode) error {
+	tmpPath, err := prepareHookFile(path, content)
+	if err != nil {
+		return err
+	}
+	err = hookRename(tmpPath, path)
+	if err == nil {
+		return nil
+	}
+	_ = os.Remove(tmpPath)
+	if fileMatches(path, prev) {
+		return fmt.Errorf("rename hook %s: %w", path, err)
+	}
+	if fileMatches(path, content) {
+		return fmt.Errorf("rename hook %s: %w (new hook installed)", path, err)
+	}
+	if _, statErr := os.Lstat(path); statErr == nil {
+		return fmt.Errorf("rename hook %s failed (%v) and the hook now has unrecognized content; "+
+			"no verified hook is active — inspect %s", path, err, path)
+	}
+	if restoreErr := hookWriteFile(path, prev, prevMode); restoreErr != nil {
+		return fmt.Errorf("rename hook %s failed (%v) and the previous hook could not be restored (%v); "+
+			"no hook is active — re-run enable", path, err, restoreErr)
+	}
+	return fmt.Errorf("rename hook %s: %w (previous hook restored)", path, err)
 }

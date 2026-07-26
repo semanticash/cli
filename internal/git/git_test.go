@@ -499,7 +499,7 @@ func TestBuildSemanticaHookWrapperScript_PropagatesUserHookExitCode(t *testing.T
 //
 // This test simulates the full sequence:
 //  1. Pre-existing user hook installed by team policy.
-//  2. First `semantica enable` wraps it (rename + wrapper write).
+//  2. First `semantica enable` preserves it and installs a wrapper.
 //  3. Second `semantica enable` (reinstall / upgrade).
 //  4. The resulting hook still references the preserved file.
 func TestInstallSemanticaHook_ReinstallPreservesWrapper(t *testing.T) {
