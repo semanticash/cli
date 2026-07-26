@@ -108,11 +108,13 @@ jobs:
         run: go test -tags e2e -count=1 -timeout 120s -v ./e2e/...
 
   shellcheck:
-    name: Validate install script
+    name: Validate shell scripts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: ShellCheck
-        run: shellcheck install.sh
+        run: shellcheck install.sh .github/scripts/*.sh
       - name: Smoke test (parse check)
         run: sh -n install.sh
+      - name: Test status checker
+        run: bash .github/scripts/check-go-test-status_test.sh
