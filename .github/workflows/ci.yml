@@ -44,6 +44,25 @@ jobs:
             go test ./... -count=1
           fi
 
+  vet:
+    name: Cross-GOOS vet (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Type-check packages and tests under every supported build target.
+      - name: go vet
+        run: go vet ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+
   lint:
     runs-on: ubuntu-latest
     steps:

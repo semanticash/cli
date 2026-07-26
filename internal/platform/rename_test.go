@@ -3,7 +3,6 @@ package platform
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -48,14 +47,4 @@ func TestSafeRename_OverwritesExisting(t *testing.T) {
 	if string(got) != "new" {
 		t.Errorf("content = %q, want new", got)
 	}
-}
-
-func TestSafeRename_IntegrationRetriesOnTransient(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("windows-only retry test")
-	}
-	if testing.Short() {
-		t.Skip("integration: retry under contention test")
-	}
-	t.Skip("integration test not implemented yet")
 }

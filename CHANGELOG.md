@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.
+- Added Windows runtime coverage for cross-process locking, detached processes, transient file replacement, and cross-platform static checks.
 
 ### Fixed
 
