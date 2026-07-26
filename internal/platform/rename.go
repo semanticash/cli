@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// renameRetrySleep allows tests to coordinate transient-error retries.
+var renameRetrySleep = time.Sleep
+
 // SafeRename moves src to dst, replacing dst if it exists.
 // On Windows, it removes dst first because os.Rename cannot overwrite
 // an existing file. It retries transient sharing, lock, and access
@@ -26,7 +29,7 @@ func SafeRename(src, dst string) error {
 		return err
 	}
 	for i := 1; i <= 3; i++ {
-		time.Sleep(time.Duration(i*50) * time.Millisecond)
+		renameRetrySleep(time.Duration(i*50) * time.Millisecond)
 		_ = os.Remove(dst)
 		err = os.Rename(src, dst)
 		if err == nil {

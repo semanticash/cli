@@ -22,21 +22,21 @@ jobs:
       - name: Build (compilation gate)
         run: go build ./...
 
+      # Preserve test failures while allowing one known Windows cleanup error.
       - name: Fast tests (runtime correctness)
         shell: bash
         run: |
           set +e
           go test -short ./... -count=1 2>&1 | tee test-output.txt
-          # Check for actual test failures, not Go toolchain cleanup errors.
-          if grep -q "^--- FAIL:" test-output.txt; then
-            exit 1
-          fi
+          status=${PIPESTATUS[0]}
+          set -e
+          bash .github/scripts/check-go-test-status.sh "$status" test-output.txt
 
       - name: Integration tests (locking, detachment, concurrency)
         shell: bash
         run: |
           set +e
           go test -run "Integration|CrossProcess|Stress|E2E" ./... -count=1 -timeout 5m 2>&1 | tee test-output.txt
-          if grep -q "^--- FAIL:" test-output.txt; then
-            exit 1
-          fi
+          status=${PIPESTATUS[0]}
+          set -e
+          bash .github/scripts/check-go-test-status.sh "$status" test-output.txt
