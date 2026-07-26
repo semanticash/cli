@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
 - Batched commit-subject lookup for lineage-record listings, avoiding one git subprocess per row on large local histories.
 - Launcher dispatch now detects a replaced Semantica binary before kicking the background worker and re-registers the service, avoiding queued post-commit work after upgrades. The shell installer and `make install` also refresh the launcher when safe, or print a user-scoped repair command when run as root.
+- Gemini CLI hook configuration created during enablement is now added to `.gitignore` using the provider's canonical name.
+- Turn packaging now falls back to the prompt-time working directory when completion events omit it.
 
 ### Security
 

@@ -662,9 +662,21 @@ func captureDirectSubagent(ctx context.Context, provider HookProvider, event *Ev
 	}
 }
 
+// turnCWD returns the event CWD, falling back to the prompt-time capture state.
+func turnCWD(event *Event, preState *CaptureState) string {
+	if event.CWD != "" {
+		return event.CWD
+	}
+	if preState != nil {
+		return preState.CWD
+	}
+	return ""
+}
+
 // packageTurnFromState writes the packaged turn artifacts after capture succeeds.
 func packageTurnFromState(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, preState *CaptureState) {
-	if event.CWD == "" {
+	cwd := turnCWD(event, preState)
+	if cwd == "" {
 		return
 	}
 
@@ -675,7 +687,7 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	var repoPath string
 	var bestLen int
 	for _, r := range repos {
-		if broker.PathBelongsToRepo(event.CWD, r.Path) && len(r.CanonicalPath) > bestLen {
+		if broker.PathBelongsToRepo(cwd, r.Path) && len(r.CanonicalPath) > bestLen {
 			repoPath = r.Path
 			bestLen = len(r.CanonicalPath)
 		}
@@ -706,7 +718,7 @@ func buildTurnContext(preState *CaptureState, event *Event, providerName string)
 		TranscriptRef: preState.TranscriptRef,
 		StartedAt:     preState.PromptSubmittedAt,
 		CompletedAt:   time.Now().UnixMilli(),
-		CWD:           event.CWD,
+		CWD:           turnCWD(event, preState),
 	}
 }
 

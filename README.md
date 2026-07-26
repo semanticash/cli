@@ -302,7 +302,7 @@ user-scoped refresh command to run afterward.
 | Cursor (IDE and CLI) | `.cursor/hooks.json` | Auto |
 | Kiro IDE | `.kiro/hooks/*.kiro.hook` | Auto |
 | Kiro CLI | `.kiro/agents/semantica.json` | Auto |
-| Gemini CLI | `~/.gemini/settings.json` | Auto |
+| Gemini CLI | `.gemini/settings.json` | Auto |
 | GitHub Copilot | `.github/hooks/semantica.json` | Auto |
 
 Providers are detected automatically during `semantica enable`. For each detected provider, Semantica installs lightweight hooks in the provider's configuration 

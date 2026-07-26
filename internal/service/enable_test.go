@@ -471,3 +471,10 @@ func TestEnable_UnknownProviderName_NoPartialInstall(t *testing.T) {
 		}
 	}
 }
+
+func TestNewEnableService_RejectsNilRegistry(t *testing.T) {
+	_, err := NewEnableService(EnableServiceOptions{RepoPath: t.TempDir(), Registry: nil})
+	if err == nil {
+		t.Fatal("nil registry must be rejected")
+	}
+}

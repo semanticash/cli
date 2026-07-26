@@ -236,7 +236,8 @@ kiro-cli agent set-default semantica
 
 ## Gemini CLI
 
-**Hook config**: `~/.gemini/settings.json`
+**Hook config**: `.gemini/settings.json` (repository-local; added to
+`.gitignore` when created by Semantica)
 
 Gemini CLI stores conversation history in project-specific directories under
 `~/.gemini/tmp/`. Semantica supports both legacy JSON transcripts and newer
@@ -248,10 +249,11 @@ Detected by checking for the existence of `~/.gemini/tmp/`. The project hash is 
 
 ### Hooks
 
-Semantica registers hooks in `~/.gemini/settings.json` following the same
-lifecycle pattern as the other providers. File-edit and shell tool hooks are
-captured directly when Gemini emits them, and transcript replay fills in session
-metadata such as model, tokens, and the provider session ID.
+Semantica registers hooks in the repository-local `.gemini/settings.json`
+following the same lifecycle pattern as the other providers. File-edit and
+shell tool hooks are captured directly when Gemini emits them, and transcript
+replay fills in session metadata such as model, tokens, and the provider
+session ID.
 
 ---
 
