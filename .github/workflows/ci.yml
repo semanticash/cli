@@ -108,7 +108,7 @@ jobs:
         run: go test -tags e2e -count=1 -timeout 120s -v ./e2e/...
 
   shellcheck:
-    name: Validate shell scripts
+    name: Validate install script
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
