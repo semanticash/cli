@@ -42,14 +42,33 @@ func SafeRename(src, dst string) error {
 	return err
 }
 
-// isTransientError reports whether SafeRename should retry err.
+// ReplaceFile replaces dst without removing it first, avoiding a
+// missing-destination window. On Windows it uses MoveFileEx with
+// replace-existing and write-through flags and retries transient file
+// access errors. Use it when dst must remain present during replacement.
+func ReplaceFile(src, dst string) error {
+	err := replaceFile(src, dst)
+	if err == nil || !isTransientError(err) {
+		return err
+	}
+	for i := 1; i <= 3; i++ {
+		renameRetrySleep(time.Duration(i*50) * time.Millisecond)
+		err = replaceFile(src, dst)
+		if err == nil || !isTransientError(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// isTransientError reports whether a file replacement should retry err.
 //
 //   - ERROR_SHARING_VIOLATION (32): another process has the file open
 //     with an incompatible share mode.
 //   - ERROR_LOCK_VIOLATION (33): another process holds a conflicting
 //     file lock.
-//   - ERROR_ACCESS_DENIED (5): a concurrent writer may have recreated
-//     dst between this writer's remove and rename calls.
+//   - ERROR_ACCESS_DENIED (5): another process may temporarily prevent
+//     replacement.
 //
 // Access denied can also mean a real permission error, but the bounded
 // retry keeps that cost small.

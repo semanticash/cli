@@ -45,10 +45,27 @@ func helperRenameHolder() {
 	fmt.Println("RELEASED")
 }
 
-func TestSafeRename_IntegrationRetriesOnTransient(t *testing.T) {
+// TestFileReplace_IntegrationRetriesOnTransient drives each
+// replacement primitive through a real sharing violation and verifies
+// its bounded retry recovers once the holder releases.
+func TestFileReplace_IntegrationRetriesOnTransient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: retry under contention test")
 	}
+	for _, tc := range []struct {
+		name string
+		fn   func(src, dst string) error
+	}{
+		{"SafeRename", SafeRename},
+		{"ReplaceFile", ReplaceFile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runTransientContention(t, tc.name, tc.fn)
+		})
+	}
+}
+
+func runTransientContention(t *testing.T, name string, replace func(src, dst string) error) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.txt")
 	dst := filepath.Join(dir, "dst.txt")
@@ -118,11 +135,11 @@ func TestSafeRename_IntegrationRetriesOnTransient(t *testing.T) {
 	}
 	t.Cleanup(func() { renameRetrySleep = orig })
 
-	if err := SafeRename(src, dst); err != nil {
-		t.Fatalf("SafeRename did not recover from transient sharing violation: %v", err)
+	if err := replace(src, dst); err != nil {
+		t.Fatalf("%s did not recover from transient sharing violation: %v", name, err)
 	}
 	if retries == 0 {
-		t.Fatal("SafeRename succeeded without hitting the transient path; retry not exercised")
+		t.Fatalf("%s succeeded without hitting the transient path; retry not exercised", name)
 	}
 	got, err := os.ReadFile(dst)
 	if err != nil {
