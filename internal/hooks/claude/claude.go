@@ -420,6 +420,9 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 // When the saved offset exceeds the current line count, we treat it as a
 // compaction rewrite - reset to EOF (accept a gap) rather than read from an
 // invalid position. This matches the ContextCompacted "accept a gap" policy.
+// OffsetReadsAuthoritative reports whether offset-based reads are exact.
+func (p *Provider) OffsetReadsAuthoritative() bool { return true }
+
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {

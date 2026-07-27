@@ -88,7 +88,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		turnID := uuid.NewString()
 		event.TurnID = turnID
 
-		if err := SaveCaptureState(&CaptureState{
+		newState := &CaptureState{
 			SessionID:         event.SessionID,
 			Provider:          provider.Name(),
 			TranscriptRef:     event.TranscriptRef,
@@ -97,7 +97,36 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 			TurnID:            turnID,
 			PromptSubmittedAt: event.Timestamp,
 			CWD:               event.CWD,
-		}); err != nil {
+			TurnStartOffset:   offset,
+		}
+		// Keep unresolved transcript data behind the current EOF.
+		if prev, perr := LoadCaptureState(event.SessionID); perr == nil {
+			switch {
+			case prev.TranscriptRef == event.TranscriptRef && prev.TranscriptOffset < offset:
+				// Resume replay at the oldest unresolved boundary.
+				newState.TranscriptOffset = prev.TranscriptOffset
+				newState.PendingTurns = prev.PendingTurns
+				if prev.TurnID != "" {
+					newState.PendingTurns = append(newState.PendingTurns, PendingTurnBoundary{
+						TurnID:            prev.TurnID,
+						PromptSubmittedAt: prev.PromptSubmittedAt,
+						StartOffset:       prev.TurnStartOffset,
+					})
+				}
+				newState.ScopedDeferrals = prev.ScopedDeferrals
+				newState.LastDeferredAt = prev.LastDeferredAt
+			case prev.TranscriptRef != event.TranscriptRef && prev.ScopedDeferrals > 0:
+				// Preserve the deferred segment before replacing its
+				// active state with the new transcript.
+				orphan := *prev
+				orphan.StateKey = orphan.SessionID + ".orphan." + uuid.NewString()
+				orphan.OrphanedAt = time.Now().UnixMilli()
+				if serr := SaveCaptureState(&orphan); serr != nil {
+					return fmt.Errorf("preserve deferred capture segment: %w", serr)
+				}
+			}
+		}
+		if err := SaveCaptureState(newState); err != nil {
 			return err
 		}
 
@@ -338,11 +367,22 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 // CaptureAndRoute reads a transcript delta, routes the resulting events, and
 // advances the saved offset only after every repo write succeeds.
 func CaptureAndRoute(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store) error {
+	_, err := captureAndRouteScoped(ctx, provider, event, bh, blobStore, "")
+	return err
+}
+
+// CaptureAndRouteForRepo routes only when every event belongs to repoRoot.
+// A cross-repository result leaves the offset unchanged and returns false.
+func CaptureAndRouteForRepo(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store, repoRoot string) (bool, error) {
+	return captureAndRouteScoped(ctx, provider, event, bh, blobStore, repoRoot)
+}
+
+func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store, scopeRepo string) (bool, error) {
 	state, err := LoadCaptureState(event.SessionID)
 	if errors.Is(err, ErrNoCaptureState) {
 		// Start from the current end of the transcript rather than backfilling.
 		offset, _ := provider.TranscriptOffset(ctx, event.TranscriptRef)
-		return SaveCaptureState(&CaptureState{
+		return true, SaveCaptureState(&CaptureState{
 			SessionID:        event.SessionID,
 			Provider:         provider.Name(),
 			TranscriptRef:    event.TranscriptRef,
@@ -351,7 +391,7 @@ func CaptureAndRoute(ctx context.Context, provider HookProvider, event *Event, b
 		})
 	}
 	if err != nil {
-		return fmt.Errorf("load capture state: %w", err)
+		return false, fmt.Errorf("load capture state: %w", err)
 	}
 
 	readCtx := context.WithValue(ctx, CaptureTimestampKey, state.Timestamp)
@@ -369,35 +409,172 @@ func CaptureAndRoute(ctx context.Context, provider HookProvider, event *Event, b
 	}
 	events, newOffset, err := readReplayEvents(readCtx, provider, state, bs)
 	if err != nil {
-		return fmt.Errorf("read from offset: %w", err)
+		return false, fmt.Errorf("read from offset: %w", err)
 	}
 	if len(events) == 0 {
 		state.TranscriptOffset = newOffset
 		state.Timestamp = time.Now().UnixMilli()
-		return SaveCaptureState(state)
+		state.ScopedDeferrals = 0
+		state.LastDeferredAt = 0
+		state.PendingTurns = nil
+		return true, SaveCaptureState(state)
 	}
 
-	// Stamp TurnID from capture state onto replayed events so the dedup
-	// check in WriteEventsToRepo can skip events already captured directly.
-	if state.TurnID != "" {
-		for i := range events {
-			if events[i].TurnID == "" {
-				events[i].TurnID = state.TurnID
+	// Prefer transcript boundaries; timestamps are a conservative fallback.
+	if len(state.PendingTurns) > 0 && offsetsAuthoritative(provider) && canProbeOffsets(state, newOffset) {
+		if err := assignTurnsByOffset(readCtx, provider, state, events); err != nil {
+			slog.Warn("turn ownership probe failed; falling back to timestamps", "err", err)
+			stampTurnIDs(events, state)
+		}
+	} else {
+		stampTurnIDs(events, state)
+	}
+
+	repos, err := broker.ListActiveRepos(ctx, bh)
+	if err != nil {
+		return false, fmt.Errorf("list active repos: %w", err)
+	}
+	matches := computeEventRoutes(events, repos)
+	if scopeRepo != "" {
+		for _, m := range matches {
+			if !sameRepoPath(m.Repo.Path, scopeRepo) {
+				// Defer the whole session rather than split its events
+				// across repositories under one repository lock.
+				state.ScopedDeferrals++
+				state.LastDeferredAt = time.Now().UnixMilli()
+				if serr := SaveCaptureState(state); serr != nil {
+					return false, fmt.Errorf("record scoped deferral: %w", serr)
+				}
+				return false, nil
 			}
 		}
 	}
-
-	if err := routeAndWriteEvents(ctx, events, bh, blobStore); err != nil {
-		return fmt.Errorf("route and write: %w", err)
+	if err := writeRoutedEvents(ctx, matches, blobStore); err != nil {
+		return false, fmt.Errorf("route and write: %w", err)
 	}
 
 	state.TranscriptOffset = newOffset
 	state.Timestamp = time.Now().UnixMilli()
+	state.ScopedDeferrals = 0
+	state.LastDeferredAt = 0
+	state.PendingTurns = nil
 	if err := SaveCaptureState(state); err != nil {
-		return fmt.Errorf("save capture state: %w", err)
+		return false, fmt.Errorf("save capture state: %w", err)
 	}
 
+	return true, nil
+}
+
+// maxOwnershipProbes bounds transcript rereads during turn recovery.
+const maxOwnershipProbes = 8
+
+func offsetsAuthoritative(provider HookProvider) bool {
+	oar, ok := provider.(OffsetAuthoritativeReader)
+	return ok && oar.OffsetReadsAuthoritative()
+}
+
+// canProbeOffsets rejects boundaries invalidated by transcript compaction.
+func canProbeOffsets(state *CaptureState, transcriptEnd int) bool {
+	if state.TurnStartOffset <= 0 || state.TurnStartOffset > transcriptEnd {
+		return false
+	}
+	if len(state.PendingTurns) > maxOwnershipProbes {
+		return false
+	}
+	last := -1
+	for _, b := range state.PendingTurns {
+		if b.StartOffset < 0 || b.StartOffset <= last {
+			return false
+		}
+		last = b.StartOffset
+	}
+	return last < state.TurnStartOffset
+}
+
+// assignTurnsByOffset assigns ownership only after every boundary read succeeds.
+func assignTurnsByOffset(ctx context.Context, provider HookProvider, state *CaptureState, events []broker.RawEvent) error {
+	owners := map[string]string{}
+	for _, ev := range events {
+		if ev.TurnID == "" && len(state.PendingTurns) > 0 {
+			owners[ev.EventID] = state.PendingTurns[0].TurnID
+		}
+	}
+
+	type segment struct {
+		turnID string
+		start  int
+	}
+	var segs []segment
+	for _, b := range state.PendingTurns[1:] {
+		segs = append(segs, segment{b.TurnID, b.StartOffset})
+	}
+	segs = append(segs, segment{state.TurnID, state.TurnStartOffset})
+
+	for _, sg := range segs {
+		probe, _, err := provider.ReadFromOffset(ctx, state.TranscriptRef, sg.start, nil)
+		if err != nil {
+			return fmt.Errorf("probe offset %d: %w", sg.start, err)
+		}
+		member := make(map[string]bool, len(probe))
+		for _, ev := range probe {
+			member[ev.EventID] = true
+		}
+		for id := range owners {
+			if member[id] {
+				owners[id] = sg.turnID
+			}
+		}
+	}
+
+	for i := range events {
+		if events[i].TurnID == "" {
+			events[i].TurnID = owners[events[i].EventID]
+		}
+	}
 	return nil
+}
+
+// stampTurnIDs leaves events unowned when timestamps cannot identify a turn.
+func stampTurnIDs(events []broker.RawEvent, state *CaptureState) {
+	if state.TurnID == "" && len(state.PendingTurns) == 0 {
+		return
+	}
+	for i := range events {
+		if events[i].TurnID != "" {
+			continue
+		}
+		events[i].TurnID = turnOwnerByTime(events[i].Timestamp, state)
+	}
+}
+
+func turnOwnerByTime(ts int64, state *CaptureState) string {
+	if len(state.PendingTurns) == 0 {
+		return state.TurnID
+	}
+	if ts <= 0 {
+		return "" // ambiguous: no position, no time
+	}
+	if state.PromptSubmittedAt > 0 {
+		if ts == state.PromptSubmittedAt {
+			return "" // ambiguous: boundary collision
+		}
+		if ts > state.PromptSubmittedAt {
+			return state.TurnID
+		}
+	}
+	for i := len(state.PendingTurns) - 1; i >= 0; i-- {
+		if ts == state.PendingTurns[i].PromptSubmittedAt {
+			return "" // ambiguous: boundary collision
+		}
+		if ts > state.PendingTurns[i].PromptSubmittedAt {
+			return state.PendingTurns[i].TurnID
+		}
+	}
+	return "" // ambiguous: predates every known boundary
+}
+
+func sameRepoPath(a, b string) bool {
+	return broker.PathBelongsToRepo(a, b) && broker.PathBelongsToRepo(b, a)
 }
 
 func readReplayEvents(ctx context.Context, provider HookProvider, state *CaptureState, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
@@ -733,6 +910,12 @@ func routeAndWriteEvents(ctx context.Context, events []broker.RawEvent, bh *brok
 }
 
 func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, repos []broker.RegisteredRepo, blobStore *blobs.Store) error {
+	return writeRoutedEvents(ctx, computeEventRoutes(events, repos), blobStore)
+}
+
+// computeEventRoutes maps events to their target repositories,
+// including the no-file-path fallback via source project path.
+func computeEventRoutes(events []broker.RawEvent, repos []broker.RegisteredRepo) []broker.RepoMatch {
 	matches := broker.RouteEvents(events, repos)
 
 	// Fallback: route events without file paths via source project path.
@@ -751,7 +934,10 @@ func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, r
 			matches = append(matches, *m)
 		}
 	}
+	return matches
+}
 
+func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStore *blobs.Store) error {
 	var writeFailed bool
 	for _, match := range matches {
 		if _, err := broker.WriteEventsToRepo(ctx, match.Repo.Path, match.Events, blobStore); err != nil {

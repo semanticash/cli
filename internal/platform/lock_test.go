@@ -93,6 +93,41 @@ func TestLockFile_CrossProcessContention(t *testing.T) {
 	}
 }
 
+func TestTryLockFile_ContendedAndFree(t *testing.T) {
+	f := createTempLockFile(t)
+	if err := LockFile(f); err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+
+	// A second descriptor for the same file must not acquire.
+	f2, err := os.OpenFile(f.Name(), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f2.Close() })
+	got, err := TryLockFile(f2)
+	if err != nil {
+		t.Fatalf("TryLockFile contended: %v", err)
+	}
+	if got {
+		t.Fatal("TryLockFile acquired a lock another descriptor holds")
+	}
+
+	if err := UnlockFile(f); err != nil {
+		t.Fatalf("UnlockFile: %v", err)
+	}
+	got, err = TryLockFile(f2)
+	if err != nil {
+		t.Fatalf("TryLockFile free: %v", err)
+	}
+	if !got {
+		t.Fatal("TryLockFile failed to acquire a free lock")
+	}
+	if err := UnlockFile(f2); err != nil {
+		t.Fatalf("UnlockFile second descriptor: %v", err)
+	}
+}
+
 func createTempLockFile(t *testing.T) *os.File {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "lockfile")

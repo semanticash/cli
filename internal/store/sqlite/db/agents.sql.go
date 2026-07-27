@@ -430,8 +430,9 @@ insert or ignore into agent_events (
     tokens_in, tokens_out, tokens_cache_read, tokens_cache_create,
     summary, provider_event_id,
     turn_id, tool_use_id, tool_name, event_source,
-    provenance_hash
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    provenance_hash, insert_seq
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    (select coalesce(max(e2.insert_seq), 0) + 1 from agent_events e2))
 `
 
 type InsertAgentEventParams struct {
@@ -456,6 +457,7 @@ type InsertAgentEventParams struct {
 	ProvenanceHash    sql.NullString `json:"provenance_hash"`
 }
 
+// Allocate insert_seq under SQLite's single-writer lock.
 func (q *Queries) InsertAgentEvent(ctx context.Context, arg InsertAgentEventParams) error {
 	_, err := q.exec(ctx, q.insertAgentEventStmt, insertAgentEvent,
 		arg.EventID,
@@ -496,7 +498,7 @@ func (q *Queries) InsertSessionCheckpoint(ctx context.Context, arg InsertSession
 }
 
 const listAgentEventsBySession = `-- name: ListAgentEventsBySession :many
-select event_id, session_id, repository_id, ts, kind, payload_hash, role, tool_uses, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create, summary, provider_event_id, turn_id, tool_use_id, tool_name, event_source, provenance_hash from agent_events where session_id = ? order by ts desc limit ?
+select event_id, session_id, repository_id, ts, kind, payload_hash, role, tool_uses, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create, summary, provider_event_id, turn_id, tool_use_id, tool_name, event_source, provenance_hash, insert_seq from agent_events where session_id = ? order by ts desc limit ?
 `
 
 type ListAgentEventsBySessionParams struct {
@@ -533,6 +535,7 @@ func (q *Queries) ListAgentEventsBySession(ctx context.Context, arg ListAgentEve
 			&i.ToolName,
 			&i.EventSource,
 			&i.ProvenanceHash,
+			&i.InsertSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -548,7 +551,7 @@ func (q *Queries) ListAgentEventsBySession(ctx context.Context, arg ListAgentEve
 }
 
 const listAgentEventsBySessionPaged = `-- name: ListAgentEventsBySessionPaged :many
-select event_id, session_id, repository_id, ts, kind, payload_hash, role, tool_uses, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create, summary, provider_event_id, turn_id, tool_use_id, tool_name, event_source, provenance_hash from agent_events
+select event_id, session_id, repository_id, ts, kind, payload_hash, role, tool_uses, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create, summary, provider_event_id, turn_id, tool_use_id, tool_name, event_source, provenance_hash, insert_seq from agent_events
 where session_id = ?1
   and (ts > ?2
        or (ts = ?2 and event_id > ?3))
@@ -600,6 +603,7 @@ func (q *Queries) ListAgentEventsBySessionPaged(ctx context.Context, arg ListAge
 			&i.ToolName,
 			&i.EventSource,
 			&i.ProvenanceHash,
+			&i.InsertSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -783,7 +787,7 @@ func (q *Queries) ListEventsByProviderInWindow(ctx context.Context, arg ListEven
 }
 
 const listEventsBySessionASC = `-- name: ListEventsBySessionASC :many
-select e.event_id, e.session_id, e.repository_id, e.ts, e.kind, e.payload_hash, e.role, e.tool_uses, e.tokens_in, e.tokens_out, e.tokens_cache_read, e.tokens_cache_create, e.summary, e.provider_event_id, e.turn_id, e.tool_use_id, e.tool_name, e.event_source, e.provenance_hash, s.provider from agent_events e
+select e.event_id, e.session_id, e.repository_id, e.ts, e.kind, e.payload_hash, e.role, e.tool_uses, e.tokens_in, e.tokens_out, e.tokens_cache_read, e.tokens_cache_create, e.summary, e.provider_event_id, e.turn_id, e.tool_use_id, e.tool_name, e.event_source, e.provenance_hash, e.insert_seq, s.provider from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.session_id = ? order by e.ts, e.event_id
 `
@@ -808,6 +812,7 @@ type ListEventsBySessionASCRow struct {
 	ToolName          sql.NullString `json:"tool_name"`
 	EventSource       string         `json:"event_source"`
 	ProvenanceHash    sql.NullString `json:"provenance_hash"`
+	InsertSeq         sql.NullInt64  `json:"insert_seq"`
 	Provider          string         `json:"provider"`
 }
 
@@ -840,6 +845,7 @@ func (q *Queries) ListEventsBySessionASC(ctx context.Context, sessionID string) 
 			&i.ToolName,
 			&i.EventSource,
 			&i.ProvenanceHash,
+			&i.InsertSeq,
 			&i.Provider,
 		); err != nil {
 			return nil, err
@@ -1262,20 +1268,35 @@ func (q *Queries) ListSessionsForRepository(ctx context.Context, arg ListSession
 const listSessionsWithEventsInWindow = `-- name: ListSessionsWithEventsInWindow :many
 select distinct e.session_id from agent_events e
 where e.repository_id = ?
-  and e.ts > ?2
-  and e.ts <= ?3
+  and ((cast(?2 as integer) = 1
+          and (e.ts > ?3
+               or (e.ts = ?3 and e.insert_seq > ?4))
+          and (e.ts < ?5
+               or (e.ts = ?5 and e.insert_seq <= ?6)))
+       or (cast(?2 as integer) = 0
+          and e.ts > ?3 and e.ts <= ?5))
 `
 
 type ListSessionsWithEventsInWindowParams struct {
-	RepositoryID string `json:"repository_id"`
-	AfterTs      int64  `json:"after_ts"`
-	UpToTs       int64  `json:"up_to_ts"`
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
 }
 
 // Returns distinct session IDs that have at least one event in the given
 // time window [after_ts, up_to_ts] for the specified repository.
 func (q *Queries) ListSessionsWithEventsInWindow(ctx context.Context, arg ListSessionsWithEventsInWindowParams) ([]string, error) {
-	rows, err := q.query(ctx, q.listSessionsWithEventsInWindowStmt, listSessionsWithEventsInWindow, arg.RepositoryID, arg.AfterTs, arg.UpToTs)
+	rows, err := q.query(ctx, q.listSessionsWithEventsInWindowStmt, listSessionsWithEventsInWindow,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
 	if err != nil {
 		return nil, err
 	}

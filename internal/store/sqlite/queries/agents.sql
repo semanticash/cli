@@ -32,14 +32,16 @@ select * from agent_sessions
 where repository_id = ? and provider_session_id = ?;
 
 -- name: InsertAgentEvent :exec
+-- Allocate insert_seq under SQLite's single-writer lock.
 insert or ignore into agent_events (
     event_id, session_id, repository_id, ts, kind,
     payload_hash, role, tool_uses,
     tokens_in, tokens_out, tokens_cache_read, tokens_cache_create,
     summary, provider_event_id,
     turn_id, tool_use_id, tool_name, event_source,
-    provenance_hash
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    provenance_hash, insert_seq
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    (select coalesce(max(e2.insert_seq), 0) + 1 from agent_events e2));
 
 -- name: StepEventExists :one
 select count(*) > 0 as exists_flag from agent_events
@@ -353,8 +355,13 @@ where e.session_id = ? order by e.ts, e.event_id;
 -- time window [after_ts, up_to_ts] for the specified repository.
 select distinct e.session_id from agent_events e
 where e.repository_id = ?
-  and e.ts > sqlc.arg(after_ts)
-  and e.ts <= sqlc.arg(up_to_ts);
+  and ((cast(sqlc.arg(use_cursor) as integer) = 1
+          and (e.ts > sqlc.arg(after_ts)
+               or (e.ts = sqlc.arg(after_ts) and e.insert_seq > sqlc.arg(after_cursor)))
+          and (e.ts < sqlc.arg(up_to_ts)
+               or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
+       or (cast(sqlc.arg(use_cursor) as integer) = 0
+          and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)));
 
 -- name: ResolveSessionByPrefix :many
 select session_id from agent_sessions

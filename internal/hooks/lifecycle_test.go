@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ type fakeProvider struct {
 	transcriptOffset int
 	events           []broker.RawEvent
 	readSequence     []fakeReadResult
+	readByOffset     map[int][]broker.RawEvent // offset-keyed reads for ownership probes
 	readCalls        int
 	readPaths        []string // tracks which transcript paths were read
 	readOffsets      []int    // offsets used for each ReadFromOffset call
@@ -40,7 +42,10 @@ type fakeDirectProvider struct {
 	buildErr     error
 }
 
-func (f *fakeProvider) Name() string        { return f.name }
+func (f *fakeProvider) Name() string { return f.name }
+
+func (f *fakeProvider) OffsetReadsAuthoritative() bool { return true }
+
 func (f *fakeProvider) DisplayName() string { return f.name }
 func (f *fakeProvider) IsAvailable() bool   { return true }
 func (f *fakeProvider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
@@ -61,6 +66,9 @@ func (f *fakeProvider) ReadFromOffset(ctx context.Context, transcriptRef string,
 	f.readCalls++
 	f.readPaths = append(f.readPaths, transcriptRef)
 	f.readOffsets = append(f.readOffsets, offset)
+	if f.readByOffset != nil {
+		return append([]broker.RawEvent(nil), f.readByOffset[offset]...), f.transcriptOffset, nil
+	}
 	if len(f.readSequence) >= f.readCalls {
 		r := f.readSequence[f.readCalls-1]
 		return r.events, r.offset, r.err
@@ -1493,5 +1501,755 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 	})
 	if got := manifestCount("turn-no-cwd"); got != 0 {
 		t.Fatalf("packaging ran without any CWD: %d manifests, want 0", got)
+	}
+}
+
+func TestCaptureAndRouteForRepo_DefersCrossRepoEvents(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	repoA, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoB, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+	for _, r := range []string{repoA, repoB} {
+		if err := broker.Register(ctx, bh, r, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "scoped-1", Provider: "fake", TranscriptRef: "t",
+		TranscriptOffset: 7, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{
+		name: "fake",
+		readSequence: []fakeReadResult{{
+			events: []broker.RawEvent{{
+				EventID: "ev1", Provider: "fake", Timestamp: 1,
+				Kind: "assistant", FilePaths: []string{filepath.Join(repoB, "main.go")},
+			}},
+			offset: 99,
+		}},
+	}
+
+	captured, err := CaptureAndRouteForRepo(ctx, provider,
+		&Event{SessionID: "scoped-1", TranscriptRef: "t"}, bh, nil, repoA)
+	if err != nil {
+		t.Fatalf("scoped capture: %v", err)
+	}
+	if captured {
+		t.Fatal("events routing to another repository must defer, not capture")
+	}
+	state, err := LoadCaptureState("scoped-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TranscriptOffset != 7 {
+		t.Fatalf("offset advanced to %d on a deferred session; events would be lost", state.TranscriptOffset)
+	}
+	if state.ScopedDeferrals != 1 || state.LastDeferredAt == 0 {
+		t.Fatalf("deferral not recorded: deferrals=%d lastDeferredAt=%d",
+			state.ScopedDeferrals, state.LastDeferredAt)
+	}
+}
+
+func TestDispatch_PromptPreservesDeferredCaptureState(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "defer-1", Provider: "fake", TranscriptRef: "t",
+		TranscriptOffset: 7, Timestamp: 1,
+		ScopedDeferrals: 2, LastDeferredAt: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 42} // current EOF
+	if err := Dispatch(ctx, provider, &Event{
+		Type: PromptSubmitted, SessionID: "defer-1", TranscriptRef: "t",
+		Timestamp: 123, CWD: "/some/repo",
+	}, bh, nil); err != nil {
+		t.Fatalf("dispatch prompt: %v", err)
+	}
+
+	state, err := LoadCaptureState("defer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TranscriptOffset != 7 {
+		t.Fatalf("offset = %d, want preserved 7: resetting to EOF skips the deferred segment", state.TranscriptOffset)
+	}
+	if state.ScopedDeferrals != 2 || state.LastDeferredAt != 99 {
+		t.Fatalf("deferral record lost: deferrals=%d lastDeferredAt=%d", state.ScopedDeferrals, state.LastDeferredAt)
+	}
+	if state.TurnID == "" || state.PromptSubmittedAt != 123 {
+		t.Fatalf("prompt fields should refresh: turnID=%q promptAt=%d", state.TurnID, state.PromptSubmittedAt)
+	}
+}
+
+func TestDispatch_PromptResetsOffsetForNewTranscript(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "defer-2", Provider: "fake", TranscriptRef: "old-t",
+		TranscriptOffset: 7, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 42}
+	if err := Dispatch(ctx, provider, &Event{
+		Type: PromptSubmitted, SessionID: "defer-2", TranscriptRef: "new-t",
+		Timestamp: 123,
+	}, bh, nil); err != nil {
+		t.Fatalf("dispatch prompt: %v", err)
+	}
+
+	state, err := LoadCaptureState("defer-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TranscriptOffset != 42 {
+		t.Fatalf("offset = %d, want 42: a new transcript starts at its own EOF", state.TranscriptOffset)
+	}
+}
+
+func TestCaptureAndRoute_RecoveredSegmentKeepsOldTurn(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	repoDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	semDir := filepath.Join(repoDir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: "repo-rec", RootPath: repoDir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatal(err)
+	}
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+	if err := broker.Register(ctx, bh, repoDir, repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "s-rec", Provider: "fake", TranscriptRef: "t",
+		TranscriptOffset: 0, Timestamp: 100,
+		TurnID: "turn-old", PromptSubmittedAt: 100, CWD: repoDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 5}
+	if err := Dispatch(ctx, provider, &Event{
+		Type: PromptSubmitted, SessionID: "s-rec", TranscriptRef: "t",
+		Timestamp: 200, CWD: repoDir,
+	}, bh, nil); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadCaptureState("s-rec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PendingTurns) != 1 || state.PendingTurns[0].TurnID != "turn-old" || state.TranscriptOffset != 0 {
+		t.Fatalf("prompt did not preserve the interrupted turn: %+v", state)
+	}
+	newTurnID := state.TurnID
+
+	eOld := broker.RawEvent{
+		EventID: "e-old", SourceKey: "sk", Provider: "fake",
+		ProviderSessionID: "ps-rec", Timestamp: 150,
+		Kind: "assistant", Role: "assistant",
+		FilePaths: []string{filepath.Join(repoDir, "f.go")},
+	}
+	eNew := broker.RawEvent{
+		EventID: "e-new", SourceKey: "sk", Provider: "fake",
+		ProviderSessionID: "ps-rec", Timestamp: 250,
+		Kind: "assistant", Role: "assistant",
+		FilePaths: []string{filepath.Join(repoDir, "f.go")},
+	}
+	provider.transcriptOffset = 10 // post-capture EOF
+	provider.readByOffset = map[int][]broker.RawEvent{
+		0: {eOld, eNew}, // full unresolved segment
+		5: {eNew},       // the new turn's segment
+	}
+	if err := CaptureAndRoute(ctx, provider, &Event{
+		SessionID: "s-rec", TranscriptRef: "t",
+	}, bh, nil); err != nil {
+		t.Fatalf("completion capture: %v", err)
+	}
+
+	h, err = sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	turnFor := func(eventID string) string {
+		var turn string
+		if err := h.DB.QueryRowContext(ctx,
+			"select coalesce(turn_id, '') from agent_events where event_id like ?", "%"+eventID+"%",
+		).Scan(&turn); err != nil {
+			t.Fatalf("read %s: %v", eventID, err)
+		}
+		return turn
+	}
+	if got := turnFor("e-old"); got != "turn-old" {
+		t.Errorf("recovered event turn = %q, want turn-old (interrupted turn keeps its evidence)", got)
+	}
+	if got := turnFor("e-new"); got != newTurnID {
+		t.Errorf("new-turn event turn = %q, want %q", got, newTurnID)
+	}
+
+	state, err = LoadCaptureState("s-rec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PendingTurns) != 0 || state.TranscriptOffset != 10 {
+		t.Errorf("post-capture state: %+v, want cleared pending turns and offset 10", state)
+	}
+}
+
+func TestDispatch_PromptOrphansDeferredSegmentOnNewTranscript(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "s-orph", Provider: "fake", TranscriptRef: "old-t",
+		TranscriptOffset: 7, Timestamp: 1,
+		ScopedDeferrals: 2, LastDeferredAt: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 42}
+	if err := Dispatch(ctx, provider, &Event{
+		Type: PromptSubmitted, SessionID: "s-orph", TranscriptRef: "new-t", Timestamp: 123,
+	}, bh, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := LoadCaptureState("s-orph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ScopedDeferrals != 0 || state.TranscriptOffset != 42 {
+		t.Fatalf("new-transcript state should be fresh: %+v", state)
+	}
+
+	active, err := LoadActiveCaptureStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range active {
+		if s.OrphanedAt != 0 {
+			t.Fatalf("orphan leaked into active states: %+v", s)
+		}
+	}
+	orphans, err := LoadOrphanedCaptureStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("orphan snapshot missing: %v", orphans)
+	}
+	orphan := orphans[0]
+	if orphan.TranscriptRef != "old-t" || orphan.TranscriptOffset != 7 || orphan.ScopedDeferrals != 2 {
+		t.Fatalf("orphan must keep the unresolved segment: %+v", orphan)
+	}
+}
+
+func TestStampTurnIDs_BoundaryOwnership(t *testing.T) {
+	state := &CaptureState{
+		TurnID: "t3", PromptSubmittedAt: 300,
+		PendingTurns: []PendingTurnBoundary{
+			{TurnID: "t1", PromptSubmittedAt: 100},
+			{TurnID: "t2", PromptSubmittedAt: 200},
+		},
+	}
+	events := []broker.RawEvent{
+		{EventID: "ancient", Timestamp: 50}, // predates every boundary
+		{EventID: "in-t1", Timestamp: 150},
+		{EventID: "in-t2", Timestamp: 250},
+		{EventID: "at-prompt", Timestamp: 300},
+		{EventID: "in-t3", Timestamp: 350},
+		{EventID: "no-ts"},
+		{EventID: "own-turn", Timestamp: 150, TurnID: "already"},
+	}
+	stampTurnIDs(events, state)
+	want := map[string]string{
+		"ancient": "", "in-t1": "t1", "in-t2": "t2",
+		"at-prompt": "", "in-t3": "t3", "no-ts": "", "own-turn": "already",
+	}
+	for _, ev := range events {
+		if ev.TurnID != want[ev.EventID] {
+			t.Errorf("%s: turn = %q, want %q", ev.EventID, ev.TurnID, want[ev.EventID])
+		}
+	}
+}
+
+func TestDispatch_ThreePromptsPreserveEveryTurnBoundary(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	provider := &fakeProvider{name: "fake"}
+	prompt := func(ts int64, eof int) *CaptureState {
+		t.Helper()
+		provider.transcriptOffset = eof
+		if err := Dispatch(ctx, provider, &Event{
+			Type: PromptSubmitted, SessionID: "s-three", TranscriptRef: "t", Timestamp: ts,
+		}, bh, nil); err != nil {
+			t.Fatal(err)
+		}
+		state, err := LoadCaptureState("s-three")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+
+	s1 := prompt(100, 0)  // turn 1 starts at offset 0
+	s2 := prompt(200, 10) // turn 1 never captured; EOF moved to 10
+	s3 := prompt(300, 20) // turn 2 never captured either
+
+	if len(s3.PendingTurns) != 2 {
+		t.Fatalf("pending turns = %+v, want two preserved boundaries", s3.PendingTurns)
+	}
+	if s3.PendingTurns[0].TurnID != s1.TurnID || s3.PendingTurns[1].TurnID != s2.TurnID {
+		t.Fatalf("boundaries %+v must keep turn1 %s then turn2 %s", s3.PendingTurns, s1.TurnID, s2.TurnID)
+	}
+	if s3.TranscriptOffset != 0 {
+		t.Fatalf("offset = %d, want 0 (oldest unresolved segment)", s3.TranscriptOffset)
+	}
+
+	events := []broker.RawEvent{
+		{EventID: "e1", Timestamp: 150},
+		{EventID: "e2", Timestamp: 250},
+		{EventID: "e3", Timestamp: 350},
+	}
+	stampTurnIDs(events, s3)
+	if events[0].TurnID != s1.TurnID || events[1].TurnID != s2.TurnID || events[2].TurnID != s3.TurnID {
+		t.Fatalf("stamped turns [%s %s %s], want [%s %s %s]",
+			events[0].TurnID, events[1].TurnID, events[2].TurnID,
+			s1.TurnID, s2.TurnID, s3.TurnID)
+	}
+}
+
+func TestDispatch_PromptFailsClosedWhenOrphanSnapshotFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory permissions are unreliable on Windows")
+	}
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "s-fail", Provider: "fake", TranscriptRef: "old-t",
+		TranscriptOffset: 7, Timestamp: 1, ScopedDeferrals: 2, LastDeferredAt: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	captureDirPath := filepath.Join(home, "capture")
+	if err := os.Chmod(captureDirPath, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(captureDirPath, 0o755) })
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 42}
+	err = Dispatch(ctx, provider, &Event{
+		Type: PromptSubmitted, SessionID: "s-fail", TranscriptRef: "new-t", Timestamp: 123,
+	}, bh, nil)
+	if err == nil {
+		t.Fatal("prompt must fail closed when the orphan snapshot cannot be written")
+	}
+
+	_ = os.Chmod(captureDirPath, 0o755)
+	state, lerr := LoadCaptureState("s-fail")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if state.TranscriptRef != "old-t" || state.TranscriptOffset != 7 || state.ScopedDeferrals != 2 {
+		t.Fatalf("old state must survive a failed orphan snapshot: %+v", state)
+	}
+}
+
+func TestCaptureAndRoute_SameMillisecondPromptsResolveByOffset(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	repoDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	semDir := filepath.Join(repoDir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: "repo-ms", RootPath: repoDir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatal(err)
+	}
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+	if err := broker.Register(ctx, bh, repoDir, repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	const sharedTs = int64(500)
+	provider := &fakeProvider{name: "fake"}
+	prompt := func(eof int) string {
+		t.Helper()
+		provider.transcriptOffset = eof
+		if err := Dispatch(ctx, provider, &Event{
+			Type: PromptSubmitted, SessionID: "s-ms", TranscriptRef: "t",
+			Timestamp: sharedTs, CWD: repoDir,
+		}, bh, nil); err != nil {
+			t.Fatal(err)
+		}
+		state, err := LoadCaptureState("s-ms")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state.TurnID
+	}
+	turn1 := prompt(0)
+	turn2 := prompt(10)
+	turn3 := prompt(20)
+
+	mkEvent := func(id string) broker.RawEvent {
+		return broker.RawEvent{
+			EventID: id, SourceKey: "sk", Provider: "fake",
+			ProviderSessionID: "ps-ms", Timestamp: sharedTs,
+			Kind: "assistant", Role: "assistant",
+			FilePaths: []string{filepath.Join(repoDir, "f.go")},
+		}
+	}
+	e1, e2, e3 := mkEvent("e-seg1"), mkEvent("e-seg2"), mkEvent("e-seg3")
+	provider.transcriptOffset = 30
+	provider.readByOffset = map[int][]broker.RawEvent{
+		0:  {e1, e2, e3},
+		10: {e2, e3},
+		20: {e3},
+	}
+
+	if err := CaptureAndRoute(ctx, provider, &Event{
+		SessionID: "s-ms", TranscriptRef: "t",
+	}, bh, nil); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	h, err = sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	turnFor := func(eventID string) string {
+		var turn string
+		if err := h.DB.QueryRowContext(ctx,
+			"select coalesce(turn_id, '') from agent_events where event_id like ?", "%"+eventID+"%",
+		).Scan(&turn); err != nil {
+			t.Fatalf("read %s: %v", eventID, err)
+		}
+		return turn
+	}
+	if got := turnFor("e-seg1"); got != turn1 {
+		t.Errorf("segment-1 event turn = %q, want %q", got, turn1)
+	}
+	if got := turnFor("e-seg2"); got != turn2 {
+		t.Errorf("segment-2 event turn = %q, want %q", got, turn2)
+	}
+	if got := turnFor("e-seg3"); got != turn3 {
+		t.Errorf("segment-3 event turn = %q, want %q", got, turn3)
+	}
+}
+
+func TestCaptureAndRoute_EmptyReplayClearsRecoveryState(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "s-empty", Provider: "fake", TranscriptRef: "t",
+		TranscriptOffset: 3, Timestamp: 1,
+		TurnID: "turn-now", PromptSubmittedAt: 200, TurnStartOffset: 5,
+		PendingTurns:    []PendingTurnBoundary{{TurnID: "turn-old", PromptSubmittedAt: 100, StartOffset: 1}},
+		ScopedDeferrals: 2, LastDeferredAt: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "fake", readSequence: []fakeReadResult{{events: nil, offset: 9}}}
+	if err := CaptureAndRoute(ctx, provider, &Event{
+		SessionID: "s-empty", TranscriptRef: "t",
+	}, bh, nil); err != nil {
+		t.Fatalf("empty capture: %v", err)
+	}
+
+	state, err := LoadCaptureState("s-empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TranscriptOffset != 9 {
+		t.Errorf("offset = %d, want 9", state.TranscriptOffset)
+	}
+	if len(state.PendingTurns) != 0 || state.ScopedDeferrals != 0 || state.LastDeferredAt != 0 {
+		t.Errorf("recovery state not cleared by empty replay: %+v", state)
+	}
+}
+
+func TestDispatch_RepeatedOrphansDoNotOverwrite(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+
+	provider := &fakeProvider{name: "fake", transcriptOffset: 42}
+	orphanRound := func(oldRef, newRef string) {
+		t.Helper()
+		if err := SaveCaptureState(&CaptureState{
+			SessionID: "s-multi", Provider: "fake", TranscriptRef: oldRef,
+			TranscriptOffset: 7, Timestamp: 1, ScopedDeferrals: 1, LastDeferredAt: 9,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Dispatch(ctx, provider, &Event{
+			Type: PromptSubmitted, SessionID: "s-multi", TranscriptRef: newRef, Timestamp: 123,
+		}, bh, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orphanRound("t-1", "t-2")
+	orphanRound("t-2", "t-3")
+
+	orphans, err := LoadOrphanedCaptureStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 2 {
+		t.Fatalf("orphans = %d, want 2 distinct snapshots", len(orphans))
+	}
+}
+
+type fakeUnpositionedProvider struct {
+	fakeProvider
+}
+
+func (f *fakeUnpositionedProvider) OffsetReadsAuthoritative() bool { return false }
+
+func TestStampFallback_NonAuthoritativeProviderNeverProbes(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+
+	repoDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	semDir := filepath.Join(repoDir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: "repo-np", RootPath: repoDir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatal(err)
+	}
+	bh, err := broker.Open(ctx, filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = broker.Close(bh) }()
+	if err := broker.Register(ctx, bh, repoDir, repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	const sharedTs = int64(500)
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "s-np", Provider: "fake", TranscriptRef: "t",
+		TranscriptOffset: 0, Timestamp: 1, CWD: repoDir,
+		TurnID: "turn-new", PromptSubmittedAt: sharedTs, TurnStartOffset: 10,
+		PendingTurns: []PendingTurnBoundary{{TurnID: "turn-old", PromptSubmittedAt: sharedTs, StartOffset: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := broker.RawEvent{
+		EventID: "e-ambig", SourceKey: "sk", Provider: "fake",
+		ProviderSessionID: "ps-np", Timestamp: sharedTs,
+		Kind: "assistant", Role: "assistant",
+		FilePaths: []string{filepath.Join(repoDir, "f.go")},
+	}
+	provider := &fakeUnpositionedProvider{fakeProvider{
+		name:             "fake",
+		transcriptOffset: 20,
+		readByOffset:     map[int][]broker.RawEvent{0: {ev}, 1: {ev}, 10: {ev}},
+	}}
+
+	if err := CaptureAndRoute(ctx, provider, &Event{
+		SessionID: "s-np", TranscriptRef: "t",
+	}, bh, nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.readCalls != 1 {
+		t.Fatalf("non-authoritative provider probed: %d reads beyond canonical", provider.readCalls-1)
+	}
+
+	h, err = sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	var turn string
+	if err := h.DB.QueryRowContext(ctx,
+		"select coalesce(turn_id, '') from agent_events where event_id like '%e-ambig%'",
+	).Scan(&turn); err != nil {
+		t.Fatalf("read e-ambig: %v", err)
+	}
+	if turn != "" {
+		t.Fatalf("ambiguous event turn = %q, want unowned (timestamp collision, no offset authority)", turn)
+	}
+}
+
+func TestCanProbeOffsets_IncoherentChainsFallBack(t *testing.T) {
+	base := func() *CaptureState {
+		return &CaptureState{
+			TurnStartOffset: 30,
+			PendingTurns: []PendingTurnBoundary{
+				{TurnID: "t1", StartOffset: 0},
+				{TurnID: "t2", StartOffset: 10},
+			},
+		}
+	}
+	if s := base(); !canProbeOffsets(s, 40) {
+		t.Error("coherent chain should probe")
+	}
+	if s := base(); canProbeOffsets(s, 20) {
+		t.Error("current turn start beyond transcript end (compaction) must fall back")
+	}
+	s := base()
+	s.PendingTurns[1].StartOffset = 35 // exceeds the current turn's start
+	if canProbeOffsets(s, 40) {
+		t.Error("boundary beyond current turn start must fall back")
+	}
+	s = base()
+	s.PendingTurns[1].StartOffset = 0 // not strictly increasing
+	if canProbeOffsets(s, 40) {
+		t.Error("non-monotonic boundaries must fall back")
+	}
+	s = base()
+	s.PendingTurns = make([]PendingTurnBoundary, maxOwnershipProbes+1)
+	for i := range s.PendingTurns {
+		s.PendingTurns[i] = PendingTurnBoundary{TurnID: "t", StartOffset: i + 1}
+	}
+	if canProbeOffsets(s, 40) {
+		t.Error("probe count beyond the bound must fall back")
 	}
 }

@@ -28,6 +28,7 @@ type AgentEvent struct {
 	ToolName          sql.NullString `json:"tool_name"`
 	EventSource       string         `json:"event_source"`
 	ProvenanceHash    sql.NullString `json:"provenance_hash"`
+	InsertSeq         sql.NullInt64  `json:"insert_seq"`
 }
 
 type AgentSession struct {
@@ -54,18 +55,20 @@ type AgentSource struct {
 }
 
 type Checkpoint struct {
-	CheckpointID string         `json:"checkpoint_id"`
-	RepositoryID string         `json:"repository_id"`
-	CreatedAt    int64          `json:"created_at"`
-	Kind         string         `json:"kind"`
-	Trigger      sql.NullString `json:"trigger"`
-	Message      sql.NullString `json:"message"`
-	ManifestHash sql.NullString `json:"manifest_hash"`
-	SizeBytes    sql.NullInt64  `json:"size_bytes"`
-	Status       string         `json:"status"`
-	CompletedAt  sql.NullInt64  `json:"completed_at"`
-	SummaryJson  sql.NullString `json:"summary_json"`
-	SummaryModel sql.NullString `json:"summary_model"`
+	CheckpointID       string         `json:"checkpoint_id"`
+	RepositoryID       string         `json:"repository_id"`
+	CreatedAt          int64          `json:"created_at"`
+	Kind               string         `json:"kind"`
+	Trigger            sql.NullString `json:"trigger"`
+	Message            sql.NullString `json:"message"`
+	ManifestHash       sql.NullString `json:"manifest_hash"`
+	SizeBytes          sql.NullInt64  `json:"size_bytes"`
+	Status             string         `json:"status"`
+	CompletedAt        sql.NullInt64  `json:"completed_at"`
+	SummaryJson        sql.NullString `json:"summary_json"`
+	SummaryModel       sql.NullString `json:"summary_model"`
+	RepositorySequence int64          `json:"repository_sequence"`
+	EventCursor        sql.NullInt64  `json:"event_cursor"`
 }
 
 type CheckpointStat struct {

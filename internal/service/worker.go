@@ -202,7 +202,179 @@ func prepareCheckpoint(ctx context.Context, in WorkerInput) (prepareResult, erro
 	}, nil
 }
 
+// Run serializes and drains commit-linked work for one repository.
+// The requested checkpoint is a wake-up signal, not a direct claim.
 func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
+	semDir := filepath.Join(in.RepoRoot, ".semantica")
+	if !util.IsEnabled(semDir) {
+		return nil
+	}
+
+	lock, err := acquireRepoLock(ctx, semDir, in.CheckpointID, repoLockWait)
+	if err != nil {
+		if errors.Is(err, errRepoLockTimeout) {
+			if checkpointSettled(ctx, in) {
+				return nil
+			}
+			// Retryable: the marker must survive so launcher-backed
+			// execution runs again. Never report success here.
+			return fmt.Errorf("worker: repository busy, requested checkpoint still pending: %w", err)
+		}
+		return err
+	}
+	defer lock.release()
+
+	// Reconcile only state protected by this repository lock.
+	reconcileActiveSessions(ctx, s.registry, in.RepoRoot)
+
+	if err := s.drainRepositoryQueue(ctx, in.RepoRoot); err != nil {
+		return err
+	}
+	// Manual and baseline checkpoints are not part of the commit queue.
+	linked, err := requestedIsCommitLinked(ctx, in)
+	if err != nil {
+		return err
+	}
+	if !linked {
+		if err := s.processOne(ctx, in); err != nil {
+			return err
+		}
+	}
+	return s.drainRepositoryQueue(ctx, in.RepoRoot)
+}
+
+// requestedIsCommitLinked reports whether the requested checkpoint has
+// a commit link, in which case the ordered drain owns it.
+func requestedIsCommitLinked(ctx context.Context, in WorkerInput) (bool, error) {
+	if in.CheckpointID == "" {
+		return false, nil
+	}
+	dbPath := filepath.Join(in.RepoRoot, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return false, fmt.Errorf("open db for commit-link check: %w", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	links, err := h.Queries.GetCommitLinksByCheckpoint(ctx, in.CheckpointID)
+	if err != nil {
+		return false, fmt.Errorf("commit-link check: %w", err)
+	}
+	return len(links) > 0, nil
+}
+
+// checkpointSettled reports whether the requested checkpoint no longer
+// needs this worker (complete, failed, missing, or untracked repo).
+func checkpointSettled(ctx context.Context, in WorkerInput) bool {
+	semDir := filepath.Join(in.RepoRoot, ".semantica")
+	dbPath := filepath.Join(semDir, "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return false
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	cp, err := h.Queries.GetCheckpointByID(ctx, in.CheckpointID)
+	if err != nil {
+		return errors.Is(err, sql.ErrNoRows)
+	}
+	return cp.Status != "pending"
+}
+
+// drainRepositoryQueue processes commit-linked checkpoints in sequence.
+// A failed queue head blocks later work unless a completed successor
+// shows that the failure predates ordered processing.
+func (s *WorkerService) drainRepositoryQueue(ctx context.Context, repoRoot string) error {
+	for {
+		queue, maxCompleteSeq, err := listPendingCommitLinked(ctx, repoRoot)
+		if err != nil {
+			return err
+		}
+		if len(queue) == 0 {
+			return nil
+		}
+		progressed := false
+		for _, item := range queue {
+			if item.Status == "failed" {
+				if item.Sequence < maxCompleteSeq {
+					// Already passed by a completed successor.
+					continue
+				}
+				wlog("worker: queue blocked by failed checkpoint %s (sequence %d); "+
+					"later checkpoints wait until it is resolved\n",
+					item.CheckpointID, item.Sequence)
+				return nil
+			}
+			err := workerProcess(s, ctx, WorkerInput{
+				CheckpointID: item.CheckpointID,
+				CommitHash:   item.CommitHash,
+				RepoRoot:     repoRoot,
+			})
+			if err != nil {
+				return err
+			}
+			progressed = true
+		}
+		if !progressed {
+			return nil
+		}
+	}
+}
+
+type queueItem struct {
+	CheckpointID string
+	CommitHash   string
+	Status       string
+	Sequence     int64
+}
+
+// workerProcess is a seam for drain-order tests.
+var workerProcess = (*WorkerService).processOne
+
+func listPendingCommitLinked(ctx context.Context, repoRoot string) ([]queueItem, int64, error) {
+	semDir := filepath.Join(repoRoot, ".semantica")
+	dbPath := filepath.Join(semDir, "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return nil, 0, fmt.Errorf("open db for queue: %w", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("resolve repository: %w", err)
+	}
+	rows, err := h.Queries.ListPendingCommitLinkedCheckpoints(ctx, repo.RepositoryID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list pending queue: %w", err)
+	}
+	var maxCompleteSeq int64
+	if latest, err := h.Queries.GetMostRecentCommitLinkedCheckpoint(ctx, repo.RepositoryID); err == nil {
+		maxCompleteSeq = latest.RepositorySequence
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, fmt.Errorf("resolve completed boundary: %w", err)
+	}
+	var queue []queueItem
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if seen[r.CheckpointID] {
+			continue
+		}
+		seen[r.CheckpointID] = true
+		queue = append(queue, queueItem{
+			CheckpointID: r.CheckpointID,
+			CommitHash:   r.CommitHash,
+			Status:       r.Status,
+			Sequence:     r.RepositorySequence,
+		})
+	}
+	return queue, maxCompleteSeq, nil
+}
+
+// processOne runs the full enrichment pipeline for one checkpoint.
+// Callers must hold the repository worker lock.
+func (s *WorkerService) processOne(ctx context.Context, in WorkerInput) error {
 	prep, err := prepareCheckpoint(ctx, in)
 	if err != nil {
 		return err
@@ -212,10 +384,6 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	}
 	wctx := prep.wctx
 	defer wctx.close()
-
-	// Reconciliation must run before manifest/checkpoint completion so
-	// recovered events are included in this checkpoint.
-	reconcileActiveSessions(ctx, s.registry)
 
 	// Build the manifest, link sessions, update stats, and compute AI%.
 	er, err := enrichCheckpoint(ctx, wctx, in)

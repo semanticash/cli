@@ -174,6 +174,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listPackagedManifestsStmt, err = db.PrepareContext(ctx, listPackagedManifests); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPackagedManifests: %w", err)
 	}
+	if q.listPendingCommitLinkedCheckpointsStmt, err = db.PrepareContext(ctx, listPendingCommitLinkedCheckpoints); err != nil {
+		return nil, fmt.Errorf("error preparing query ListPendingCommitLinkedCheckpoints: %w", err)
+	}
 	if q.listPendingManifestsStmt, err = db.PrepareContext(ctx, listPendingManifests); err != nil {
 		return nil, fmt.Errorf("error preparing query ListPendingManifests: %w", err)
 	}
@@ -537,6 +540,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listPackagedManifestsStmt: %w", cerr)
 		}
 	}
+	if q.listPendingCommitLinkedCheckpointsStmt != nil {
+		if cerr := q.listPendingCommitLinkedCheckpointsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listPendingCommitLinkedCheckpointsStmt: %w", cerr)
+		}
+	}
 	if q.listPendingManifestsStmt != nil {
 		if cerr := q.listPendingManifestsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listPendingManifestsStmt: %w", cerr)
@@ -806,6 +814,7 @@ type Queries struct {
 	listEventsInWindowForAnnotationsStmt         *sql.Stmt
 	listFailedManifestReasonsStmt                *sql.Stmt
 	listPackagedManifestsStmt                    *sql.Stmt
+	listPendingCommitLinkedCheckpointsStmt       *sql.Stmt
 	listPendingManifestsStmt                     *sql.Stmt
 	listProvidersByCheckpointStmt                *sql.Stmt
 	listRecentAIPercentagesStmt                  *sql.Stmt
@@ -898,6 +907,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listEventsInWindowForAnnotationsStmt:         q.listEventsInWindowForAnnotationsStmt,
 		listFailedManifestReasonsStmt:                q.listFailedManifestReasonsStmt,
 		listPackagedManifestsStmt:                    q.listPackagedManifestsStmt,
+		listPendingCommitLinkedCheckpointsStmt:       q.listPendingCommitLinkedCheckpointsStmt,
 		listPendingManifestsStmt:                     q.listPendingManifestsStmt,
 		listProvidersByCheckpointStmt:                q.listProvidersByCheckpointStmt,
 		listRecentAIPercentagesStmt:                  q.listRecentAIPercentagesStmt,

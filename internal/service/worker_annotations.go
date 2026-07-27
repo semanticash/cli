@@ -29,18 +29,21 @@ func detectCommitAnnotations(ctx context.Context, repo *git.Repo, h *sqlstore.Ha
 		return nil
 	}
 
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	if prev, prevErr := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       cp.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	}); prevErr == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, cp)
 	}
 
 	rows, err := h.Queries.ListEventsInWindowForAnnotations(ctx, sqldb.ListEventsInWindowForAnnotationsParams{
 		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UpToTs:       cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UpToTs:       win.upToTs,
 	})
 	if err != nil || len(rows) == 0 {
 		return nil

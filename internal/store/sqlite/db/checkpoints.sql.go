@@ -82,7 +82,7 @@ func (q *Queries) FailCheckpoint(ctx context.Context, arg FailCheckpointParams) 
 }
 
 const getCheckpointByID = `-- name: GetCheckpointByID :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model from checkpoints where checkpoint_id = ?
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where checkpoint_id = ?
 `
 
 func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (Checkpoint, error) {
@@ -101,6 +101,8 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (C
 		&i.CompletedAt,
 		&i.SummaryJson,
 		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
 	)
 	return i, err
 }
@@ -140,7 +142,7 @@ func (q *Queries) GetCheckpointSummary(ctx context.Context, checkpointID string)
 }
 
 const getLatestCheckpointForRepo = `-- name: GetLatestCheckpointForRepo :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model from checkpoints where repository_id = ? order by created_at desc limit 1
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where repository_id = ? order by repository_sequence desc limit 1
 `
 
 func (q *Queries) GetLatestCheckpointForRepo(ctx context.Context, repositoryID string) (Checkpoint, error) {
@@ -159,21 +161,22 @@ func (q *Queries) GetLatestCheckpointForRepo(ctx context.Context, repositoryID s
 		&i.CompletedAt,
 		&i.SummaryJson,
 		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
 	)
 	return i, err
 }
 
 const getMostRecentCommitLinkedCheckpoint = `-- name: GetMostRecentCommitLinkedCheckpoint :one
-select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model from checkpoints c
+select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
-order by c.created_at desc
+order by c.repository_sequence desc
 limit 1
 `
 
-// Returns the most recent completed checkpoint that has an associated
-// commit link for the repository.
+// Latest completed commit-linked checkpoint by repository sequence.
 func (q *Queries) GetMostRecentCommitLinkedCheckpoint(ctx context.Context, repositoryID string) (Checkpoint, error) {
 	row := q.queryRow(ctx, q.getMostRecentCommitLinkedCheckpointStmt, getMostRecentCommitLinkedCheckpoint, repositoryID)
 	var i Checkpoint
@@ -190,31 +193,30 @@ func (q *Queries) GetMostRecentCommitLinkedCheckpoint(ctx context.Context, repos
 		&i.CompletedAt,
 		&i.SummaryJson,
 		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
 	)
 	return i, err
 }
 
 const getPreviousCommitLinkedCheckpoint = `-- name: GetPreviousCommitLinkedCheckpoint :one
-select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model from checkpoints c
+select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
-  and c.created_at < ?
-order by c.created_at desc
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
 limit 1
 `
 
 type GetPreviousCommitLinkedCheckpointParams struct {
-	RepositoryID string `json:"repository_id"`
-	CreatedAt    int64  `json:"created_at"`
+	RepositoryID       string `json:"repository_id"`
+	RepositorySequence int64  `json:"repository_sequence"`
 }
 
-// Returns the most recent completed checkpoint before the given timestamp
-// that has an associated commit link. Used by attribution to anchor the
-// delta window to the previous commit rather than an intermediate manual
-// or baseline checkpoint.
+// Ignore manual and baseline checkpoints when anchoring attribution.
 func (q *Queries) GetPreviousCommitLinkedCheckpoint(ctx context.Context, arg GetPreviousCommitLinkedCheckpointParams) (Checkpoint, error) {
-	row := q.queryRow(ctx, q.getPreviousCommitLinkedCheckpointStmt, getPreviousCommitLinkedCheckpoint, arg.RepositoryID, arg.CreatedAt)
+	row := q.queryRow(ctx, q.getPreviousCommitLinkedCheckpointStmt, getPreviousCommitLinkedCheckpoint, arg.RepositoryID, arg.RepositorySequence)
 	var i Checkpoint
 	err := row.Scan(
 		&i.CheckpointID,
@@ -229,27 +231,30 @@ func (q *Queries) GetPreviousCommitLinkedCheckpoint(ctx context.Context, arg Get
 		&i.CompletedAt,
 		&i.SummaryJson,
 		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
 	)
 	return i, err
 }
 
 const getPreviousCompletedCheckpoint = `-- name: GetPreviousCompletedCheckpoint :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model from checkpoints
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints
 where repository_id = ?
   and status = 'complete'
   and manifest_hash is not null
-  and created_at < ?
-order by created_at desc
+  and repository_sequence < ?
+order by repository_sequence desc
 limit 1
 `
 
 type GetPreviousCompletedCheckpointParams struct {
-	RepositoryID string `json:"repository_id"`
-	CreatedAt    int64  `json:"created_at"`
+	RepositoryID       string `json:"repository_id"`
+	RepositorySequence int64  `json:"repository_sequence"`
 }
 
+// Sequence selects the predecessor; timestamps bound its event window.
 func (q *Queries) GetPreviousCompletedCheckpoint(ctx context.Context, arg GetPreviousCompletedCheckpointParams) (Checkpoint, error) {
-	row := q.queryRow(ctx, q.getPreviousCompletedCheckpointStmt, getPreviousCompletedCheckpoint, arg.RepositoryID, arg.CreatedAt)
+	row := q.queryRow(ctx, q.getPreviousCompletedCheckpointStmt, getPreviousCompletedCheckpoint, arg.RepositoryID, arg.RepositorySequence)
 	var i Checkpoint
 	err := row.Scan(
 		&i.CheckpointID,
@@ -264,6 +269,8 @@ func (q *Queries) GetPreviousCompletedCheckpoint(ctx context.Context, arg GetPre
 		&i.CompletedAt,
 		&i.SummaryJson,
 		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
 	)
 	return i, err
 }
@@ -271,8 +278,14 @@ func (q *Queries) GetPreviousCompletedCheckpoint(ctx context.Context, arg GetPre
 const insertCheckpoint = `-- name: InsertCheckpoint :exec
 insert into checkpoints(
     checkpoint_id, repository_id, created_at, kind, trigger, message,
-    manifest_hash, size_bytes, status, completed_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    manifest_hash, size_bytes, status, completed_at, repository_sequence,
+    event_cursor
+) values (?1, ?2, ?3,
+    ?4, ?5, ?6, ?7,
+    ?8, ?9, ?10,
+    (select coalesce(max(repository_sequence), 0) + 1
+     from checkpoints c2 where c2.repository_id = ?2),
+    (select coalesce(max(e.insert_seq), 0) from agent_events e))
 `
 
 type InsertCheckpointParams struct {
@@ -288,6 +301,7 @@ type InsertCheckpointParams struct {
 	CompletedAt  sql.NullInt64  `json:"completed_at"`
 }
 
+// Allocate sequence and event cursor in the insert transaction.
 func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointParams) error {
 	_, err := q.exec(ctx, q.insertCheckpointStmt, insertCheckpoint,
 		arg.CheckpointID,
@@ -305,7 +319,7 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 }
 
 const listCheckpointsByRepository = `-- name: ListCheckpointsByRepository :many
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model from checkpoints where repository_id = ? order by created_at desc limit ?
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where repository_id = ? order by created_at desc limit ?
 `
 
 type ListCheckpointsByRepositoryParams struct {
@@ -335,6 +349,8 @@ func (q *Queries) ListCheckpointsByRepository(ctx context.Context, arg ListCheck
 			&i.CompletedAt,
 			&i.SummaryJson,
 			&i.SummaryModel,
+			&i.RepositorySequence,
+			&i.EventCursor,
 		); err != nil {
 			return nil, err
 		}
@@ -396,6 +412,52 @@ func (q *Queries) ListCheckpointsWithCommit(ctx context.Context, arg ListCheckpo
 			&i.CompletedAt,
 			&i.CommitHash,
 			&i.ManifestHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingCommitLinkedCheckpoints = `-- name: ListPendingCommitLinkedCheckpoints :many
+select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash
+from checkpoints c
+    join commit_links cl on cl.checkpoint_id = c.checkpoint_id
+where c.repository_id = ?
+  and c.status in ('pending', 'failed')
+order by c.repository_sequence asc, cl.linked_at desc, cl.commit_hash desc
+`
+
+type ListPendingCommitLinkedCheckpointsRow struct {
+	CheckpointID       string `json:"checkpoint_id"`
+	RepositorySequence int64  `json:"repository_sequence"`
+	Status             string `json:"status"`
+	CommitHash         string `json:"commit_hash"`
+}
+
+// Include failed rows because a failed queue head blocks later work.
+// Newest commit links sort first for deterministic deduplication.
+func (q *Queries) ListPendingCommitLinkedCheckpoints(ctx context.Context, repositoryID string) ([]ListPendingCommitLinkedCheckpointsRow, error) {
+	rows, err := q.query(ctx, q.listPendingCommitLinkedCheckpointsStmt, listPendingCommitLinkedCheckpoints, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPendingCommitLinkedCheckpointsRow{}
+	for rows.Next() {
+		var i ListPendingCommitLinkedCheckpointsRow
+		if err := rows.Scan(
+			&i.CheckpointID,
+			&i.RepositorySequence,
+			&i.Status,
+			&i.CommitHash,
 		); err != nil {
 			return nil, err
 		}

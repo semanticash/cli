@@ -183,13 +183,13 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 
 	// Use the previous commit-linked checkpoint so intermediate manual or
 	// baseline checkpoints do not shrink the attribution window.
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	prev, prevErr := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       cp.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if prevErr == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, cp)
 	}
 
 	bs, err := blobs.NewStore(objectsDir)
@@ -199,8 +199,11 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 
 	windowRows, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
 		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UpToTs:       cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UpToTs:       win.upToTs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list events in window: %w", err)
@@ -302,8 +305,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				histInput := ComputeAIPercentInput{
 					RepoRoot: repoRoot,
 					RepoID:   cp.RepositoryID,
-					AfterTs:  0,
-					UpToTs:   prev.CreatedAt,
+					Window:   windowBetween(nil, prev),
 				}
 				if histEvents, histErr := loadWindowEvents(ctx, h, histInput); histErr == nil {
 					histRows := toEventRows(ctx, bs, histEvents)
@@ -581,8 +583,7 @@ type AIPercentResult struct {
 type ComputeAIPercentInput struct {
 	RepoRoot string
 	RepoID   string
-	AfterTs  int64 // lower bound of delta window (exclusive)
-	UpToTs   int64 // upper bound of delta window (inclusive, checkpoint created_at)
+	Window   eventWindow // delta window (previous checkpoint, this checkpoint]
 }
 
 // fileScore stores internal per-file attribution counts.
@@ -663,8 +664,11 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 func loadWindowEvents(ctx context.Context, h *sqlstore.Handle, in ComputeAIPercentInput) ([]sqldb.ListEventsInWindowRow, error) {
 	events, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
 		RepositoryID: in.RepoID,
-		AfterTs:      in.AfterTs,
-		UpToTs:       in.UpToTs,
+		UseCursor:    in.Window.cursorFlag(),
+		AfterCursor:  in.Window.cursorAfter(),
+		UpToCursor:   in.Window.cursorUpTo(),
+		AfterTs:      in.Window.afterTs,
+		UpToTs:       in.Window.upToTs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
@@ -1343,8 +1347,7 @@ func attributeWithCarryForward(
 		histInput := ComputeAIPercentInput{
 			RepoRoot: in.RepoRoot,
 			RepoID:   in.RepoID,
-			AfterTs:  0,
-			UpToTs:   prevCP.CreatedAt,
+			Window:   windowBetween(nil, *prevCP),
 		}
 		histEvents, histErr := loadWindowEvents(ctx, h, histInput)
 		if histErr == nil {
@@ -1439,19 +1442,22 @@ func (s *AttributionService) blameCheckpoint(
 	}
 
 	// Delta window: previous commit-linked checkpoint -> this checkpoint.
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	prev, prevErr := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       repoID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if prevErr == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, cp)
 	}
 
 	events, err := h.Queries.ListEventsInWindow(ctx, sqldb.ListEventsInWindowParams{
 		RepositoryID: repoID,
-		AfterTs:      afterTs,
-		UpToTs:       cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UpToTs:       win.upToTs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list events in window: %w", err)

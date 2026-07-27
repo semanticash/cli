@@ -158,15 +158,19 @@ func linkSession(t *testing.T, h *sqlstore.Handle, sessionID, checkpointID strin
 }
 
 // queryDelta calls the delta transcript query and returns event IDs.
-func queryDelta(t *testing.T, h *sqlstore.Handle, _ /* checkpointID */ string, repoID string, cpCreatedAt int64) []string {
+func queryDelta(t *testing.T, h *sqlstore.Handle, checkpointID string, repoID string, cpCreatedAt int64) []string {
 	t.Helper()
 	ctx := context.Background()
 
 	// Find previous commit-linked checkpoint
 	var afterTs int64
+	cpRow, err := h.Queries.GetCheckpointByID(ctx, checkpointID)
+	if err != nil {
+		t.Fatalf("get checkpoint: %v", err)
+	}
 	prev, err := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    cpCreatedAt,
+		RepositoryID:       repoID,
+		RepositorySequence: cpRow.RepositorySequence,
 	})
 	if err == nil {
 		afterTs = prev.CreatedAt

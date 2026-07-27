@@ -46,9 +46,13 @@ func queryAttribution(t *testing.T, h *sqlstore.Handle, repoID, checkpointID str
 	ctx := context.Background()
 
 	var afterTs int64
+	cpRow, err := h.Queries.GetCheckpointByID(ctx, checkpointID)
+	if err != nil {
+		t.Fatalf("get checkpoint: %v", err)
+	}
 	prev, err := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    cpCreatedAt,
+		RepositoryID:       repoID,
+		RepositorySequence: cpRow.RepositorySequence,
 	})
 	if err == nil {
 		afterTs = prev.CreatedAt
@@ -421,8 +425,7 @@ func TestComputeAIPercent_CursorFileLevel(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(context.Background(), h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/fake/repo",
 		RepoID:   repoID,
-		AfterTs:  0,
-		UpToTs:   300_000,
+		Window:   tsWindow(0, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
@@ -505,8 +508,7 @@ func TestComputeAIPercent_MixedClaudeAndCursor(t *testing.T) {
 	result, err := svc.ComputeAIPercentFromDiff(context.Background(), h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/fake/repo",
 		RepoID:   repoID,
-		AfterTs:  0,
-		UpToTs:   300_000,
+		Window:   tsWindow(0, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
@@ -1210,8 +1212,7 @@ func TestCarryForward_MixedWindow(t *testing.T) {
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt, // 200_000
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000), // (200_000, 300_000]
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
@@ -1268,8 +1269,7 @@ func TestCarryForward_HistoricalBoundUsesCP1CreatedAt(t *testing.T) {
 	histEvents, err := loadWindowEvents(ctx, h, ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  0,
-		UpToTs:   200_000,
+		Window:   tsWindow(0, 200_000),
 	})
 	if err != nil {
 		t.Fatalf("loadWindowEvents (historical): %v", err)
@@ -1300,8 +1300,7 @@ func TestCarryForward_HistoricalBoundUsesCP1CreatedAt(t *testing.T) {
 	currentEvents, err := loadWindowEvents(ctx, h, ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  200_000,
-		UpToTs:   300_000,
+		Window:   tsWindow(200_000, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("loadWindowEvents (current): %v", err)
@@ -1374,8 +1373,7 @@ func TestCarryForward_NoOverride(t *testing.T) {
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt,
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
@@ -1453,8 +1451,7 @@ func TestCarryForward_PerFileMerge(t *testing.T) {
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt,
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
@@ -1532,8 +1529,7 @@ func TestCarryForward_ProviderMerge(t *testing.T) {
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt,
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
@@ -1590,8 +1586,7 @@ func TestCarryForward_NilPrevCP(t *testing.T) {
 	cfr, err := attributeWithCarryForward(context.Background(), h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  0,
-		UpToTs:   300_000,
+		Window:   tsWindow(0, 300_000),
 	}, nil, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -1673,8 +1668,7 @@ func TestCarryForward_EventsWithNoCandidates(t *testing.T) {
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt,
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
@@ -1725,8 +1719,7 @@ func TestCarryForward_NoEventsInBothWindows(t *testing.T) {
 	_, err := attributeWithCarryForward(context.Background(), h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
-		AfterTs:  cp1.CreatedAt,
-		UpToTs:   300_000,
+		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}, &cp1, semDir)
 
 	// Should return ErrNoEventsInWindow with noEvents=true
