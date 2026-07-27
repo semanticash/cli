@@ -343,11 +343,11 @@ semantica doctor
 semantica doctor --json
 ```
 
-Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active capture state, recent provider events, hosted sync manifests, recent hook errors, provider configuration risks, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
+Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active and deferred capture state, worker lock and queue health, recent provider events, hosted sync manifests, recent hook errors, provider configuration risks, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
 
 ### Caveats
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.
-- The background worker runs a reconciliation pass to flush any sessions with pending capture state, ensuring no events are lost if a hook invocation was interrupted.
+- The background worker attempts to reconcile pending capture state owned by the repository it is processing. Cross-repository, unowned, and orphaned segments are reported by `semantica doctor` and may leave evidence incomplete.
 - `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending commit snapshots as failed without touching complete lineage history.
 - Capture is per-machine - activity from a different machine using the same repo is not captured unless that machine also has Semantica enabled.

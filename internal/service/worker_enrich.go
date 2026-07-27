@@ -26,11 +26,13 @@ type enrichResult struct {
 //
 // These serve different purposes and must not be conflated.
 type workerWindows struct {
-	// sessionAfterTs is the lower bound for session linking and file counting.
-	sessionAfterTs int64
+	// sessionWindow bounds session linking and file counting
+	// (previous completed checkpoint -> this checkpoint).
+	sessionWindow eventWindow
 
-	// attrAfterTs is the lower bound for the attribution event window.
-	attrAfterTs int64
+	// attrWindow bounds the attribution event window (previous
+	// commit-linked checkpoint -> this checkpoint).
+	attrWindow eventWindow
 
 	// prevCommitLinked is the previous commit-linked checkpoint, if any.
 	// Passed to attributeWithCarryForward for historical lookback.
@@ -39,22 +41,25 @@ type workerWindows struct {
 
 // resolveWorkerWindows looks up both previous-checkpoint boundaries.
 func resolveWorkerWindows(ctx context.Context, h *sqlstore.Handle, cp sqldb.Checkpoint) workerWindows {
-	var w workerWindows
+	w := workerWindows{
+		sessionWindow: windowBetween(nil, cp),
+		attrWindow:    windowBetween(nil, cp),
+	}
 
 	prev, err := h.Queries.GetPreviousCompletedCheckpoint(ctx, sqldb.GetPreviousCompletedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       cp.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if err == nil {
-		w.sessionAfterTs = prev.CreatedAt
+		w.sessionWindow = windowBetween(&prev, cp)
 	}
 
 	prevCL, err := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       cp.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if err == nil {
-		w.attrAfterTs = prevCL.CreatedAt
+		w.attrWindow = windowBetween(&prevCL, cp)
 		cp := prevCL // copy to avoid aliasing loop variable
 		w.prevCommitLinked = &cp
 	}
@@ -64,11 +69,14 @@ func resolveWorkerWindows(ctx context.Context, h *sqlstore.Handle, cp sqldb.Chec
 
 // linkSessionsToCheckpoint finds sessions with events in the window and
 // inserts session_checkpoint rows. Returns the set of linked session IDs.
-func linkSessionsToCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string, cp sqldb.Checkpoint, afterTs int64) map[string]bool {
+func linkSessionsToCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string, cp sqldb.Checkpoint, win eventWindow) map[string]bool {
 	windowSessions, err := h.Queries.ListSessionsWithEventsInWindow(ctx, sqldb.ListSessionsWithEventsInWindowParams{
 		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UpToTs:       cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UpToTs:       win.upToTs,
 	})
 	if err != nil {
 		wlog("worker: list sessions in window: %v\n", err)
@@ -106,7 +114,7 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	}
 
 	// Manifest.
-	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.CreatedAt)
+	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.RepositorySequence)
 	mr, err := blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, prevManifest.files)
 	if err != nil {
 		return enrichResult{}, err
@@ -116,7 +124,7 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	windows := resolveWorkerWindows(ctx, h, cp)
 
 	// Session linking.
-	seen := linkSessionsToCheckpoint(ctx, h, in.CheckpointID, cp, windows.sessionAfterTs)
+	seen := linkSessionsToCheckpoint(ctx, h, in.CheckpointID, cp, windows.sessionWindow)
 
 	// Stats.
 	filesChanged := countChangedFiles(prevManifest, mr.Manifest.Files)
@@ -154,8 +162,7 @@ func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in W
 	cfr, err := attributeWithCarryForward(ctx, wctx.h, wctx.blobStore, diffBytes, ComputeAIPercentInput{
 		RepoRoot: in.RepoRoot,
 		RepoID:   wctx.cp.RepositoryID,
-		AfterTs:  windows.attrAfterTs,
-		UpToTs:   wctx.cp.CreatedAt,
+		Window:   windows.attrWindow,
 	}, windows.prevCommitLinked, wctx.semDir)
 	if err != nil {
 		return

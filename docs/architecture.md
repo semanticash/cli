@@ -45,7 +45,7 @@ Semantica is a single Go binary that operates as a CLI tool, a set of Git hook h
 There are two ingestion paths:
 
 1. **Real-time capture** (primary) - Provider hooks fire `semantica capture` during agent activity, routing events through the broker into one or more enabled repos.
-2. **Worker reconciliation** (secondary) - The background worker flushes any sessions that still have pending capture state, ensuring no events are lost if a capture hook was interrupted.
+2. **Worker reconciliation** (secondary) - Before processing a repository queue, the worker attempts to replay pending capture state owned by that repository. Cross-repository and unowned state remains pending and is reported by `semantica doctor`.
 
 The broker fans out by file ownership. A capture started from one enabled repo can still write events into another enabled repo when the touched files belong there.
 
@@ -60,6 +60,8 @@ The capture command:
 3. On direct tool hooks: stores prompt, file edit, shell, and subagent boundary events immediately when the provider exposes them
 4. On stop: reads the transcript or provider store from the saved offset, extracts events, and routes them through the broker to the correct repo's database
 5. Packages prompt, step, and bundle provenance blobs for each completed turn
+
+When a new prompt arrives before pending transcript data is replayed, Semantica preserves ordered turn boundaries. Providers with authoritative offsets recover ownership by transcript position; other providers leave ambiguous ownership unset. If a session switches transcripts while evidence is pending, Semantica preserves the old state as an orphan snapshot reported by `semantica doctor`.
 
 See [providers.md](providers.md) for provider-specific hook details.
 
@@ -119,9 +121,11 @@ ways:
 
 Both paths end up in the same `WorkerService.Run` pipeline for each record.
 
+Workers serialize processing per repository with `.semantica/worker.lock`. Commit-linked records are drained in their repository-local sequence. A failed queue head blocks later commit-linked records until it is resolved; `semantica doctor` reports lock and queue state.
+
 ### Processing pipeline
 
-1. **Session reconciliation** - Flushes any sessions that still have pending capture state (via `reconcileActiveSessions`). This is a catch-up mechanism - the primary capture path is the real-time `semantica capture` command triggered by provider hooks. The worker ensures no events are lost if a capture hook was interrupted or if the agent session outlived the hook call.
+1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
 
 2. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous lineage record's manifest for incremental building.
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 
@@ -18,6 +19,36 @@ import (
 
 //go:embed schema/*.sql
 var migrationsFS embed.FS
+
+// dirtyProbes identifies whether each migration changed the schema.
+// Every migration must register a probe.
+var dirtyProbes = map[int]func(ctx context.Context, db *sql.DB) (bool, error){
+	1: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasTable(ctx, db, "checkpoints")
+	},
+	2: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasColumn(ctx, db, "checkpoints", "repository_sequence")
+	},
+	3: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasColumn(ctx, db, "checkpoints", "event_cursor")
+	},
+}
+
+func schemaHasTable(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		"select count(*) from sqlite_master where type = 'table' and name = ?", table,
+	).Scan(&n)
+	return n > 0, err
+}
+
+func schemaHasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		"select count(*) from pragma_table_info(?) where name = ?", table, column,
+	).Scan(&n)
+	return n > 0, err
+}
 
 // MigratePath opens a temporary connection, runs migrations, and closes it.
 // Used by tests that need a migrated DB without a full Handle.
@@ -58,6 +89,35 @@ func migrateDB(ctx context.Context, db *sql.DB) error {
 	driver, err := migratesqlite.WithInstance(db, &migratesqlite.Config{})
 	if err != nil {
 		return fmt.Errorf("create sqlite migrate driver: %w", err)
+	}
+
+	// A dirty marker can represent either a committed or rolled-back
+	// migration, so inspect the schema before changing its version.
+	if version, dirty, verr := driver.Version(); verr == nil && dirty {
+		probe, ok := dirtyProbes[version]
+		if !ok {
+			return fmt.Errorf("database is dirty at migration %d and no recovery probe exists for it; "+
+				"inspect the schema before forcing a version", version)
+		}
+		applied, err := probe(ctx, db)
+		if err != nil {
+			return fmt.Errorf("probe dirty migration %d: %w", version, err)
+		}
+		if applied {
+			// Crash after commit: keep the version, clear the flag.
+			if err := driver.SetVersion(version, false); err != nil {
+				return fmt.Errorf("clear dirty migration state: %w", err)
+			}
+		} else {
+			// Rolled back: step back so Up() retries the migration.
+			prev := version - 1
+			if prev < 1 {
+				prev = database.NilVersion
+			}
+			if err := driver.SetVersion(prev, false); err != nil {
+				return fmt.Errorf("reset dirty migration state: %w", err)
+			}
+		}
 	}
 
 	src, err := iofs.New(migrationsFS, "schema")

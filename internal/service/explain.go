@@ -337,13 +337,13 @@ func (s *ExplainService) sessionsForCommit(
 	}
 
 	// Time window: previous commit-linked checkpoint -> this checkpoint.
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	prev, err := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: cp.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       cp.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if err == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, cp)
 	}
 
 	// Get changed files for commit-scope filtering.
@@ -359,8 +359,11 @@ func (s *ExplainService) sessionsForCommit(
 	// Query events in window.
 	events, err := h.Queries.ListTranscriptEvents(ctx, sqldb.ListTranscriptEventsParams{
 		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UntilTs:      cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UntilTs:      win.upToTs,
 	})
 	if err != nil {
 		return nil, nil, err

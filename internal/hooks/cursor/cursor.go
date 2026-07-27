@@ -390,6 +390,9 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	return count, scanner.Err()
 }
 
+// OffsetReadsAuthoritative reports whether offset-based reads are exact.
+func (p *Provider) OffsetReadsAuthoritative() bool { return true }
+
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {

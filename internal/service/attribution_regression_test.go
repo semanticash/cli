@@ -370,7 +370,7 @@ func TestRegression_ComputeAIPercent_ClaudeLineLevel(t *testing.T) {
 	}, "\n")
 
 	input := ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	}
 
 	svc := NewAttributionService()
@@ -434,7 +434,7 @@ func TestRegression_ComputeAIPercent_CursorFileTouchOnly(t *testing.T) {
 
 	svc := NewAttributionService()
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
@@ -471,7 +471,7 @@ func TestRegression_ComputeAIPercent_NoEventsInWindow(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,1 @@\n+package main\n"
 	svc := NewAttributionService()
 	_, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	})
 	if !errors.Is(err, ErrNoEventsInWindow) {
 		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
@@ -485,7 +485,7 @@ func TestRegression_ComputeAIPercent_EmptyDiff(t *testing.T) {
 	repoID := insertRepo(t, h, 100_000)
 	svc := NewAttributionService()
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, nil, ComputeAIPercentInput{
-		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -523,7 +523,7 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,2 @@\n+package utils\n+func Helper() {}\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -576,7 +576,7 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -624,7 +624,7 @@ func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,3 @@\n package utils\n+func Handler() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -661,7 +661,7 @@ func TestRegression_CarryForward_Modified_ZeroCurrentWindowEvents(t *testing.T) 
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil && !errors.Is(err, ErrNoEventsInWindow) {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -706,7 +706,7 @@ func TestRegression_CarryForward_Modified_CrossProviderRejected(t *testing.T) {
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -754,7 +754,7 @@ func TestRegression_CarryForward_Modified_ProviderTouchOnlyRejected(t *testing.T
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -785,7 +785,7 @@ func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
 	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,1 @@\n+package utils\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if !errors.Is(err, ErrNoEventsInWindow) {
 		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
@@ -803,7 +803,7 @@ func TestRegression_CarryForward_NilPrevCP(t *testing.T) {
 	repoID := insertRepo(t, h, 100_000)
 	diff := "diff --git a/main.go b/main.go\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,1 @@\n+package main\n"
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, AfterTs: 0, UpToTs: 300_000,
+		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(0, 300_000),
 	}, nil, semDir)
 	if !errors.Is(err, ErrNoEventsInWindow) {
 		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
@@ -835,7 +835,7 @@ func TestRegression_CarryForward_HistoricalEmpty_PreservesCurrent(t *testing.T) 
 	diff := "diff --git a/edit.go b/edit.go\n--- a/edit.go\n+++ b/edit.go\n@@ -1 +1,2 @@\n+package edit\n+func Handle() {}\ndiff --git a/new.go b/new.go\n--- /dev/null\n+++ b/new.go\n@@ -0,0 +1,1 @@\n+package new\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
@@ -871,7 +871,7 @@ func TestRegression_ComputeAIPercent_MixedProviders(t *testing.T) {
 
 	svc := NewAttributionService()
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
@@ -948,7 +948,7 @@ func TestRegression_ComputeAIPercent_DeletionPath(t *testing.T) {
 	diff := "diff --git a/old.go b/old.go\n--- a/old.go\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-package old\n-func Legacy() {}\n"
 	svc := NewAttributionService()
 	result, err := svc.ComputeAIPercentFromDiff(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 100_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(100_000, 300_000),
 	})
 	if err != nil {
 		t.Fatalf("ComputeAIPercentFromDiff: %v", err)
@@ -1073,7 +1073,7 @@ func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
 	diff := "diff --git a/utils.go b/utils.go\n--- /dev/null\n+++ b/utils.go\n@@ -0,0 +1,1 @@\n+package utils\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, _ := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
-		RepoRoot: repoRoot, RepoID: repoID, AfterTs: 200_000, UpToTs: 300_000,
+		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
 	}, &cp1, semDir)
 
 	// The file should have 0 AI lines and no carry-forward evidence.

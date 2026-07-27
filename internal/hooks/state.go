@@ -29,6 +29,26 @@ type CaptureState struct {
 	TurnID            string `json:"turn_id,omitempty"`
 	PromptSubmittedAt int64  `json:"prompt_submitted_at,omitempty"`
 	CWD               string `json:"cwd,omitempty"` // working directory from hook payload
+
+	// TurnStartOffset is the transcript EOF at prompt submission.
+	TurnStartOffset int `json:"turn_start_offset,omitempty"`
+
+	// ScopedDeferrals counts cross-repository replay deferrals.
+	ScopedDeferrals int   `json:"scoped_deferrals,omitempty"`
+	LastDeferredAt  int64 `json:"last_deferred_at,omitempty"`
+
+	// PendingTurns records unresolved turn boundaries, oldest first.
+	PendingTurns []PendingTurnBoundary `json:"pending_turns,omitempty"`
+
+	// OrphanedAt marks deferred state retained after a transcript switch.
+	OrphanedAt int64 `json:"orphaned_at,omitempty"`
+}
+
+// PendingTurnBoundary records where an interrupted turn begins.
+type PendingTurnBoundary struct {
+	TurnID            string `json:"turn_id"`
+	PromptSubmittedAt int64  `json:"prompt_submitted_at"`
+	StartOffset       int    `json:"start_offset,omitempty"`
 }
 
 // Key returns the state file key.
@@ -152,7 +172,7 @@ func LoadCaptureState(sessionID string) (*CaptureState, error) {
 	return &state, nil
 }
 
-// LoadActiveCaptureStates scans all capture state files.
+// LoadActiveCaptureStates returns states that remain eligible for capture.
 func LoadActiveCaptureStates() ([]*CaptureState, error) {
 	dir, err := captureDir()
 	if err != nil {
@@ -180,7 +200,43 @@ func LoadActiveCaptureStates() ([]*CaptureState, error) {
 		if err := json.Unmarshal(data, &state); err != nil {
 			continue
 		}
+		if state.OrphanedAt != 0 {
+			continue
+		}
 		states = append(states, &state)
+	}
+	return states, nil
+}
+
+// LoadOrphanedCaptureStates returns deferred state from replaced transcripts.
+func LoadOrphanedCaptureStates() ([]*CaptureState, error) {
+	dir, err := captureDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read capture dir: %w", err)
+	}
+	var states []*CaptureState
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "capture-") || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var state CaptureState
+		if err := json.Unmarshal(data, &state); err != nil {
+			continue
+		}
+		if state.OrphanedAt != 0 {
+			states = append(states, &state)
+		}
 	}
 	return states, nil
 }

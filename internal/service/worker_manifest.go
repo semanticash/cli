@@ -18,11 +18,12 @@ type prevManifestResult struct {
 	ok     bool
 }
 
-// loadPreviousManifest returns the previous completed manifest when available.
-func loadPreviousManifest(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, repoID string, cpCreatedAt int64) prevManifestResult {
+// loadPreviousManifest returns the previous completed manifest when
+// available. The predecessor is selected by repository_sequence.
+func loadPreviousManifest(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, repoID string, cpSequence int64) prevManifestResult {
 	prev, err := h.Queries.GetPreviousCompletedCheckpoint(ctx, sqldb.GetPreviousCompletedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    cpCreatedAt,
+		RepositoryID:       repoID,
+		RepositorySequence: cpSequence,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

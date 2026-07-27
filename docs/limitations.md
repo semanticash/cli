@@ -16,11 +16,13 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Capture only happens where Semantica hooks are installed. In practice, sessions launched from a Semantica-enabled repo are captured; activity in repos without `semantica enable` is not.
 - Capture is **per-machine**. Another developer or CI runner working on the same repo needs its own Semantica setup to capture their sessions.
 - If the CLI is upgraded or the capture state directory (`$SEMANTICA_HOME/capture/`) is cleared mid-session, offset state for in-progress sessions is lost. The worker reconciliation pass recovers what it can, but some events may be missed.
+- Repository workers reconcile only capture state owned by the locked repository. Cross-repository sessions wait for an unscoped capture. Transcript switches preserve unresolved segments as doctor-visible orphan snapshots, but do not replay them automatically.
 
 ## Git and repo boundaries
 
 - Lineage manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured in manifests.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
+- Commit-linked processing is serialized per repository. A failed queue head blocks later records until it is repaired or retried; `semantica doctor` reports the blocking record.
 
 ## Attribution fidelity
 

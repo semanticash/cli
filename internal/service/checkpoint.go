@@ -122,22 +122,27 @@ func (s *CheckpointService) Create(ctx context.Context, in CreateCheckpointInput
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
 
-	// Link sessions to checkpoint (INSERT OR IGNORE).
-	// Events are already in the DB from hooks. Query for sessions with
-	// events in the checkpoint's time window.
-	var afterTs int64
+	// Re-read the allocated sequence and event cursor.
+	inserted, err := h.Queries.GetCheckpointByID(ctx, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("read inserted checkpoint: %w", err)
+	}
+	win := windowBetween(nil, inserted)
 	prev, prevErr := h.Queries.GetPreviousCompletedCheckpoint(ctx, sqldb.GetPreviousCompletedCheckpointParams{
-		RepositoryID: repoID,
-		CreatedAt:    now,
+		RepositoryID:       repoID,
+		RepositorySequence: inserted.RepositorySequence,
 	})
 	if prevErr == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, inserted)
 	}
 
 	windowSessions, sessErr := h.Queries.ListSessionsWithEventsInWindow(ctx, sqldb.ListSessionsWithEventsInWindowParams{
 		RepositoryID: repoID,
-		AfterTs:      afterTs,
-		UpToTs:       now,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UpToTs:       win.upToTs,
 	})
 	if sessErr != nil {
 		wlog("checkpoint: list sessions in window: %v\n", sessErr)

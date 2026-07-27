@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.5.6] - 2026-07-26
+## [0.5.6] - 2026-07-27
 
 ### Added
 
@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.
 - Added Windows runtime coverage for cross-process locking, detached processes, transient file replacement, and cross-platform static checks.
+- Added repository-serialized checkpoint processing with monotonic ordering and `semantica doctor` diagnostics for worker locks and blocked queues.
 
 ### Fixed
 
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Gemini CLI hook configuration created during enablement is now added to `.gitignore` using the provider's canonical name.
 - Turn packaging now falls back to the prompt-time working directory when completion events omit it.
 - Git hook installation now preserves existing user hooks through interrupted or failed updates by validating backups before replacing the active hook.
+- Capture reconciliation now stays within the locked repository, preserves replayable interrupted-turn ownership, and reports deferred or orphaned evidence instead of discarding it silently.
 
 ### Security
 

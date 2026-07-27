@@ -30,15 +30,23 @@ select
 from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.repository_id = ?
-    and e.ts > ?2
-    and e.ts <= ?3
+    and ((cast(?2 as integer) = 1
+            and (e.ts > ?3
+                 or (e.ts = ?3 and e.insert_seq > ?4))
+            and (e.ts < ?5
+                 or (e.ts = ?5 and e.insert_seq <= ?6)))
+         or (cast(?2 as integer) = 0
+            and e.ts > ?3 and e.ts <= ?5))
 order by e.ts, e.event_id
 `
 
 type ListEventsInWindowParams struct {
-	RepositoryID string `json:"repository_id"`
-	AfterTs      int64  `json:"after_ts"`
-	UpToTs       int64  `json:"up_to_ts"`
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
 }
 
 type ListEventsInWindowRow struct {
@@ -63,7 +71,14 @@ type ListEventsInWindowRow struct {
 // requiring session_checkpoints links. Used by attribution to query
 // events directly by repository and time range.
 func (q *Queries) ListEventsInWindow(ctx context.Context, arg ListEventsInWindowParams) ([]ListEventsInWindowRow, error) {
-	rows, err := q.query(ctx, q.listEventsInWindowStmt, listEventsInWindow, arg.RepositoryID, arg.AfterTs, arg.UpToTs)
+	rows, err := q.query(ctx, q.listEventsInWindowStmt, listEventsInWindow,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -116,15 +131,23 @@ select
 from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.repository_id = ?
-    and e.ts > ?2
-    and e.ts <= ?3
+    and ((cast(?2 as integer) = 1
+            and (e.ts > ?3
+                 or (e.ts = ?3 and e.insert_seq > ?4))
+            and (e.ts < ?5
+                 or (e.ts = ?5 and e.insert_seq <= ?6)))
+         or (cast(?2 as integer) = 0
+            and e.ts > ?3 and e.ts <= ?5))
 order by e.ts, e.event_id
 `
 
 type ListEventsInWindowForAnnotationsParams struct {
-	RepositoryID string `json:"repository_id"`
-	AfterTs      int64  `json:"after_ts"`
-	UpToTs       int64  `json:"up_to_ts"`
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
 }
 
 type ListEventsInWindowForAnnotationsRow struct {
@@ -146,7 +169,14 @@ type ListEventsInWindowForAnnotationsRow struct {
 // the detector can reason about authored-then-revised / authored-then-removed
 // sequences directly.
 func (q *Queries) ListEventsInWindowForAnnotations(ctx context.Context, arg ListEventsInWindowForAnnotationsParams) ([]ListEventsInWindowForAnnotationsRow, error) {
-	rows, err := q.query(ctx, q.listEventsInWindowForAnnotationsStmt, listEventsInWindowForAnnotations, arg.RepositoryID, arg.AfterTs, arg.UpToTs)
+	rows, err := q.query(ctx, q.listEventsInWindowForAnnotationsStmt, listEventsInWindowForAnnotations,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -188,15 +218,23 @@ select
 from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.repository_id = ?
-    and e.ts > ?2
-    and e.ts <= ?3
+    and ((cast(?2 as integer) = 1
+            and (e.ts > ?3
+                 or (e.ts = ?3 and e.insert_seq > ?4))
+            and (e.ts < ?5
+                 or (e.ts = ?5 and e.insert_seq <= ?6)))
+         or (cast(?2 as integer) = 0
+            and e.ts > ?3 and e.ts <= ?5))
 order by e.ts, s.provider, e.session_id, e.event_id
 `
 
 type ListTranscriptEventsParams struct {
-	RepositoryID string `json:"repository_id"`
-	AfterTs      int64  `json:"after_ts"`
-	UntilTs      int64  `json:"until_ts"`
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UntilTs      int64         `json:"until_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
 }
 
 type ListTranscriptEventsRow struct {
@@ -217,7 +255,14 @@ type ListTranscriptEventsRow struct {
 }
 
 func (q *Queries) ListTranscriptEvents(ctx context.Context, arg ListTranscriptEventsParams) ([]ListTranscriptEventsRow, error) {
-	rows, err := q.query(ctx, q.listTranscriptEventsStmt, listTranscriptEvents, arg.RepositoryID, arg.AfterTs, arg.UntilTs)
+	rows, err := q.query(ctx, q.listTranscriptEventsStmt, listTranscriptEvents,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UntilTs,
+		arg.UpToCursor,
+	)
 	if err != nil {
 		return nil, err
 	}

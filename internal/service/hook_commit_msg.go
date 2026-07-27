@@ -195,14 +195,14 @@ func (s *CommitMsgHookService) computeAttribution(
 	}
 
 	// Delta window: previous commit-linked checkpoint -> this checkpoint.
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	var prevCPPtr *sqldb.Checkpoint
 	prev, err := h.Queries.GetPreviousCommitLinkedCheckpoint(attrCtx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-		RepositoryID: repoRow.RepositoryID,
-		CreatedAt:    cp.CreatedAt,
+		RepositoryID:       repoRow.RepositoryID,
+		RepositorySequence: cp.RepositorySequence,
 	})
 	if err == nil {
-		afterTs = prev.CreatedAt
+		win = windowBetween(&prev, cp)
 		prevCPPtr = &prev
 	}
 
@@ -233,8 +233,7 @@ func (s *CommitMsgHookService) computeAttribution(
 	input := ComputeAIPercentInput{
 		RepoRoot: repoRoot,
 		RepoID:   repoRow.RepositoryID,
-		AfterTs:  afterTs,
-		UpToTs:   cp.CreatedAt,
+		Window:   win,
 	}
 
 	// Fast path: compute with carry-forward from existing events in DB.

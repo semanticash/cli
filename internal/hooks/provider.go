@@ -102,6 +102,12 @@ type TranscriptPreparer interface {
 	PrepareTranscript(ctx context.Context, transcriptRef string) error
 }
 
+// OffsetAuthoritativeReader marks providers whose offset reads are exact.
+// Other providers use timestamp-based turn ownership.
+type OffsetAuthoritativeReader interface {
+	OffsetReadsAuthoritative() bool
+}
+
 // DirectHookEmitter is an optional interface for providers that can emit
 // RawEvents directly from hook payloads without waiting for transcript replay.
 // Used by providers that expose structured hook payloads for prompt and

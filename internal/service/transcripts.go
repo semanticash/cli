@@ -180,23 +180,27 @@ func (s *TranscriptService) TranscriptsForCheckpoint(ctx context.Context, in Tra
 	// Query events directly by repository + time window (no session_checkpoints dependency).
 	// Anchor the delta window to the previous commit-linked checkpoint,
 	// ignoring manual/baseline checkpoints - matches attribution behaviour.
-	var afterTs int64
+	win := windowBetween(nil, cp)
 	if !in.Cumulative {
 		prev, err := h.Queries.GetPreviousCommitLinkedCheckpoint(ctx, sqldb.GetPreviousCommitLinkedCheckpointParams{
-			RepositoryID: cp.RepositoryID,
-			CreatedAt:    cp.CreatedAt,
+			RepositoryID:       cp.RepositoryID,
+			RepositorySequence: cp.RepositorySequence,
 		})
 		if err == nil {
-			afterTs = prev.CreatedAt
+			win = windowBetween(&prev, cp)
 		}
-		// If no previous commit-linked checkpoint (sql.ErrNoRows), afterTs stays 0 -
-		// which means "everything up to this checkpoint" (same as cumulative for the first checkpoint).
+		// If no previous commit-linked checkpoint (sql.ErrNoRows), the
+		// lower edge stays unbounded - "everything up to this
+		// checkpoint" (same as cumulative for the first checkpoint).
 	}
 
 	events, err := h.Queries.ListTranscriptEvents(ctx, sqldb.ListTranscriptEventsParams{
 		RepositoryID: cp.RepositoryID,
-		AfterTs:      afterTs,
-		UntilTs:      cp.CreatedAt,
+		UseCursor:    win.cursorFlag(),
+		AfterCursor:  win.cursorAfter(),
+		UpToCursor:   win.cursorUpTo(),
+		AfterTs:      win.afterTs,
+		UntilTs:      win.upToTs,
 	})
 	if err != nil {
 		return nil, err

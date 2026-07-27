@@ -1,8 +1,15 @@
 -- name: InsertCheckpoint :exec
+-- Allocate sequence and event cursor in the insert transaction.
 insert into checkpoints(
     checkpoint_id, repository_id, created_at, kind, trigger, message,
-    manifest_hash, size_bytes, status, completed_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    manifest_hash, size_bytes, status, completed_at, repository_sequence,
+    event_cursor
+) values (sqlc.arg(checkpoint_id), sqlc.arg(repository_id), sqlc.arg(created_at),
+    sqlc.arg(kind), sqlc.arg(trigger), sqlc.arg(message), sqlc.arg(manifest_hash),
+    sqlc.arg(size_bytes), sqlc.arg(status), sqlc.arg(completed_at),
+    (select coalesce(max(repository_sequence), 0) + 1
+     from checkpoints c2 where c2.repository_id = sqlc.arg(repository_id)),
+    (select coalesce(max(e.insert_seq), 0) from agent_events e));
 
 -- name: GetCheckpointByID :one
 select * from checkpoints where checkpoint_id = ?;
@@ -14,7 +21,7 @@ select * from checkpoints where repository_id = ? order by created_at desc limit
 delete from checkpoints where checkpoint_id = ?;
 
 -- name: GetLatestCheckpointForRepo :one
-select * from checkpoints where repository_id = ? order by created_at desc limit 1;
+select * from checkpoints where repository_id = ? order by repository_sequence desc limit 1;
 
 -- name: CompleteCheckpoint :exec
 update checkpoints
@@ -35,12 +42,13 @@ where c.repository_id = ?
 order by c.created_at desc limit ?;
 
 -- name: GetPreviousCompletedCheckpoint :one
+-- Sequence selects the predecessor; timestamps bound its event window.
 select * from checkpoints
 where repository_id = ?
   and status = 'complete'
   and manifest_hash is not null
-  and created_at < ?
-order by created_at desc
+  and repository_sequence < ?
+order by repository_sequence desc
 limit 1;
 
 -- name: UpsertCheckpointStats :exec
@@ -61,26 +69,22 @@ update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?;
 select count(*) from session_checkpoints where checkpoint_id = ?;
 
 -- name: GetPreviousCommitLinkedCheckpoint :one
--- Returns the most recent completed checkpoint before the given timestamp
--- that has an associated commit link. Used by attribution to anchor the
--- delta window to the previous commit rather than an intermediate manual
--- or baseline checkpoint.
+-- Ignore manual and baseline checkpoints when anchoring attribution.
 select c.* from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
-  and c.created_at < ?
-order by c.created_at desc
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
 limit 1;
 
 -- name: GetMostRecentCommitLinkedCheckpoint :one
--- Returns the most recent completed checkpoint that has an associated
--- commit link for the repository.
+-- Latest completed commit-linked checkpoint by repository sequence.
 select c.* from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
-order by c.created_at desc
+order by c.repository_sequence desc
 limit 1;
 
 -- name: ResolveCheckpointByPrefix :many
@@ -103,6 +107,16 @@ where c.repository_id = ?
   and c.manifest_hash is null
   and cl.commit_hash is null
   and c.created_at < sqlc.arg(before_ts);
+
+-- name: ListPendingCommitLinkedCheckpoints :many
+-- Include failed rows because a failed queue head blocks later work.
+-- Newest commit links sort first for deterministic deduplication.
+select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash
+from checkpoints c
+    join commit_links cl on cl.checkpoint_id = c.checkpoint_id
+where c.repository_id = ?
+  and c.status in ('pending', 'failed')
+order by c.repository_sequence asc, cl.linked_at desc, cl.commit_hash desc;
 
 -- name: SaveCheckpointSummary :exec
 update checkpoints
