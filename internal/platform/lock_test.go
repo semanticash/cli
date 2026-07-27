@@ -128,6 +128,26 @@ func TestTryLockFile_ContendedAndFree(t *testing.T) {
 	}
 }
 
+func TestLockFile_ContentReadableWhileHeld(t *testing.T) {
+	f := createTempLockFile(t)
+	const meta = `{"pid":1234}`
+	if _, err := f.WriteAt([]byte(meta), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := LockFile(f); err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	defer func() { _ = UnlockFile(f) }()
+
+	got, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("metadata unreadable while lock held: %v", err)
+	}
+	if string(got) != meta {
+		t.Errorf("metadata = %q, want %q", got, meta)
+	}
+}
+
 func createTempLockFile(t *testing.T) *os.File {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "lockfile")
