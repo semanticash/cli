@@ -21,7 +21,8 @@ func TestRenderWorkerTask_ContainsRequiredElements(t *testing.T) {
 	for _, want := range []string{
 		`<?xml version="1.0" encoding="UTF-16"?>`,
 		`<Task version="1.2"`,
-		`<Triggers/>`,
+		`<Triggers>`,
+		`<TimeTrigger>`,
 		`<Actions Context="Author">`,
 		`<Principals>`,
 	} {
@@ -287,8 +288,9 @@ func TestResolveWorkingDirectory(t *testing.T) {
 // The scheduled task includes the periodic recovery trigger.
 func TestRenderWorkerTask_PeriodicDrain(t *testing.T) {
 	body, err := renderWorkerTask(taskInput{
-		BinaryPath: `C:\Program Files\Semantica\semantica.exe`,
-		LogPath:    `C:\Users\u\.semantica\worker.log`,
+		BinaryPath:       `C:\Program Files\Semantica\semantica.exe`,
+		LogPath:          `C:\Users\u\.semantica\worker.log`,
+		WorkingDirectory: `C:\Program Files\Semantica`,
 	})
 	if err != nil {
 		t.Fatal(err)
