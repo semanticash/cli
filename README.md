@@ -285,6 +285,17 @@ supported. Use the launcher when commits are often created by agents or
 IDE-integrated tools and you want post-commit work to run through the OS service
 manager.
 
+Commit-linked work is processed in repository order. Transient failures retry
+with bounded exponential backoff; retries due soon run in the current worker,
+and launcher installations also drain every 30 minutes. A terminal failure
+blocks later commit-linked work so it cannot be processed against the wrong
+predecessor. `semantica doctor` reports the blocking checkpoint and error. After
+fixing the cause, run:
+
+```bash
+semantica worker retry <checkpoint-id>
+```
+
 After upgrading or locally reinstalling Semantica, `semantica launcher refresh`
 re-registers the worker service against the current binary and drains any
 queued work. The official installer and `make install` attempt this

@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/providers"
 	"github.com/semanticash/cli/internal/service"
 )
@@ -18,7 +19,30 @@ func NewWorkerCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd.AddCommand(NewWorkerRunCmd(rootOpts))
 	cmd.AddCommand(NewWorkerDrainCmd(rootOpts))
+	cmd.AddCommand(NewWorkerRetryCmd(rootOpts))
 	return cmd
+}
+
+// NewWorkerRetryCmd retries a terminally failed checkpoint.
+func NewWorkerRetryCmd(rootOpts *RootOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "retry <checkpoint-id>",
+		Short: "Retry a terminally failed checkpoint",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := git.OpenRepo(rootOpts.RepoPath)
+			if err != nil {
+				return err
+			}
+			svc := service.NewWorkerService(providers.NewHookRegistry())
+			id, err := svc.ResolveAndRetryCheckpoint(cmd.Context(), repo.Root(), args[0])
+			if err != nil {
+				return err
+			}
+			cmd.Printf("checkpoint %s retried\n", id)
+			return nil
+		},
+	}
 }
 
 func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
@@ -55,8 +79,7 @@ func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-// NewWorkerDrainCmd returns the hidden launchd entry point that
-// drains pending markers across active repositories.
+// NewWorkerDrainCmd drains pending markers across active repositories.
 func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 	var (
 		lingerSeconds int
@@ -71,19 +94,9 @@ func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// First action: redirect worker output to the requested
-			// file when --log-file is set. Used by the Linux systemd
-			// and Windows Task Scheduler launcher backends, where the
-			// daemon manager does not redirect stdout/stderr at the OS
-			// level. macOS launchd handles redirection via the plist's
-			// StandardOutPath / StandardErrorPath, so the flag is a
-			// no-op there but accepted for cross-platform parity.
-			//
-			// Per-job repo-local redirects (see service.redirectWlogToRepoLog)
-			// compose with this: they save and restore wlogWriter
-			// around each job, so pipeline output still lands in the
-			// repo's .semantica/worker.log while everything outside a
-			// job lands in --log-file.
+			// Linux and Windows pass --log-file because their launcher
+			// backends do not redirect process output. Per-repository
+			// logs temporarily override this destination for each job.
 			if logFilePath != "" {
 				cleanup, err := service.RedirectWorkerLog(logFilePath)
 				if err != nil {

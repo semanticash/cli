@@ -25,13 +25,49 @@ select * from checkpoints where repository_id = ? order by repository_sequence d
 
 -- name: CompleteCheckpoint :exec
 update checkpoints
-set manifest_hash = ?, size_bytes = ?, status = 'complete', completed_at = ?
+set manifest_hash = ?, size_bytes = ?, status = 'complete', completed_at = ?,
+    lease_owner = null, lease_until = null, last_error = null, next_attempt_at = 0
 where checkpoint_id = ?;
 
--- name: FailCheckpoint :exec
+-- name: FailCheckpoint :execrows
+-- Terminal failure: permanent error or attempts exhausted; the final
+-- error is preserved for doctor and manual retry.
 update checkpoints
-set status = 'failed', completed_at = ?
+set status = 'failed', completed_at = ?, last_error = ?,
+    lease_owner = null, lease_until = null, next_attempt_at = 0
 where checkpoint_id = ?;
+
+-- name: ClaimCheckpoint :one
+-- Atomic claim: takes a due pending checkpoint whose lease is free or
+-- expired and increments attempt_count exactly once. A live lease on a
+-- pending row represents processing. Returns no row when unavailable.
+update checkpoints
+set lease_owner = sqlc.arg(lease_owner),
+    lease_until = sqlc.arg(lease_until),
+    attempt_count = attempt_count + 1
+where checkpoint_id = sqlc.arg(checkpoint_id)
+  and status = 'pending'
+  and next_attempt_at <= sqlc.arg(now)
+  and (lease_owner is null or lease_until < sqlc.arg(now))
+returning *;
+
+-- name: ReleaseCheckpointForRetry :execrows
+-- Transient failure: release the lease with a scheduled retry. The
+-- attempt counter was already incremented by the claim. Callers must
+-- require one affected row; zero means the lease was lost and the
+-- transition was not recorded.
+update checkpoints
+set last_error = ?, next_attempt_at = ?,
+    lease_owner = null, lease_until = null
+where checkpoint_id = ? and lease_owner = ?;
+
+-- name: RetryFailedCheckpoint :execrows
+-- Manual retry: a human intervened, so the attempt budget resets.
+update checkpoints
+set status = 'pending', attempt_count = 0, next_attempt_at = 0,
+    lease_owner = null, lease_until = null,
+    last_error = null, completed_at = null
+where checkpoint_id = ? and status = 'failed';
 
 -- name: ListCheckpointsWithCommit :many
 select c.checkpoint_id, c.created_at, c.kind, c.trigger, c.message,
@@ -111,7 +147,8 @@ where c.repository_id = ?
 -- name: ListPendingCommitLinkedCheckpoints :many
 -- Include failed rows because a failed queue head blocks later work.
 -- Newest commit links sort first for deterministic deduplication.
-select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash
+select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash,
+       c.attempt_count, c.last_error, c.next_attempt_at, c.lease_until
 from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?

@@ -94,23 +94,47 @@ func checkWorkerLock(ctx context.Context, opts Options) []Check {
 	return append(checks, workerQueueCheck(ctx, opts, true)...)
 }
 
-// workerQueueCheck reports waiting or blocked commit-linked work.
+// queueState summarizes the commit-linked drain queue for doctor.
+type queueState struct {
+	pending     int    // pending checkpoints, due or scheduled
+	overdue     int    // pending, due now, no live lease
+	blockedBy   string // terminally failed checkpoint gating the queue
+	blockedErr  string // its preserved last error
+	blockedTry  int64  // attempts consumed before terminal failure
+	nextRetryAt int64  // earliest scheduled retry (unix ms), 0 if none
+	retrying    int64  // attempt count of the scheduled-retry head
+}
+
+// workerQueueCheck reports waiting, scheduled, or blocked work.
 func workerQueueCheck(ctx context.Context, opts Options, lockHeld bool) []Check {
-	depth, blockedBy, err := pendingQueueState(ctx, opts.RepoPath)
+	qs, err := pendingQueueState(ctx, opts.RepoPath)
 	if err != nil {
 		return nil
 	}
-	if blockedBy != "" {
+	if qs.blockedBy != "" {
+		msg := fmt.Sprintf("queue: %d checkpoint(s) waiting, blocked by terminally failed checkpoint %s (attempts %d)",
+			qs.pending, qs.blockedBy, qs.blockedTry)
+		if qs.blockedErr != "" {
+			msg += ": " + qs.blockedErr
+		}
 		return []Check{{
 			Category: "worker", ID: "queue", Status: StatusWarn,
-			Message:     fmt.Sprintf("queue: %d checkpoint(s) waiting, blocked by failed checkpoint %s", depth, blockedBy),
-			Remediation: "later checkpoints wait until the failed checkpoint is resolved; inspect .semantica/worker.log",
+			Message:     msg,
+			Remediation: fmt.Sprintf("address the cause, then run `semantica worker retry %s`", qs.blockedBy),
 		}}
 	}
-	if depth == 0 {
+	if qs.pending == 0 {
 		return []Check{{
 			Category: "worker", ID: "queue", Status: StatusOK,
 			Message: "queue: no checkpoints waiting",
+		}}
+	}
+	if qs.nextRetryAt > 0 && qs.overdue == 0 {
+		in := time.Until(time.UnixMilli(qs.nextRetryAt)).Round(time.Second)
+		return []Check{{
+			Category: "worker", ID: "queue", Status: StatusOK,
+			Message: fmt.Sprintf("queue: %d checkpoint(s) waiting, retry scheduled in %s (attempt %d)",
+				qs.pending, in, qs.retrying+1),
 		}}
 	}
 	status := StatusOK
@@ -121,28 +145,28 @@ func workerQueueCheck(ctx context.Context, opts Options, lockHeld bool) []Check 
 	}
 	return []Check{{
 		Category: "worker", ID: "queue", Status: status,
-		Message:     fmt.Sprintf("queue: %d checkpoint(s) waiting", depth),
+		Message:     fmt.Sprintf("queue: %d checkpoint(s) waiting", qs.pending),
 		Remediation: remediation,
 	}}
 }
 
-// pendingQueueState counts distinct pending commit-linked checkpoints
-// and reports the failed checkpoint blocking the queue head, if any.
-func pendingQueueState(ctx context.Context, repoRoot string) (int, string, error) {
+// pendingQueueState summarizes distinct commit-linked queue rows.
+func pendingQueueState(ctx context.Context, repoRoot string) (queueState, error) {
+	var qs queueState
 	dbPath := filepath.Join(repoRoot, ".semantica", "lineage.db")
 	h, err := openLineage(ctx, dbPath)
 	if err != nil {
-		return 0, "", err
+		return qs, err
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 
 	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
 	if err != nil {
-		return 0, "", err
+		return qs, err
 	}
 	rows, err := h.Queries.ListPendingCommitLinkedCheckpoints(ctx, repo.RepositoryID)
 	if err != nil {
-		return 0, "", err
+		return qs, err
 	}
 	// Failed rows already passed by a completed successor do not block
 	// (history from before ordering was enforced).
@@ -150,8 +174,7 @@ func pendingQueueState(ctx context.Context, repoRoot string) (int, string, error
 	if latest, err := h.Queries.GetMostRecentCommitLinkedCheckpoint(ctx, repo.RepositoryID); err == nil {
 		maxCompleteSeq = latest.RepositorySequence
 	}
-	var pending int
-	var blockedBy string
+	now := time.Now().UnixMilli()
 	seen := map[string]bool{}
 	for _, r := range rows {
 		if seen[r.CheckpointID] {
@@ -159,14 +182,28 @@ func pendingQueueState(ctx context.Context, repoRoot string) (int, string, error
 		}
 		seen[r.CheckpointID] = true
 		// The first active failure gates all later rows.
-		if r.Status == "failed" && blockedBy == "" && r.RepositorySequence > maxCompleteSeq {
-			blockedBy = r.CheckpointID
+		if r.Status == "failed" && qs.blockedBy == "" && r.RepositorySequence > maxCompleteSeq {
+			qs.blockedBy = r.CheckpointID
+			qs.blockedErr = r.LastError.String
+			qs.blockedTry = r.AttemptCount
 		}
-		if r.Status == "pending" {
-			pending++
+		if r.Status != "pending" {
+			continue
+		}
+		qs.pending++
+		switch {
+		case r.LeaseUntil.Int64 > now:
+			// Live lease: being processed right now.
+		case r.NextAttemptAt > now:
+			if qs.nextRetryAt == 0 || r.NextAttemptAt < qs.nextRetryAt {
+				qs.nextRetryAt = r.NextAttemptAt
+				qs.retrying = r.AttemptCount
+			}
+		default:
+			qs.overdue++
 		}
 	}
-	return pending, blockedBy, nil
+	return qs, nil
 }
 
 // checkUnownedCaptureStates reports state outside active repositories.

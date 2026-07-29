@@ -69,6 +69,11 @@ type Checkpoint struct {
 	SummaryModel       sql.NullString `json:"summary_model"`
 	RepositorySequence int64          `json:"repository_sequence"`
 	EventCursor        sql.NullInt64  `json:"event_cursor"`
+	AttemptCount       int64          `json:"attempt_count"`
+	LastError          sql.NullString `json:"last_error"`
+	NextAttemptAt      int64          `json:"next_attempt_at"`
+	LeaseOwner         sql.NullString `json:"lease_owner"`
+	LeaseUntil         sql.NullInt64  `json:"lease_until"`
 }
 
 type CheckpointStat struct {

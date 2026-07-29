@@ -144,10 +144,8 @@ func TestRenderWorkerUnit_RejectsRelativePaths(t *testing.T) {
 	}
 }
 
-// systemdQuote wraps the input in double quotes and escapes the
-// four characters systemd treats specially inside ExecStart
-// arguments: `"`, `\`, `%`, `$`. The table pins each escape so a
-// regression on any single character surfaces clearly.
+// systemdQuote escapes characters that are special in quoted
+// ExecStart arguments.
 func TestSystemdQuote(t *testing.T) {
 	cases := []struct {
 		name string
@@ -171,5 +169,20 @@ func TestSystemdQuote(t *testing.T) {
 				t.Errorf("systemdQuote(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// The systemd timer includes startup and periodic recovery intervals.
+func TestRenderWorkerTimer(t *testing.T) {
+	body := renderWorkerTimer()
+	for _, want := range []string{
+		"OnStartupSec=5min",
+		"OnUnitActiveSec=30min",
+		"Unit=" + UnitTarget(),
+		"WantedBy=timers.target",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("timer unit missing %q:\n%s", want, body)
+		}
 	}
 }

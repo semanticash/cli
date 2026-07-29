@@ -524,3 +524,60 @@ func TestDrainUntilStable_NoArrivalExitsAfterLinger(t *testing.T) {
 		t.Errorf("runner should not have been called, got %d", got)
 	}
 }
+
+// Near retries run in the same drain invocation.
+func TestDrainUntilStable_WaitsForScheduledRetry(t *testing.T) {
+	repo := t.TempDir()
+	setupDrainEnv(t, repo)
+	markerPath := writeMarker(t, repo, "ck-wait")
+
+	calls := 0
+	runner := func(ctx context.Context, in WorkerInput) error {
+		calls++
+		if calls == 1 {
+			return &ErrRetryScheduled{CheckpointID: in.CheckpointID, At: time.Now().Add(150 * time.Millisecond)}
+		}
+		return nil
+	}
+
+	if err := DrainUntilStable(context.Background(), 0, runner); err != nil {
+		t.Fatalf("DrainUntilStable: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("runner calls = %d, want 2 (initial attempt + in-process retry)", calls)
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("marker should be deleted after the successful retry: %v", err)
+	}
+}
+
+// Far retries preserve their marker without holding the process.
+func TestDrainUntilStable_FarRetryDoesNotHoldProcess(t *testing.T) {
+	repo := t.TempDir()
+	setupDrainEnv(t, repo)
+	markerPath := writeMarker(t, repo, "ck-far")
+
+	orig := maxRetryDrainWait
+	maxRetryDrainWait = 50 * time.Millisecond
+	t.Cleanup(func() { maxRetryDrainWait = orig })
+
+	calls := 0
+	runner := func(ctx context.Context, in WorkerInput) error {
+		calls++
+		return &ErrRetryScheduled{CheckpointID: in.CheckpointID, At: time.Now().Add(time.Hour)}
+	}
+
+	start := time.Now()
+	if err := DrainUntilStable(context.Background(), 0, runner); err != nil {
+		t.Fatalf("DrainUntilStable: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("drain held the process %s for a far retry", elapsed)
+	}
+	if calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", calls)
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("marker must survive for the later wake-up: %v", err)
+	}
+}

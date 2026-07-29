@@ -31,3 +31,18 @@ func UserDomain() string {
 func UnitTarget() string {
 	return LabelWorker + ".service"
 }
+
+// TimerPath returns the systemd user timer path for the periodic
+// worker drain.
+func TimerPath() (string, error) {
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user config dir: %w", err)
+	}
+	return filepath.Join(cfgDir, "systemd", "user", LabelWorker+".timer"), nil
+}
+
+// TimerTarget returns the systemd timer unit name.
+func TimerTarget() string {
+	return LabelWorker + ".timer"
+}

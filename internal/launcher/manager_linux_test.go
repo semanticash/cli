@@ -21,10 +21,7 @@ func TestDisable_BestEffortWhenSystemctlAlwaysFails(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("SEMANTICA_HOME", semHome)
 
-	// Fake systemctl that fails every invocation. show-environment
-	// fails (would have blocked Disable in the buggy version);
-	// stop and daemon-reload also fail. Despite all that, Disable
-	// must still remove the unit file.
+	// Simulate an unavailable systemd user instance.
 	writeFakeSystemctl(t, 1, "Failed to connect to bus")
 
 	// Seed the unit file as if a previous Enable had run.
@@ -80,27 +77,20 @@ func TestDisable_BestEffortWhenSystemctlAlwaysFails(t *testing.T) {
 	}
 }
 
-// IsRegistered must report registration state, not running state.
-// Type=oneshot units return to "inactive" between kicks, which is
-// the steady state - not a problem. The previous IsActive
-// implementation used systemctl is-active and would report false
-// for any idle unit, making Status render the drift hint
-// "settings say enabled, but the OS daemon manager has no loaded
-// service" on every status check between worker runs.
-//
-// The test wires a fake systemctl that returns LoadState=loaded
-// from `systemctl --user show`, mimicking the steady state of an
-// installed unit between kicks. IsRegistered must return true.
+// A loaded oneshot service is healthy while idle when its timer is
+// enabled and active.
 func TestIsRegistered_IdleUnitCountsAsLoaded(t *testing.T) {
 	dir := t.TempDir()
 	argvLog := filepath.Join(dir, "argv.log")
-	// Fake systemctl: prints "loaded" to stdout for show
-	// LoadState queries, exits 0. Logs argv for assertion below.
+	// Log each probe while reporting a healthy service and timer.
 	script := fmt.Sprintf(`#!/bin/bash
 printf '%%s\n' "$*" >> %q
 case "$2" in
   show)
     echo "loaded"
+    ;;
+  is-enabled)
+    echo "enabled"
     ;;
 esac
 exit 0
@@ -123,37 +113,28 @@ exit 0
 		t.Errorf("LoadState=loaded must report registered=true")
 	}
 
-	// Pin the systemctl probe used: must be `show LoadState`,
-	// not `is-active`. Using is-active would re-introduce the
-	// false-on-idle bug for Type=oneshot units.
+	// The service uses LoadState; the waiting timer uses activity.
 	logBytes, err := os.ReadFile(argvLog)
 	if err != nil {
 		t.Fatalf("read argv log: %v", err)
 	}
-	if !strings.Contains(string(logBytes), "--user show") {
-		t.Errorf("IsRegistered must probe via `show`, got argv:\n%s", string(logBytes))
+	argv := string(logBytes)
+	if !strings.Contains(argv, "--user show") {
+		t.Errorf("IsRegistered must probe the service via `show`, got argv:\n%s", argv)
 	}
-	if strings.Contains(string(logBytes), "is-active") {
-		t.Errorf("IsRegistered must NOT use `is-active` (returns false for idle Type=oneshot units), got argv:\n%s", string(logBytes))
+	if strings.Contains(argv, "is-active --quiet "+UnitTarget()) {
+		t.Errorf("IsRegistered must NOT use `is-active` for the service, got argv:\n%s", argv)
+	}
+	if !strings.Contains(argv, "is-active --quiet "+TimerTarget()) {
+		t.Errorf("IsRegistered must probe the timer via `is-active`, got argv:\n%s", argv)
 	}
 }
 
-// TestInstall_ReinstalledFlagUsesRegistrationProbe pins that the
-// Reinstalled detection on Linux uses isUnitRegistered, NOT
-// isUnitActive. Type=oneshot units return to inactive between
-// kicks, so probing with is-active would falsely report
-// Reinstalled=false on every reinstall of an idle but registered
-// unit. Sibling regression to the Status fix that switched to
-// registration semantics.
+// Reinstallation checks service registration rather than activity.
 func TestInstall_ReinstalledFlagUsesRegistrationProbe(t *testing.T) {
 	dir := t.TempDir()
 	argvLog := filepath.Join(dir, "argv.log")
-	// Fake systemctl: succeeds for every operation. `show
-	// LoadState` returns "loaded" so Install sees a previously-
-	// registered unit. is-active is configured to LIE - return
-	// "inactive" exit 3 - so a regression that probes with
-	// is-active instead of show would read false here and the
-	// Reinstalled assertion would fail.
+	// Report the service as loaded but inactive between runs.
 	script := fmt.Sprintf(`#!/bin/bash
 printf '%%s\n' "$*" >> %q
 case "$2" in
@@ -189,8 +170,7 @@ exit 0
 		t.Errorf("Reinstalled=false even though `show LoadState=loaded` reported a prior registration; probe is using the wrong systemctl subcommand")
 	}
 
-	// Pin the systemctl probe used: registration check must go
-	// through `show`, not `is-active`.
+	// Registration must use LoadState, not activity.
 	logBytes, err := os.ReadFile(argvLog)
 	if err != nil {
 		t.Fatalf("read argv log: %v", err)
@@ -203,11 +183,7 @@ exit 0
 	}
 }
 
-// TestInstall_ReachabilityProbeFailsWithClearError pins that the
-// systemd reachability probe lives in Install (not newManager) and
-// surfaces a clear, actionable error when the user manager is
-// unreachable. The error is NOT ErrUnsupportedOS - Linux supports
-// the launcher; this is a runtime environment issue.
+// Install reports an unreachable user manager as an environment error.
 func TestInstall_ReachabilityProbeFailsWithClearError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
@@ -240,4 +216,56 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A disabled or inactive timer makes the launcher unhealthy.
+func TestIsRegistered_TimerHealthGates(t *testing.T) {
+	cases := []struct {
+		name           string
+		isEnabledState string
+		isEnabledExit  int
+		isActiveExit   int
+		want           bool
+	}{
+		{"timer enabled and active", "enabled", 0, 0, true},
+		{"timer disabled", "disabled", 1, 0, false},
+		{"timer static (exit 0 but not enabled)", "static", 0, 0, false},
+		{"timer inactive", "enabled", 0, 3, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := fmt.Sprintf(`#!/bin/bash
+case "$2" in
+  show)
+    echo "loaded"
+    ;;
+  is-enabled)
+    echo %q
+    exit %d
+    ;;
+  is-active)
+    exit %d
+    ;;
+esac
+exit 0
+`, tc.isEnabledState, tc.isEnabledExit, tc.isActiveExit)
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			m, err := newManager()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := m.IsRegistered(context.Background())
+			if err != nil {
+				t.Fatalf("IsRegistered: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("IsRegistered = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

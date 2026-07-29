@@ -181,3 +181,17 @@ func TestLabelWorker_StableAcrossVersions(t *testing.T) {
 			LabelWorker)
 	}
 }
+
+// The launchd service includes the periodic recovery interval.
+func TestRenderWorkerPlist_PeriodicDrain(t *testing.T) {
+	body, err := renderWorkerPlist(plistInput{
+		BinaryPath: "/usr/local/bin/semantica",
+		LogPath:    "/tmp/worker.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "<key>StartInterval</key>") || !strings.Contains(body, "<integer>1800</integer>") {
+		t.Errorf("plist missing periodic StartInterval:\n%s", body)
+	}
+}

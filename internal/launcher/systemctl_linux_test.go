@@ -152,12 +152,8 @@ func TestIsUnitActive_OtherNonZeroExitsPropagate(t *testing.T) {
 	}
 }
 
-// userManagerReachable uses show-environment, NOT is-system-running.
-// is-system-running returns non-zero for `degraded`/`starting`/
-// `maintenance` even when the user manager is perfectly usable;
-// keying on its exit code would falsely classify any host with one
-// failed user unit as "no launcher backend". This test pins the
-// chosen probe.
+// A degraded user manager can remain usable, so this probe uses
+// show-environment instead of is-system-running.
 func TestUserManagerReachable_UsesShowEnvironment(t *testing.T) {
 	_, argvLog := writeFakeSystemctl(t, 0, "")
 
@@ -203,5 +199,41 @@ func TestKickstart_HonorsCallerSuppliedTargetOnLinux(t *testing.T) {
 	want := "--user start --no-block " + callerTarget
 	if got != want {
 		t.Errorf("systemctl argv = %q, want %q", got, want)
+	}
+}
+
+// Enablement follows the printed state rather than the exit code.
+func TestIsUnitEnabled_StateTable(t *testing.T) {
+	cases := []struct {
+		state   string
+		exit    int
+		want    bool
+		wantErr bool
+	}{
+		{"enabled", 0, true, false},
+		{"enabled-runtime", 0, false, false}, // runtime-only, lost on reboot
+		{"static", 0, false, false},          // exit 0 but not enablement
+		{"disabled", 1, false, false},
+		{"not-found", 4, false, false}, // absent unit is drift, not an outage
+		{"bad", 1, false, true},        // invalid unit file is operational
+		{"???", 0, false, true},        // unrecognized must not be guessed
+	}
+	for _, tc := range cases {
+		t.Run(tc.state, func(t *testing.T) {
+			dir := t.TempDir()
+			script := fmt.Sprintf("#!/bin/bash\necho %q\nexit %d\n", tc.state, tc.exit)
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			got, err := isUnitEnabled(context.Background(), "x.timer")
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("enabled = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

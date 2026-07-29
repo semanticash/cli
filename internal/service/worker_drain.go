@@ -32,6 +32,10 @@ type DrainStats struct {
 	// RunErrors counts markers left on disk after runner failure.
 	RunErrors int
 
+	// EarliestRetry is the soonest scheduled-retry time reported by a
+	// runner, zero when none was reported.
+	EarliestRetry time.Time
+
 	// DeleteErrors counts markers whose work ran but could not be
 	// removed.
 	DeleteErrors int
@@ -117,7 +121,11 @@ func drainOncePass(ctx context.Context, run MarkerRunner, skip map[string]bool) 
 			if skip != nil && skip[p] {
 				continue
 			}
-			switch drainOne(ctx, run, root, p) {
+			outcome, retryAt := drainOne(ctx, run, root, p)
+			if !retryAt.IsZero() && (stats.EarliestRetry.IsZero() || retryAt.Before(stats.EarliestRetry)) {
+				stats.EarliestRetry = retryAt
+			}
+			switch outcome {
 			case outcomeProcessed:
 				stats.Processed++
 			case outcomeRejected:
@@ -138,21 +146,22 @@ func drainOncePass(ctx context.Context, run MarkerRunner, skip map[string]bool) 
 	return stats, nil
 }
 
-// drainOne processes one marker and returns the outcome.
-func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOutcome {
+// drainOne processes one marker and returns the outcome, plus the
+// scheduled-retry time when the runner reported one.
+func drainOne(ctx context.Context, run MarkerRunner, root, path string) (outcome drainOutcome, retryAt time.Time) {
 	m, err := launcher.ReadInQueue(root, path)
 	if err != nil {
 		// Another pass already deleted the marker.
 		if errors.Is(err, os.ErrNotExist) {
-			return outcomeNone
+			return outcomeNone, retryAt
 		}
 		// Drop unreadable or mismatched markers so they do not loop.
 		wlog("worker: drain: reject corrupt marker %s: %v\n", path, err)
 		if delErr := launcher.Delete(path); delErr != nil {
 			wlog("worker: drain: delete corrupt marker %s: %v\n", path, delErr)
-			return outcomeDeleteError
+			return outcomeDeleteError, retryAt
 		}
-		return outcomeRejected
+		return outcomeRejected, retryAt
 	}
 
 	// Route this job's output to the repo-local worker log. Drain-loop
@@ -166,14 +175,23 @@ func drainOne(ctx context.Context, run MarkerRunner, root, path string) drainOut
 		RepoRoot:     m.RepoRoot,
 	}); err != nil {
 		wlog("worker: drain: run checkpoint %s: %v\n", m.CheckpointID, err)
-		return outcomeRunError
+		var sched *ErrRetryScheduled
+		if errors.As(err, &sched) {
+			retryAt = sched.At
+		}
+		// Lease expiry is the next safe reclaim time.
+		var held *ErrLeaseHeld
+		if errors.As(err, &held) {
+			retryAt = held.Until
+		}
+		return outcomeRunError, retryAt
 	}
 
 	if err := launcher.Delete(path); err != nil {
 		wlog("worker: drain: delete marker %s: %v\n", path, err)
-		return outcomeDeleteError
+		return outcomeDeleteError, retryAt
 	}
-	return outcomeProcessed
+	return outcomeProcessed, retryAt
 }
 
 // redirectWlogToRepoLog points wlog and the default slog logger at
@@ -202,12 +220,32 @@ func redirectWlogToRepoLog(repoRoot string) func() {
 // without exporting wlogWriter.
 func writerIs(w io.Writer) bool { return wlogWriter == w }
 
+// maxRetryDrainWait bounds how long a drain waits in-process. Later
+// retries wait for a launcher interval, commit, or manual drain.
+var maxRetryDrainWait = 10 * time.Minute
+
 // DrainUntilStable keeps draining until two passes in a row remove no
-// markers, with an optional idle linger between them. Markers that
-// fail to run or delete are skipped for the rest of the invocation
-// and retried by a later one.
+// markers. It waits for retries due within maxRetryDrainWait; other
+// failed markers remain queued for a later invocation.
 func DrainUntilStable(ctx context.Context, linger time.Duration, run MarkerRunner) error {
 	skip := map[string]bool{}
+	waitForRetry := func(at time.Time) (bool, error) {
+		delay := time.Until(at)
+		if at.IsZero() || delay > maxRetryDrainWait {
+			return false, nil
+		}
+		if delay > 0 {
+			wlog("worker: drain: waiting %s for scheduled retry\n", delay.Round(time.Second))
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		// The retry is due: clear the skip set so its marker reruns.
+		clear(skip)
+		return true, nil
+	}
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -217,6 +255,11 @@ func DrainUntilStable(ctx context.Context, linger time.Duration, run MarkerRunne
 			return err
 		}
 		if stats.Progress() > 0 {
+			continue
+		}
+		if retried, err := waitForRetry(stats.EarliestRetry); err != nil {
+			return err
+		} else if retried {
 			continue
 		}
 		if linger <= 0 {
@@ -230,6 +273,11 @@ func DrainUntilStable(ctx context.Context, linger time.Duration, run MarkerRunne
 		final, err := drainOncePass(ctx, run, skip)
 		if err != nil {
 			return err
+		}
+		if retried, err := waitForRetry(final.EarliestRetry); err != nil {
+			return err
+		} else if retried {
+			continue
 		}
 		if final.Progress() == 0 {
 			return nil

@@ -10,9 +10,64 @@ import (
 	"database/sql"
 )
 
+const claimCheckpoint = `-- name: ClaimCheckpoint :one
+update checkpoints
+set lease_owner = ?1,
+    lease_until = ?2,
+    attempt_count = attempt_count + 1
+where checkpoint_id = ?3
+  and status = 'pending'
+  and next_attempt_at <= ?4
+  and (lease_owner is null or lease_until < ?4)
+returning checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until
+`
+
+type ClaimCheckpointParams struct {
+	LeaseOwner   sql.NullString `json:"lease_owner"`
+	LeaseUntil   sql.NullInt64  `json:"lease_until"`
+	CheckpointID string         `json:"checkpoint_id"`
+	Now          int64          `json:"now"`
+}
+
+// Atomic claim: takes a due pending checkpoint whose lease is free or
+// expired and increments attempt_count exactly once. A live lease on a
+// pending row represents processing. Returns no row when unavailable.
+func (q *Queries) ClaimCheckpoint(ctx context.Context, arg ClaimCheckpointParams) (Checkpoint, error) {
+	row := q.queryRow(ctx, q.claimCheckpointStmt, claimCheckpoint,
+		arg.LeaseOwner,
+		arg.LeaseUntil,
+		arg.CheckpointID,
+		arg.Now,
+	)
+	var i Checkpoint
+	err := row.Scan(
+		&i.CheckpointID,
+		&i.RepositoryID,
+		&i.CreatedAt,
+		&i.Kind,
+		&i.Trigger,
+		&i.Message,
+		&i.ManifestHash,
+		&i.SizeBytes,
+		&i.Status,
+		&i.CompletedAt,
+		&i.SummaryJson,
+		&i.SummaryModel,
+		&i.RepositorySequence,
+		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
+	)
+	return i, err
+}
+
 const completeCheckpoint = `-- name: CompleteCheckpoint :exec
 update checkpoints
-set manifest_hash = ?, size_bytes = ?, status = 'complete', completed_at = ?
+set manifest_hash = ?, size_bytes = ?, status = 'complete', completed_at = ?,
+    lease_owner = null, lease_until = null, last_error = null, next_attempt_at = 0
 where checkpoint_id = ?
 `
 
@@ -65,24 +120,31 @@ func (q *Queries) DeleteCheckpointByID(ctx context.Context, checkpointID string)
 	return err
 }
 
-const failCheckpoint = `-- name: FailCheckpoint :exec
+const failCheckpoint = `-- name: FailCheckpoint :execrows
 update checkpoints
-set status = 'failed', completed_at = ?
+set status = 'failed', completed_at = ?, last_error = ?,
+    lease_owner = null, lease_until = null, next_attempt_at = 0
 where checkpoint_id = ?
 `
 
 type FailCheckpointParams struct {
-	CompletedAt  sql.NullInt64 `json:"completed_at"`
-	CheckpointID string        `json:"checkpoint_id"`
+	CompletedAt  sql.NullInt64  `json:"completed_at"`
+	LastError    sql.NullString `json:"last_error"`
+	CheckpointID string         `json:"checkpoint_id"`
 }
 
-func (q *Queries) FailCheckpoint(ctx context.Context, arg FailCheckpointParams) error {
-	_, err := q.exec(ctx, q.failCheckpointStmt, failCheckpoint, arg.CompletedAt, arg.CheckpointID)
-	return err
+// Terminal failure: permanent error or attempts exhausted; the final
+// error is preserved for doctor and manual retry.
+func (q *Queries) FailCheckpoint(ctx context.Context, arg FailCheckpointParams) (int64, error) {
+	result, err := q.exec(ctx, q.failCheckpointStmt, failCheckpoint, arg.CompletedAt, arg.LastError, arg.CheckpointID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCheckpointByID = `-- name: GetCheckpointByID :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where checkpoint_id = ?
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints where checkpoint_id = ?
 `
 
 func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (Checkpoint, error) {
@@ -103,6 +165,11 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (C
 		&i.SummaryModel,
 		&i.RepositorySequence,
 		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
 	)
 	return i, err
 }
@@ -142,7 +209,7 @@ func (q *Queries) GetCheckpointSummary(ctx context.Context, checkpointID string)
 }
 
 const getLatestCheckpointForRepo = `-- name: GetLatestCheckpointForRepo :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where repository_id = ? order by repository_sequence desc limit 1
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints where repository_id = ? order by repository_sequence desc limit 1
 `
 
 func (q *Queries) GetLatestCheckpointForRepo(ctx context.Context, repositoryID string) (Checkpoint, error) {
@@ -163,12 +230,17 @@ func (q *Queries) GetLatestCheckpointForRepo(ctx context.Context, repositoryID s
 		&i.SummaryModel,
 		&i.RepositorySequence,
 		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
 	)
 	return i, err
 }
 
 const getMostRecentCommitLinkedCheckpoint = `-- name: GetMostRecentCommitLinkedCheckpoint :one
-select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor from checkpoints c
+select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor, c.attempt_count, c.last_error, c.next_attempt_at, c.lease_owner, c.lease_until from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
@@ -195,12 +267,17 @@ func (q *Queries) GetMostRecentCommitLinkedCheckpoint(ctx context.Context, repos
 		&i.SummaryModel,
 		&i.RepositorySequence,
 		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
 	)
 	return i, err
 }
 
 const getPreviousCommitLinkedCheckpoint = `-- name: GetPreviousCommitLinkedCheckpoint :one
-select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor from checkpoints c
+select c.checkpoint_id, c.repository_id, c.created_at, c.kind, c."trigger", c.message, c.manifest_hash, c.size_bytes, c.status, c.completed_at, c.summary_json, c.summary_model, c.repository_sequence, c.event_cursor, c.attempt_count, c.last_error, c.next_attempt_at, c.lease_owner, c.lease_until from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
   and c.status = 'complete'
@@ -233,12 +310,17 @@ func (q *Queries) GetPreviousCommitLinkedCheckpoint(ctx context.Context, arg Get
 		&i.SummaryModel,
 		&i.RepositorySequence,
 		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
 	)
 	return i, err
 }
 
 const getPreviousCompletedCheckpoint = `-- name: GetPreviousCompletedCheckpoint :one
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints
 where repository_id = ?
   and status = 'complete'
   and manifest_hash is not null
@@ -271,6 +353,11 @@ func (q *Queries) GetPreviousCompletedCheckpoint(ctx context.Context, arg GetPre
 		&i.SummaryModel,
 		&i.RepositorySequence,
 		&i.EventCursor,
+		&i.AttemptCount,
+		&i.LastError,
+		&i.NextAttemptAt,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
 	)
 	return i, err
 }
@@ -319,7 +406,7 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 }
 
 const listCheckpointsByRepository = `-- name: ListCheckpointsByRepository :many
-select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor from checkpoints where repository_id = ? order by created_at desc limit ?
+select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints where repository_id = ? order by created_at desc limit ?
 `
 
 type ListCheckpointsByRepositoryParams struct {
@@ -351,6 +438,11 @@ func (q *Queries) ListCheckpointsByRepository(ctx context.Context, arg ListCheck
 			&i.SummaryModel,
 			&i.RepositorySequence,
 			&i.EventCursor,
+			&i.AttemptCount,
+			&i.LastError,
+			&i.NextAttemptAt,
+			&i.LeaseOwner,
+			&i.LeaseUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -427,7 +519,8 @@ func (q *Queries) ListCheckpointsWithCommit(ctx context.Context, arg ListCheckpo
 }
 
 const listPendingCommitLinkedCheckpoints = `-- name: ListPendingCommitLinkedCheckpoints :many
-select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash
+select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash,
+       c.attempt_count, c.last_error, c.next_attempt_at, c.lease_until
 from checkpoints c
     join commit_links cl on cl.checkpoint_id = c.checkpoint_id
 where c.repository_id = ?
@@ -436,10 +529,14 @@ order by c.repository_sequence asc, cl.linked_at desc, cl.commit_hash desc
 `
 
 type ListPendingCommitLinkedCheckpointsRow struct {
-	CheckpointID       string `json:"checkpoint_id"`
-	RepositorySequence int64  `json:"repository_sequence"`
-	Status             string `json:"status"`
-	CommitHash         string `json:"commit_hash"`
+	CheckpointID       string         `json:"checkpoint_id"`
+	RepositorySequence int64          `json:"repository_sequence"`
+	Status             string         `json:"status"`
+	CommitHash         string         `json:"commit_hash"`
+	AttemptCount       int64          `json:"attempt_count"`
+	LastError          sql.NullString `json:"last_error"`
+	NextAttemptAt      int64          `json:"next_attempt_at"`
+	LeaseUntil         sql.NullInt64  `json:"lease_until"`
 }
 
 // Include failed rows because a failed queue head blocks later work.
@@ -458,6 +555,10 @@ func (q *Queries) ListPendingCommitLinkedCheckpoints(ctx context.Context, reposi
 			&i.RepositorySequence,
 			&i.Status,
 			&i.CommitHash,
+			&i.AttemptCount,
+			&i.LastError,
+			&i.NextAttemptAt,
+			&i.LeaseUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -568,6 +669,37 @@ func (q *Queries) ListStalePendingCheckpoints(ctx context.Context, arg ListStale
 	return items, nil
 }
 
+const releaseCheckpointForRetry = `-- name: ReleaseCheckpointForRetry :execrows
+update checkpoints
+set last_error = ?, next_attempt_at = ?,
+    lease_owner = null, lease_until = null
+where checkpoint_id = ? and lease_owner = ?
+`
+
+type ReleaseCheckpointForRetryParams struct {
+	LastError     sql.NullString `json:"last_error"`
+	NextAttemptAt int64          `json:"next_attempt_at"`
+	CheckpointID  string         `json:"checkpoint_id"`
+	LeaseOwner    sql.NullString `json:"lease_owner"`
+}
+
+// Transient failure: release the lease with a scheduled retry. The
+// attempt counter was already incremented by the claim. Callers must
+// require one affected row; zero means the lease was lost and the
+// transition was not recorded.
+func (q *Queries) ReleaseCheckpointForRetry(ctx context.Context, arg ReleaseCheckpointForRetryParams) (int64, error) {
+	result, err := q.exec(ctx, q.releaseCheckpointForRetryStmt, releaseCheckpointForRetry,
+		arg.LastError,
+		arg.NextAttemptAt,
+		arg.CheckpointID,
+		arg.LeaseOwner,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const resolveCheckpointByPrefix = `-- name: ResolveCheckpointByPrefix :many
 select checkpoint_id from checkpoints
 where checkpoint_id like ? and repository_id = ?
@@ -600,6 +732,23 @@ func (q *Queries) ResolveCheckpointByPrefix(ctx context.Context, arg ResolveChec
 		return nil, err
 	}
 	return items, nil
+}
+
+const retryFailedCheckpoint = `-- name: RetryFailedCheckpoint :execrows
+update checkpoints
+set status = 'pending', attempt_count = 0, next_attempt_at = 0,
+    lease_owner = null, lease_until = null,
+    last_error = null, completed_at = null
+where checkpoint_id = ? and status = 'failed'
+`
+
+// Manual retry: a human intervened, so the attempt budget resets.
+func (q *Queries) RetryFailedCheckpoint(ctx context.Context, checkpointID string) (int64, error) {
+	result, err := q.exec(ctx, q.retryFailedCheckpointStmt, retryFailedCheckpoint, checkpointID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const saveCheckpointSummary = `-- name: SaveCheckpointSummary :exec
