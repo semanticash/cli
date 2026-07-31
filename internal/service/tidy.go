@@ -205,7 +205,7 @@ func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyRe
 			}
 
 			if in.Apply {
-				if err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
+				if _, err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
 					CompletedAt:  sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
 					CheckpointID: cp.CheckpointID,
 				}); err != nil {

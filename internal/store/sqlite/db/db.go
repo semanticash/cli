@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.advanceBackfillCursorStmt, err = db.PrepareContext(ctx, advanceBackfillCursor); err != nil {
 		return nil, fmt.Errorf("error preparing query AdvanceBackfillCursor: %w", err)
 	}
+	if q.claimCheckpointStmt, err = db.PrepareContext(ctx, claimCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query ClaimCheckpoint: %w", err)
+	}
 	if q.completeBackfillStmt, err = db.PrepareContext(ctx, completeBackfill); err != nil {
 		return nil, fmt.Errorf("error preparing query CompleteBackfill: %w", err)
 	}
@@ -243,6 +246,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.recoverStaleUploadingStmt, err = db.PrepareContext(ctx, recoverStaleUploading); err != nil {
 		return nil, fmt.Errorf("error preparing query RecoverStaleUploading: %w", err)
 	}
+	if q.releaseCheckpointForRetryStmt, err = db.PrepareContext(ctx, releaseCheckpointForRetry); err != nil {
+		return nil, fmt.Errorf("error preparing query ReleaseCheckpointForRetry: %w", err)
+	}
 	if q.resetManifestForRetryStmt, err = db.PrepareContext(ctx, resetManifestForRetry); err != nil {
 		return nil, fmt.Errorf("error preparing query ResetManifestForRetry: %w", err)
 	}
@@ -257,6 +263,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.resolveSessionByPrefixStmt, err = db.PrepareContext(ctx, resolveSessionByPrefix); err != nil {
 		return nil, fmt.Errorf("error preparing query ResolveSessionByPrefix: %w", err)
+	}
+	if q.retryFailedCheckpointStmt, err = db.PrepareContext(ctx, retryFailedCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query RetryFailedCheckpoint: %w", err)
 	}
 	if q.saveCheckpointSummaryStmt, err = db.PrepareContext(ctx, saveCheckpointSummary); err != nil {
 		return nil, fmt.Errorf("error preparing query SaveCheckpointSummary: %w", err)
@@ -293,6 +302,11 @@ func (q *Queries) Close() error {
 	if q.advanceBackfillCursorStmt != nil {
 		if cerr := q.advanceBackfillCursorStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing advanceBackfillCursorStmt: %w", cerr)
+		}
+	}
+	if q.claimCheckpointStmt != nil {
+		if cerr := q.claimCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing claimCheckpointStmt: %w", cerr)
 		}
 	}
 	if q.completeBackfillStmt != nil {
@@ -655,6 +669,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing recoverStaleUploadingStmt: %w", cerr)
 		}
 	}
+	if q.releaseCheckpointForRetryStmt != nil {
+		if cerr := q.releaseCheckpointForRetryStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing releaseCheckpointForRetryStmt: %w", cerr)
+		}
+	}
 	if q.resetManifestForRetryStmt != nil {
 		if cerr := q.resetManifestForRetryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing resetManifestForRetryStmt: %w", cerr)
@@ -678,6 +697,11 @@ func (q *Queries) Close() error {
 	if q.resolveSessionByPrefixStmt != nil {
 		if cerr := q.resolveSessionByPrefixStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing resolveSessionByPrefixStmt: %w", cerr)
+		}
+	}
+	if q.retryFailedCheckpointStmt != nil {
+		if cerr := q.retryFailedCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing retryFailedCheckpointStmt: %w", cerr)
 		}
 	}
 	if q.saveCheckpointSummaryStmt != nil {
@@ -765,6 +789,7 @@ type Queries struct {
 	db                                           DBTX
 	tx                                           *sql.Tx
 	advanceBackfillCursorStmt                    *sql.Stmt
+	claimCheckpointStmt                          *sql.Stmt
 	completeBackfillStmt                         *sql.Stmt
 	completeCheckpointStmt                       *sql.Stmt
 	countCheckpointsWithSummaryStmt              *sql.Stmt
@@ -837,11 +862,13 @@ type Queries struct {
 	promptEventExistsStmt                        *sql.Stmt
 	recordBackfillFailureStmt                    *sql.Stmt
 	recoverStaleUploadingStmt                    *sql.Stmt
+	releaseCheckpointForRetryStmt                *sql.Stmt
 	resetManifestForRetryStmt                    *sql.Stmt
 	resetManifestToPackagedStmt                  *sql.Stmt
 	resolveCheckpointByPrefixStmt                *sql.Stmt
 	resolveCommitLinkByPrefixStmt                *sql.Stmt
 	resolveSessionByPrefixStmt                   *sql.Stmt
+	retryFailedCheckpointStmt                    *sql.Stmt
 	saveCheckpointSummaryStmt                    *sql.Stmt
 	stepEventExistsStmt                          *sql.Stmt
 	updateCheckpointAIPercentageStmt             *sql.Stmt
@@ -858,6 +885,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                                           tx,
 		tx:                                           tx,
 		advanceBackfillCursorStmt:                    q.advanceBackfillCursorStmt,
+		claimCheckpointStmt:                          q.claimCheckpointStmt,
 		completeBackfillStmt:                         q.completeBackfillStmt,
 		completeCheckpointStmt:                       q.completeCheckpointStmt,
 		countCheckpointsWithSummaryStmt:              q.countCheckpointsWithSummaryStmt,
@@ -930,11 +958,13 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		promptEventExistsStmt:                        q.promptEventExistsStmt,
 		recordBackfillFailureStmt:                    q.recordBackfillFailureStmt,
 		recoverStaleUploadingStmt:                    q.recoverStaleUploadingStmt,
+		releaseCheckpointForRetryStmt:                q.releaseCheckpointForRetryStmt,
 		resetManifestForRetryStmt:                    q.resetManifestForRetryStmt,
 		resetManifestToPackagedStmt:                  q.resetManifestToPackagedStmt,
 		resolveCheckpointByPrefixStmt:                q.resolveCheckpointByPrefixStmt,
 		resolveCommitLinkByPrefixStmt:                q.resolveCommitLinkByPrefixStmt,
 		resolveSessionByPrefixStmt:                   q.resolveSessionByPrefixStmt,
+		retryFailedCheckpointStmt:                    q.retryFailedCheckpointStmt,
 		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
 		stepEventExistsStmt:                          q.stepEventExistsStmt,
 		updateCheckpointAIPercentageStmt:             q.updateCheckpointAIPercentageStmt,

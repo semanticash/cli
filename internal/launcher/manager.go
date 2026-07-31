@@ -37,6 +37,11 @@ type DisableResult struct {
 	// RemovedUnitPath is the unit/plist/task path that was
 	// removed, if any. Empty when no file was on disk.
 	RemovedUnitPath string
+
+	// Warnings lists cleanup steps that did not complete (for
+	// example a periodic timer that could not be disabled). The
+	// disable still succeeds; callers should surface these.
+	Warnings []string
 }
 
 // manager is the OS-specific backend the public API delegates to.

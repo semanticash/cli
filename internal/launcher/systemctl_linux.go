@@ -89,6 +89,20 @@ func stopUnit(ctx context.Context, unit string) error {
 	return err
 }
 
+// enableNowUnit enables a unit persistently and starts it, used for
+// the periodic drain timer.
+func enableNowUnit(ctx context.Context, unit string) error {
+	_, err := runSystemctl(ctx, "enable", "--now", unit)
+	return err
+}
+
+// disableNowUnit disables and stops a unit. Best-effort at the call
+// site during uninstall.
+func disableNowUnit(ctx context.Context, unit string) error {
+	_, err := runSystemctl(ctx, "disable", "--now", unit)
+	return err
+}
+
 // isUnitActive reports whether the unit is currently active.
 // systemctl --user is-active exits 0 when active and 3 when not.
 // Both flatten to (bool, nil); other exit codes propagate.
@@ -108,6 +122,28 @@ func isUnitActive(ctx context.Context, unit string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// isUnitEnabled reports persistent enablement from the printed state.
+// systemctl returns success for several non-persistent states, so only
+// "enabled" is accepted. Invalid and unknown states are errors.
+func isUnitEnabled(ctx context.Context, unit string) (bool, error) {
+	out, err := runSystemctl(ctx, "is-enabled", unit)
+	state := strings.TrimSpace(out)
+	switch state {
+	case "enabled":
+		return true, nil
+	case "enabled-runtime", "linked", "linked-runtime", "alias",
+		"masked", "masked-runtime", "static", "indirect",
+		"disabled", "generated", "transient", "not-found":
+		return false, nil
+	case "bad":
+		return false, fmt.Errorf("systemctl is-enabled %s: unit reported bad (invalid unit file)", unit)
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, fmt.Errorf("systemctl is-enabled %s: unrecognized state %q", unit, state)
 }
 
 // isUnitRegistered reports whether the systemd user instance has

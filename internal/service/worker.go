@@ -177,16 +177,16 @@ func prepareCheckpoint(ctx context.Context, in WorkerInput) (prepareResult, erro
 		return prepareResult{skip: true}, nil
 	}
 
+	// Setup failures are transient (a blob dir or repo can recover);
+	// the claim layer schedules the retry or records terminal failure.
 	blobStore, err := blobs.NewStore(objectsDir)
 	if err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
 		_ = sqlstore.Close(h)
 		return prepareResult{}, fmt.Errorf("init blob store: %w", err)
 	}
 
 	repo, err := git.OpenRepo(in.RepoRoot)
 	if err != nil {
-		failCheckpoint(ctx, h, in.CheckpointID)
 		_ = sqlstore.Close(h)
 		return prepareResult{}, fmt.Errorf("open repo: %w", err)
 	}
@@ -237,6 +237,8 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	}
 	if !linked {
 		if err := s.processOne(ctx, in); err != nil {
+			// Non-commit checkpoints are outside the retry queue.
+			failRequestedCheckpoint(ctx, in, err)
 			return err
 		}
 	}
@@ -280,9 +282,11 @@ func checkpointSettled(ctx context.Context, in WorkerInput) bool {
 }
 
 // drainRepositoryQueue processes commit-linked checkpoints in sequence.
-// A failed queue head blocks later work unless a completed successor
-// shows that the failure predates ordered processing.
+// Each checkpoint is claimed with a durable lease. A failed, leased, or
+// retry-delayed queue head prevents later checkpoints from running.
 func (s *WorkerService) drainRepositoryQueue(ctx context.Context, repoRoot string) error {
+	const maxClaimRaces = 10
+	claimRaces := 0
 	for {
 		queue, maxCompleteSeq, err := listPendingCommitLinked(ctx, repoRoot)
 		if err != nil {
@@ -291,27 +295,49 @@ func (s *WorkerService) drainRepositoryQueue(ctx context.Context, repoRoot strin
 		if len(queue) == 0 {
 			return nil
 		}
+		now := time.Now().UnixMilli()
 		progressed := false
+		raced := false
 		for _, item := range queue {
-			if item.Status == "failed" {
+			switch item.Status {
+			case "failed":
 				if item.Sequence < maxCompleteSeq {
 					// Already passed by a completed successor.
 					continue
 				}
-				wlog("worker: queue blocked by failed checkpoint %s (sequence %d); "+
-					"later checkpoints wait until it is resolved\n",
-					item.CheckpointID, item.Sequence)
+				wlog("worker: queue blocked by terminally failed checkpoint %s (sequence %d, attempts %d): %s; "+
+					"run `semantica worker retry %s` after addressing the cause\n",
+					item.CheckpointID, item.Sequence, item.AttemptCount, item.LastError, item.CheckpointID)
 				return nil
+			case "pending":
+				if item.LeaseUntil > now {
+					// A live lease on a pending row is the processing
+					// state. Honor it until expiry even though the
+					// repository lock says the holder is gone.
+					return &ErrLeaseHeld{CheckpointID: item.CheckpointID, Until: time.UnixMilli(item.LeaseUntil)}
+				}
+				if item.NextAttemptAt > now {
+					return &ErrRetryScheduled{CheckpointID: item.CheckpointID, At: time.UnixMilli(item.NextAttemptAt)}
+				}
 			}
-			err := workerProcess(s, ctx, WorkerInput{
-				CheckpointID: item.CheckpointID,
-				CommitHash:   item.CommitHash,
-				RepoRoot:     repoRoot,
-			})
+			claimed, err := s.claimAndProcess(ctx, repoRoot, item)
 			if err != nil {
 				return err
 			}
+			if !claimed {
+				// The claim raced away; re-read the queue.
+				raced = true
+				break
+			}
 			progressed = true
+		}
+		if raced {
+			claimRaces++
+			if claimRaces >= maxClaimRaces {
+				// Preserve the marker while runnable work may remain.
+				return fmt.Errorf("worker: claim raced %d times for repository %s; retrying on a later drain", claimRaces, repoRoot)
+			}
+			continue
 		}
 		if !progressed {
 			return nil
@@ -320,10 +346,14 @@ func (s *WorkerService) drainRepositoryQueue(ctx context.Context, repoRoot strin
 }
 
 type queueItem struct {
-	CheckpointID string
-	CommitHash   string
-	Status       string
-	Sequence     int64
+	CheckpointID  string
+	CommitHash    string
+	Status        string
+	Sequence      int64
+	AttemptCount  int64
+	LastError     string
+	NextAttemptAt int64
+	LeaseUntil    int64
 }
 
 // workerProcess is a seam for drain-order tests.
@@ -363,10 +393,14 @@ func listPendingCommitLinked(ctx context.Context, repoRoot string) ([]queueItem,
 		}
 		seen[r.CheckpointID] = true
 		queue = append(queue, queueItem{
-			CheckpointID: r.CheckpointID,
-			CommitHash:   r.CommitHash,
-			Status:       r.Status,
-			Sequence:     r.RepositorySequence,
+			CheckpointID:  r.CheckpointID,
+			CommitHash:    r.CommitHash,
+			Status:        r.Status,
+			Sequence:      r.RepositorySequence,
+			AttemptCount:  r.AttemptCount,
+			LastError:     r.LastError.String,
+			NextAttemptAt: r.NextAttemptAt,
+			LeaseUntil:    r.LeaseUntil.Int64,
 		})
 	}
 	return queue, maxCompleteSeq, nil
@@ -388,7 +422,6 @@ func (s *WorkerService) processOne(ctx context.Context, in WorkerInput) error {
 	// Build the manifest, link sessions, update stats, and compute AI%.
 	er, err := enrichCheckpoint(ctx, wctx, in)
 	if err != nil {
-		failCheckpoint(ctx, wctx.h, in.CheckpointID)
 		return err
 	}
 
@@ -399,7 +432,6 @@ func (s *WorkerService) processOne(ctx context.Context, in WorkerInput) error {
 		CompletedAt:  sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
 		CheckpointID: in.CheckpointID,
 	}); err != nil {
-		failCheckpoint(ctx, wctx.h, in.CheckpointID)
 		return fmt.Errorf("complete checkpoint: %w", err)
 	}
 
@@ -438,11 +470,21 @@ func runPostCompletion(ctx context.Context, wctx *workerContext, in WorkerInput)
 	}
 }
 
-func failCheckpoint(ctx context.Context, h *sqlstore.Handle, checkpointID string) {
-	if err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
+// failRequestedCheckpoint records a terminal failure for a directly
+// requested non-commit checkpoint, which is outside the retry queue.
+func failRequestedCheckpoint(ctx context.Context, in WorkerInput, cause error) {
+	dbPath := filepath.Join(in.RepoRoot, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		wlog("worker: record failure for %s: %v\n", in.CheckpointID, err)
+		return
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	if _, err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
 		CompletedAt:  sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
-		CheckpointID: checkpointID,
+		LastError:    sqlstore.NullStr(cause.Error()),
+		CheckpointID: in.CheckpointID,
 	}); err != nil {
-		wlog("worker: fail checkpoint %s: %v\n", checkpointID, err)
+		wlog("worker: fail checkpoint %s: %v\n", in.CheckpointID, err)
 	}
 }

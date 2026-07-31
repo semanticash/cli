@@ -140,7 +140,7 @@ func TestWorkerRun_StopsAfterFailedCheckpoint(t *testing.T) {
 	orig := workerProcess
 	workerProcess = func(s *WorkerService, ctx context.Context, in WorkerInput) error {
 		got = append(got, in.CheckpointID)
-		if err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
+		if _, err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
 			CompletedAt:  sql.NullInt64{Int64: 1, Valid: true},
 			CheckpointID: in.CheckpointID,
 		}); err != nil {
@@ -164,7 +164,7 @@ func TestWorkerRun_FailedHeadBlocksNextInvocation(t *testing.T) {
 	ctx := context.Background()
 	insertPendingLinked(t, h, repoID, "ck-1", "c1", 100)
 	insertPendingLinked(t, h, repoID, "ck-2", "c2", 100)
-	if err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
+	if _, err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
 		CompletedAt:  sql.NullInt64{Int64: 1, Valid: true},
 		CheckpointID: "ck-1",
 	}); err != nil {
@@ -194,7 +194,7 @@ func TestWorkerRun_PassedFailedCheckpointDoesNotBlock(t *testing.T) {
 	dir, h, repoID := setupQueueRepo(t)
 	ctx := context.Background()
 	insertPendingLinked(t, h, repoID, "ck-old", "c1", 100)
-	if err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
+	if _, err := h.Queries.FailCheckpoint(ctx, sqldb.FailCheckpointParams{
 		CompletedAt:  sql.NullInt64{Int64: 1, Valid: true},
 		CheckpointID: "ck-old",
 	}); err != nil {

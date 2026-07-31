@@ -23,11 +23,9 @@ func newManager() (manager, error) {
 	return &linuxManager{}, nil
 }
 
-// Install renders the systemd user unit, writes it under
-// $XDG_CONFIG_HOME/systemd/user/, and tells the user manager to
-// pick it up via daemon-reload. The unit is on-demand only - no
-// `enable` to autostart at boot - because the post-commit hook is
-// the trigger and the unit's job is to be kickable.
+// Install writes the systemd user service and timer, reloads the user
+// manager, and enables the timer. Commits start the service on demand;
+// the timer provides periodic retry and crash recovery.
 //
 // Linger (`loginctl enable-linger`) is intentionally out of scope.
 // It usually requires sudo, and the launcher only needs the user
@@ -63,23 +61,27 @@ func (m *linuxManager) Install(ctx context.Context, binaryPath string) (*Install
 		return nil, err
 	}
 
-	// Detect a previously-registered unit before the rewrite so
-	// the Reinstalled flag is meaningful. Uses isUnitRegistered
-	// (LoadState=loaded), NOT isUnitActive: Type=oneshot units
-	// return to inactive between kicks, so an is-active probe
-	// would read false for a fully-registered idle unit and every
-	// subsequent `semantica launcher enable` would falsely report
-	// a fresh install. Probe errors are treated as "not previously
-	// registered" rather than blocking the rewrite - a transient
-	// systemctl issue should not stop the install path.
+	// A oneshot service is normally inactive between runs, so
+	// registration is determined from LoadState rather than activity.
+	// Probe failures do not prevent the service from being repaired.
 	previouslyRegistered, _ := isUnitRegistered(ctx, UnitTarget())
 
 	if err := writeUnitAtomic(unitPath, []byte(body)); err != nil {
 		return nil, err
 	}
+	timerPath, err := TimerPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeUnitAtomic(timerPath, []byte(renderWorkerTimer())); err != nil {
+		return nil, err
+	}
 
 	if err := daemonReload(ctx); err != nil {
 		return nil, fmt.Errorf("launcher: daemon-reload: %w", err)
+	}
+	if err := enableNowUnit(ctx, TimerTarget()); err != nil {
+		return nil, fmt.Errorf("launcher: enable drain timer: %w", err)
 	}
 
 	return &InstallResult{
@@ -102,9 +104,20 @@ func (m *linuxManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 	}
 	res := &DisableResult{WasEnabled: settings.Launcher.Enabled}
 
-	// Stop is best-effort: the unit may not be running, may not
-	// exist, or systemctl may be transiently unavailable.
+	// Service stop is best-effort. Timer cleanup failures are reported
+	// because an enabled timer would continue starting drains.
 	_ = stopUnit(ctx, UnitTarget())
+	if err := disableNowUnit(ctx, TimerTarget()); err != nil {
+		res.Warnings = append(res.Warnings,
+			fmt.Sprintf("drain timer %s could not be disabled: %v; run `systemctl --user disable --now %s`",
+				TimerTarget(), err, TimerTarget()))
+	}
+	if timerPath, err := TimerPath(); err == nil {
+		if rmErr := os.Remove(timerPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			res.Warnings = append(res.Warnings,
+				fmt.Sprintf("drain timer unit file was not removed: %v", rmErr))
+		}
+	}
 
 	unitPath := settings.Launcher.InstalledUnitPath
 	if unitPath == "" {
@@ -122,11 +135,14 @@ func (m *linuxManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 		res.RemovedUnitPath = unitPath
 	}
 
-	// Reload after removal so systemd forgets the unit. A failure
-	// here is logged through the wrapped error class but does not
-	// fail the disable: the file is gone, which is the only
-	// user-visible state we need to land.
-	_ = daemonReload(ctx)
+	// Reload after removal so systemd forgets the units. A failure
+	// does not fail the disable — the files are gone — but it is
+	// reported: systemd may keep stale in-memory entries until the
+	// next reload.
+	if err := daemonReload(ctx); err != nil {
+		res.Warnings = append(res.Warnings,
+			fmt.Sprintf("daemon-reload failed after unit removal: %v; run `systemctl --user daemon-reload`", err))
+	}
 
 	return res, nil
 }
@@ -136,14 +152,19 @@ func (m *linuxManager) Kick(ctx context.Context) error {
 	return startUnit(ctx, UnitTarget())
 }
 
-// IsRegistered reports whether the systemd user instance has the
-// worker unit loaded. Uses isUnitRegistered (LoadState=loaded)
-// rather than isUnitActive: Type=oneshot units return to
-// "inactive" between kicks, so is-active would report false for
-// a perfectly registered idle unit and Status would render drift
-// hints on every status check between worker runs.
+// IsRegistered reports whether the service is loaded and its timer is
+// persistently enabled and active. The oneshot service may be inactive
+// between runs; the timer must remain active while waiting.
 func (m *linuxManager) IsRegistered(ctx context.Context) (bool, error) {
-	return isUnitRegistered(ctx, UnitTarget())
+	service, err := isUnitRegistered(ctx, UnitTarget())
+	if err != nil || !service {
+		return false, err
+	}
+	enabled, err := isUnitEnabled(ctx, TimerTarget())
+	if err != nil || !enabled {
+		return false, err
+	}
+	return isUnitActive(ctx, TimerTarget())
 }
 
 // writeUnitAtomic atomically writes the systemd unit file.

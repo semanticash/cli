@@ -103,7 +103,9 @@ Users can optionally enable an OS-managed launcher path with
 `semantica launcher enable`. In that mode, post-commit writes a repo-local job
 marker and asks the platform backend (launchd on macOS, systemd user units on
 Linux, or Task Scheduler on Windows) to run `semantica worker drain`, which
-discovers and processes pending markers across active repositories.
+discovers and processes pending markers across active repositories. Launcher
+backends also drain every 30 minutes so expired leases and scheduled retries
+recover after a worker exits unexpectedly.
 
 The launcher records the binary identity at registration time. If a later
 commit runs through a replaced Semantica binary, dispatch re-registers the
@@ -119,9 +121,14 @@ ways:
 1. The default detached worker spawned directly by post-commit
 2. The optional OS-managed launcher worker that drains pending markers
 
-Both paths end up in the same `WorkerService.Run` pipeline for each record.
+Both paths use the same `WorkerService.Run` pipeline for each record.
 
-Workers serialize processing per repository with `.semantica/worker.lock`. Commit-linked records are drained in their repository-local sequence. A failed queue head blocks later commit-linked records until it is resolved; `semantica doctor` reports lock and queue state.
+Workers serialize processing per repository with `.semantica/worker.lock`.
+Commit-linked records are drained in repository sequence and claimed with a
+durable lease. Transient failures use bounded exponential backoff. A terminally
+failed queue head blocks later records until the cause is fixed and
+`semantica worker retry <checkpoint-id>` resets it. `semantica doctor` reports
+lock state, scheduled retries, and blocked queues.
 
 ### Processing pipeline
 
@@ -157,7 +164,7 @@ Single-file database in `.semantica/`. Contains:
 | Table | Purpose |
 |-------|---------|
 | `repositories` | Repo records keyed by root path |
-| `checkpoints` | Internal lineage record metadata (ID, kind, trigger, status, timestamps) |
+| `checkpoints` | Internal lineage record metadata, repository sequence, retry state, and processing lease |
 | `commit_links` | Maps commit hashes to lineage record IDs |
 | `agent_sources` | Provider source metadata keyed by provider and source key |
 | `agent_sessions` | AI agent sessions (provider, model, timestamps, parent linkage) |
@@ -209,6 +216,7 @@ The `providers` field is a string array of installed hook provider names (not pa
 | Launcher log (launcher mode) | `~/.semantica/worker-launcher.log` | `SEMANTICA_HOME` |
 | LaunchAgent plist (macOS launcher mode) | `~/Library/LaunchAgents/sh.semantica.worker.plist` | none |
 | systemd user unit (Linux launcher mode) | `~/.config/systemd/user/sh.semantica.worker.service` | `XDG_CONFIG_HOME` |
+| systemd user timer (Linux launcher mode) | `~/.config/systemd/user/sh.semantica.worker.timer` | `XDG_CONFIG_HOME` |
 | Task Scheduler XML import file (Windows launcher mode) | `~/.semantica/sh.semantica.worker.xml` | `SEMANTICA_HOME` |
 | User config (auth fallback, release check cache) | `~/.config/semantica` | `XDG_CONFIG_HOME` |
 

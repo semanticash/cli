@@ -77,6 +77,25 @@ func renderWorkerUnit(in unitInput) (string, error) {
 	), nil
 }
 
+// workerTimerTemplate schedules recovery for retries and expired
+// leases. The service remains available for on-demand starts.
+const workerTimerTemplate = `[Unit]
+Description=Semantica worker drain schedule
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=30min
+Unit=%s
+
+[Install]
+WantedBy=timers.target
+`
+
+// renderWorkerTimer renders the systemd timer unit body.
+func renderWorkerTimer() string {
+	return fmt.Sprintf(workerTimerTemplate, UnitTarget())
+}
+
 // systemdQuote wraps s in double quotes and escapes the characters
 // that systemd treats specially in ExecStart arguments: `"`, `\`,
 // `%`, and `$`.

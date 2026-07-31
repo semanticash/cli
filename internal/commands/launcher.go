@@ -172,7 +172,7 @@ func printEnableResult(w io.Writer, r *launcher.InstallResult) {
 }
 
 func printDisableResult(w io.Writer, r *launcher.DisableResult) {
-	if !r.WasEnabled && r.RemovedUnitPath == "" {
+	if !r.WasEnabled && r.RemovedUnitPath == "" && len(r.Warnings) == 0 {
 		_, _ = fmt.Fprintln(w, "Launcher was not installed; nothing to do.")
 		return
 	}
@@ -180,6 +180,9 @@ func printDisableResult(w io.Writer, r *launcher.DisableResult) {
 		_, _ = fmt.Fprintf(w, "Removed service: %s\n", r.RemovedUnitPath)
 	}
 	_, _ = fmt.Fprintln(w, "Service unregistered. Commits now use the legacy spawn path.")
+	for _, warning := range r.Warnings {
+		_, _ = fmt.Fprintf(w, "Warning: %s\n", warning)
+	}
 }
 
 // printLauncherStatus renders launcher status as a human-readable

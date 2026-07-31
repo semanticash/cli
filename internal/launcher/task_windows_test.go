@@ -21,7 +21,8 @@ func TestRenderWorkerTask_ContainsRequiredElements(t *testing.T) {
 	for _, want := range []string{
 		`<?xml version="1.0" encoding="UTF-16"?>`,
 		`<Task version="1.2"`,
-		`<Triggers/>`,
+		`<Triggers>`,
+		`<TimeTrigger>`,
 		`<Actions Context="Author">`,
 		`<Principals>`,
 	} {
@@ -89,8 +90,7 @@ func TestRenderWorkerTask_HandlesSpacedLogPath(t *testing.T) {
 	}
 }
 
-// windowsCmdQuote table-test: each row pins one CommandLineToArgvW
-// quoting rule. A regression on any single rule surfaces clearly.
+// Each case covers one CommandLineToArgvW quoting rule.
 func TestWindowsCmdQuote(t *testing.T) {
 	cases := []struct {
 		name string
@@ -118,10 +118,9 @@ func TestWindowsCmdQuote(t *testing.T) {
 	}
 }
 
-// The task is on-demand only. UAC-elevated principals (Administrators,
-// SYSTEM) and boot triggers would change the security context or run
-// schedule and break the design. Pin both negatives.
-func TestRenderWorkerTask_RejectsElevationAndScheduleHints(t *testing.T) {
+// The task runs on demand and on its periodic timer. Other triggers and
+// elevated principals would change its execution context.
+func TestRenderWorkerTask_RejectsElevationAndUnexpectedTriggers(t *testing.T) {
 	got, err := renderWorkerTask(taskInput{
 		BinaryPath:       `C:\bin\semantica.exe`,
 		LogPath:          `C:\log\worker.log`,
@@ -135,12 +134,11 @@ func TestRenderWorkerTask_RejectsElevationAndScheduleHints(t *testing.T) {
 		"Administrators",
 		"S-1-5-18", // SYSTEM SID
 		"<BootTrigger",
-		"<TimeTrigger",
 		"<CalendarTrigger",
 		"<LogonTrigger",
 	} {
 		if strings.Contains(got, mustNot) {
-			t.Errorf("task XML must not contain %q (would change security context or run schedule); got:\n%s", mustNot, got)
+			t.Errorf("task XML contains unsupported principal or trigger %q:\n%s", mustNot, got)
 		}
 	}
 }
@@ -214,9 +212,7 @@ func TestRenderWorkerTask_ValidatesRequiredFields(t *testing.T) {
 	}
 }
 
-// schtasks /Create /XML expects UTF-16 LE with a BOM. UTF-8 input
-// is silently mangled or rejected on some Windows versions, so this
-// test pins the BOM and byte ordering.
+// schtasks /Create /XML requires UTF-16 LE with a BOM.
 func TestEncodeUTF16LE_HasBOMAndLittleEndianOrder(t *testing.T) {
 	got := encodeUTF16LE("AB")
 
@@ -284,5 +280,31 @@ func TestResolveWorkingDirectory(t *testing.T) {
 					tc.binaryPath, tc.globalBase, got, tc.want)
 			}
 		})
+	}
+}
+
+// The scheduled task includes the periodic recovery trigger.
+func TestRenderWorkerTask_PeriodicDrain(t *testing.T) {
+	body, err := renderWorkerTask(taskInput{
+		BinaryPath:       `C:\Program Files\Semantica\semantica.exe`,
+		LogPath:          `C:\Users\u\.semantica\worker.log`,
+		WorkingDirectory: `C:\Program Files\Semantica`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<TimeTrigger>", "<Interval>PT30M</Interval>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("task XML missing %q:\n%s", want, body)
+		}
+	}
+	// Task Scheduler validates child order against the triggerBaseType
+	// schema sequence: Enabled, then StartBoundary, then Repetition.
+	enabled := strings.Index(body, "<Enabled>")
+	start := strings.Index(body, "<StartBoundary>")
+	repetition := strings.Index(body, "<Repetition>")
+	if enabled < 0 || start < 0 || repetition < 0 || !(enabled < start && start < repetition) {
+		t.Errorf("TimeTrigger children out of schema order (Enabled=%d StartBoundary=%d Repetition=%d):\n%s",
+			enabled, start, repetition, body)
 	}
 }

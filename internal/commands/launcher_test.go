@@ -266,3 +266,18 @@ func TestPrintLauncherStatus_DriftHintsStillFire(t *testing.T) {
 		t.Errorf("expected unit-missing drift hint, got:\n%s", buf.String())
 	}
 }
+
+// Warning-only cleanup results must remain visible.
+func TestPrintDisableResult_WarningOnly(t *testing.T) {
+	var buf bytes.Buffer
+	printDisableResult(&buf, &launcher.DisableResult{
+		Warnings: []string{"drain timer could not be disabled: boom"},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "Warning: drain timer could not be disabled: boom") {
+		t.Errorf("warning missing from output:\n%s", out)
+	}
+	if strings.Contains(out, "nothing to do") {
+		t.Errorf("warning-only result must not report nothing-to-do:\n%s", out)
+	}
+}

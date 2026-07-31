@@ -44,8 +44,8 @@ func (in plistInput) validate() error {
 	return nil
 }
 
-// workerPlistTemplate is the launchd plist template. The service
-// runs only when kickstarted and logs stdout and stderr to one file.
+// workerPlistTemplate runs the worker on demand and every 30 minutes.
+// The interval recovers scheduled retries and expired leases.
 const workerPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -60,6 +60,8 @@ const workerPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
   </array>
   <key>RunAtLoad</key>
   <false/>
+  <key>StartInterval</key>
+  <integer>1800</integer>
   <key>StandardOutPath</key>
   <string>%s</string>
   <key>StandardErrorPath</key>

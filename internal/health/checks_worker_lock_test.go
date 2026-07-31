@@ -158,7 +158,7 @@ func TestCheckWorkerLock_BlockedQueueReportsFailedCheckpoint(t *testing.T) {
 
 	checks := checkWorkerLock(ctx, Options{RepoPath: dir})
 	queue := findCheck(t, checks, "queue")
-	if queue.Status != StatusWarn || !strings.Contains(queue.Message, "blocked by failed checkpoint ck-failed") {
+	if queue.Status != StatusWarn || !strings.Contains(queue.Message, "blocked by terminally failed checkpoint ck-failed") {
 		t.Errorf("blocked queue should name the blocker: %+v", queue)
 	}
 }
@@ -244,5 +244,39 @@ func TestCheckUnownedCaptureStates_ReportsOrphanedSegments(t *testing.T) {
 		if c.ID == "cross_repo_capture_states" {
 			t.Errorf("orphan must not double-report as an active deferral: %+v", c)
 		}
+	}
+}
+
+func TestCheckWorkerLock_ScheduledRetryReported(t *testing.T) {
+	dir := setupLockRepo(t)
+	ctx := context.Background()
+	dbPath := filepath.Join(dir, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+		CheckpointID: "ck-r", RepositoryID: "repo-lock", CreatedAt: 1,
+		Kind: "auto", Status: "pending",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
+		CommitHash: "c1", RepositoryID: "repo-lock", CheckpointID: "ck-r", LinkedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DB.ExecContext(ctx,
+		"update checkpoints set attempt_count = 2, next_attempt_at = ?, last_error = 'transient boom' where checkpoint_id = 'ck-r'",
+		time.Now().Add(time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := checkWorkerLock(ctx, Options{RepoPath: dir})
+	queue := findCheck(t, checks, "queue")
+	if queue.Status != StatusOK || !strings.Contains(queue.Message, "retry scheduled in") ||
+		!strings.Contains(queue.Message, "attempt 3") {
+		t.Errorf("scheduled retry should be reported calmly: %+v", queue)
 	}
 }

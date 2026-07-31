@@ -64,9 +64,10 @@ func (in taskInput) validate() error {
 //
 // Settings worth calling out:
 //
-//   - <Triggers/> is empty: the task is on-demand only, kicked by
-//     the post-commit hook via `schtasks /Run`. No boot or schedule
-//     trigger.
+//   - The TimeTrigger runs every 30 minutes to recover retries and
+//     expired leases. Commits also start the task on demand.
+//     TimeTrigger children follow schema order: Enabled,
+//     StartBoundary, then Repetition.
 //   - <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>:
 //     a second kick during an in-flight drain is dropped, matching
 //     launchd's kickstart behavior (it never starts a second copy).
@@ -86,7 +87,16 @@ const workerTaskTemplate = `<?xml version="1.0" encoding="UTF-16"?>
   <RegistrationInfo>
     <Description>Semantica worker drain</Description>
   </RegistrationInfo>
-  <Triggers/>
+  <Triggers>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT30M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>

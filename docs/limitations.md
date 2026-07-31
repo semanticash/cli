@@ -22,7 +22,8 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 - Lineage manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured in manifests.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
-- Commit-linked processing is serialized per repository. A failed queue head blocks later records until it is repaired or retried; `semantica doctor` reports the blocking record.
+- Commit-linked processing is serialized per repository. Transient failures retry with bounded backoff. A terminally failed queue head blocks later records until it is repaired and retried; `semantica doctor` reports the blocking record.
+- Without the optional launcher, retries due after the current worker exits wait for the next commit or manual drain. Launcher installations add a 30-minute recovery interval.
 
 ## Attribution fidelity
 

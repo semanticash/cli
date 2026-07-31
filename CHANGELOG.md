@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.5.6] - 2026-07-27
+## [0.6.0] - 2026-07-30
 
 ### Added
 
@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.
 - Added Windows runtime coverage for cross-process locking, detached processes, transient file replacement, and cross-platform static checks.
 - Added repository-serialized checkpoint processing with monotonic ordering and `semantica doctor` diagnostics for worker locks and blocked queues.
+- Checkpoint processing now uses durable leases and bounded retries. Terminal failures preserve their error, appear in `semantica doctor`, and block later commit-linked work.
+- Added `semantica worker retry <checkpoint-id>` to reset and re-run a terminally failed checkpoint.
+- Launcher backends now drain every 30 minutes to recover scheduled retries and expired leases. Linux launcher disablement also reports incomplete timer cleanup.
 
 ### Fixed
 
