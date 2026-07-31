@@ -118,10 +118,9 @@ func TestWindowsCmdQuote(t *testing.T) {
 	}
 }
 
-// The task is on-demand only. UAC-elevated principals (Administrators,
-// SYSTEM) and boot triggers would change the security context or run
-// schedule and break the design. Pin both negatives.
-func TestRenderWorkerTask_RejectsElevationAndScheduleHints(t *testing.T) {
+// The task runs on demand and on its periodic timer. Other triggers and
+// elevated principals would change its execution context.
+func TestRenderWorkerTask_RejectsElevationAndUnexpectedTriggers(t *testing.T) {
 	got, err := renderWorkerTask(taskInput{
 		BinaryPath:       `C:\bin\semantica.exe`,
 		LogPath:          `C:\log\worker.log`,
@@ -135,12 +134,11 @@ func TestRenderWorkerTask_RejectsElevationAndScheduleHints(t *testing.T) {
 		"Administrators",
 		"S-1-5-18", // SYSTEM SID
 		"<BootTrigger",
-		"<TimeTrigger",
 		"<CalendarTrigger",
 		"<LogonTrigger",
 	} {
 		if strings.Contains(got, mustNot) {
-			t.Errorf("task XML must not contain %q (would change security context or run schedule); got:\n%s", mustNot, got)
+			t.Errorf("task XML contains unsupported principal or trigger %q:\n%s", mustNot, got)
 		}
 	}
 }
