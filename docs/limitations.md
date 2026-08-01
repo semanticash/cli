@@ -68,6 +68,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Hosted features require CLI authentication plus a repo connection via `semantica connect`.
 - Additional remote setup may be required depending on where you want attribution to appear.
 - Hosted sync is best-effort with a 10-second timeout. Failures never block the worker, the commit, or any local feature.
+- Historical checkpoints created before readiness markers may report attribution or sync as unknown even when work previously completed.
 
 ## Secret redaction
 

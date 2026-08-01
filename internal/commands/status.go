@@ -211,7 +211,40 @@ func statusOverviewFields(res *service.StatusResult, view statusView) []statusFi
 			statusField{Label: "Endpoint", Value: view.Endpoint},
 		)
 	}
+	if v := auditReadinessValue(res); v != "" {
+		fields = append(fields, statusField{Label: "Audit ready", Value: v})
+	}
 	return fields
+}
+
+// auditReadinessValue formats the last checkpoint verdict for text output.
+func auditReadinessValue(res *service.StatusResult) string {
+	ar := res.AuditReadiness
+	if ar == nil {
+		return ""
+	}
+	if ar.AuditReady {
+		return "yes"
+	}
+	for _, c := range []struct {
+		name string
+		comp service.ReadinessComponent
+	}{
+		{"manifest", ar.Manifest},
+		{"attribution", ar.Attribution},
+		{"provenance", ar.Provenance},
+		{"sync", ar.Sync},
+	} {
+		if c.comp.State == service.ReadinessReady || c.comp.State == service.ReadinessNotRequired {
+			continue
+		}
+		v := fmt.Sprintf("no (%s %s", c.name, c.comp.State)
+		if c.comp.Reason != "" {
+			v += ": " + c.comp.Reason
+		}
+		return v + ")"
+	}
+	return "no"
 }
 
 func statusSettingsFields(res *service.StatusResult) []statusField {

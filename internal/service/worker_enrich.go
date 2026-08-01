@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -155,7 +158,12 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 // logged, not propagated to the caller.
 func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in WorkerInput, windows workerWindows) {
 	diffBytes, err := wctx.repo.DiffForCommit(ctx, in.CommitHash)
-	if err != nil || len(diffBytes) == 0 {
+	if err != nil {
+		return
+	}
+	if len(diffBytes) == 0 {
+		// An empty diff is a completed attribution result.
+		markAttributionComputed(ctx, wctx.h, in.CheckpointID)
 		return
 	}
 
@@ -164,6 +172,11 @@ func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in W
 		RepoID:   wctx.cp.RepositoryID,
 		Window:   windows.attrWindow,
 	}, windows.prevCommitLinked, wctx.semDir)
+	if errors.Is(err, ErrNoEventsInWindow) {
+		// No agent evidence is a valid zero-AI result.
+		markAttributionComputed(ctx, wctx.h, in.CheckpointID)
+		return
+	}
 	if err != nil {
 		return
 	}
@@ -173,6 +186,19 @@ func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in W
 		CheckpointID: in.CheckpointID,
 	}); err != nil {
 		wlog("worker: update AI percentage: %v\n", err)
+		return
 	}
+	markAttributionComputed(ctx, wctx.h, in.CheckpointID)
 	wlog("worker: AI attribution: %.0f%%\n", cfr.result.Percent)
+}
+
+// markAttributionComputed records stage completion. Write failures leave
+// attribution readiness unknown.
+func markAttributionComputed(ctx context.Context, h *sqlstore.Handle, checkpointID string) {
+	if err := h.Queries.MarkCheckpointAttributionComputed(ctx, sqldb.MarkCheckpointAttributionComputedParams{
+		AttributionComputedAt: sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
+		CheckpointID:          checkpointID,
+	}); err != nil {
+		wlog("worker: mark attribution computed for %s: %v\n", checkpointID, err)
+	}
 }

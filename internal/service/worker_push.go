@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/redact"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
+	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
 	"github.com/semanticash/cli/internal/version"
 )
@@ -223,11 +225,29 @@ func tryPushAttribution(ctx context.Context, repo *git.Repo, h *sqlstore.Handle,
 	}
 }
 
-// pushAttribution is the log-only wrapper used by the worker call site.
+// markAttributionPushed persists local evidence of a successful hosted push.
+func markAttributionPushed(ctx context.Context, h *sqlstore.Handle, checkpointID string) error {
+	if err := h.Queries.MarkCheckpointAttributionPushed(ctx, sqldb.MarkCheckpointAttributionPushedParams{
+		AttributionPushedAt: sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
+		CheckpointID:        checkpointID,
+	}); err != nil {
+		return fmt.Errorf("record attribution push for %s: %w", checkpointID, err)
+	}
+	return nil
+}
+
+// pushAttribution logs the push result and schedules retryable failures.
 func pushAttribution(ctx context.Context, repo *git.Repo, h *sqlstore.Handle, commitHash, checkpointID string) PushResult {
 	r := tryPushAttribution(ctx, repo, h, commitHash, checkpointID)
 	switch r.Action {
 	case PushUploaded:
+		if err := markAttributionPushed(ctx, h, checkpointID); err != nil {
+			// Retry the idempotent push so the marker can be recorded.
+			wlog("worker: push-remote: %v; scheduling re-push\n", err)
+			r.Action = PushRetry
+			r.Err = err
+			return r
+		}
 		wlog("worker: push-remote: pushed attribution for %s (%.0f%% AI)\n", util.ShortID(commitHash), r.AIPercentage)
 	case PushSkip:
 		wlog("worker: push-remote: %v\n", r.Err)
@@ -305,6 +325,10 @@ func RePushAttribution(ctx context.Context, repoRoot, commitHash, checkpointID s
 	r := tryPushAttribution(ctx, repo, h, commitHash, checkpointID)
 	switch r.Action {
 	case PushUploaded:
+		if err := markAttributionPushed(ctx, h, checkpointID); err != nil {
+			// Readiness remains pending until the marker is recorded.
+			wlog("worker: re-push: %v\n", err)
+		}
 		wlog("worker: re-push: sent enriched attribution for %s (%.0f%% AI)\n",
 			util.ShortID(commitHash), r.AIPercentage)
 	case PushSkip:

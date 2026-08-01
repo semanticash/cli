@@ -77,10 +77,12 @@ type Checkpoint struct {
 }
 
 type CheckpointStat struct {
-	CheckpointID string  `json:"checkpoint_id"`
-	SessionCount int64   `json:"session_count"`
-	FilesChanged int64   `json:"files_changed"`
-	AiPercentage float64 `json:"ai_percentage"`
+	CheckpointID          string        `json:"checkpoint_id"`
+	SessionCount          int64         `json:"session_count"`
+	FilesChanged          int64         `json:"files_changed"`
+	AiPercentage          float64       `json:"ai_percentage"`
+	AttributionComputedAt sql.NullInt64 `json:"attribution_computed_at"`
+	AttributionPushedAt   sql.NullInt64 `json:"attribution_pushed_at"`
 }
 
 type CommitLink struct {

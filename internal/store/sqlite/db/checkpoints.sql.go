@@ -111,6 +111,83 @@ func (q *Queries) CountSessionsForCheckpoint(ctx context.Context, checkpointID s
 	return count, err
 }
 
+const countWindowTurnProvenance = `-- name: CountWindowTurnProvenance :one
+select
+    cast(count(distinct e.turn_id) as integer) as total_turns,
+    cast(count(distinct case when ok.turn_id is not null then e.turn_id end) as integer) as packaged_turns,
+    cast(count(distinct case when up.turn_id is not null then e.turn_id end) as integer) as uploaded_turns,
+    cast(count(distinct case when fl.turn_id is not null then e.turn_id end) as integer) as failed_upload_turns
+from agent_events e
+    left join provenance_manifests ok
+        on ok.repository_id = e.repository_id
+        and ok.session_id = e.session_id
+        and ok.turn_id = e.turn_id
+        and ok.kind = 'turn_bundle'
+        and coalesce(ok.provenance_bundle_hash, '') != ''
+    left join provenance_manifests up
+        on up.repository_id = e.repository_id
+        and up.session_id = e.session_id
+        and up.turn_id = e.turn_id
+        and up.kind = 'turn_bundle'
+        and coalesce(up.provenance_bundle_hash, '') != ''
+        and up.status = 'uploaded'
+    left join provenance_manifests fl
+        on fl.repository_id = e.repository_id
+        and fl.session_id = e.session_id
+        and fl.turn_id = e.turn_id
+        and fl.kind = 'turn_bundle'
+        and coalesce(fl.provenance_bundle_hash, '') != ''
+        and fl.status = 'failed'
+where e.repository_id = ?
+  and e.turn_id is not null
+  and ((cast(?2 as integer) = 1
+          and (e.ts > ?3
+               or (e.ts = ?3 and e.insert_seq > ?4))
+          and (e.ts < ?5
+               or (e.ts = ?5 and e.insert_seq <= ?6)))
+       or (cast(?2 as integer) = 0
+          and e.ts > ?3 and e.ts <= ?5))
+`
+
+type CountWindowTurnProvenanceParams struct {
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
+}
+
+type CountWindowTurnProvenanceRow struct {
+	TotalTurns        int64 `json:"total_turns"`
+	PackagedTurns     int64 `json:"packaged_turns"`
+	UploadedTurns     int64 `json:"uploaded_turns"`
+	FailedUploadTurns int64 `json:"failed_upload_turns"`
+}
+
+// Counts turn bundles in the checkpoint event window. A non-empty bundle hash
+// means local packaging succeeded; failed rows with a hash represent terminal
+// upload failures. Joins use repository, session, turn, and kind. Window bounds
+// use (ts, insert_seq).
+func (q *Queries) CountWindowTurnProvenance(ctx context.Context, arg CountWindowTurnProvenanceParams) (CountWindowTurnProvenanceRow, error) {
+	row := q.queryRow(ctx, q.countWindowTurnProvenanceStmt, countWindowTurnProvenance,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
+	var i CountWindowTurnProvenanceRow
+	err := row.Scan(
+		&i.TotalTurns,
+		&i.PackagedTurns,
+		&i.UploadedTurns,
+		&i.FailedUploadTurns,
+	)
+	return i, err
+}
+
 const deleteCheckpointByID = `-- name: DeleteCheckpointByID :exec
 delete from checkpoints where checkpoint_id = ?
 `
@@ -175,7 +252,7 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (C
 }
 
 const getCheckpointStats = `-- name: GetCheckpointStats :one
-select checkpoint_id, session_count, files_changed, ai_percentage from checkpoint_stats where checkpoint_id = ?
+select checkpoint_id, session_count, files_changed, ai_percentage, attribution_computed_at, attribution_pushed_at from checkpoint_stats where checkpoint_id = ?
 `
 
 func (q *Queries) GetCheckpointStats(ctx context.Context, checkpointID string) (CheckpointStat, error) {
@@ -186,6 +263,8 @@ func (q *Queries) GetCheckpointStats(ctx context.Context, checkpointID string) (
 		&i.SessionCount,
 		&i.FilesChanged,
 		&i.AiPercentage,
+		&i.AttributionComputedAt,
+		&i.AttributionPushedAt,
 	)
 	return i, err
 }
@@ -667,6 +746,43 @@ func (q *Queries) ListStalePendingCheckpoints(ctx context.Context, arg ListStale
 		return nil, err
 	}
 	return items, nil
+}
+
+const markCheckpointAttributionComputed = `-- name: MarkCheckpointAttributionComputed :exec
+insert into checkpoint_stats (checkpoint_id, attribution_computed_at)
+values (?, ?)
+on conflict(checkpoint_id) do update set
+    attribution_computed_at = excluded.attribution_computed_at
+`
+
+type MarkCheckpointAttributionComputedParams struct {
+	CheckpointID          string        `json:"checkpoint_id"`
+	AttributionComputedAt sql.NullInt64 `json:"attribution_computed_at"`
+}
+
+// Records successful attribution, including an empty result. Upsert preserves
+// the marker when the stats row does not exist yet.
+func (q *Queries) MarkCheckpointAttributionComputed(ctx context.Context, arg MarkCheckpointAttributionComputedParams) error {
+	_, err := q.exec(ctx, q.markCheckpointAttributionComputedStmt, markCheckpointAttributionComputed, arg.CheckpointID, arg.AttributionComputedAt)
+	return err
+}
+
+const markCheckpointAttributionPushed = `-- name: MarkCheckpointAttributionPushed :exec
+insert into checkpoint_stats (checkpoint_id, attribution_pushed_at)
+values (?, ?)
+on conflict(checkpoint_id) do update set
+    attribution_pushed_at = excluded.attribution_pushed_at
+`
+
+type MarkCheckpointAttributionPushedParams struct {
+	CheckpointID        string        `json:"checkpoint_id"`
+	AttributionPushedAt sql.NullInt64 `json:"attribution_pushed_at"`
+}
+
+// Records a successful hosted attribution push. Upsert creates missing stats rows.
+func (q *Queries) MarkCheckpointAttributionPushed(ctx context.Context, arg MarkCheckpointAttributionPushedParams) error {
+	_, err := q.exec(ctx, q.markCheckpointAttributionPushedStmt, markCheckpointAttributionPushed, arg.CheckpointID, arg.AttributionPushedAt)
+	return err
 }
 
 const releaseCheckpointForRetry = `-- name: ReleaseCheckpointForRetry :execrows

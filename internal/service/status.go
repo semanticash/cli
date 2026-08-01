@@ -44,6 +44,8 @@ type StatusResult struct {
 	AutoPlaybook       bool                   `json:"auto_playbook"`
 	GitTrailers        bool                   `json:"git_trailers"`
 	LastCheckpoint     *LastCheckpointInfo    `json:"last_checkpoint,omitempty"`
+	BlockedBy          *BlockedCheckpointInfo `json:"blocked_by,omitempty"`
+	AuditReadiness     *AuditReadiness        `json:"audit_readiness,omitempty"`
 	RecentSessions     []RecentSessionInfo    `json:"recent_sessions,omitempty"`
 	AITrend            []AITrendPoint         `json:"ai_trend,omitempty"`
 	PlaybookCount      int64                  `json:"playbook_count"`
@@ -62,8 +64,17 @@ type LastCheckpointInfo struct {
 	ID        string `json:"id"`
 	CreatedAt int64  `json:"created_at"`
 	Kind      string `json:"kind"`
+	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
 	Commit    string `json:"commit,omitempty"`
+}
+
+// BlockedCheckpointInfo identifies the terminally failed checkpoint
+// gating the repository's commit-linked queue.
+type BlockedCheckpointInfo struct {
+	CheckpointID string `json:"checkpoint_id"`
+	Status       string `json:"status"`
+	LastError    string `json:"last_error,omitempty"`
 }
 
 type RecentSessionInfo struct {
@@ -145,13 +156,17 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 	}
 	repoID := repoRow.RepositoryID
 
-	// Last checkpoint.
+	// Last checkpoint, its audit readiness, and any queue blockage.
 	if cp, err := h.Queries.GetLatestCheckpointForRepo(ctx, repoID); err == nil {
 		info := &LastCheckpointInfo{
 			ID:        cp.CheckpointID,
 			CreatedAt: cp.CreatedAt,
 			Kind:      cp.Kind,
+			Status:    cp.Status,
 		}
+		ar := EvaluateAuditReadiness(ctx, h, semDir, cp, PolicyLocal)
+		result.AuditReadiness = &ar
+		result.BlockedBy = queueBlockage(ctx, h, repoID)
 		if cp.Message.Valid {
 			info.Message = cp.Message.String
 		}

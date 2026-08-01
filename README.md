@@ -192,10 +192,14 @@ Generate commit messages and pull request descriptions from your current changes
 ```bash
 semantica suggest commit # generates a concise commit message from your current diff.
 semantica suggest pr # generates a pull request title and description from your branch diff.
-semantica status # shows repo status, workspace tier, monitored providers, and sync state.
+semantica status # shows repo status, audit readiness, monitored providers, and sync state.
 semantica doctor # diagnoses local binary, hook, launcher, capture, and auth health.
 semantica handoff --write # writes a redacted handoff bundle for a fresh agent session.
 ```
+
+For automation, `semantica status --json` includes the latest checkpoint state,
+any failed checkpoint blocking the queue, and a named audit-readiness verdict
+for manifest, attribution, provenance, and sync evidence.
 
 ### Agent sessions
 
