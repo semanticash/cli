@@ -289,7 +289,21 @@ func TestWorkerRun_RecordsAttributionCompletionMarker(t *testing.T) {
 
 	enableSemantica(t, ctx, dir)
 
-	dbPath := filepath.Join(dir, ".semantica", "lineage.db")
+	semDir := filepath.Join(dir, ".semantica")
+	settings, err := util.ReadSettings(semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This test exercises enrichment only; avoid starting a detached playbook process.
+	if settings.Automations == nil {
+		settings.Automations = &util.Automations{}
+	}
+	settings.Automations.Playbook.Enabled = false
+	if err := util.WriteSettings(semDir, settings); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(semDir, "lineage.db")
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +339,7 @@ func TestWorkerRun_RecordsAttributionCompletionMarker(t *testing.T) {
 		t.Fatal("real enrichment must record the attribution completion marker")
 	}
 	cp := readCheckpoint(t, h, "ck-real")
-	ar := EvaluateAuditReadiness(ctx, h, filepath.Join(dir, ".semantica"), cp, PolicyLocal)
+	ar := EvaluateAuditReadiness(ctx, h, semDir, cp, PolicyLocal)
 	if ar.Attribution.State != ReadinessReady {
 		t.Fatalf("attribution = %+v, want ready after real enrichment", ar.Attribution)
 	}
