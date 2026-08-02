@@ -130,6 +130,10 @@ failed queue head blocks later records until the cause is fixed and
 `semantica worker retry <checkpoint-id>` resets it. `semantica doctor` reports
 lock state, scheduled retries, and blocked queues.
 
+Status derives audit readiness from checkpoint state, attribution completion,
+turn-bundle coverage, and hosted push markers. Each component reports an
+explicit state under a named local or hosted policy.
+
 ### Processing pipeline
 
 1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
@@ -171,7 +175,7 @@ Single-file database in `.semantica/`. Contains:
 | `agent_events` | Captured prompt, assistant, tool, and provenance events |
 | `provenance_manifests` | Per-turn packaged transcript/bundle metadata and upload state |
 | `session_checkpoints` | Links sessions to the lineage records they influenced |
-| `checkpoint_stats` | Cached lineage record aggregates |
+| `checkpoint_stats` | Lineage aggregates and attribution/sync completion markers |
 
 The schema is defined in `internal/store/sqlite/schema/` and queries in `internal/store/sqlite/queries/`. Both are processed by [sqlc](https://sqlc.dev) to generate type-safe Go code.
 

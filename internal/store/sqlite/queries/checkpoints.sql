@@ -98,6 +98,62 @@ on conflict(checkpoint_id) do update set
 -- name: GetCheckpointStats :one
 select * from checkpoint_stats where checkpoint_id = ?;
 
+-- name: MarkCheckpointAttributionComputed :exec
+-- Records successful attribution, including an empty result. Upsert preserves
+-- the marker when the stats row does not exist yet.
+insert into checkpoint_stats (checkpoint_id, attribution_computed_at)
+values (?, ?)
+on conflict(checkpoint_id) do update set
+    attribution_computed_at = excluded.attribution_computed_at;
+
+-- name: MarkCheckpointAttributionPushed :exec
+-- Records a successful hosted attribution push. Upsert creates missing stats rows.
+insert into checkpoint_stats (checkpoint_id, attribution_pushed_at)
+values (?, ?)
+on conflict(checkpoint_id) do update set
+    attribution_pushed_at = excluded.attribution_pushed_at;
+
+-- name: CountWindowTurnProvenance :one
+-- Counts turn bundles in the checkpoint event window. A non-empty bundle hash
+-- means local packaging succeeded; failed rows with a hash represent terminal
+-- upload failures. Joins use repository, session, turn, and kind. Window bounds
+-- use (ts, insert_seq).
+select
+    cast(count(distinct e.turn_id) as integer) as total_turns,
+    cast(count(distinct case when ok.turn_id is not null then e.turn_id end) as integer) as packaged_turns,
+    cast(count(distinct case when up.turn_id is not null then e.turn_id end) as integer) as uploaded_turns,
+    cast(count(distinct case when fl.turn_id is not null then e.turn_id end) as integer) as failed_upload_turns
+from agent_events e
+    left join provenance_manifests ok
+        on ok.repository_id = e.repository_id
+        and ok.session_id = e.session_id
+        and ok.turn_id = e.turn_id
+        and ok.kind = 'turn_bundle'
+        and coalesce(ok.provenance_bundle_hash, '') != ''
+    left join provenance_manifests up
+        on up.repository_id = e.repository_id
+        and up.session_id = e.session_id
+        and up.turn_id = e.turn_id
+        and up.kind = 'turn_bundle'
+        and coalesce(up.provenance_bundle_hash, '') != ''
+        and up.status = 'uploaded'
+    left join provenance_manifests fl
+        on fl.repository_id = e.repository_id
+        and fl.session_id = e.session_id
+        and fl.turn_id = e.turn_id
+        and fl.kind = 'turn_bundle'
+        and coalesce(fl.provenance_bundle_hash, '') != ''
+        and fl.status = 'failed'
+where e.repository_id = ?
+  and e.turn_id is not null
+  and ((cast(sqlc.arg(use_cursor) as integer) = 1
+          and (e.ts > sqlc.arg(after_ts)
+               or (e.ts = sqlc.arg(after_ts) and e.insert_seq > sqlc.arg(after_cursor)))
+          and (e.ts < sqlc.arg(up_to_ts)
+               or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
+       or (cast(sqlc.arg(use_cursor) as integer) = 0
+          and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)));
+
 -- name: UpdateCheckpointAIPercentage :exec
 update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?;
 

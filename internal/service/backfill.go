@@ -46,9 +46,10 @@ func InitBackfillState(ctx context.Context, h *sqlstore.Handle, connectedRepoID,
 	return true, nil
 }
 
-// DrainBackfillBatch runs up to `limit` replay pushes for the given backfill.
-// It opens the DB, loads backfill state, iterates candidates, and updates
-// cursor/failure state as it goes. Safe to call from connect or worker.
+// markAttributionPushedFn allows tests to simulate marker persistence failures.
+var markAttributionPushedFn = markAttributionPushed
+
+// DrainBackfillBatch runs up to limit replay pushes and updates backfill state.
 func DrainBackfillBatch(ctx context.Context, repoRoot, connectedRepoID string, limit int) BackfillResult {
 	semDir := filepath.Join(repoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
@@ -127,6 +128,23 @@ func DrainBackfillBatch(ctx context.Context, repoRoot, connectedRepoID string, l
 
 		switch pr.Action {
 		case PushUploaded:
+			// Persist sync evidence before advancing. A failure leaves the
+			// cursor in place for an idempotent retry.
+			if err := markAttributionPushedFn(ctx, h, c.CheckpointID); err != nil {
+				if rerr := h.Queries.RecordBackfillFailure(ctx, sqldb.RecordBackfillFailureParams{
+					FailedCommitHash: sql.NullString{String: c.CommitHash, Valid: true},
+					LastError:        sql.NullString{String: err.Error(), Valid: true},
+					UpdatedAt:        now,
+					ConnectedRepoID:  connectedRepoID,
+				}); rerr != nil {
+					result.Failed = true
+					result.Reason = fmt.Sprintf("record marker failure: %v", rerr)
+					return result
+				}
+				result.Failed = true
+				result.Reason = err.Error()
+				return result
+			}
 			if err := h.Queries.AdvanceBackfillCursor(ctx, sqldb.AdvanceBackfillCursorParams{
 				CursorLinkedAt:   c.LinkedAt,
 				CursorCommitHash: c.CommitHash,

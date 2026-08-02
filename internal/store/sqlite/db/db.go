@@ -45,6 +45,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countSessionsForCheckpointStmt, err = db.PrepareContext(ctx, countSessionsForCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query CountSessionsForCheckpoint: %w", err)
 	}
+	if q.countWindowTurnProvenanceStmt, err = db.PrepareContext(ctx, countWindowTurnProvenance); err != nil {
+		return nil, fmt.Errorf("error preparing query CountWindowTurnProvenance: %w", err)
+	}
 	if q.deleteCheckpointByIDStmt, err = db.PrepareContext(ctx, deleteCheckpointByID); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteCheckpointByID: %w", err)
 	}
@@ -228,6 +231,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listUserPromptsForCommitStmt, err = db.PrepareContext(ctx, listUserPromptsForCommit); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserPromptsForCommit: %w", err)
 	}
+	if q.markCheckpointAttributionComputedStmt, err = db.PrepareContext(ctx, markCheckpointAttributionComputed); err != nil {
+		return nil, fmt.Errorf("error preparing query MarkCheckpointAttributionComputed: %w", err)
+	}
+	if q.markCheckpointAttributionPushedStmt, err = db.PrepareContext(ctx, markCheckpointAttributionPushed); err != nil {
+		return nil, fmt.Errorf("error preparing query MarkCheckpointAttributionPushed: %w", err)
+	}
 	if q.markManifestFailedStmt, err = db.PrepareContext(ctx, markManifestFailed); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkManifestFailed: %w", err)
 	}
@@ -332,6 +341,11 @@ func (q *Queries) Close() error {
 	if q.countSessionsForCheckpointStmt != nil {
 		if cerr := q.countSessionsForCheckpointStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countSessionsForCheckpointStmt: %w", cerr)
+		}
+	}
+	if q.countWindowTurnProvenanceStmt != nil {
+		if cerr := q.countWindowTurnProvenanceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countWindowTurnProvenanceStmt: %w", cerr)
 		}
 	}
 	if q.deleteCheckpointByIDStmt != nil {
@@ -639,6 +653,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listUserPromptsForCommitStmt: %w", cerr)
 		}
 	}
+	if q.markCheckpointAttributionComputedStmt != nil {
+		if cerr := q.markCheckpointAttributionComputedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing markCheckpointAttributionComputedStmt: %w", cerr)
+		}
+	}
+	if q.markCheckpointAttributionPushedStmt != nil {
+		if cerr := q.markCheckpointAttributionPushedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing markCheckpointAttributionPushedStmt: %w", cerr)
+		}
+	}
 	if q.markManifestFailedStmt != nil {
 		if cerr := q.markManifestFailedStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing markManifestFailedStmt: %w", cerr)
@@ -795,6 +819,7 @@ type Queries struct {
 	countCheckpointsWithSummaryStmt              *sql.Stmt
 	countManifestsByStatusStmt                   *sql.Stmt
 	countSessionsForCheckpointStmt               *sql.Stmt
+	countWindowTurnProvenanceStmt                *sql.Stmt
 	deleteCheckpointByIDStmt                     *sql.Stmt
 	failCheckpointStmt                           *sql.Stmt
 	getActiveAgentSessionForRepoStmt             *sql.Stmt
@@ -856,6 +881,8 @@ type Queries struct {
 	listStepProvenanceForTurnStmt                *sql.Stmt
 	listTranscriptEventsStmt                     *sql.Stmt
 	listUserPromptsForCommitStmt                 *sql.Stmt
+	markCheckpointAttributionComputedStmt        *sql.Stmt
+	markCheckpointAttributionPushedStmt          *sql.Stmt
 	markManifestFailedStmt                       *sql.Stmt
 	markManifestUploadedStmt                     *sql.Stmt
 	markManifestUploadingStmt                    *sql.Stmt
@@ -891,6 +918,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		countCheckpointsWithSummaryStmt:              q.countCheckpointsWithSummaryStmt,
 		countManifestsByStatusStmt:                   q.countManifestsByStatusStmt,
 		countSessionsForCheckpointStmt:               q.countSessionsForCheckpointStmt,
+		countWindowTurnProvenanceStmt:                q.countWindowTurnProvenanceStmt,
 		deleteCheckpointByIDStmt:                     q.deleteCheckpointByIDStmt,
 		failCheckpointStmt:                           q.failCheckpointStmt,
 		getActiveAgentSessionForRepoStmt:             q.getActiveAgentSessionForRepoStmt,
@@ -952,6 +980,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listStepProvenanceForTurnStmt:                q.listStepProvenanceForTurnStmt,
 		listTranscriptEventsStmt:                     q.listTranscriptEventsStmt,
 		listUserPromptsForCommitStmt:                 q.listUserPromptsForCommitStmt,
+		markCheckpointAttributionComputedStmt:        q.markCheckpointAttributionComputedStmt,
+		markCheckpointAttributionPushedStmt:          q.markCheckpointAttributionPushedStmt,
 		markManifestFailedStmt:                       q.markManifestFailedStmt,
 		markManifestUploadedStmt:                     q.markManifestUploadedStmt,
 		markManifestUploadingStmt:                    q.markManifestUploadingStmt,

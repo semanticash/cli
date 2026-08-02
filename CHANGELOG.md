@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-07-30
+## [0.6.0] - 2026-07-02
 
 ### Added
 
@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Checkpoint processing now uses durable leases and bounded retries. Terminal failures preserve their error, appear in `semantica doctor`, and block later commit-linked work.
 - Added `semantica worker retry <checkpoint-id>` to reset and re-run a terminally failed checkpoint.
 - Launcher backends now drain every 30 minutes to recover scheduled retries and expired leases. Linux launcher disablement also reports incomplete timer cleanup.
+- Added checkpoint audit readiness to `semantica status` and `semantica status --json`, with explicit manifest, attribution, provenance, and sync states under a named policy. JSON output also reports terminal queue blockage and its recorded error.
 
 ### Fixed
 
