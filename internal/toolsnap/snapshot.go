@@ -30,8 +30,16 @@ func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	paths, err := dirtyPaths(ctx, s.repo, s.maxPaths())
+	paths, statusOID, err := dirtyPaths(ctx, s.repo, s.maxPaths())
 	if err != nil {
+		return Snapshot{}, err
+	}
+	// The HEAD resolved with the repository context can go stale
+	// before status runs: store opening and, in the real hook,
+	// registry-lock acquisition sit between them. Status reports the
+	// HEAD it described, so a mismatch means the snapshot would mix
+	// two repository states and must degrade to partial.
+	if err := verifyHeadUnmoved(headCommit, statusOID); err != nil {
 		return Snapshot{}, err
 	}
 	// Clean fast path: with no dirty paths the worktree tree is the
@@ -47,9 +55,30 @@ func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
 	return Snapshot{TreeHash: tree, HeadHash: headCommit, DirtyPath: paths}, nil
 }
 
-// resolveHead returns the HEAD commit and tree hashes. An unborn
-// branch resolves to the empty tree.
+// verifyHeadUnmoved compares the HEAD commit the snapshot is built
+// from with the branch.oid git status reported. An unborn branch
+// reports "(initial)".
+func verifyHeadUnmoved(headCommit, statusOID string) error {
+	expected := headCommit
+	if expected == "" {
+		expected = "(initial)"
+	}
+	if statusOID == "" || statusOID != expected {
+		return &PartialError{
+			Reason: ReasonHeadChanged,
+			Detail: fmt.Sprintf("HEAD %s but status described %s", expected, statusOID),
+		}
+	}
+	return nil
+}
+
+// resolveHead returns the HEAD commit and tree hashes, reusing the
+// values resolved with the repository context when available. An
+// unborn branch resolves to the empty tree.
 func (s *Store) resolveHead(ctx context.Context) (commit, tree string, err error) {
+	if s.repo.HeadCommit != "" && s.repo.HeadTree != "" {
+		return s.repo.HeadCommit, s.repo.HeadTree, nil
+	}
 	out, err := gitOutput(ctx, s.repo.WorktreeRoot, "rev-parse", "HEAD", "HEAD^{tree}")
 	if err != nil {
 		if strings.Contains(err.Error(), "unknown revision") ||

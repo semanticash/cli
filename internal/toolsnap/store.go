@@ -60,16 +60,141 @@ func OpenStore(ctx context.Context, rc RepoContext, semDir string) (*Store, erro
 		}
 	}
 
-	if err := s.verifyCompatible(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.sanitizeConfig(ctx); err != nil {
-		return nil, err
+	// Fast path: the store config is Semantica-owned and tiny. When a
+	// direct read shows the expected object format and no trace of
+	// fetch-capable configuration, the git-based verification and
+	// sanitization spawns are skipped; anything suspicious takes the
+	// authoritative slow path. This keeps hook-path store opening free
+	// of git invocations.
+	if !s.configFastPathClean() {
+		if err := s.verifyCompatible(ctx); err != nil {
+			return nil, err
+		}
+		if err := s.sanitizeConfig(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.ensureAlternate(); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// configFastPathClean reports whether the store config file can be
+// accepted without spawning git. Two independent checks must pass:
+// an over-broad token scan (a false positive only costs the slow
+// path) and a strict section/key parse of the object format, because
+// granting the fast path from substring matching would let a comment
+// mentioning sha256 misclassify the store.
+func (s *Store) configFastPathClean() bool {
+	raw, err := os.ReadFile(filepath.Join(s.Dir, "config"))
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(raw))
+	for _, token := range []string{"remote", "include", "partialclone", "promisor"} {
+		if strings.Contains(lower, token) {
+			return false
+		}
+	}
+	format, ok := parseStoreObjectFormat(string(raw))
+	return ok && format == s.repo.ObjectFormat
+}
+
+// allowedCoreKeys are the core keys git init writes for a bare store
+// across supported platforms. Anything else is not a configuration
+// Semantica generates and forces the slow path.
+var allowedCoreKeys = map[string]bool{
+	"repositoryformatversion": true,
+	"filemode":                true,
+	"bare":                    true,
+	"logallrefupdates":        true,
+	"ignorecase":              true,
+	"precomposeunicode":       true,
+	"symlinks":                true,
+}
+
+// parseStoreObjectFormat accepts only the configuration shape a
+// Semantica-initialized store has: the generated minimum of
+// repositoryformatversion, bare = true, and gc.auto = 0 must all be
+// present, other whitelisted core keys may appear, and
+// extensions.objectformat requires repository format version 1. Any
+// unknown section, key, subsection, deviating value, or malformed
+// line returns not-ok so the authoritative git-based path decides.
+func parseStoreObjectFormat(raw string) (string, bool) {
+	section := ""
+	format := "sha1"
+	version := ""
+	sawBare := false
+	sawGcAutoZero := false
+	sawExtensions := false
+	for _, line := range strings.Split(raw, "\n") {
+		// Strip comments; neither section names nor the values this
+		// parser accepts may legally contain # or ;.
+		if idx := strings.IndexAny(line, "#;"); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			if !strings.HasSuffix(line, "]") {
+				return "", false
+			}
+			section = strings.ToLower(strings.TrimSpace(strings.Trim(line, "[]")))
+			// Subsections never appear in a store Semantica created.
+			if strings.ContainsAny(section, " \t\"") {
+				return "", false
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return "", false
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
+		switch section {
+		case "core":
+			if !allowedCoreKeys[key] {
+				return "", false
+			}
+			switch key {
+			case "bare":
+				if value != "true" {
+					return "", false
+				}
+				sawBare = true
+			case "repositoryformatversion":
+				if value != "0" && value != "1" {
+					return "", false
+				}
+				version = value
+			}
+		case "extensions":
+			if key != "objectformat" || (value != "sha1" && value != "sha256") {
+				return "", false
+			}
+			sawExtensions = true
+			format = value
+		case "gc":
+			if key != "auto" || value != "0" {
+				return "", false
+			}
+			sawGcAutoZero = true
+		default:
+			return "", false
+		}
+	}
+	if !sawBare || !sawGcAutoZero || version == "" {
+		return "", false
+	}
+	// Extensions require repository format version 1.
+	if sawExtensions && version != "1" {
+		return "", false
+	}
+	return format, true
 }
 
 // sanitizeConfig removes fetch-capable settings from the Semantica-owned

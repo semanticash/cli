@@ -18,9 +18,12 @@ import (
 //
 // Status only nominates candidates; the worktree supplies file type,
 // mode, and content. Parsing stops when the path limit is exceeded.
-func dirtyPaths(ctx context.Context, rc RepoContext, limit int) ([]string, error) {
+// dirtyPaths also returns the branch.oid reported by status so the
+// caller can detect HEAD movement between context resolution and the
+// status read.
+func dirtyPaths(ctx context.Context, rc RepoContext, limit int) ([]string, string, error) {
 	cmd := exec.CommandContext(ctx, "git",
-		"status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames")
+		"status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--no-renames")
 	cmd.Dir = rc.WorktreeRoot
 	cmd.Env = gitEnv(nil)
 	platform.HideWindow(cmd)
@@ -28,10 +31,10 @@ func dirtyPaths(ctx context.Context, rc RepoContext, limit int) ([]string, error
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("toolsnap: status pipe: %w", err)
+		return nil, "", fmt.Errorf("toolsnap: status pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("toolsnap: status: %w", err)
+		return nil, "", fmt.Errorf("toolsnap: status: %w", err)
 	}
 
 	p := &statusParser{limit: limit, seen: map[string]bool{}}
@@ -50,18 +53,18 @@ func dirtyPaths(ctx context.Context, rc RepoContext, limit int) ([]string, error
 	if perr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return nil, perr
+		return nil, "", perr
 	}
 	if err := cmd.Wait(); err != nil {
 		if msg := stderr.String(); msg != "" {
-			return nil, fmt.Errorf("toolsnap: status: %w: %s", err, msg)
+			return nil, "", fmt.Errorf("toolsnap: status: %w: %s", err, msg)
 		}
-		return nil, fmt.Errorf("toolsnap: status: %w", err)
+		return nil, "", fmt.Errorf("toolsnap: status: %w", err)
 	}
 	if err := p.finish(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return p.sortedPaths(), nil
+	return p.sortedPaths(), p.branchOID, nil
 }
 
 // statusParser consumes NUL-delimited porcelain-v2 records. Unknown or
@@ -70,6 +73,7 @@ type statusParser struct {
 	limit      int
 	seen       map[string]bool
 	expectOrig bool
+	branchOID  string
 }
 
 func (p *statusParser) feed(rec string) error {
@@ -112,7 +116,12 @@ func (p *statusParser) feed(rec string) error {
 			return malformedStatus(rec)
 		}
 		return p.add(rec[2:])
-	case '#', '!': // headers and ignored entries carry no capture paths
+	case '#': // branch headers carry the HEAD oid for staleness checks
+		if oid, ok := strings.CutPrefix(rec, "# branch.oid "); ok {
+			p.branchOID = oid
+		}
+		return nil
+	case '!': // ignored entries carry no capture paths
 		return nil
 	default:
 		return malformedStatus(rec)

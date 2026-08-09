@@ -33,25 +33,43 @@ type RepoContext struct {
 	// WorktreeID is a stable identifier for this worktree, used to
 	// namespace snapshot refs.
 	WorktreeID string
+	// HeadCommit and HeadTree are resolved with the same rev-parse
+	// invocation when HEAD exists; both are empty on an unborn branch.
+	// The values can go stale before capture reads the worktree, so
+	// CaptureBefore cross-checks them against the branch.oid reported
+	// by status and degrades to partial on mismatch.
+	HeadCommit string
+	HeadTree   string
 }
 
 // ResolveRepoContext discovers the repository context for the given
 // directory. It fails on bare repositories: snapshots capture worktree
 // state, so a worktree is required.
 func ResolveRepoContext(ctx context.Context, dir string) (RepoContext, error) {
-	out, err := gitOutput(ctx, dir,
+	flags := []string{
 		"rev-parse",
 		"--is-bare-repository",
 		"--show-toplevel",
 		"--absolute-git-dir",
 		"--git-common-dir",
 		"--show-object-format",
-	)
+	}
+	// HEAD resolves in the same invocation to keep hook processes at
+	// two git spawns; an unborn branch falls back to flags only.
+	out, err := gitOutput(ctx, dir, append(flags, "HEAD", "HEAD^{tree}")...)
+	withHead := err == nil
+	if err != nil {
+		out, err = gitOutput(ctx, dir, flags...)
+	}
 	if err != nil {
 		return RepoContext{}, fmt.Errorf("toolsnap: resolve repository: %w", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 5 {
+	want := 5
+	if withHead {
+		want = 7
+	}
+	if len(lines) != want {
 		return RepoContext{}, fmt.Errorf("toolsnap: unexpected rev-parse output: %q", out)
 	}
 	if lines[0] == "true" {
@@ -80,6 +98,9 @@ func ResolveRepoContext(ctx context.Context, dir string) (RepoContext, error) {
 	}
 
 	rc.WorktreeID = worktreeID(rc.GitDir, rc.CommonDir)
+	if withHead {
+		rc.HeadCommit, rc.HeadTree = lines[5], lines[6]
+	}
 	return rc, nil
 }
 
