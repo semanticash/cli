@@ -63,19 +63,76 @@ func OpenStore(ctx context.Context, rc RepoContext, semDir string) (*Store, erro
 	if err := s.verifyCompatible(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.sanitizeConfig(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.ensureAlternate(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
+// sanitizeConfig removes fetch-capable settings from the Semantica-owned
+// store. Snapshot stores never need remotes, partial-clone settings, or
+// external config includes.
+func (s *Store) sanitizeConfig(ctx context.Context) error {
+	list, err := s.git(ctx, "config", "--local", "--list", "--name-only")
+	if err != nil {
+		return fmt.Errorf("toolsnap: read store config: %w", err)
+	}
+	sections := map[string]bool{}
+	unset := []string{}
+	for _, name := range strings.Split(strings.TrimSpace(list), "\n") {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		switch {
+		case strings.HasPrefix(lower, "remote."):
+			if idx := strings.LastIndexByte(name, '.'); idx > 0 {
+				sections[name[:idx]] = true
+			}
+		// Object reads expand include.path and includeIf.*.path. Remove
+		// includes by full key because conditional subsection names are
+		// not valid --remove-section arguments.
+		case strings.HasPrefix(lower, "include."),
+			strings.HasPrefix(lower, "includeif."),
+			lower == "extensions.partialclone":
+			unset = append(unset, name)
+		}
+	}
+	for section := range sections {
+		if _, err := s.git(ctx, "config", "--remove-section", section); err != nil {
+			return fmt.Errorf("toolsnap: remove store config section %s: %w", section, err)
+		}
+	}
+	for _, name := range unset {
+		if _, err := s.git(ctx, "config", "--local", "--unset-all", name); err != nil {
+			return fmt.Errorf("toolsnap: unset store config %s: %w", name, err)
+		}
+	}
+
+	// Verify that the store cannot resolve a transport source.
+	list, err = s.git(ctx, "config", "--local", "--list", "--name-only")
+	if err != nil {
+		return fmt.Errorf("toolsnap: re-read store config: %w", err)
+	}
+	for _, name := range strings.Split(strings.ToLower(strings.TrimSpace(list)), "\n") {
+		name = strings.TrimSpace(name)
+		if strings.HasPrefix(name, "remote.") ||
+			strings.HasPrefix(name, "include.") ||
+			strings.HasPrefix(name, "includeif.") ||
+			name == "extensions.partialclone" {
+			return fmt.Errorf("%w: fetch-enabling config %q persists after sanitization", ErrStoreIncompatible, name)
+		}
+	}
+	return nil
+}
+
 func (s *Store) initialize(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.Dir), 0o755); err != nil {
 		return fmt.Errorf("toolsnap: create store parent: %w", err)
 	}
-	// The store must share the repository's object format or tree
-	// entries referencing repository blobs would be malformed.
-	_, err := gitOutput(ctx, filepath.Dir(s.Dir),
+	// Matching object formats let snapshot trees reference repository blobs.
+	// Config isolation also prevents inherited templates from modifying the store.
+	_, err := gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil),
 		"init", "--bare", "--object-format="+s.repo.ObjectFormat, s.Dir)
 	if err != nil {
 		return fmt.Errorf("toolsnap: init store: %w", err)
@@ -128,5 +185,5 @@ func (s *Store) ensureAlternate() error {
 // user's environment discovery.
 func (s *Store) git(ctx context.Context, args ...string) (string, error) {
 	full := append([]string{"--git-dir", s.Dir}, args...)
-	return gitOutput(ctx, filepath.Dir(s.Dir), full...)
+	return gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil), full...)
 }

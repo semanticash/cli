@@ -301,7 +301,7 @@ func (s *Store) gitStdinDir(ctx context.Context, dir string, extraEnv []string, 
 	full := append([]string{"--git-dir", s.Dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
-	cmd.Env = gitEnv(extraEnv)
+	cmd.Env = storeGitEnv(extraEnv)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

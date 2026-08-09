@@ -137,10 +137,9 @@ var scrubbedGitVars = []string{
 	"GIT_DISCOVERY_ACROSS_FILESYSTEM",
 }
 
-// gitEnv returns an isolated environment for snapshot Git commands.
-// GIT_NO_LAZY_FETCH (git 2.44+) keeps capture off the network;
-// GIT_OPTIONAL_LOCKS=0 keeps status from taking or refreshing locks
-// in the user repository.
+// gitEnv removes inherited settings that can redirect repository access.
+// GIT_NO_LAZY_FETCH supplements store isolation on Git 2.45 and later.
+// GIT_OPTIONAL_LOCKS keeps read-only commands from refreshing user state.
 func gitEnv(extra []string) []string {
 	env := make([]string, 0, len(scrubbedGitVars)+len(extra)+4)
 	for _, kv := range os.Environ() {
@@ -164,11 +163,32 @@ func isScrubbedGitVar(key string) bool {
 	return false
 }
 
+// storeGitEnv also disables inherited Git configuration. Store commands
+// must not discover remotes or promisor settings that could trigger a fetch.
+func storeGitEnv(extra []string) []string {
+	base := gitEnv(nil)
+	env := make([]string, 0, len(base)+len(extra)+2)
+	for _, kv := range base {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok && len(key) >= len("GIT_CONFIG") && strings.EqualFold(key[:len("GIT_CONFIG")], "GIT_CONFIG") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+	return append(env, extra...)
+}
+
 // gitOutput runs git in dir under the scrubbed capture environment.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	return gitOutputEnv(ctx, dir, gitEnv(nil), args...)
+}
+
+// gitOutputEnv runs git in dir under an explicit environment.
+func gitOutputEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = gitEnv(nil)
+	cmd.Env = env
 	platform.HideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {

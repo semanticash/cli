@@ -113,8 +113,8 @@ func TestRefComponentsDoNotCollide(t *testing.T) {
 }
 
 func TestGitEnvScrubIsCaseInsensitive(t *testing.T) {
-	t.Setenv("git_object_directory", "/tmp/evil")
-	t.Setenv("Git_Index_File", "/tmp/evil-index")
+	t.Setenv("git_object_directory", "/tmp/redirected-objects")
+	t.Setenv("Git_Index_File", "/tmp/redirected-index")
 	for _, kv := range gitEnv(nil) {
 		key, _, _ := strings.Cut(kv, "=")
 		if strings.EqualFold(key, "GIT_OBJECT_DIRECTORY") || strings.EqualFold(key, "GIT_INDEX_FILE") {

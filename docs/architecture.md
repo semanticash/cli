@@ -71,7 +71,7 @@ Semantica installs three Git hooks via `semantica enable`. Each hook invokes the
 
 ### pre-commit
 
-Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file is how state is passed between the three hook phases.
+Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file passes state between the three hooks.
 
 The hook exits immediately - it never blocks the commit.
 
@@ -204,8 +204,15 @@ read-only alternate to the repository object database.
 Capture is bounded by candidate-path and byte limits. Unknown status records,
 unsupported file types, incompatible object formats, and over-limit worktrees
 fail closed instead of producing partial workspace trees. Git environment
-variables that could redirect the repository, index, or object database are
-removed from snapshot subprocesses.
+variables that could redirect repository access are removed from snapshot
+subprocesses. Store commands ignore inherited Git configuration, and store-local
+remotes, partial-clone settings, and config includes are removed before object
+access. Snapshot capture therefore never contacts a Git remote.
+
+The store supports SHA-1 and SHA-256 repositories and gives each linked
+worktree a distinct private ref namespace. Committed objects are read through
+the repository's common object database. If repository maintenance removes an
+alternate object, capture fails without fabricating evidence.
 
 This store is currently an internal foundation. Provider hooks and attribution
 scoring do not consume tool snapshots yet.
