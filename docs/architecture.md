@@ -194,6 +194,22 @@ objects/
 Used for file snapshots (lineage manifests), event payloads, transcript
 slices, prompts, and packaged provenance blobs.
 
+### Tool snapshot store (`tool-snapshots.git`)
+
+`internal/toolsnap` can represent a worktree as an ephemeral Git tree without
+writing objects or refs to the user repository. It stores private objects and
+refs in `.semantica/tool-snapshots.git` and reads committed objects through a
+read-only alternate to the repository object database.
+
+Capture is bounded by candidate-path and byte limits. Unknown status records,
+unsupported file types, incompatible object formats, and over-limit worktrees
+fail closed instead of producing partial workspace trees. Git environment
+variables that could redirect the repository, index, or object database are
+removed from snapshot subprocesses.
+
+This store is currently an internal foundation. Provider hooks and attribution
+scoring do not consume tool snapshots yet.
+
 ### Settings (`settings.json`)
 
 ```json
@@ -272,6 +288,7 @@ internal/
     cursor/                 Cursor session ingestion
     gemini/                 Gemini CLI session ingestion
     copilot/                GitHub Copilot session ingestion
+  toolsnap/                 Isolated workspace snapshot and tree-diff engine
   broker/                   Cross-repo event routing
   version/                  Build version injection
 e2e/                        End-to-end tests

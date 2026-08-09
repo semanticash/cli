@@ -5,10 +5,11 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-07-02
+## [0.6.0] - 2026-07-10
 
 ### Added
 
+- Added a bounded workspace snapshot engine for future attribution of files changed by agent-run shell tools. Snapshots use an isolated Git object store under `.semantica/`, leave repository objects and refs untouched, and reject unsupported or over-limit captures instead of guessing. Shell-tool snapshots are not yet included in attribution results.
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.
