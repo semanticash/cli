@@ -154,7 +154,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	// path change (or any future change to the guarded-command shape)
 	// would leave stale trust entries at positions that have shifted
 	// between runs: their hashes would not be in the new install's
-	// recognizedHashes, so the cleanup phase would skip them.
+	// recognizedHashes, so cleanup would skip them.
 	prior, err := scanInstalledSemanticaEntries(hooksPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 0, err
@@ -170,7 +170,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	}
 
 	// Build the trust mutation. trustHashes drives the upsert;
-	// recognizedHashes lets the cleanup phase remove any stale trust
+	// recognizedHashes lets cleanup remove any stale trust
 	// entries under hooksFilePath whose stored hash matches a
 	// Semantica command from this or a prior install.
 	mutation := configMutation{

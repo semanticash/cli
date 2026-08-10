@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // A FIFO cannot be represented as a Git tree entry.
@@ -105,6 +106,73 @@ func TestClosedFalseWhenPublicationFails(t *testing.T) {
 	}
 	if len(stale) != 1 {
 		t.Fatalf("group lost after failed publication: %+v", stale)
+	}
+}
+
+// A failed registry publication leaves one ref for bounded cleanup.
+func TestCaptureAndBeginPublicationFailureLeavesBoundedOrphan(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	semDir := filepath.Join(root, ".semantica")
+	reg, err := OpenRegistry(semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Keep locking available while preventing registry publication.
+	if f, err := os.OpenFile(reg.lockPath(), os.O_RDWR|os.O_CREATE, 0o644); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+	if err := os.Chmod(reg.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(reg.dir, 0o755) }()
+
+	writeFile(t, root, "a.txt", "captured then orphaned\n")
+	_, err = reg.CaptureAndBegin(ctx, s, key("tu-orphan"), "Bash", 100)
+	if err == nil {
+		t.Fatal("publication failure not reported")
+	}
+	if err := os.Chmod(reg.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Registry state remains unchanged.
+	stale, err := reg.Stale(ctx, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("registry gained windows despite failed publication: %+v", stale)
+	}
+	// Maintenance retains the fresh orphan.
+	refs, err := s.ListRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs = %v, want the single orphan", refs)
+	}
+	report, err := s.Maintain(ctx, reg, 0)
+	if err != nil || report.Deferred || report.RefsKept != 1 || report.RefsDeleted != 0 {
+		t.Fatalf("fresh orphan handling: report=%+v err=%v", report, err)
+	}
+	// Maintenance removes the stale orphan.
+	for ref := range refs {
+		old := time.Now().Add(-DefaultStaleWindowAge - time.Hour)
+		if err := os.Chtimes(filepath.Join(s.Dir, filepath.FromSlash(ref)), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err = s.Maintain(ctx, reg, 0)
+	if err != nil || report.RefsDeleted != 1 {
+		t.Fatalf("aged orphan handling: report=%+v err=%v", report, err)
 	}
 }
 

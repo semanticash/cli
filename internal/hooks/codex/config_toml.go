@@ -111,7 +111,7 @@ type configMutation struct {
 	trustHashes map[string]string
 
 	// hooksFilePath is the absolute path of the hooks.json this
-	// mutation targets. The cleanup phase only inspects trust entries
+	// mutation targets. Cleanup only inspects trust entries
 	// whose key begins with this path so entries from other tools that
 	// happen to share the [hooks.state] namespace are never touched.
 	hooksFilePath string
@@ -119,7 +119,7 @@ type configMutation struct {
 	// recognizedHashes is the set of trust hash values produced by
 	// commands the caller treats as Semantica's. Pre-existing entries
 	// under hooksFilePath whose stored trusted_hash matches one of
-	// these are eligible for removal during the cleanup phase. Install
+	// these are eligible for removal during cleanup. Install
 	// computes this from the canonical hashes of the four events;
 	// uninstall computes it from the actual command strings observed
 	// in hooks.json before pruning.

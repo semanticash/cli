@@ -422,6 +422,115 @@ func TestInvalidPostCallbackStateNotPublished(t *testing.T) {
 	}
 }
 
+// CaptureAndBegin captures once and groups overlapping windows.
+func TestCaptureAndBeginLifecycle(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	reg, err := OpenRegistry(filepath.Join(root, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	writeFile(t, root, "a.txt", "pre-hook content\n")
+	k := key("tu-cab")
+	w, err := reg.CaptureAndBegin(ctx, s, k, "Bash", 100)
+	if err != nil {
+		t.Fatalf("capture and begin: %v", err)
+	}
+	if w.Status != "active" || w.TreeHash == "" || w.SnapshotRef == "" || w.GroupID == "" {
+		t.Fatalf("window = %+v", w)
+	}
+	refs, err := s.ListRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs[w.SnapshotRef] != w.TreeHash {
+		t.Fatalf("refs = %v, want %s -> %s", refs, w.SnapshotRef, w.TreeHash)
+	}
+	content := run(t, root, "git", "--git-dir", s.Dir, "cat-file", "blob", w.TreeHash+":a.txt")
+	if content != "pre-hook content\n" {
+		t.Fatalf("captured tree = %q", content)
+	}
+
+	// Duplicate delivery: same registration, no new capture or ref.
+	writeFile(t, root, "a.txt", "changed after first capture\n")
+	dup, err := reg.CaptureAndBegin(ctx, s, k, "Bash", 105)
+	if err != nil {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if dup != w {
+		t.Fatalf("duplicate returned %+v, want original %+v", dup, w)
+	}
+	refsAfter, err := s.ListRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refsAfter) != len(refs) {
+		t.Fatalf("duplicate created refs: %v", refsAfter)
+	}
+
+	// An overlapping window joins the same group.
+	w2, err := reg.CaptureAndBegin(ctx, s, key("tu-cab2"), "Bash", 110)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w2.GroupID != w.GroupID {
+		t.Fatalf("overlap group %s, want %s", w2.GroupID, w.GroupID)
+	}
+}
+
+// Mismatched registry and store directories fail before capture.
+func TestCaptureAndBeginRejectsMismatchedStore(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	otherReg, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = otherReg.CaptureAndBegin(context.Background(), s, key("tu-mismatch"), "Bash", 100)
+	if err == nil || !strings.Contains(err.Error(), "different directories") {
+		t.Fatalf("mismatched pair accepted: %v", err)
+	}
+}
+
+// Lock contention stops capture before a ref is created.
+func TestCaptureAndBeginLockTimeoutLeavesNoState(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	reg, err := OpenRegistry(filepath.Join(root, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(reg.lockPath(), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	if err := platform.LockFile(holder); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, root, "a.txt", "never captured\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err = reg.CaptureAndBegin(ctx, s, key("tu-lock"), "Bash", 100)
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonLockTimeout {
+		t.Fatalf("err = %v, want %s", err, ReasonLockTimeout)
+	}
+	if err := platform.UnlockFile(holder); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := s.ListRefs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("refs created without registration: %v", refs)
+	}
+}
+
 func TestCompleteWithoutBeginIsTyped(t *testing.T) {
 	r := testRegistry(t)
 	_, err := r.Complete(context.Background(), key("ghost"), 10, noFinalize(t))

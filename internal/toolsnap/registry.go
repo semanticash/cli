@@ -302,8 +302,59 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	return fnErr
 }
 
-// Begin registers a tool window. Overlapping windows share the active group.
-// Re-registering a retained key returns its existing group.
+// CaptureAndBegin captures and registers a pre-tool snapshot while
+// holding the registry lock. Duplicate deliveries reuse the existing entry.
+func (r *Registry) CaptureAndBegin(ctx context.Context, s *Store, key ToolKey, toolName string, startedAt int64) (PendingToolSnapshot, error) {
+	if err := key.validate(); err != nil {
+		return PendingToolSnapshot{}, err
+	}
+	// The registry lock protects only the store in the same .semantica directory.
+	if filepath.Dir(r.dir) != filepath.Dir(s.Dir) {
+		return PendingToolSnapshot{}, fmt.Errorf("toolsnap: registry %s and store %s belong to different directories",
+			filepath.Dir(r.dir), filepath.Dir(s.Dir))
+	}
+	var result PendingToolSnapshot
+	err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		for _, w := range state.Windows {
+			if w.Key == key {
+				result = w
+				return false, nil
+			}
+		}
+		groupID := "g-" + key.hash()
+		for _, w := range state.Windows {
+			if w.Status == "active" && w.Key.RepositoryID == key.RepositoryID {
+				groupID = w.GroupID
+				break
+			}
+		}
+		snap, err := s.CaptureBefore(ctx)
+		if err != nil {
+			return false, err
+		}
+		ref := SnapshotRef(s.repo.WorktreeID, groupID, key.ToolUseID)
+		if err := s.CreateRef(ctx, ref, snap.TreeHash); err != nil {
+			return false, err
+		}
+		// If registry publication fails, maintenance retains the orphaned
+		// ref until it becomes stale.
+		result = PendingToolSnapshot{
+			Key: key, ToolName: toolName,
+			SnapshotRef: ref, TreeHash: snap.TreeHash, HeadHash: snap.HeadHash,
+			ObjectFormat: s.repo.ObjectFormat,
+			StartedAt:    startedAt, GroupID: groupID, Status: "active",
+		}
+		state.Windows = append(state.Windows, result)
+		return true, nil
+	})
+	if err != nil {
+		return PendingToolSnapshot{}, err
+	}
+	return result, nil
+}
+
+// Begin registers a pre-existing snapshot. Hook callers use
+// CaptureAndBegin so capture and registration share one lock.
 func (r *Registry) Begin(ctx context.Context, entry PendingToolSnapshot) (string, error) {
 	if entry.Status != "" && entry.Status != "active" {
 		return "", fmt.Errorf("toolsnap: begin with status %q", entry.Status)

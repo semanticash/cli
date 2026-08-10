@@ -81,7 +81,7 @@ func SynthesizeAssistantBlob(ctx context.Context, bs api.BlobPutter, toolName st
 //	{ "tool_input": <toolInput>, "tool_response": <toolResponse> }
 //
 // The tool_response field is omitted when toolResponse is empty, so
-// hook phases that do not carry a response (for example pre-tool-use)
+// hooks that do not carry a response (for example pre-tool-use)
 // produce a smaller, wrapper-only blob.
 //
 // File-edit provenance uses this envelope so hosted diff readers can

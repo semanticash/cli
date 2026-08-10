@@ -18,7 +18,7 @@ const (
 	IncrementalCapture      // mid-turn trigger to scan transcript from saved offset
 )
 
-// HookPhase returns a short stable string for the event's lifecycle phase.
+// HookPhase returns a short stable string for the event's lifecycle point.
 // Used by providers to disambiguate event IDs when the same tool_use_id
 // appears in both a pre and post hook (e.g., PreToolUse[Agent] and
 // PostToolUse[Agent] share a tool_use_id but are different events).

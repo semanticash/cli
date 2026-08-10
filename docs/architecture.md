@@ -220,6 +220,9 @@ A repository-scoped registry serializes overlapping tool windows under an
 OS-backed lock. Closing tree identities survive retries, and timeout tombstones
 keep delayed captures from being treated as line evidence.
 
+Bounded maintenance defers during capture, removes stale unreferenced refs, and
+prunes expired objects without operating on the user repository.
+
 This store is currently an internal foundation. Provider hooks and attribution
 scoring do not consume tool snapshots yet.
 
