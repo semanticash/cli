@@ -30,6 +30,7 @@ type MaintenanceReport struct {
 	ActiveWindows int
 	RefsDeleted   int
 	RefsKept      int
+	MarkersPruned int
 	PruneRan      bool
 	// StoreBytes is the store object size after the pass.
 	StoreBytes int64
@@ -49,7 +50,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 	lockCtx, lockCancel := context.WithTimeout(passCtx, maintenanceLockWait)
 	defer lockCancel()
 
-	err := reg.withLock(lockCtx, func(state *registryState) (bool, error) {
+	_, err := reg.withLock(lockCtx, func(state *registryState) (bool, error) {
 		for _, w := range state.Windows {
 			if w.Status == "active" {
 				report.ActiveWindows++
@@ -98,6 +99,22 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 				return false, err
 			}
 			report.RefsDeleted++
+		}
+
+		// Expire closure markers with the stale-window retention period.
+		if entries, err := os.ReadDir(filepath.Join(reg.dir, "closures")); err == nil {
+			for _, e := range entries {
+				if err := passCtx.Err(); err != nil {
+					return false, err
+				}
+				fi, err := e.Info()
+				if err != nil || fi.ModTime().After(staleCutoff) {
+					continue
+				}
+				if os.Remove(filepath.Join(reg.dir, "closures", e.Name())) == nil {
+					report.MarkersPruned++
+				}
+			}
 		}
 
 		// Use an explicit grace period; routine maintenance never prunes now.

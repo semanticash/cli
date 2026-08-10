@@ -12,14 +12,17 @@ const (
 
 // Partial reason strings are persisted and must remain stable.
 const (
-	ReasonFileLimit       = "file_limit"
-	ReasonByteLimit       = "byte_limit"
-	ReasonUnsupportedPath = "unsupported_path"
-	ReasonMalformedStatus = "malformed_status"
-	ReasonHeadChanged     = "head_changed"
-	ReasonAlternateGone   = "alternate_object_missing"
-	ReasonTimeout         = "timeout"
-	ReasonLockTimeout     = "registry_lock_timeout"
+	ReasonFileLimit        = "file_limit"
+	ReasonByteLimit        = "byte_limit"
+	ReasonUnsupportedPath  = "unsupported_path"
+	ReasonMalformedStatus  = "malformed_status"
+	ReasonHeadChanged      = "head_changed"
+	ReasonAlternateGone    = "alternate_object_missing"
+	ReasonTimeout          = "timeout"
+	ReasonLockTimeout      = "registry_lock_timeout"
+	ReasonStoreUnavailable = "snapshot_store_unavailable"
+	// ReasonPostSnapshotLost marks a retry without durable post state.
+	ReasonPostSnapshotLost = "post_snapshot_lost"
 )
 
 // PartialError reports a capture that must degrade to partial

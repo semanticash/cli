@@ -23,7 +23,7 @@ func retainGroup(t *testing.T, reg *Registry, tool, ref string) {
 		t.Fatal(err)
 	}
 	boom := errors.New("retained for retry")
-	if _, err := reg.Complete(ctx, key(tool), 200, func(_ []PendingToolSnapshot, _ *GroupFinal) (FinalizeResult, error) {
+	if _, err := reg.Complete(ctx, key(tool), CompletionInfo{EventID: "e", At: 200}, nil, func(_ []PendingToolSnapshot, _ *GroupFinal, _ bool, _ func() error) (FinalizeResult, error) {
 		return FinalizeResult{Final: GroupFinal{PartialReason: ReasonLockTimeout}}, boom
 	}); !errors.Is(err, boom) {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestMaintenancePreservesCapturedFinalPostRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	boom := errors.New("persist failed")
-	if _, err := reg.Complete(ctx, key("tu-cap"), 200, func(_ []PendingToolSnapshot, _ *GroupFinal) (FinalizeResult, error) {
+	if _, err := reg.Complete(ctx, key("tu-cap"), CompletionInfo{EventID: "e", At: 200}, nil, func(_ []PendingToolSnapshot, _ *GroupFinal, _ bool, _ func() error) (FinalizeResult, error) {
 		return FinalizeResult{Final: GroupFinal{PostTreeHash: post.TreeHash, CapturedAt: 200}}, boom
 	}); !errors.Is(err, boom) {
 		t.Fatal(err)

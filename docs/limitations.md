@@ -29,14 +29,14 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 - Attribution is anchored to captured session data within the commit lineage window. Deferred created or modified files can carry forward AI attribution from earlier history when matching AI output lands in a later commit.
 - **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata. Those weaker provider-touch signals are preserved as evidence and `ai_provider_only_lines`, but excluded from the headline AI percentage instead of being treated as equivalent to line-level matches.
-- **Shell side effects are limited.** Bash and shell-tool events are captured as command provenance, but Semantica currently extracts file-touch evidence only for recognized deletion commands such as `rm`. Shell writes such as `echo > file`, `tee`, or `cp` do not synthesize file-touch or line-level attribution unless the provider also emits a file-edit hook for the affected file.
+- **Shell side effects are not yet scored.** Claude Code Bash hooks capture bounded workspace deltas locally, but attribution results do not yet use them. Other shell-tool providers contribute command provenance and recognized deletion evidence unless they also emit file-edit hooks.
 - Manual edits after AI generation downgrade matches from "exact" to "modified." Mixed human/AI edits in the same hunk are attributed as modified rather than exact.
 - Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
 - Attribution is computed against the diff between commit lineage records. Squashed or rebased commits that collapse multiple records may produce less precise results.
 
 ## Playbooks and suggestions
 
-- Require at least one supported LLM CLI installed and authenticated: Claude Code (`claude`), Cursor CLI (`agent`), Gemini CLI (`gemini`), or Copilot CLI (`copilot`). For Claude Code, the binary bundled inside the VS Code extension is also discovered automatically when the standalone CLI is not on PATH.
+- Require at least one supported LLM CLI installed and authenticated: Claude Code (`claude`), Codex (`codex`), Cursor CLI (`agent`), Gemini CLI (`gemini`), Copilot CLI (`copilot`), or Kiro CLI (`kiro-cli`). For Claude Code, the binary bundled inside the VS Code extension is also discovered automatically when the standalone CLI is not on PATH.
 - Playbook generation uses bounded diff input to stay within LLM context limits. Commit message and PR suggestions use structured change summaries plus selected per-file excerpts. Large diffs may still produce less precise summaries.
 - `semantica suggest pr` uses the committed branch diff against the base ref. Uncommitted working-tree changes are not included in the suggestion.
 - `semantica suggest pr` detects the base branch best-effort. Repos with non-standard default branch names may need `--base` explicitly.

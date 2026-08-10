@@ -315,6 +315,12 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		if len(events) == 0 {
 			return nil
 		}
+		// Bash completion may persist events while closing its tool window.
+		if event.ToolName == "Bash" &&
+			completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
+			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+			return nil
+		}
 		err = routeAndWriteEvents(benchCtx, events, bh, blobStore)
 		if err != nil {
 			slog.Warn("direct step write failed", "tool", event.ToolName, "err", err)

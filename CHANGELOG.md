@@ -5,11 +5,11 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-07-10
+## [0.6.0] - 2026-08-12
 
 ### Added
 
-- Added a bounded workspace snapshot and delta engine with a crash-safe registry and bounded store maintenance. Claude Code pre-Bash hooks now register pending snapshots in an isolated Git store without contacting repository remotes. Post-tool deltas are not yet included in attribution results.
+- Added bounded workspace snapshots for Claude Code Bash tools. Semantica captures before and after states in an isolated Git store, persists canonical deltas with crash-safe recovery, and maintains the store without contacting repository remotes. Tool deltas are not yet included in attribution results.
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.

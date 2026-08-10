@@ -20,12 +20,30 @@ func SnapshotRef(worktreeID, groupID, toolUseID string) string {
 		sanitizeRefComponent(toolUseID))
 }
 
-// validRefName enforces the snapshot namespace at the operation
-// itself. Components after the fixed prefix must use the safe
-// alphabet sanitizeRefComponent produces: this excludes dot-dot,
-// backslashes (a separator on Windows via filepath.FromSlash), and
-// every other path metacharacter, so a crafted ref cannot traverse
-// outside the store.
+// GroupPostRef returns the ref that protects a group's post tree.
+func GroupPostRef(worktreeID, groupID string) string {
+	return fmt.Sprintf("%s/%s/%s/post", refPrefix,
+		sanitizeRefComponent(worktreeID),
+		sanitizeRefComponent(groupID))
+}
+
+// WorktreeID returns the store's worktree identity.
+func (s *Store) WorktreeID() string { return s.repo.WorktreeID }
+
+// EnsureRef creates a ref or accepts an identical existing ref.
+func (s *Store) EnsureRef(ctx context.Context, ref, tree string) error {
+	err := s.CreateRef(ctx, ref, tree)
+	if err == nil {
+		return nil
+	}
+	refs, lerr := s.ListRefs(ctx)
+	if lerr == nil && refs[ref] == tree {
+		return nil
+	}
+	return err
+}
+
+// validRefName accepts only snapshot refs produced by sanitizeRefComponent.
 func validRefName(ref string) bool {
 	rest, ok := strings.CutPrefix(ref, refPrefix+"/")
 	if !ok {
@@ -46,28 +64,16 @@ func validRefName(ref string) bool {
 	return true
 }
 
-// CreateRef atomically creates a tree ref. The ref keeps a pending
-// snapshot reachable during store maintenance.
-//
-// Publication is crash-safe without a git spawn: the content is fully
-// written and synced to a temporary file, then linked to the final
-// name. Link is atomic no-replace, so a partially written or empty
-// ref can never appear under the final name and a duplicate create
-// fails. packed-refs is consulted first so a packed ref cannot be
-// silently shadowed; store maintenance must not pack active snapshot
-// refs.
+// CreateRef atomically publishes a tree ref without replacing an existing ref.
 func (s *Store) CreateRef(ctx context.Context, ref, tree string) error {
 	if !validRefName(ref) {
 		return fmt.Errorf("toolsnap: refusing to create ref outside %s: %s", refPrefix, ref)
 	}
-	// git update-ref validated the target; a direct write must do the
-	// same for form. Object existence is the caller's guarantee: the
-	// hash comes from write-tree in the same process.
+	// The caller guarantees that the object exists in the store.
 	if !validHash(tree, s.repo.ObjectFormat) {
 		return fmt.Errorf("toolsnap: invalid ref target %q", tree)
 	}
-	// Only a missing packed-refs file may be ignored: publishing
-	// blind on a read error would weaken create-if-absent.
+	// Read errors prevent safe create-if-absent publication.
 	packed, err := os.ReadFile(filepath.Join(s.Dir, "packed-refs"))
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("toolsnap: read packed-refs: %w", err)
@@ -81,8 +87,7 @@ func (s *Store) CreateRef(ctx context.Context, ref, tree string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("toolsnap: create ref parents %s: %w", ref, err)
 	}
-	// A random suffix keeps crash remnants genuinely ignorable; a
-	// PID-only name could collide after PID reuse.
+	// A random suffix avoids collisions with abandoned temp files.
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("toolsnap: create ref temp %s: %w", ref, err)
@@ -106,9 +111,7 @@ func (s *Store) CreateRef(ctx context.Context, ref, tree string) error {
 	return nil
 }
 
-// validHash reports whether s is a full lowercase hex object name for
-// the given format, the only form Semantica's own tree building
-// produces.
+// validHash accepts full lowercase object IDs for the repository format.
 func validHash(s, format string) bool {
 	if len(s) != hashLen(format) {
 		return false

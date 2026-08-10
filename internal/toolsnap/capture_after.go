@@ -59,13 +59,24 @@ func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResul
 	if post.TreeHash == before.TreeHash {
 		return CaptureResult{Post: post}, nil
 	}
-
-	changes, err := s.DiffTrees(ctx, before.TreeHash, post.TreeHash)
+	files, bytesRead, truncated, err := s.DeltaBetweenTrees(ctx, before.TreeHash, post.TreeHash)
 	if err != nil {
 		return CaptureResult{}, err
 	}
+	return CaptureResult{Post: post, Files: files, BytesRead: bytesRead, Truncated: truncated}, nil
+}
+
+// DeltaBetweenTrees computes bounded file deltas between captured trees.
+func (s *Store) DeltaBetweenTrees(ctx context.Context, beforeTree, afterTree string) ([]FileDelta, int64, bool, error) {
+	if beforeTree == afterTree {
+		return nil, 0, false, nil
+	}
+	changes, err := s.DiffTrees(ctx, beforeTree, afterTree)
+	if err != nil {
+		return nil, 0, false, err
+	}
 	if len(changes) > s.maxPaths() {
-		return CaptureResult{}, &PartialError{
+		return nil, 0, false, &PartialError{
 			Reason: ReasonFileLimit,
 			Detail: fmt.Sprintf("%d changed paths exceed limit %d", len(changes), s.maxPaths()),
 		}
@@ -87,7 +98,7 @@ func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResul
 	}
 	blobs, bytesRead, err := s.batchReadBlobs(ctx, hashes)
 	if err != nil {
-		return CaptureResult{}, err
+		return nil, 0, false, err
 	}
 
 	diffBudget := int64(maxDiffWorkPerCapture)
@@ -95,7 +106,7 @@ func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResul
 	files := make([]FileDelta, 0, len(changes))
 	for _, c := range changes {
 		if ctx.Err() != nil {
-			return CaptureResult{}, &PartialError{
+			return nil, 0, false, &PartialError{
 				Reason: ReasonTimeout,
 				Detail: "capture deadline exceeded during delta generation",
 			}
@@ -132,14 +143,14 @@ func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResul
 		default:
 			fd.Hunks, err = diffLinesBudget(ctx, beforeContent, afterContent, &diffBudget)
 			if err != nil {
-				return CaptureResult{}, err
+				return nil, 0, false, err
 			}
 			fd.OldNoEOFNewline = len(beforeContent) > 0 && beforeContent[len(beforeContent)-1] != '\n'
 			fd.NewNoEOFNewline = len(afterContent) > 0 && afterContent[len(afterContent)-1] != '\n'
 		}
 		files = append(files, fd)
 	}
-	return CaptureResult{Post: post, Files: files, BytesRead: bytesRead, Truncated: truncated}, nil
+	return files, bytesRead, truncated, nil
 }
 
 func operationForStatus(op byte) string {

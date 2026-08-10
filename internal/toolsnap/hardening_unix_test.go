@@ -67,7 +67,7 @@ func TestNewlinePathBlobEntersExactAccounting(t *testing.T) {
 	}
 }
 
-// Failed publication must leave a finalized group open for retry.
+// A Done receipt completes removal after publication failure.
 func TestClosedFalseWhenPublicationFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
@@ -82,9 +82,9 @@ func TestClosedFalseWhenPublicationFails(t *testing.T) {
 	}
 
 	finalized := false
-	closed, err := r.Complete(ctx, key("tu1"), 200, func([]PendingToolSnapshot, *GroupFinal) (FinalizeResult, error) {
+	closed, err := r.Complete(ctx, key("tu1"), CompletionInfo{EventID: "e", At: 200}, nil, func([]PendingToolSnapshot, *GroupFinal, bool, func() error) (FinalizeResult, error) {
 		finalized = true
-		// Deny the state publication that follows finalization.
+		// Fail state publication after finalization.
 		if err := os.Chmod(r.dir, 0o500); err != nil {
 			t.Fatal(err)
 		}
@@ -100,12 +100,78 @@ func TestClosedFalseWhenPublicationFails(t *testing.T) {
 	if err := os.Chmod(r.dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The next operation applies the Done receipt.
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want the Done receipt", entries, err)
+	}
 	stale, err := r.Stale(ctx, 10_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stale) != 1 {
-		t.Fatalf("group lost after failed publication: %+v", stale)
+	if len(stale) != 0 {
+		t.Fatalf("group stranded after Done receipt: %+v", stale)
+	}
+	entries, err = os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after recovery = %v err = %v, want none", entries, err)
+	}
+}
+
+// A receipt recovers a durable member after publication failure.
+func TestCompletionReceiptReconciliation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Keep the group open while the first member completes.
+	if _, err := r.Begin(ctx, entry("tu1", 100)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Begin(ctx, entry("tu2", 110)); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted := false
+	_, err = r.Complete(ctx, key("tu1"), CompletionInfo{EventID: "evt-1", At: 200, CommandSummary: "first"},
+		func(PendingToolSnapshot) error {
+			persisted = true
+			// Fail state publication after the event write.
+			return os.Chmod(r.dir, 0o500)
+		}, noFinalize(t))
+	defer func() { _ = os.Chmod(r.dir, 0o755) }()
+	if !persisted || err == nil {
+		t.Fatalf("persisted=%v err=%v, want durable member with publication failure", persisted, err)
+	}
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want one", entries, err)
+	}
+
+	// The next completion applies the receipt before closing the group.
+	var members []PendingToolSnapshot
+	closed, err := r.Complete(ctx, key("tu2"), CompletionInfo{EventID: "evt-2", At: 300}, nil, doneFinalize(&members))
+	if err != nil || !closed {
+		t.Fatalf("closure: closed=%v err=%v", closed, err)
+	}
+	byUse := map[string]PendingToolSnapshot{}
+	for _, m := range members {
+		byUse[m.Key.ToolUseID] = m
+	}
+	m1 := byUse["tu1"]
+	if m1.Status != "complete" || m1.EventID != "evt-1" || m1.CommandSummary != "first" || m1.CompletedAt != 200 {
+		t.Fatalf("receipted member = %+v", m1)
+	}
+	entries, err = os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after reconciliation = %v err = %v, want none", entries, err)
 	}
 }
 

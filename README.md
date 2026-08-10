@@ -30,7 +30,7 @@ Website: [semantica.sh](https://www.semantica.sh)
 - **Git** - Semantica hooks into the Git commit lifecycle
 - **macOS, Linux, or Windows** - see [platform notes](docs/limitations.md) for details
 - **At least one supported AI provider** for capture (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or Kiro IDE/CLI)
-- **At least one supported AI CLI** for LLM-backed features such as suggestions and playbooks (`claude`, `codex`, `agent`, `gemini`, `copilot`, or `kiro-cli`) - not required for core capture and attribution
+- **At least one supported AI CLI** for LLM-backed features such as suggestions and playbooks: Claude Code (`claude`), Codex (`codex`), Cursor CLI (`agent`), Gemini CLI (`gemini`), Copilot CLI (`copilot`), or Kiro CLI (`kiro-cli`) - not required for core capture and attribution
 
 ---
 
@@ -312,7 +312,7 @@ user-scoped refresh command to run afterward.
 
 | Provider | Hook config | Detection |
 |----------|-------------|-----------|
-| Claude Code | `.claude/settings.json` | Auto |
+| Claude Code | `.claude/settings.local.json` | Auto |
 | OpenAI Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` | Auto |
 | Cursor (IDE and CLI) | `.cursor/hooks.json` | Auto |
 | Kiro IDE | `.kiro/hooks/*.kiro.hook` | Auto |
@@ -356,6 +356,8 @@ Most commands support `--json` for structured output. See [help.md](help.md) for
   settings.json       # configuration
   lineage.db          # SQLite (lineage records, sessions, events, attribution, playbooks)
   objects/            # content-addressed blob store (SHA-256, zstd compressed)
+  tool-snapshots.git/ # isolated Git objects for shell-tool workspace snapshots
+  tool-windows/       # pending shell-tool capture state
   activity.log        # hook and lifecycle warnings / activity log
   worker.log          # background worker logs
 ```

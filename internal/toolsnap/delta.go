@@ -99,6 +99,10 @@ func (d *Delta) Validate() error {
 		if tu.Actor < 0 || tu.Actor >= len(d.Actors) {
 			return fmt.Errorf("toolsnap: tool use %s references actor %d of %d", tu.ToolUseID, tu.Actor, len(d.Actors))
 		}
+		// Tool uses require event identities for evidence links.
+		if tu.EventID == "" {
+			return fmt.Errorf("toolsnap: tool use %s without event identity", tu.ToolUseID)
+		}
 		key := tu.ToolUseID + "\x00" + tu.EventID
 		if tuSeen[key] {
 			return fmt.Errorf("toolsnap: duplicate tool use %s/%s", tu.ToolUseID, tu.EventID)
