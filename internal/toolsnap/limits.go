@@ -17,6 +17,8 @@ const (
 	ReasonUnsupportedPath = "unsupported_path"
 	ReasonMalformedStatus = "malformed_status"
 	ReasonHeadChanged     = "head_changed"
+	ReasonAlternateGone   = "alternate_object_missing"
+	ReasonTimeout         = "timeout"
 )
 
 // PartialError reports a capture that must degrade to partial

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added a bounded workspace snapshot engine for future attribution of files changed by agent-run shell tools. It supports linked worktrees and SHA-1/SHA-256 repositories, keeps snapshots in an isolated Git store, never contacts repository remotes, and rejects unsupported or over-limit captures instead of guessing. Shell-tool snapshots are not yet included in attribution results.
+- Added a bounded workspace snapshot and delta engine for future attribution of files changed by agent-run shell tools. It stores deterministic text hunks and file-level evidence in an isolated Git store without contacting repository remotes. Shell-tool deltas are not yet included in attribution results.
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.

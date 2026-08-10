@@ -12,21 +12,22 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// Snapshot is one captured workspace state: a Git tree in the isolated
-// store plus the repository positions it was built against.
+// Snapshot identifies a captured workspace tree and its repository state.
 type Snapshot struct {
 	TreeHash  string
 	HeadHash  string
 	DirtyPath []string
 }
 
-// CaptureBefore builds a tree representing the current worktree
-// content: the HEAD tree with every dirty, staged, type-changed, or
-// untracked path replaced by its literal worktree bytes and deletions
-// removed. Unchanged subtrees keep their existing hashes, so cost
-// scales with dirty paths, not repository size.
+// CaptureBefore builds a workspace tree from HEAD and current changes.
+// Unchanged subtrees retain their existing object IDs.
 func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
-	headCommit, headTree, err := s.resolveHead(ctx)
+	return s.capture(ctx, true)
+}
+
+// capture builds a snapshot, optionally using the HEAD resolved at open.
+func (s *Store) capture(ctx context.Context, useCachedHead bool) (Snapshot, error) {
+	headCommit, headTree, err := s.resolveHead(ctx, useCachedHead)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -34,17 +35,11 @@ func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// The HEAD resolved with the repository context can go stale
-	// before status runs: store opening and, in the real hook,
-	// registry-lock acquisition sit between them. Status reports the
-	// HEAD it described, so a mismatch means the snapshot would mix
-	// two repository states and must degrade to partial.
+	// Reject a snapshot spanning two HEAD states.
 	if err := verifyHeadUnmoved(headCommit, statusOID); err != nil {
 		return Snapshot{}, err
 	}
-	// Clean fast path: with no dirty paths the worktree tree is the
-	// HEAD tree, already stored in the repository. No index, no tree
-	// writing, no store objects.
+	// A clean worktree already matches the HEAD tree.
 	if len(paths) == 0 {
 		return Snapshot{TreeHash: headTree, HeadHash: headCommit}, nil
 	}
@@ -55,9 +50,7 @@ func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
 	return Snapshot{TreeHash: tree, HeadHash: headCommit, DirtyPath: paths}, nil
 }
 
-// verifyHeadUnmoved compares the HEAD commit the snapshot is built
-// from with the branch.oid git status reported. An unborn branch
-// reports "(initial)".
+// verifyHeadUnmoved compares resolved HEAD with the status snapshot.
 func verifyHeadUnmoved(headCommit, statusOID string) error {
 	expected := headCommit
 	if expected == "" {
@@ -72,11 +65,10 @@ func verifyHeadUnmoved(headCommit, statusOID string) error {
 	return nil
 }
 
-// resolveHead returns the HEAD commit and tree hashes, reusing the
-// values resolved with the repository context when available. An
-// unborn branch resolves to the empty tree.
-func (s *Store) resolveHead(ctx context.Context) (commit, tree string, err error) {
-	if s.repo.HeadCommit != "" && s.repo.HeadTree != "" {
+// resolveHead returns the current commit and tree. An unborn branch
+// uses the empty tree.
+func (s *Store) resolveHead(ctx context.Context, useCached bool) (commit, tree string, err error) {
+	if useCached && s.repo.HeadCommit != "" && s.repo.HeadTree != "" {
 		return s.repo.HeadCommit, s.repo.HeadTree, nil
 	}
 	out, err := gitOutput(ctx, s.repo.WorktreeRoot, "rev-parse", "HEAD", "HEAD^{tree}")
@@ -124,9 +116,7 @@ func (s *Store) buildTree(ctx context.Context, headTree string, paths []string) 
 	if err != nil {
 		return "", err
 	}
-	// Enforce the budget against the blobs Git actually hashed. Objects
-	// written by a rejected capture remain unreachable and are pruned by
-	// snapshot-store maintenance.
+	// Account for the exact blobs written by Git.
 	if len(written) > 0 {
 		bytesRead, err := s.blobSizeSum(ctx, written)
 		if err != nil {
@@ -157,13 +147,15 @@ func (s *Store) buildTree(ctx context.Context, headTree string, paths []string) 
 	return strings.TrimSpace(out), nil
 }
 
-// indexEntry is one update-index record. Removals use an all-zero
-// object ID; every other entry references a blob hashed by capture.
+// indexEntry is one update-index record.
 type indexEntry struct {
 	mode string
 	hash string
 	path string
 }
+
+// gitlinkMode identifies a submodule commit entry.
+const gitlinkMode = "160000"
 
 func (e indexEntry) isRemoval() bool { return e.mode == "000000" }
 
@@ -215,6 +207,16 @@ func (s *Store) hashWorktreePaths(ctx context.Context, paths []string) ([]string
 				mode = "100755"
 			}
 			regular = append(regular, regularFile{path: p, mode: mode})
+		case fi.IsDir():
+			// Dirty directory candidates are represented as gitlinks.
+			hash, err := gitOutput(ctx, abs, "rev-parse", "HEAD")
+			if err != nil {
+				return nil, nil, &PartialError{
+					Reason: ReasonUnsupportedPath,
+					Detail: fmt.Sprintf("%s is a directory without a resolvable HEAD", p),
+				}
+			}
+			typed = append(typed, indexEntry{mode: gitlinkMode, hash: strings.TrimSpace(hash), path: p})
 		default:
 			// Git trees cannot represent sockets, pipes, or devices.
 			return nil, nil, &PartialError{
@@ -275,12 +277,12 @@ func (s *Store) hashWorktreePaths(ctx context.Context, paths []string) ([]string
 		}
 	}
 
-	// Derive index records and byte-accounted blob hashes together.
+	// Gitlinks do not reference blobs in the snapshot store.
 	entries := make([]string, 0, len(typed))
 	var written []string
 	for _, e := range typed {
 		entries = append(entries, e.indexInfo())
-		if !e.isRemoval() {
+		if !e.isRemoval() && e.mode != gitlinkMode {
 			written = append(written, e.hash)
 		}
 	}

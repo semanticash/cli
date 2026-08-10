@@ -201,9 +201,11 @@ writing objects or refs to the user repository. It stores private objects and
 refs in `.semantica/tool-snapshots.git` and reads committed objects through a
 read-only alternate to the repository object database.
 
-Capture is bounded by candidate-path and byte limits. Unknown status records,
-unsupported file types, incompatible object formats, and over-limit worktrees
-fail closed instead of producing partial workspace trees. Git environment
+Capture and delta generation are bounded by path, byte, line, and diff-work
+limits. Text changes produce deterministic, context-free hunks. Binary files,
+gitlinks, and truncated text files retain file-level evidence. Unknown status
+records, unsupported file types, incompatible object formats, and over-limit
+worktrees fail closed. Git environment
 variables that could redirect repository access are removed from snapshot
 subprocesses. Store commands ignore inherited Git configuration, and store-local
 remotes, partial-clone settings, and config includes are removed before object
