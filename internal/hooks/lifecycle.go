@@ -273,6 +273,13 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		return nil
 
+	case ToolStepStarted:
+		benchCtx, benchScope := doctor.WithBenchScope(ctx)
+		hookStart := time.Now()
+		err := handleToolStepStarted(benchCtx, provider.Name(), event, bh)
+		emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+		return err
+
 	case ToolStepCompleted:
 		benchCtx, benchScope := doctor.WithBenchScope(ctx)
 		hookStart := time.Now()

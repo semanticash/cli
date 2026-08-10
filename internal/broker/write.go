@@ -18,6 +18,21 @@ import (
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
 
+// RepositoryIDForPath returns the repository UUID stored in its lineage database.
+func RepositoryIDForPath(ctx context.Context, repoPath string) (string, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return "", fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("get repo %s: %w", repoPath, err)
+	}
+	return repo.RepositoryID, nil
+}
+
 // WriteEventsToRepo writes broker-routed events into the target repo's
 // lineage DB. Groups events by source and session, upserts the necessary
 // records, and inserts events with INSERT OR IGNORE for idempotency.

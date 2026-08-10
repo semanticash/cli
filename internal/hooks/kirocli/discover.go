@@ -14,7 +14,6 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
-
 // kiroSessionsCLISubdir holds Kiro CLI session files. Parent sessions and
 // AgentCrew stage children share this directory.
 const kiroSessionsCLISubdir = ".kiro/sessions/cli"

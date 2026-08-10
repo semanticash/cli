@@ -100,7 +100,7 @@ func TestDiffFixtureSet_IgnoresUnrelatedFiles(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "alpha.golden.json"), "{}")
 	mustWriteFile(t, filepath.Join(dir, "README.md"), "notes")
-	mustWriteFile(t, filepath.Join(dir, "alpha.input.json"), "{}")       // not a golden
+	mustWriteFile(t, filepath.Join(dir, "alpha.input.json"), "{}")      // not a golden
 	mustWriteFile(t, filepath.Join(dir, "alpha.golden.json.bak"), "{}") // leftover from manual edit
 
 	cases := []Case{{Name: "alpha"}}

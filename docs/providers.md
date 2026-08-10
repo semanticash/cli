@@ -68,6 +68,7 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 
 - **`UserPromptSubmit`** - Saves the current transcript offset and records the prompt.
 - **`PostToolUse[Write]`**, **`PostToolUse[Edit]`**, **`PostToolUse[Bash]`** - Capture direct file and shell provenance from hook payloads.
+- **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for pending shell-tool evidence.
 - **`PreToolUse[Agent]`** - Captures the delegated subagent prompt.
 - **`PostToolUse[Agent]`** - Captures the delegated subagent boundary.
 - **`Stop`** - Replays the transcript from the saved offset and packages the completed turn.

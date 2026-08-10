@@ -85,7 +85,6 @@ func (r *Registry) ListAvailable() []HookProvider {
 	return out
 }
 
-
 func sortProviders(ps []HookProvider) {
 	sort.Slice(ps, func(i, j int) bool {
 		oi, oki := providerOrder[ps[i].Name()]
