@@ -216,6 +216,10 @@ worktree a distinct private ref namespace. Committed objects are read through
 the repository's common object database. If repository maintenance removes an
 alternate object, capture fails without fabricating evidence.
 
+A repository-scoped registry serializes overlapping tool windows under an
+OS-backed lock. Closing tree identities survive retries, and timeout tombstones
+keep delayed captures from being treated as line evidence.
+
 This store is currently an internal foundation. Provider hooks and attribution
 scoring do not consume tool snapshots yet.
 

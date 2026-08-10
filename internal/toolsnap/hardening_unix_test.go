@@ -66,6 +66,48 @@ func TestNewlinePathBlobEntersExactAccounting(t *testing.T) {
 	}
 }
 
+// Failed publication must leave a finalized group open for retry.
+func TestClosedFalseWhenPublicationFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := r.Begin(ctx, entry("tu1", 100)); err != nil {
+		t.Fatal(err)
+	}
+
+	finalized := false
+	closed, err := r.Complete(ctx, key("tu1"), 200, func([]PendingToolSnapshot, *GroupFinal) (FinalizeResult, error) {
+		finalized = true
+		// Deny the state publication that follows finalization.
+		if err := os.Chmod(r.dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return FinalizeResult{Done: true}, nil
+	})
+	defer func() { _ = os.Chmod(r.dir, 0o755) }()
+	if !finalized {
+		t.Fatal("finalize did not run")
+	}
+	if closed || err == nil {
+		t.Fatalf("closed=%v err=%v, want closed=false with publication error", closed, err)
+	}
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := r.Stale(ctx, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("group lost after failed publication: %+v", stale)
+	}
+}
+
 // Symlink targets count toward the byte budget before objects are written.
 func TestSymlinkTargetBytesCountTowardBudget(t *testing.T) {
 	root := testRepo(t)

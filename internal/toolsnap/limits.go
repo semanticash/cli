@@ -19,6 +19,7 @@ const (
 	ReasonHeadChanged     = "head_changed"
 	ReasonAlternateGone   = "alternate_object_missing"
 	ReasonTimeout         = "timeout"
+	ReasonLockTimeout     = "registry_lock_timeout"
 )
 
 // PartialError reports a capture that must degrade to partial
