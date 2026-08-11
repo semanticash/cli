@@ -147,6 +147,12 @@ func TestCheckToolWindows(t *testing.T) {
 		if c.Status != StatusWarn || !strings.Contains(c.Message, "1 Bash hook event") {
 			t.Fatalf("checks = %+v, want per-event drift warning", checks)
 		}
+		// Captured evidence in the window redirects the diagnosis to
+		// stale sessions rather than missing installation.
+		if !strings.Contains(c.Message, "1 captured") ||
+			!strings.Contains(c.Remediation, "restart agent sessions") {
+			t.Fatalf("check = %+v, want the stale-session diagnosis", c)
+		}
 
 		// Providers without a pre hook do not count as drift.
 		evtCodex := strings.Repeat("ef", 32)

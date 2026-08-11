@@ -118,22 +118,40 @@ func checkToolWindowDrift(ctx context.Context, opts Options) []Check {
 	defer func() { _ = sqlstore.Close(h) }()
 
 	since := time.Now().Add(-24 * time.Hour).UnixMilli()
-	var unmatched int
+	var unmatched, captured int
 	// Drift applies only to providers with a pre-tool hook.
 	if err := h.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM agent_events e
+		`SELECT
+		   COUNT(*) FILTER (WHERE NOT EXISTS (
+		     SELECT 1 FROM agent_event_evidence_links l
+		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
+		       AND l.group_id NOT LIKE 'pre_snapshot_missing:%')),
+		   COUNT(*) FILTER (WHERE EXISTS (
+		     SELECT 1 FROM agent_event_evidence_links l
+		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
+		       AND l.group_id NOT LIKE 'pre_snapshot_missing:%'))
+		 FROM agent_events e
 		 JOIN agent_sessions s ON s.session_id = e.session_id
 		 WHERE e.tool_name = 'Bash' AND e.event_source = 'hook' AND e.ts > ?
-		 AND s.provider = 'claude_code'
-		 AND NOT EXISTS (
-		   SELECT 1 FROM agent_event_evidence_links l
-		   WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
-		     AND l.group_id NOT LIKE 'pre_snapshot_missing:%')`,
-		since).Scan(&unmatched); err != nil {
+		 AND s.provider = 'claude_code'`,
+		since).Scan(&unmatched, &captured); err != nil {
 		return nil
 	}
 	if unmatched == 0 {
 		return nil
+	}
+	// Captured evidence in the same window proves the installed hooks
+	// work: the unmatched events come from sessions whose hook set
+	// predates the last enable, not from missing installation.
+	if captured > 0 {
+		return []Check{{
+			Category: "toolwindow",
+			ID:       "drift",
+			Status:   StatusWarn,
+			Message: fmt.Sprintf("tool windows: %d Bash hook event(s) in 24h without captured evidence, %d captured; likely sessions started before the last `semantica enable`",
+				unmatched, captured),
+			Remediation: "restart agent sessions that were running when hooks were (re)installed",
+		}}
 	}
 	return []Check{{
 		Category: "toolwindow",
