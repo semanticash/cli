@@ -1249,7 +1249,7 @@ func TestCarryForward_MixedWindow(t *testing.T) {
 		Window:   tsWindow(cp1.CreatedAt, 300_000), // (200_000, 300_000]
 	}
 
-	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1410,7 +1410,7 @@ func TestCarryForward_NoOverride(t *testing.T) {
 		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
-	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1488,7 +1488,7 @@ func TestCarryForward_PerFileMerge(t *testing.T) {
 		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
-	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1566,7 +1566,7 @@ func TestCarryForward_ProviderMerge(t *testing.T) {
 		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
-	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1621,7 +1621,7 @@ func TestCarryForward_NilPrevCP(t *testing.T) {
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
 		Window:   tsWindow(0, 300_000),
-	}, nil, semDir)
+	}, nil, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1705,7 +1705,7 @@ func TestCarryForward_EventsWithNoCandidates(t *testing.T) {
 		Window:   tsWindow(cp1.CreatedAt, 300_000),
 	}
 
-	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir)
+	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), input, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1754,7 +1754,7 @@ func TestCarryForward_NoEventsInBothWindows(t *testing.T) {
 		RepoRoot: repoRoot,
 		RepoID:   repoID,
 		Window:   tsWindow(cp1.CreatedAt, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 
 	// Should return ErrNoEventsInWindow with noEvents=true
 	if !errors.Is(err, ErrNoEventsInWindow) {

@@ -263,6 +263,29 @@ func TestScoreV2_IncompleteDiffRefusesAlignment(t *testing.T) {
 	if fs.DeltaExactLines != 0 || fs.ExactLines != 1 {
 		t.Fatalf("score = %+v, want direct-only evidence", fs)
 	}
+	// Direct evidence can still anchor modified-line attribution.
+	if fs.ModifiedLines != 1 || fs.HumanLines != 0 || fs.ProviderOnlyLines != 0 {
+		t.Fatalf("score = %+v, want the tool line modified via the direct anchor", fs)
+	}
+}
+
+// A refused delta takes sidecar credit over generic file-touch evidence.
+func TestScoreV2_RefusalCreditsClaimProviderOverTouch(t *testing.T) {
+	diff := deltaDiff(t, "+tool line one", "+tool line two")
+	diff.Complete = false
+	scores, _ := ScoreFilesWithDeltas(diff, nil,
+		map[string]string{"f.go": "cursor"}, nil, nil, nil,
+		groupsFor(group("claude_code", 100, "e1", "tool line one", "tool line two")))
+	fs := scores[0]
+	if !fs.DeltaAlignmentRefused {
+		t.Fatalf("refusal not surfaced: %+v", fs)
+	}
+	if fs.ProviderOnlyLines != 2 || fs.HumanLines != 0 {
+		t.Fatalf("score = %+v, want both lines in the sidecar", fs)
+	}
+	if fs.ProviderOnlyLinesByProvider["claude_code"] != 2 || fs.ProviderOnlyLinesByProvider["cursor"] != 0 {
+		t.Fatalf("sidecar providers = %+v, want the refused claim provider credited", fs.ProviderOnlyLinesByProvider)
+	}
 }
 
 // The cumulative per-file budget refuses over-large alignments.
@@ -281,8 +304,8 @@ func TestScoreV2_BudgetRefusal(t *testing.T) {
 	if !fs.DeltaAlignmentRefused || stats.DeltaAlignmentsRefused != 1 {
 		t.Fatalf("refusal not surfaced: %+v", stats)
 	}
-	if fs.ExactLines != 0 || fs.HumanLines != n {
-		t.Fatalf("score = %+v, want no guessed lines", fs)
+	if fs.ExactLines != 0 || fs.ProviderOnlyLines != n || fs.HumanLines != 0 {
+		t.Fatalf("score = %+v, want no guessed lines, all in the sidecar", fs)
 	}
 }
 

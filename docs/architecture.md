@@ -149,7 +149,7 @@ explicit state under a named local or hosted policy.
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
-   Computes per-file and aggregate AI percentage and stores it on the lineage record. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
+   Computes per-file and aggregate AI percentage and stores it on the lineage record. Optional v2 scoring aligns verified tool deltas with committed lines and preserves unaligned changes as file-level evidence. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
 6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
@@ -173,6 +173,7 @@ Single-file database in `.semantica/`. Contains:
 | `agent_sources` | Provider source metadata keyed by provider and source key |
 | `agent_sessions` | AI agent sessions (provider, model, timestamps, parent linkage) |
 | `agent_events` | Captured prompt, assistant, tool, and provenance events |
+| `agent_event_evidence_links` | Links captured events to tool-delta evidence |
 | `provenance_manifests` | Per-turn packaged transcript/bundle metadata and upload state |
 | `session_checkpoints` | Links sessions to the lineage records they influenced |
 | `checkpoint_stats` | Lineage aggregates and attribution/sync completion markers |
@@ -224,9 +225,9 @@ Bounded maintenance defers during capture, removes stale unreferenced refs, and
 prunes expired objects without operating on the user repository.
 
 Claude Code pre- and post-Bash hooks capture canonical deltas and link them to
-their tool events. Recovery runs during worker drains and when
-`semantica tidy --apply` runs. Attribution scoring does not consume tool deltas
-yet.
+their tool events. Recovery runs during worker drains and with
+`semantica tidy --apply`. Optional v2 scoring verifies and aligns these deltas
+against committed lines; partial or ambiguous evidence remains unscored.
 
 ### Settings (`settings.json`)
 
@@ -238,13 +239,14 @@ yet.
   "connected": false,
   "connected_repo_id": "",
   "trailers": true,
+  "attribution_v2": false,
   "automations": {
     "playbook": { "enabled": false }
   }
 }
 ```
 
-The `providers` field is a string array of installed hook provider names (not paths). `connected` controls whether the current repo attempts hosted sync. `connected_repo_id` is written when a repo is connected and stores the repo-local connection binding used by hosted features. The `trailers` field controls whether `Semantica-Attribution` and `Semantica-Diagnostics` are appended; `Semantica-Checkpoint`, the lineage record ID, is always included. When omitted, `trailers` defaults to `true`.
+The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` enables experimental tool-delta scoring and defaults to `false`. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`.
 
 ### Global paths
 

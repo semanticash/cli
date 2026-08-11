@@ -25,6 +25,8 @@ type Settings struct {
 	Automations *Automations `json:"automations,omitempty"`
 	Connected        bool         `json:"connected"`
 	ConnectedRepoID  string       `json:"connected_repo_id,omitempty"`
+	// AttributionV2 enables tool-delta scoring. An absent value is disabled.
+	AttributionV2 *bool `json:"attribution_v2,omitempty"`
 }
 
 func SettingsPath(semDir string) string {
@@ -115,6 +117,21 @@ func TrailersEnabled(semDir string) bool {
 		return true
 	}
 	return *s.Trailers
+}
+
+// AttributionV2Enabled reads the environment override, then repository settings.
+func AttributionV2Enabled(semDir string) bool {
+	switch os.Getenv("SEMANTICA_ATTRIBUTION_V2") {
+	case "1", "true":
+		return true
+	case "0", "false":
+		return false
+	}
+	s, err := ReadSettings(semDir)
+	if err != nil || s.AttributionV2 == nil {
+		return false
+	}
+	return *s.AttributionV2
 }
 
 // IsPlaybookEnabled returns true if the auto-playbook automation is enabled.

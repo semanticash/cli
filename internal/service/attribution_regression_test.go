@@ -524,7 +524,7 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestRegression_CarryForward_Modified_ZeroCurrentWindowEvents(t *testing.T) 
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil && !errors.Is(err, ErrNoEventsInWindow) {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestRegression_CarryForward_Modified_CrossProviderRejected(t *testing.T) {
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -755,7 +755,7 @@ func TestRegression_CarryForward_Modified_ProviderTouchOnlyRejected(t *testing.T
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -786,7 +786,7 @@ func TestRegression_CarryForward_BothWindowsEmpty(t *testing.T) {
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if !errors.Is(err, ErrNoEventsInWindow) {
 		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
 	}
@@ -804,7 +804,7 @@ func TestRegression_CarryForward_NilPrevCP(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,1 @@\n+package main\n"
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: "/test/repo/" + repoID, RepoID: repoID, Window: tsWindow(0, 300_000),
-	}, nil, semDir)
+	}, nil, semDir, false)
 	if !errors.Is(err, ErrNoEventsInWindow) {
 		t.Errorf("expected ErrNoEventsInWindow, got %v", err)
 	}
@@ -836,7 +836,7 @@ func TestRegression_CarryForward_HistoricalEmpty_PreservesCurrent(t *testing.T) 
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
@@ -1074,7 +1074,7 @@ func TestRegression_CarryForward_EvidenceOnlyWhenScored(t *testing.T) {
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, _ := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
 		RepoRoot: repoRoot, RepoID: repoID, Window: tsWindow(200_000, 300_000),
-	}, &cp1, semDir)
+	}, &cp1, semDir, false)
 
 	// The file should have 0 AI lines and no carry-forward evidence.
 	if cfr.result.AILines != 0 {

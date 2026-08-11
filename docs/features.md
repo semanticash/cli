@@ -27,7 +27,7 @@ semantica blame HEAD          # aggregate AI percentage
 semantica blame HEAD --json   # per-file breakdown with exact/formatted/modified counts
 ```
 
-The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-file `providers` involvement lists, per-commit provider breakdown (provider name, model, line-level AI lines, provider-only lines), and diagnostics (events considered, payloads loaded, match counts). Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list of contributing evidence classes. This lets downstream views distinguish exact line matches from weaker supporting signals such as provider-touch metadata or carry-forward attribution.
+The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-file `providers` involvement lists, per-commit provider breakdown, and attribution diagnostics. Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list. Tool-delta scoring additionally reports `ai_delta_exact_lines`, `ai_delta_formatted_lines`, and `tool_delta_touch` evidence.
 
 ### Prerequisites
 
@@ -38,7 +38,8 @@ The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_pro
 ### Caveats
 
 - Attribution is anchored to the delta window between commit lineage records. Deferred created or modified files can still pick up AI attribution from earlier history when matching AI output lands in a later commit.
-- Lines that a developer manually edits after AI generation may count as "modified" rather than "exact."
+- Lines manually edited after direct AI generation may count as "modified" rather than "exact." Tool-delta lines must survive exactly or after whitespace normalization.
+- Tool-delta scoring is experimental and disabled by default. Enable it with `attribution_v2` in `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=1`.
 - Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
 - Provider-level attribution (file touched by AI) is available for all providers. When a provider reports only file-touch metadata, those lines are reported as `ai_provider_only_lines` and excluded from the headline AI percentage.
 - When weaker evidence contributes to a file that also has line-level matches, Semantica keeps the strongest class as `evidence_class` and preserves the weaker signals in `evidence_classes`.

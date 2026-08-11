@@ -236,8 +236,8 @@ func (s *CommitMsgHookService) computeAttribution(
 		Window:   win,
 	}
 
-	// Fast path: compute with carry-forward from existing events in DB.
-	cfr, err := attributeWithCarryForward(attrCtx, h, bs, diffBytes, input, prevCPPtr, semDir)
+	// Commit-message attribution stays on v1 to bound hook latency.
+	cfr, err := attributeWithCarryForward(attrCtx, h, bs, diffBytes, input, prevCPPtr, semDir, false)
 	if err == nil {
 		return &commitAttrResult{result: &cfr.result, totalLines: diffTotalLines, noEvents: cfr.noEvents}
 	}
@@ -251,7 +251,7 @@ func (s *CommitMsgHookService) computeAttribution(
 
 	flushActiveSessions(attrCtx, s.Registry)
 
-	cfr, err = attributeWithCarryForward(attrCtx, h, bs, diffBytes, input, prevCPPtr, semDir)
+	cfr, err = attributeWithCarryForward(attrCtx, h, bs, diffBytes, input, prevCPPtr, semDir, false)
 	if err == nil {
 		return &commitAttrResult{result: &cfr.result, totalLines: diffTotalLines, noEvents: cfr.noEvents}
 	}

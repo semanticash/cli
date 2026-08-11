@@ -81,10 +81,20 @@ func ScoreFilesWithDeltas(
 				haveDelta = true
 			}
 		}
+		// Refused alignments retain file-level evidence under the first
+		// claim group's provider.
+		refusedProvider := ""
+		if fs.DeltaAlignmentRefused && len(groups) > 0 {
+			refusedProvider = groups[0].Provider
+		}
 
 		provider, isProviderFile := providerTouchedFiles[fd.Path]
 		isProviderOnly := isProviderFile && aiLines[fd.Path] == nil && !haveDelta
 		if isProviderOnly {
+			creditProvider := provider
+			if refusedProvider != "" {
+				creditProvider = refusedProvider
+			}
 			for _, group := range fd.Groups {
 				for _, line := range group.Lines {
 					trimmed := strings.TrimSpace(line)
@@ -93,7 +103,7 @@ func ScoreFilesWithDeltas(
 					}
 					fs.TotalLines++
 					fs.ProviderOnlyLines++
-					fs.ProviderOnlyLinesByProvider[provider]++
+					fs.ProviderOnlyLinesByProvider[creditProvider]++
 					stats.ProviderOnlyMatches++
 				}
 			}
@@ -261,6 +271,10 @@ func ScoreFilesWithDeltas(
 					} else if prov != "" {
 						fs.ProviderLines[prov]++
 					}
+				case refusedProvider != "":
+					fs.ProviderOnlyLines++
+					fs.ProviderOnlyLinesByProvider[refusedProvider]++
+					stats.ProviderOnlyMatches++
 				default:
 					fs.HumanLines++
 				}

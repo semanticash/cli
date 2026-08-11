@@ -106,14 +106,20 @@ type FileChange struct {
 // normalizes any singular "note" field from older CLI versions into
 // this same slice at ingest time.
 type AttributionDiagnostics struct {
-	EventsConsidered  int      `json:"events_considered"`
-	EventsAssistant   int      `json:"events_assistant"`
-	PayloadsLoaded    int      `json:"payloads_loaded"`
-	AIToolEvents      int      `json:"ai_tool_events"`
-	ExactMatches      int      `json:"exact_matches"`
-	NormalizedMatches int      `json:"normalized_matches"`
-	ModifiedMatches   int      `json:"modified_matches"`
-	Notes             []string `json:"notes,omitempty"`
+	EventsConsidered  int `json:"events_considered"`
+	EventsAssistant   int `json:"events_assistant"`
+	PayloadsLoaded    int `json:"payloads_loaded"`
+	AIToolEvents      int `json:"ai_tool_events"`
+	ExactMatches      int `json:"exact_matches"`
+	NormalizedMatches int `json:"normalized_matches"`
+	ModifiedMatches   int `json:"modified_matches"`
+	// Tool-delta counters are set only by v2 scoring.
+	DeltaExactMatches      int      `json:"delta_exact_matches,omitempty"`
+	DeltaNormalizedMatches int      `json:"delta_normalized_matches,omitempty"`
+	DeltaAlignmentsRefused int      `json:"delta_alignments_refused,omitempty"`
+	DeltaGroupsEligible    int      `json:"delta_groups_eligible,omitempty"`
+	DeltaGroupsRejected    int      `json:"delta_groups_rejected,omitempty"`
+	Notes                  []string `json:"notes,omitempty"`
 }
 
 // AttributionResult is the full attribution breakdown for a single commit.
@@ -141,6 +147,8 @@ type AttributionResult struct {
 	Diagnostics           AttributionDiagnostics `json:"diagnostics"`
 	Evidence              string                 `json:"evidence,omitempty"`       // "High", "Medium", "Low"
 	FallbackCount         int                    `json:"fallback_count,omitempty"` // AI-attributed files with provider-touch or weaker evidence
+	// AttrVersion identifies the scoring algorithm that produced the result.
+	AttrVersion string `json:"attribution_version,omitempty"`
 }
 
 // AttributeCommit computes the AI attribution breakdown for a single commit.
@@ -218,6 +226,19 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	eventRows := toEventRows(ctx, bs, windowRows)
 	cands, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
 
+	// V2 loads verified tool deltas and replaces matching rm inference.
+	v2 := util.AttributionV2Enabled(semDir)
+	var deltas *attrevents.DeltaCandidates
+	if v2 {
+		deltas, err = LoadDeltaCandidates(ctx, h, bs, ComputeAIPercentInput{
+			RepoRoot: repoRoot, RepoID: cp.RepositoryID, Window: win,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("load tool-delta evidence: %w", err)
+		}
+		attrevents.SuppressInferredDeletions(&cands, deltas)
+	}
+
 	// Use local names for the candidate sets used by scoring and reporting.
 	aiLines := cands.AILines
 	lineProviders := cands.LineProviders
@@ -242,6 +263,12 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	// the deleted files under it. Expand the directory-level provider
 	// signal onto those deleted files before deriving touched-file maps.
 	expandDirectoryDeletionProviders(providerTouchedFiles, dr.filesDeleted)
+
+	// Include verified file-level delta evidence before deriving touched files.
+	deltaInvolved := map[string]bool{}
+	if deltas != nil {
+		deltaInvolved = mergeDeltaInvolvement(providerTouchedFiles, deltas)
+	}
 
 	// Derive aiTouchedFiles from ProviderTouchedFiles keys after the
 	// directory expansion. The carry-forward path below may add more
@@ -276,7 +303,14 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				fileProvider:         fileProvider,
 				providerModel:        providerModel,
 			}
-			currentScores, _ := scoreDiffPerFile(dr, currentCands)
+			// Use the final scorer so current evidence is not mistaken for
+			// carry-forward.
+			var currentScores []fileScore
+			if v2 {
+				currentScores, _ = scoreDiffPerFileV2(dr, currentCands, cands.LineStamps, deltas.Claims)
+			} else {
+				currentScores, _ = scoreDiffPerFile(dr, currentCands)
+			}
 			scoredAI := make(map[string]bool, len(currentScores))
 			for _, fs := range currentScores {
 				if fileScoreAILines(&fs) > 0 {
@@ -317,6 +351,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 					histRows := toEventRows(ctx, bs, histEvents)
 					histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, repoRoot, needsCF)
 					filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
+					// Carry forward verified deltas from the historical window.
+					if v2 {
+						histDeltas, dErr := LoadDeltaCandidates(ctx, h, bs, histInput)
+						if dErr != nil {
+							return nil, fmt.Errorf("load historical tool-delta evidence: %w", dErr)
+						}
+						attrevents.SuppressInferredDeletions(&histNewCands, histDeltas)
+						filterDeltaCandidatesForCF(histDeltas, needsCF, modifiedInNeedsCF, currentProviders)
+						mergeHistoricalDeltas(deltas, histDeltas)
+						for fp := range mergeDeltaInvolvement(providerTouchedFiles, histDeltas) {
+							deltaInvolved[fp] = true
+							aiTouchedFiles[fp] = true
+						}
+					}
 					// Merge historical candidates into the main maps.
 					var cfLines int
 					for fp, lines := range histNewCands.AILines {
@@ -352,7 +400,10 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 						}
 					}
 					for fp, prov := range histNewCands.ProviderTouchedFiles {
-						providerTouchedFiles[fp] = prov
+						// Keep current delta evidence ahead of historical fallback.
+						if !deltaInvolved[fp] {
+							providerTouchedFiles[fp] = prov
+						}
 						aiTouchedFiles[fp] = true
 					}
 					for prov, model := range histNewCands.ProviderModel {
@@ -377,10 +428,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		fileProvider:         fileProvider,
 		providerModel:        providerModel,
 	}
-	scores, matchStats := scoreDiffPerFile(dr, finalCands)
+	var scores []fileScore
+	var matchStats attrscoring.MatchStats
+	if v2 {
+		scores, matchStats = scoreDiffPerFileV2(dr, finalCands, cands.LineStamps, deltas.Claims)
+	} else {
+		scores, matchStats = scoreDiffPerFile(dr, finalCands)
+	}
 
 	// Build per-file touch origins for evidence classification.
 	touchOrigins := deriveFileTouchOrigins(aiTouchedFiles, aiLines, providerTouchedFiles, fileProvider)
+	if deltas != nil {
+		applyDeltaTouchOrigins(touchOrigins, deltas)
+		applyDeltaRefusals(scores, deltas, aiTouchedFiles, providerTouchedFiles, touchOrigins)
+	}
 
 	// Narrow carry-forward set to files with scored AI lines.
 	// needsCF is the set of files that needed historical retry; some may
@@ -410,6 +471,19 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 			continue
 		}
 		if list := sortedProvidersByCount(s.providerOnlyLinesByProvider); len(list) > 0 {
+			// Preserve file-touch providers that did not receive sidecar credit.
+			if prov := providerTouchedFiles[s.path]; prov != "" {
+				found := false
+				for _, p := range list {
+					if p == prov {
+						found = true
+						break
+					}
+				}
+				if !found {
+					list = append(list, prov)
+				}
+			}
 			fileProviders[s.path] = list
 			continue
 		}
@@ -427,6 +501,16 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		if prov != "" {
 			fileProviders[fp] = []string{prov}
 		}
+	}
+	// Preserve all delta providers, with matched-line providers first.
+	if deltas != nil {
+		lineLevelWinners := make(map[string]bool, len(scores))
+		for i := range scores {
+			if len(sortedProvidersByCount(scores[i].providerLines)) > 0 {
+				lineLevelWinners[scores[i].path] = true
+			}
+		}
+		overlayDeltaProviders(fileProviders, deltas, lineLevelWinners)
 	}
 
 	// Assemble the commit result from the scored files and diff metadata.
@@ -446,6 +530,15 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	diag.ExactMatches = matchStats.ExactMatches
 	diag.NormalizedMatches = matchStats.NormalizedMatches
 	diag.ModifiedMatches = matchStats.ModifiedMatches
+	if v2 {
+		diag.DeltaExactMatches = matchStats.DeltaExactMatches
+		diag.DeltaNormalizedMatches = matchStats.DeltaNormalizedMatches
+		diag.DeltaAlignmentsRefused = matchStats.DeltaAlignmentsRefused
+		diag.DeltaGroupsEligible = deltas.Diags.GroupsEligible
+		for _, n := range deltas.Diags.Rejected {
+			diag.DeltaGroupsRejected += n
+		}
+	}
 	pipelineNote := attrreporting.RenderDiagnosticNote(attrreporting.DiagnosticsInput{
 		EventStats: attrreporting.EventStatsInput{
 			EventsConsidered: diag.EventsConsidered,
@@ -462,6 +555,10 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	})
 	diag.Notes = attrreporting.AssembleCommitNotes(pipelineNote, cr)
 	result.Diagnostics = diag
+	result.AttrVersion = "v1"
+	if v2 {
+		result.AttrVersion = "v2"
+	}
 
 	return result, nil
 }
@@ -606,6 +703,8 @@ type fileScore struct {
 	// Tool-delta subsets of exactLines and formattedLines.
 	deltaExactLines     int
 	deltaFormattedLines int
+	// Refused alignment retains file-level delta evidence.
+	deltaAlignmentRefused bool
 }
 
 // aiCandidates holds the AI line sets and provider metadata extracted from events.
@@ -784,6 +883,70 @@ func scoreDiffPerFile(dr diffResult, cands aiCandidates) ([]fileScore, attrscori
 			providerOnlyLinesByProvider: s.ProviderOnlyLinesByProvider,
 			deltaExactLines:             s.DeltaExactLines,
 			deltaFormattedLines:         s.DeltaFormattedLines,
+		}
+	}
+	return out, stats
+}
+
+// scoreDiffPerFileV2 scores direct evidence and verified tool-delta claims.
+func scoreDiffPerFileV2(
+	dr diffResult,
+	cands aiCandidates,
+	lineStamps map[string]map[string][]attrevents.LineStamp,
+	deltaClaims map[string][]attrevents.DeltaClaimGroup,
+) ([]fileScore, attrscoring.MatchStats) {
+	sDiff := toScoringDiff(dr)
+
+	var stamps map[string]map[string][]attrscoring.LineStamp
+	if lineStamps != nil {
+		stamps = make(map[string]map[string][]attrscoring.LineStamp, len(lineStamps))
+		for file, byLine := range lineStamps {
+			m := make(map[string][]attrscoring.LineStamp, len(byLine))
+			for line, witnesses := range byLine {
+				out := make([]attrscoring.LineStamp, len(witnesses))
+				for i, w := range witnesses {
+					out[i] = attrscoring.LineStamp{Provider: w.Provider, Ts: w.Ts, InsertSeq: w.InsertSeq, EventID: w.EventID}
+				}
+				m[line] = out
+			}
+			stamps[file] = m
+		}
+	}
+
+	var groups map[string][]attrscoring.DeltaClaimGroup
+	if deltaClaims != nil {
+		groups = make(map[string][]attrscoring.DeltaClaimGroup, len(deltaClaims))
+		for file, gs := range deltaClaims {
+			out := make([]attrscoring.DeltaClaimGroup, len(gs))
+			for i, g := range gs {
+				out[i] = attrscoring.DeltaClaimGroup{
+					Provider: g.Provider, Ts: g.Ts, InsertSeq: g.InsertSeq,
+					EventID: g.EventID, Lines: g.Lines,
+				}
+			}
+			groups[file] = out
+		}
+	}
+
+	newScores, stats := attrscoring.ScoreFilesWithDeltas(
+		sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider,
+		cands.lineProviders, stamps, groups)
+
+	out := make([]fileScore, len(newScores))
+	for i, s := range newScores {
+		out[i] = fileScore{
+			path:                        s.Path,
+			totalLines:                  s.TotalLines,
+			exactLines:                  s.ExactLines,
+			formattedLines:              s.FormattedLines,
+			modifiedLines:               s.ModifiedLines,
+			providerOnlyLines:           s.ProviderOnlyLines,
+			humanLines:                  s.HumanLines,
+			providerLines:               s.ProviderLines,
+			providerOnlyLinesByProvider: s.ProviderOnlyLinesByProvider,
+			deltaExactLines:             s.DeltaExactLines,
+			deltaFormattedLines:         s.DeltaFormattedLines,
+			deltaAlignmentRefused:       s.DeltaAlignmentRefused,
 		}
 	}
 	return out, stats
@@ -1016,12 +1179,7 @@ func sortedProvidersByCount(counts map[string]int) []string {
 	return out
 }
 
-// fileScoreHasAttribution reports whether a file has any AI
-// evidence at all, line-level or provider-only. Used by the
-// carry-forward merge gate, where a historical provider-only
-// touch is still a valid signal worth carrying into the current
-// commit's attribution even though it does not contribute to
-// the headline AI%.
+// fileScoreHasAttribution includes line and file-level evidence.
 func fileScoreHasAttribution(fs *fileScore) bool {
 	return fs.exactLines > 0 ||
 		fs.formattedLines > 0 ||
@@ -1062,15 +1220,195 @@ func expandDirectoryDeletionProviders(providerTouchedFiles map[string]string, de
 	}
 }
 
-// buildCommitResultInput converts local types to the reporting package's
-// CommitResultInput. It maps fileScore -> FileScoreInput and carries diff
-// metadata and the AI-touched file set.
-// deriveFileTouchOrigins classifies how each file entered the AI-touched set.
-// Uses the data already available from candidate building:
-//   - aiLines: files with line-level content -> TouchOriginLineLevel
-//   - fileProvider: files with a line-level provider -> TouchOriginLineLevel
-//   - providerTouchedFiles: files from provider file-edit events -> TouchOriginProviderEdit
-//   - remaining touched files -> TouchOriginCoarse
+// mergeDeltaInvolvement adds touch and deletion evidence without treating
+// unmatched line claims as file-level attribution.
+func mergeDeltaInvolvement(providerTouchedFiles map[string]string, deltas *attrevents.DeltaCandidates) map[string]bool {
+	involved := make(map[string]bool, len(deltas.Touched)+len(deltas.Deleted))
+	add := func(fp string, provs []string) {
+		involved[fp] = true
+		if len(provs) == 0 {
+			return
+		}
+		if _, ok := providerTouchedFiles[fp]; !ok {
+			providerTouchedFiles[fp] = provs[0]
+		}
+	}
+	for fp, provs := range deltas.Touched {
+		add(fp, provs)
+	}
+	for fp, provs := range deltas.Deleted {
+		add(fp, provs)
+	}
+	return involved
+}
+
+// filterDeltaCandidatesForCF applies carry-forward file and provider gates.
+func filterDeltaCandidatesForCF(d *attrevents.DeltaCandidates, eligible, modified, currentProviders map[string]bool) {
+	keepProvs := func(fp string, provs []string) []string {
+		if !modified[fp] {
+			return provs
+		}
+		kept := provs[:0]
+		for _, p := range provs {
+			if currentProviders[p] {
+				kept = append(kept, p)
+			}
+		}
+		return kept
+	}
+	for fp, gs := range d.Claims {
+		if !eligible[fp] {
+			delete(d.Claims, fp)
+			continue
+		}
+		if !modified[fp] {
+			continue
+		}
+		kept := gs[:0]
+		for _, g := range gs {
+			if currentProviders[g.Provider] {
+				kept = append(kept, g)
+			}
+		}
+		if len(kept) == 0 {
+			delete(d.Claims, fp)
+		} else {
+			d.Claims[fp] = kept
+		}
+	}
+	for fp, provs := range d.Touched {
+		if !eligible[fp] {
+			delete(d.Touched, fp)
+			continue
+		}
+		if kept := keepProvs(fp, provs); len(kept) == 0 {
+			delete(d.Touched, fp)
+		} else {
+			d.Touched[fp] = kept
+		}
+	}
+	for fp, provs := range d.Deleted {
+		if !eligible[fp] {
+			delete(d.Deleted, fp)
+			continue
+		}
+		if kept := keepProvs(fp, provs); len(kept) == 0 {
+			delete(d.Deleted, fp)
+		} else {
+			d.Deleted[fp] = kept
+		}
+	}
+}
+
+// mergeHistoricalDeltas merges historical evidence and diagnostics.
+func mergeHistoricalDeltas(dst, src *attrevents.DeltaCandidates) {
+	for fp, gs := range src.Claims {
+		dst.Claims[fp] = append(dst.Claims[fp], gs...)
+	}
+	for fp, provs := range src.Touched {
+		for _, p := range provs {
+			addTouchedProvider(dst.Touched, fp, p)
+		}
+	}
+	for fp, provs := range src.Deleted {
+		for _, p := range provs {
+			addTouchedProvider(dst.Deleted, fp, p)
+		}
+	}
+	dst.Diags.GroupsSeen += src.Diags.GroupsSeen
+	dst.Diags.GroupsEligible += src.Diags.GroupsEligible
+	for reason, n := range src.Diags.Rejected {
+		if dst.Diags.Rejected == nil {
+			dst.Diags.Rejected = map[string]int{}
+		}
+		dst.Diags.Rejected[reason] += n
+	}
+}
+
+// applyDeltaTouchOrigins records touch-only and deletion evidence.
+func applyDeltaTouchOrigins(origins map[string]attrreporting.TouchOrigin, deltas *attrevents.DeltaCandidates) {
+	for fp := range deltas.Touched {
+		if origins[fp] != attrreporting.TouchOriginLineLevel {
+			origins[fp] = attrreporting.TouchOriginToolDelta
+		}
+	}
+	for fp := range deltas.Deleted {
+		origins[fp] = attrreporting.TouchOriginDeletion
+	}
+}
+
+// applyDeltaRefusals retains file-level evidence for unaligned claims.
+func applyDeltaRefusals(
+	scores []fileScore,
+	deltas *attrevents.DeltaCandidates,
+	aiTouchedFiles map[string]bool,
+	providerTouchedFiles map[string]string,
+	origins map[string]attrreporting.TouchOrigin,
+) {
+	for i := range scores {
+		fs := &scores[i]
+		if !fs.deltaAlignmentRefused {
+			continue
+		}
+		groups := deltas.Claims[fs.path]
+		if len(groups) == 0 {
+			continue
+		}
+		aiTouchedFiles[fs.path] = true
+		if _, ok := providerTouchedFiles[fs.path]; !ok {
+			providerTouchedFiles[fs.path] = groups[0].Provider
+		}
+		for _, g := range groups {
+			addTouchedProvider(deltas.Touched, fs.path, g.Provider)
+		}
+		if origins[fs.path] != attrreporting.TouchOriginLineLevel {
+			origins[fs.path] = attrreporting.TouchOriginToolDelta
+		}
+	}
+}
+
+// addTouchedProvider appends a provider once, preserving first-seen order.
+func addTouchedProvider(m map[string][]string, path, provider string) {
+	for _, p := range m[path] {
+		if p == provider {
+			return
+		}
+	}
+	m[path] = append(m[path], provider)
+}
+
+// overlayDeltaProviders merges file-level providers after line-level winners.
+func overlayDeltaProviders(fileProviders map[string][]string, deltas *attrevents.DeltaCandidates, lineLevelWinners map[string]bool) {
+	merge := func(fp string, provs []string) {
+		if len(provs) == 0 {
+			return
+		}
+		lead, tail := provs, fileProviders[fp]
+		if lineLevelWinners[fp] {
+			lead, tail = fileProviders[fp], provs
+		}
+		out := append([]string(nil), lead...)
+		seen := make(map[string]bool, len(out))
+		for _, p := range out {
+			seen[p] = true
+		}
+		for _, p := range tail {
+			if !seen[p] {
+				out = append(out, p)
+				seen[p] = true
+			}
+		}
+		fileProviders[fp] = out
+	}
+	for fp, provs := range deltas.Touched {
+		merge(fp, provs)
+	}
+	for fp, provs := range deltas.Deleted {
+		merge(fp, provs)
+	}
+}
+
+// deriveFileTouchOrigins classifies how each file entered the touched set.
 func deriveFileTouchOrigins(
 	aiTouchedFiles map[string]bool,
 	aiLines map[string]map[string]struct{},
@@ -1081,20 +1419,14 @@ func deriveFileTouchOrigins(
 	for fp := range aiTouchedFiles {
 		switch {
 		case len(aiLines[fp]) > 0 || fileProvider[fp] != "":
-			// File has line-level AI content from payload extraction
-			// (Claude Edit/Write tool calls with content).
 			origins[fp] = attrreporting.TouchOriginLineLevel
 
 		case providerTouchedFiles[fp] == "claude_code":
-			// File touched by Claude but without line-level content.
-			// In BuildCandidatesFromRows, Claude files without aiLines/fileProvider
-			// enter ProviderTouchedFiles only via bash deletion extraction.
+			// Claude touch-only evidence here comes from deletion extraction.
 			origins[fp] = attrreporting.TouchOriginDeletion
 
 		case providerTouchedFiles[fp] != "":
-			// File entered via provider file-edit event (Cursor, Kiro, etc.)
-			// without line-level content. In BuildCandidatesFromRows, non-Claude
-			// providers enter ProviderTouchedFiles via the HasProviderFileEdit path.
+			// Other touch-only evidence comes from provider file-edit events.
 			origins[fp] = attrreporting.TouchOriginProviderEdit
 
 		default:
@@ -1114,6 +1446,7 @@ type commitResultContext struct {
 	carryForwardFiles map[string]bool
 }
 
+// buildCommitResultInput converts service scoring data for reporting.
 func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultContext) attrreporting.CommitResultInput {
 	deletedNonBlank := make(map[string]int, len(dr.files))
 	for _, fd := range dr.files {
@@ -1275,8 +1608,11 @@ func fromCheckpointResult(cr attrreporting.CheckpointResult) *AttributionResult 
 }
 
 // attributeWithCarryForward scores the current window and applies bounded
-// carry-forward for eligible created files. If prevCP is nil, it uses only the
+// carry-forward for eligible files. If prevCP is nil, it uses only the
 // current window. noEvents is true only when neither window contains events.
+//
+// useV2 applies tool-delta scoring to current and historical evidence.
+// Commit-message attribution passes false to keep the hook bounded.
 func attributeWithCarryForward(
 	ctx context.Context,
 	h *sqlstore.Handle,
@@ -1285,6 +1621,7 @@ func attributeWithCarryForward(
 	in ComputeAIPercentInput,
 	prevCP *sqldb.Checkpoint,
 	semDir string,
+	useV2 bool,
 ) (carryForwardResult, error) {
 	if len(diffBytes) == 0 {
 		return carryForwardResult{}, nil
@@ -1306,14 +1643,29 @@ func attributeWithCarryForward(
 	} else {
 		eventRows := toEventRows(ctx, bs, events)
 		newCands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
+		var deltas *attrevents.DeltaCandidates
+		if useV2 {
+			deltas, err = LoadDeltaCandidates(ctx, h, bs, in)
+			if err != nil {
+				return carryForwardResult{}, fmt.Errorf("load tool-delta evidence: %w", err)
+			}
+			attrevents.SuppressInferredDeletions(&newCands, deltas)
+			mergeDeltaInvolvement(newCands.ProviderTouchedFiles, deltas)
+		}
 		currentCands = aiCandidates{
 			aiLines: newCands.AILines, lineProviders: newCands.LineProviders,
 			providerTouchedFiles: newCands.ProviderTouchedFiles,
 			fileProvider:         newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
 		currentProviders = providersInWindow(events)
-		if len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 {
-			currentScores, _ = scoreDiffPerFile(dr, currentCands)
+		haveEvidence := len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 ||
+			(deltas != nil && len(deltas.Claims) > 0)
+		if haveEvidence {
+			if useV2 {
+				currentScores, _ = scoreDiffPerFileV2(dr, currentCands, newCands.LineStamps, deltas.Claims)
+			} else {
+				currentScores, _ = scoreDiffPerFile(dr, currentCands)
+			}
 		}
 	}
 
@@ -1401,13 +1753,30 @@ func attributeWithCarryForward(
 			histRows := toEventRows(ctx, bs, histEvents)
 			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
 			filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
+			// Load historical deltas for carry-forward scoring.
+			var histDeltas *attrevents.DeltaCandidates
+			if useV2 {
+				histDeltas, err = LoadDeltaCandidates(ctx, h, bs, histInput)
+				if err != nil {
+					return carryForwardResult{}, fmt.Errorf("load historical tool-delta evidence: %w", err)
+				}
+				attrevents.SuppressInferredDeletions(&histNewCands, histDeltas)
+				filterDeltaCandidatesForCF(histDeltas, needsCF, modifiedInNeedsCF, currentProviders)
+				mergeDeltaInvolvement(histNewCands.ProviderTouchedFiles, histDeltas)
+			}
 			histCands = aiCandidates{
 				aiLines: histNewCands.AILines, lineProviders: histNewCands.LineProviders,
 				providerTouchedFiles: histNewCands.ProviderTouchedFiles,
 				fileProvider:         histNewCands.FileProvider, providerModel: histNewCands.ProviderModel,
 			}
-			if len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 {
-				historicalScores, _ = scoreDiffPerFile(dr, histCands)
+			haveHist := len(histCands.aiLines) > 0 || len(histCands.providerTouchedFiles) > 0 ||
+				(histDeltas != nil && len(histDeltas.Claims) > 0)
+			if haveHist {
+				if useV2 {
+					historicalScores, _ = scoreDiffPerFileV2(dr, histCands, histNewCands.LineStamps, histDeltas.Claims)
+				} else {
+					historicalScores, _ = scoreDiffPerFile(dr, histCands)
+				}
 			}
 		} else if !errors.Is(histErr, ErrNoEventsInWindow) {
 			util.AppendActivityLog(semDir,
@@ -1548,6 +1917,9 @@ func commitWithNoDelta(ctx context.Context, hash string, repo *git.Repo) (*Attri
 	dr := parseDiff(diffBytes)
 	result := &AttributionResult{
 		CommitHash: hash,
+		// No evidence window exists for an unlinked commit; the
+		// zero-attribution result carries v1 semantics.
+		AttrVersion: "v1",
 	}
 
 	createdSet := make(map[string]bool, len(dr.filesCreated))

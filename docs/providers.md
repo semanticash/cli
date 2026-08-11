@@ -78,7 +78,7 @@ Claude Code is currently the richest provider integration. Direct step events ar
 
 ### Attribution
 
-Claude Code tool calls include file paths and content. Semantica uses direct `Write` and `Edit` hook payloads plus transcript replay to build AI-generated code hashes (`ai_code_hashes`). During attribution, each changed line in a commit is compared against these hashes to determine AI authorship.
+Claude Code tool calls include file paths and content. Semantica uses direct `Write` and `Edit` payloads plus transcript replay for line attribution. Pre- and post-Bash hooks also capture bounded workspace deltas. Experimental tool-delta scoring can attribute surviving Bash-written lines and retain file-level evidence when line matching is unavailable.
 
 ---
 
