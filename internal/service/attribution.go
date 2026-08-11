@@ -659,6 +659,30 @@ func (s *AttributionService) ComputeAIPercentFromDiff(
 	return aggregateFileScores(scores, oldCands.providerModel, len(dr.files)), nil
 }
 
+// LoadDeltaCandidates returns verified tool-delta evidence and diagnostics
+// for an attribution window.
+func LoadDeltaCandidates(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, in ComputeAIPercentInput) (*attrevents.DeltaCandidates, error) {
+	rows, err := h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
+		RepositoryID: in.RepoID,
+		UseCursor:    in.Window.cursorFlag(),
+		AfterCursor:  in.Window.cursorAfter(),
+		UpToCursor:   in.Window.cursorUpTo(),
+		AfterTs:      in.Window.afterTs,
+		UpToTs:       in.Window.upToTs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list evidence links: %w", err)
+	}
+	links := make([]attrevents.DeltaLink, len(rows))
+	for i, r := range rows {
+		links[i] = attrevents.DeltaLink{
+			EventID: r.EventID, EvidenceHash: r.EvidenceHash,
+			GroupID: r.GroupID, Provider: r.Provider,
+		}
+	}
+	return attrevents.BuildDeltaCandidates(ctx, links, bs)
+}
+
 // loadWindowEvents queries events in the delta window. Returns
 // ErrNoEventsInWindow when no events exist.
 func loadWindowEvents(ctx context.Context, h *sqlstore.Handle, in ComputeAIPercentInput) ([]sqldb.ListEventsInWindowRow, error) {

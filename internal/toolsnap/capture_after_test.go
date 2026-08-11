@@ -286,6 +286,26 @@ func TestDeltaValidateRejectsMalformed(t *testing.T) {
 	if _, err := d.CanonicalBytes(); err == nil {
 		t.Error("hunk count disagreement accepted")
 	}
+
+	// Canonical evidence uses portable repository-relative paths.
+	for _, bad := range []string{
+		"", "/abs/path.go", `dir\win.go`, "C:/drive.go", "c:relative.go",
+		"a/../victim.go", "./dotted.go", "..", "a/./b.go", "a//b.go", "a/b/",
+		"a\x00b",
+	} {
+		d = base()
+		d.Files[0].Path = bad
+		if _, err := d.CanonicalBytes(); err == nil {
+			t.Errorf("non-canonical path %q accepted", bad)
+		}
+	}
+	for _, good := range []string{"a.txt", "pkg/sub/file.go", "weird name.go", "...go"} {
+		d = base()
+		d.Files[0].Path = good
+		if _, err := d.CanonicalBytes(); err != nil {
+			t.Errorf("canonical path %q rejected: %v", good, err)
+		}
+	}
 }
 
 func TestCanonicalBytesNilAndEmptyCollectionsAgree(t *testing.T) {

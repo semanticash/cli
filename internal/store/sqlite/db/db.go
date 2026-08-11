@@ -189,6 +189,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listEvidenceLinksByGroupStmt, err = db.PrepareContext(ctx, listEvidenceLinksByGroup); err != nil {
 		return nil, fmt.Errorf("error preparing query ListEvidenceLinksByGroup: %w", err)
 	}
+	if q.listEvidenceLinksInWindowStmt, err = db.PrepareContext(ctx, listEvidenceLinksInWindow); err != nil {
+		return nil, fmt.Errorf("error preparing query ListEvidenceLinksInWindow: %w", err)
+	}
 	if q.listFailedManifestReasonsStmt, err = db.PrepareContext(ctx, listFailedManifestReasons); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFailedManifestReasons: %w", err)
 	}
@@ -598,6 +601,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listEvidenceLinksByGroupStmt: %w", cerr)
 		}
 	}
+	if q.listEvidenceLinksInWindowStmt != nil {
+		if cerr := q.listEvidenceLinksInWindowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listEvidenceLinksInWindowStmt: %w", cerr)
+		}
+	}
 	if q.listFailedManifestReasonsStmt != nil {
 		if cerr := q.listFailedManifestReasonsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFailedManifestReasonsStmt: %w", cerr)
@@ -907,6 +915,7 @@ type Queries struct {
 	listEventsInWindowForAnnotationsStmt         *sql.Stmt
 	listEvidenceLinksByEventStmt                 *sql.Stmt
 	listEvidenceLinksByGroupStmt                 *sql.Stmt
+	listEvidenceLinksInWindowStmt                *sql.Stmt
 	listFailedManifestReasonsStmt                *sql.Stmt
 	listPackagedManifestsStmt                    *sql.Stmt
 	listPendingCommitLinkedCheckpointsStmt       *sql.Stmt
@@ -1011,6 +1020,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listEventsInWindowForAnnotationsStmt:         q.listEventsInWindowForAnnotationsStmt,
 		listEvidenceLinksByEventStmt:                 q.listEvidenceLinksByEventStmt,
 		listEvidenceLinksByGroupStmt:                 q.listEvidenceLinksByGroupStmt,
+		listEvidenceLinksInWindowStmt:                q.listEvidenceLinksInWindowStmt,
 		listFailedManifestReasonsStmt:                q.listFailedManifestReasonsStmt,
 		listPackagedManifestsStmt:                    q.listPackagedManifestsStmt,
 		listPendingCommitLinkedCheckpointsStmt:       q.listPendingCommitLinkedCheckpointsStmt,

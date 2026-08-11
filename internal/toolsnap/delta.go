@@ -4,8 +4,29 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 )
+
+// canonicalRepoPath accepts clean, portable repository-relative paths.
+func canonicalRepoPath(p string) bool {
+	if p == "" || strings.ContainsAny(p, "\\\x00") || strings.HasPrefix(p, "/") {
+		return false
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		return false
+	}
+	if p != path.Clean(p) {
+		return false
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 // DeltaVersion is the canonical tool-delta schema version.
 const DeltaVersion = 1
@@ -113,6 +134,9 @@ func (d *Delta) Validate() error {
 	anyTruncated := false
 	for _, f := range d.Files {
 		anyTruncated = anyTruncated || f.Truncated
+		if !canonicalRepoPath(f.Path) {
+			return fmt.Errorf("toolsnap: non-canonical file path %q", f.Path)
+		}
 		if pathSeen[f.Path] {
 			return fmt.Errorf("toolsnap: duplicate file path %q", f.Path)
 		}

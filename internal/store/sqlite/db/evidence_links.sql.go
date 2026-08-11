@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 const agentEventExists = `-- name: AgentEventExists :one
@@ -126,6 +127,81 @@ func (q *Queries) ListEvidenceLinksByGroup(ctx context.Context, groupID string) 
 			&i.EvidenceHash,
 			&i.GroupID,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEvidenceLinksInWindow = `-- name: ListEvidenceLinksInWindow :many
+select
+    l.event_id,
+    l.evidence_hash,
+    l.group_id,
+    s.provider
+from agent_event_evidence_links l
+    join agent_events e on e.event_id = l.event_id
+    join agent_sessions s
+        on s.session_id = e.session_id
+        and s.repository_id = e.repository_id
+where e.repository_id = ?
+    and l.evidence_kind = 'tool_delta'
+    and ((cast(?2 as integer) = 1
+            and (e.ts > ?3
+                 or (e.ts = ?3 and e.insert_seq > ?4))
+            and (e.ts < ?5
+                 or (e.ts = ?5 and e.insert_seq <= ?6)))
+         or (cast(?2 as integer) = 0
+            and e.ts > ?3 and e.ts <= ?5))
+order by e.ts, e.insert_seq, l.event_id
+`
+
+type ListEvidenceLinksInWindowParams struct {
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
+}
+
+type ListEvidenceLinksInWindowRow struct {
+	EventID      string `json:"event_id"`
+	EvidenceHash string `json:"evidence_hash"`
+	GroupID      string `json:"group_id"`
+	Provider     string `json:"provider"`
+}
+
+// Lists tool-delta links and session providers in event-window order.
+func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenceLinksInWindowParams) ([]ListEvidenceLinksInWindowRow, error) {
+	rows, err := q.query(ctx, q.listEvidenceLinksInWindowStmt, listEvidenceLinksInWindow,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEvidenceLinksInWindowRow{}
+	for rows.Next() {
+		var i ListEvidenceLinksInWindowRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.EvidenceHash,
+			&i.GroupID,
+			&i.Provider,
 		); err != nil {
 			return nil, err
 		}
