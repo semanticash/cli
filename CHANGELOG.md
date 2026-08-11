@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 
 - Raised the minimum Go toolchain to Go 1.26.5 to pick up standard-library security fixes.
+- Hardened skills archive extraction against path traversal by anchoring writes to the temporary extraction directory.
 
 ## [0.5.5] - 2026-07-14
 

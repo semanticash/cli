@@ -132,12 +132,20 @@ func TestSafeExtract_RejectsAbsolutePath(t *testing.T) {
 }
 
 func TestSafeExtract_RejectsTraversal(t *testing.T) {
-	dest := t.TempDir()
-	tgz := buildTarGz(t, []tarEntry{
-		{Name: "../../../etc/evil", Type: tar.TypeReg, Body: []byte("nope")},
-	})
-	if err := safeExtractTarGz(bytes.NewReader(tgz), dest); err == nil {
-		t.Errorf("expected error for ../ entry; extraction succeeded")
+	for _, name := range []string{
+		"../../../etc/evil",
+		"skills-main/../../../evil",
+		`skills-main\..\evil`,
+		"skills-main//evil",
+	} {
+		t.Run(name, func(t *testing.T) {
+			tgz := buildTarGz(t, []tarEntry{
+				{Name: name, Type: tar.TypeReg, Body: []byte("nope")},
+			})
+			if err := safeExtractTarGz(bytes.NewReader(tgz), t.TempDir()); err == nil {
+				t.Errorf("expected error for unsafe path %q", name)
+			}
+		})
 	}
 }
 
@@ -165,6 +173,23 @@ func TestSafeExtract_SkipsSymlinkAndHardlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dest, "skills-main", "hard-link")); err == nil {
 		t.Errorf("hardlink should not have been extracted")
+	}
+}
+
+func TestSafeExtract_RejectsExistingSymlinkEscape(t *testing.T) {
+	dest := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dest, "skills-main")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	tgz := buildTarGz(t, []tarEntry{
+		{Name: "skills-main/evil", Type: tar.TypeReg, Body: []byte("nope")},
+	})
+	if err := safeExtractTarGz(bytes.NewReader(tgz), dest); err == nil {
+		t.Fatal("expected extraction through an existing symlink to fail")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "evil")); !os.IsNotExist(err) {
+		t.Fatalf("entry escaped extraction root: %v", err)
 	}
 }
 
