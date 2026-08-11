@@ -110,7 +110,7 @@ type Registry struct {
 func OpenRegistry(semDir string) (*Registry, error) {
 	dir := filepath.Join(semDir, "tool-windows")
 	// Recovery directories must exist before registry publication fails.
-	for _, d := range []string{dir, filepath.Join(dir, "tombstones"), filepath.Join(dir, "receipts"), filepath.Join(dir, "closures")} {
+	for _, d := range []string{dir, filepath.Join(dir, "tombstones"), filepath.Join(dir, "receipts"), filepath.Join(dir, "closures"), filepath.Join(dir, "partials")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, fmt.Errorf("toolsnap: create registry dir: %w", err)
 		}

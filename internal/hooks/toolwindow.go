@@ -203,19 +203,21 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		_, err := broker.WriteEventsToRepo(wctx, target.repoPath, events, globalBlobs)
 		return err
 	}
+	cleanupRefs := map[string]string{}
 	closed, err := reg.Complete(wctx, key, info, writeEvents,
 		func(members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
-			return finalizeGroup(wctx, store, repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent)
+			return finalizeGroup(wctx, store, repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs)
 		})
 	switch {
 	case err == nil:
-		// The window path persisted the events.
-		_ = closed
+		// Release refs only after registry closure is durable.
+		if closed {
+			releaseGroupRefs(wctx, store, cleanupRefs)
+		}
 		return true
 	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
-		// Record the missing pre snapshot as partial evidence.
-		persistPartialDelta(wctx, repoBlobs, target, key, event, eventID, "pre_snapshot_missing")
-		return false
+		// Preserve missing-pre evidence without blocking the ordinary write path.
+		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, "pre_snapshot_missing", events, globalBlobs)
 	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {
@@ -233,9 +235,9 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	return false
 }
 
-// finalizeGroup captures the post state and persists the group's events
-// and canonical delta. Retries use durable state instead of the workspace.
-func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
+// finalizeGroup persists a group's events, delta, and evidence links.
+// Retries use durable state, and refs remain until registry closure succeeds.
+func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string) (toolsnap.FinalizeResult, error) {
 	groupID := members[0].GroupID
 	earliest := members[0]
 
@@ -248,7 +250,11 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 
 	switch {
 	case prior != nil && prior.DeltaHash != "":
-		// The delta and closing events are already durable.
+		// Resume with the durable delta instead of reading the workspace.
+		if err := persistEvidenceLinks(ctx, target, members, prior.DeltaHash, info.At); err != nil {
+			return toolsnap.FinalizeResult{Final: *prior}, err
+		}
+		collectGroupRefs(cleanupRefs, store, members, groupID, prior.PostTreeHash)
 		return toolsnap.FinalizeResult{Done: true}, nil
 	case prior != nil && prior.PartialReason != "":
 		partialReason = prior.PartialReason
@@ -321,10 +327,51 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 	if err != nil {
 		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
 	}
-	// The delta remains in the local CAS until event-link persistence runs.
-	_ = deltaHash
-
+	// Evidence links must be durable before the group can close.
+	if err := persistEvidenceLinks(ctx, target, members, deltaHash, info.At); err != nil {
+		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, deltaHash, partialReason, capturedAt)}, err
+	}
+	collectGroupRefs(cleanupRefs, store, members, groupID, postTree)
 	return toolsnap.FinalizeResult{Done: true}, nil
+}
+
+const evidenceKindToolDelta = "tool_delta"
+
+// persistEvidenceLinks attaches one canonical delta to every member event.
+func persistEvidenceLinks(ctx context.Context, target *toolWindowTarget, members []toolsnap.PendingToolSnapshot, deltaHash string, at int64) error {
+	links := make([]broker.EvidenceLink, 0, len(members))
+	for _, m := range members {
+		links = append(links, broker.EvidenceLink{
+			EventID:      m.EventID,
+			EvidenceKind: evidenceKindToolDelta,
+			EvidenceHash: deltaHash,
+			GroupID:      m.GroupID,
+			CreatedAt:    at,
+		})
+	}
+	return broker.WriteEvidenceLinksToRepo(ctx, target.repoPath, links)
+}
+
+// collectGroupRefs records refs for release after registry closure.
+// Until then, the refs preserve retry state.
+func collectGroupRefs(dst map[string]string, store *toolsnap.Store, members []toolsnap.PendingToolSnapshot, groupID, postTree string) {
+	for _, m := range members {
+		if m.SnapshotRef != "" && m.TreeHash != "" {
+			dst[m.SnapshotRef] = m.TreeHash
+		}
+	}
+	if postTree != "" {
+		dst[toolsnap.GroupPostRef(store.WorktreeID(), groupID)] = postTree
+	}
+}
+
+// releaseGroupRefs removes unchanged refs; maintenance handles leftovers.
+func releaseGroupRefs(ctx context.Context, store *toolsnap.Store, refs map[string]string) {
+	for ref, tree := range refs {
+		if err := store.DeleteRef(ctx, ref, tree); err != nil {
+			slog.Warn("tool window: release ref", "ref", ref, "err", err)
+		}
+	}
 }
 
 // existingRefTarget distinguishes a missing ref from a store failure.
@@ -417,29 +464,57 @@ func assembleDelta(event *Event, members []toolsnap.PendingToolSnapshot, files [
 	}
 }
 
-// persistPartialDelta records durable partial evidence for a window
-// that never had a usable pre snapshot.
-func persistPartialDelta(ctx context.Context, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, event *Event, eventID, reason string) {
-	delta := &toolsnap.Delta{
-		Scope: "tool", Status: "partial", Reason: reason,
-		Window: toolsnap.Window{StartedAt: event.Timestamp, CompletedAt: event.Timestamp},
-		Actors: []toolsnap.Actor{{Provider: key.Provider, SessionID: key.SessionID, TurnID: key.TurnID}},
-		ToolUses: []toolsnap.ToolUse{{
-			ToolUseID: key.ToolUseID, ToolName: event.ToolName,
-			EventID: eventID, CommandSummary: commandSummary(event.ToolInput),
-		}},
+// persistPartialDelta records linked evidence when no pre snapshot exists.
+// A first-delivery record keeps retries and duplicate hooks deterministic.
+func persistPartialDelta(ctx context.Context, reg *toolsnap.Registry, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, event *Event, eventID, reason string, events []broker.RawEvent, globalBlobs *blobs.Store) bool {
+	if _, err := broker.WriteEventsToRepo(ctx, target.repoPath, events, globalBlobs); err != nil {
+		slog.Warn("tool window: partial delta events", "err", err)
+		return false
 	}
+	rec, err := reg.LoadOrRecordPendingPartial(toolsnap.PendingPartialRecord{
+		Key: key, EventID: eventID, Reason: reason, ToolName: event.ToolName,
+		CommandSummary: commandSummary(event.ToolInput), Timestamp: event.Timestamp,
+	})
+	if err != nil {
+		slog.Warn("tool window: pending partial record", "err", err)
+		return false
+	}
+	delta := partialDeltaFromRecord(rec)
 	canonical, err := delta.CanonicalBytes()
 	if err != nil {
 		slog.Warn("tool window: partial delta", "err", err)
-		return
+		return false
 	}
-	if _, _, err := repoBlobs.Put(ctx, canonical); err != nil {
+	deltaHash, _, err := repoBlobs.Put(ctx, canonical)
+	if err != nil {
 		slog.Warn("tool window: persist partial delta", "err", err)
-		return
+		return false
+	}
+	// Groupless partials use a deterministic reason-and-event key.
+	if err := broker.WriteEvidenceLinksToRepo(ctx, target.repoPath, []broker.EvidenceLink{{
+		EventID: rec.EventID, EvidenceKind: evidenceKindToolDelta,
+		EvidenceHash: deltaHash, GroupID: rec.Reason + ":" + rec.EventID,
+		CreatedAt: rec.Timestamp,
+	}}); err != nil {
+		slog.Warn("tool window: partial delta link", "err", err)
+		return false
 	}
 	util.AppendActivityLog(target.semDir,
 		"tool-window partial (%s): tool_use=%s", reason, key.ToolUseID)
+	return true
+}
+
+// partialDeltaFromRecord rebuilds a groupless partial from durable inputs.
+func partialDeltaFromRecord(rec toolsnap.PendingPartialRecord) *toolsnap.Delta {
+	return &toolsnap.Delta{
+		Scope: "tool", Status: "partial", Reason: rec.Reason,
+		Window: toolsnap.Window{StartedAt: rec.Timestamp, CompletedAt: rec.Timestamp},
+		Actors: []toolsnap.Actor{{Provider: rec.Key.Provider, SessionID: rec.Key.SessionID, TurnID: rec.Key.TurnID}},
+		ToolUses: []toolsnap.ToolUse{{
+			ToolUseID: rec.Key.ToolUseID, ToolName: rec.ToolName,
+			EventID: rec.EventID, CommandSummary: rec.CommandSummary,
+		}},
+	}
 }
 
 // closingEventID returns the hook event for the closing tool use.

@@ -26,12 +26,13 @@ var maintenanceMaxHold = time.Second
 // MaintenanceReport describes one maintenance pass.
 type MaintenanceReport struct {
 	// Deferred reports an incomplete pass. Counters include completed work.
-	Deferred      bool
-	ActiveWindows int
-	RefsDeleted   int
-	RefsKept      int
-	MarkersPruned int
-	PruneRan      bool
+	Deferred       bool
+	ActiveWindows  int
+	RefsDeleted    int
+	RefsKept       int
+	MarkersPruned  int
+	PartialsPruned int
+	PruneRan       bool
 	// StoreBytes is the store object size after the pass.
 	StoreBytes int64
 }
@@ -101,8 +102,15 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 			report.RefsDeleted++
 		}
 
-		// Expire closure markers with the stale-window retention period.
-		if entries, err := os.ReadDir(filepath.Join(reg.dir, "closures")); err == nil {
+		// Recovery sweeps must run before pending partials are aged out.
+		for _, sub := range []struct {
+			dir     string
+			counter *int
+		}{{"closures", &report.MarkersPruned}, {"partials", &report.PartialsPruned}} {
+			entries, err := os.ReadDir(filepath.Join(reg.dir, sub.dir))
+			if err != nil {
+				continue
+			}
 			for _, e := range entries {
 				if err := passCtx.Err(); err != nil {
 					return false, err
@@ -111,8 +119,8 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 				if err != nil || fi.ModTime().After(staleCutoff) {
 					continue
 				}
-				if os.Remove(filepath.Join(reg.dir, "closures", e.Name())) == nil {
-					report.MarkersPruned++
+				if os.Remove(filepath.Join(reg.dir, sub.dir, e.Name())) == nil {
+					*sub.counter++
 				}
 			}
 		}

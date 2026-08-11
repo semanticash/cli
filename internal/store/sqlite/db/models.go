@@ -31,6 +31,14 @@ type AgentEvent struct {
 	InsertSeq         sql.NullInt64  `json:"insert_seq"`
 }
 
+type AgentEventEvidenceLink struct {
+	EventID      string `json:"event_id"`
+	EvidenceKind string `json:"evidence_kind"`
+	EvidenceHash string `json:"evidence_hash"`
+	GroupID      string `json:"group_id"`
+	CreatedAt    int64  `json:"created_at"`
+}
+
 type AgentSession struct {
 	SessionID         string         `json:"session_id"`
 	ProviderSessionID string         `json:"provider_session_id"`

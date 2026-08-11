@@ -378,6 +378,26 @@ func TestCompleteToolWindowProducesDelta(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("closing events in lineage db = %d, want 1", count)
 	}
+
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].EventID != "evt-close" || links[0].Kind != "tool_delta" || links[0].Hash == "" {
+		t.Fatalf("links = %+v, want one tool_delta link for evt-close", links)
+	}
+	bs, err := blobs.NewStore(filepath.Join(w.semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := bs.Get(ctx, links[0].Hash)
+	if err != nil {
+		t.Fatalf("linked blob unreadable: %v", err)
+	}
+	if linked, err := toolsnap.ParseDelta(raw); err != nil || linked.ToolUses[0].EventID != "evt-close" {
+		t.Fatalf("linked blob is not the closing delta: %v", err)
+	}
+
+	if refs := snapshotRefsIn(t, w.repoPath, w.semDir); len(refs) != 0 {
+		t.Fatalf("refs after closure = %v, want none", refs)
+	}
 }
 
 // TestCompleteToolWindowConcurrentGroup covers overlapping Bash tools.
@@ -451,6 +471,68 @@ func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
 	if ids["toolu_a"] != "evt-a" || ids["toolu_b"] != "evt-b" {
 		t.Fatalf("member event ids = %v", ids)
 	}
+
+	links := linksIn(t, w.semDir)
+	if len(links) != 2 || links[0].EventID != "evt-a" || links[1].EventID != "evt-b" ||
+		links[0].Hash == "" || links[0].Hash != links[1].Hash || links[0].GroupID != links[1].GroupID {
+		t.Fatalf("links = %+v, want both members on one delta", links)
+	}
+	if refs := snapshotRefsIn(t, w.repoPath, w.semDir); len(refs) != 0 {
+		t.Fatalf("refs after closure = %v, want none", refs)
+	}
+}
+
+type evidenceLinkRow struct {
+	EventID string
+	Kind    string
+	Hash    string
+	GroupID string
+}
+
+func linksIn(t *testing.T, semDir string) []evidenceLinkRow {
+	t.Helper()
+	ctx := context.Background()
+	h, err := sqlstore.Open(ctx, filepath.Join(semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	rows, err := h.DB.QueryContext(ctx,
+		"SELECT event_id, evidence_kind, evidence_hash, group_id FROM agent_event_evidence_links ORDER BY event_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []evidenceLinkRow
+	for rows.Next() {
+		var r evidenceLinkRow
+		if err := rows.Scan(&r.EventID, &r.Kind, &r.Hash, &r.GroupID); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func snapshotRefsIn(t *testing.T, repoPath, semDir string) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	rc, err := toolsnap.ResolveRepoContext(ctx, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolsnap.OpenStore(ctx, rc, semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := store.ListRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return refs
 }
 
 // recordStages installs the capture seam and returns the recorder.
@@ -482,7 +564,11 @@ func TestRetryWithPersistedDeltaSkipsRecompute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boom := errors.New("event write failed after delta persisted")
+	// A persisted delta requires its event row.
+	if _, err := broker.WriteEventsToRepo(ctx, w.repoPath, []broker.RawEvent{bashRawEvent("evt-r", "toolu_r", "sess-r")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("publication failed after delta persisted")
 	_, err = reg.Complete(ctx, toolsnap.ToolKey{
 		RepositoryID: w.repoID, Provider: "claude_code",
 		SessionID: "sess-r", TurnID: "turn-1", ToolUseID: "toolu_r",
@@ -511,6 +597,183 @@ func TestRetryWithPersistedDeltaSkipsRecompute(t *testing.T) {
 	}
 	if wins := windowsIn(t, w.semDir); len(wins) != 0 {
 		t.Fatalf("group not closed: %+v", wins)
+	}
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].EventID != "evt-r" || links[0].Hash != "persisted-delta" {
+		t.Fatalf("links = %+v, want evt-r on the persisted delta", links)
+	}
+}
+
+func TestMissingPreSnapshotPersistsLinkedPartial(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess-mp", Provider: "claude-code",
+		TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No pre hook ran for this tool use.
+	evtMP := strings.Repeat("ab", 32)
+	post := postBashEvent("sess-mp", "toolu_mp", w.repoPath, "cmd")
+	post.Timestamp = 5000
+	events := []broker.RawEvent{bashRawEvent(evtMP, "toolu_mp", "sess-mp")}
+	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
+		t.Fatal("missing-pre partial not handled")
+	}
+
+	deltas := findDeltas(t, w.semDir)
+	if len(deltas) != 1 || deltas[0].Status != "partial" || deltas[0].Reason != "pre_snapshot_missing" {
+		t.Fatalf("deltas = %+v, want one pre_snapshot_missing partial", deltas)
+	}
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].EventID != evtMP || links[0].Kind != "tool_delta" ||
+		links[0].GroupID != "pre_snapshot_missing:"+evtMP {
+		t.Fatalf("links = %+v, want the partial linked to the closing event", links)
+	}
+	h, err := sqlstore.Open(ctx, filepath.Join(w.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := h.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM agent_events WHERE event_id = ?", evtMP).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	_ = sqlstore.Close(h)
+	if count != 1 {
+		t.Fatalf("closing event rows = %d, want 1", count)
+	}
+
+	// Reparse the duplicate with a later timestamp and active turn.
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess-mp", Provider: "claude-code",
+		TurnID: "turn-2", CWD: w.repoPath, Timestamp: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dup := postBashEvent("sess-mp", "toolu_mp", w.repoPath, "cmd")
+	dup.Timestamp = 9000
+	if !completeToolWindow(ctx, "claude-code", dup, w.bh, nil, []broker.RawEvent{bashRawEvent(evtMP, "toolu_mp", "sess-mp")}) {
+		t.Fatal("duplicate delivery not handled")
+	}
+	if deltas := findDeltas(t, w.semDir); len(deltas) != 1 || deltas[0].Window.StartedAt != 5000 {
+		t.Fatalf("deltas after duplicate = %+v, want the original window only", deltas)
+	}
+	if links := linksIn(t, w.semDir); len(links) != 1 {
+		t.Fatalf("links after duplicate = %+v, want one", links)
+	}
+}
+
+func TestPartialReplayUsesRecordedFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess-rp", Provider: "claude-code",
+		TurnID: "turn-2", CWD: w.repoPath, Timestamp: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a recorded delivery that stopped before link creation.
+	evtRP := strings.Repeat("cd", 32)
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.LoadOrRecordPendingPartial(toolsnap.PendingPartialRecord{
+		Key: toolsnap.ToolKey{
+			RepositoryID: w.repoID, Provider: "claude_code",
+			SessionID: "sess-rp", TurnID: "turn-1", ToolUseID: "toolu_rp",
+		},
+		EventID: evtRP, Reason: "pre_snapshot_missing",
+		ToolName: "Bash", CommandSummary: "original-cmd", Timestamp: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reparse with different values; the record remains authoritative.
+	post := postBashEvent("sess-rp", "toolu_rp", w.repoPath, "reparsed-cmd")
+	post.Timestamp = 9000
+	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent(evtRP, "toolu_rp", "sess-rp")}) {
+		t.Fatal("replay not handled")
+	}
+
+	deltas := findDeltas(t, w.semDir)
+	if len(deltas) != 1 {
+		t.Fatalf("deltas = %d, want one", len(deltas))
+	}
+	d := deltas[0]
+	if d.Window.StartedAt != 5000 || d.Actors[0].TurnID != "turn-1" ||
+		d.ToolUses[0].CommandSummary != "original-cmd" {
+		t.Fatalf("delta = %+v, want the recorded fields, not the reparsed payload", d)
+	}
+	if links := linksIn(t, w.semDir); len(links) != 1 || links[0].EventID != evtRP {
+		t.Fatalf("links = %+v", links)
+	}
+}
+
+func TestConflictingEvidenceLinkBlocksClosure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess-cf", Provider: "claude-code",
+		TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess-cf", "toolu_cf", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	wins := windowsIn(t, w.semDir)
+	if len(wins) != 1 {
+		t.Fatal("window missing")
+	}
+
+	// Seed a conflicting link for the same event and group.
+	if _, err := broker.WriteEventsToRepo(ctx, w.repoPath, []broker.RawEvent{bashRawEvent("evt-cf", "toolu_cf", "sess-cf")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.WriteEvidenceLinksToRepo(ctx, w.repoPath, []broker.EvidenceLink{{
+		EventID: "evt-cf", EvidenceKind: "tool_delta",
+		EvidenceHash: "foreign-hash", GroupID: wins[0].GroupID, CreatedAt: 2,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	post := postBashEvent("sess-cf", "toolu_cf", w.repoPath, "cmd")
+	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-cf", "toolu_cf", "sess-cf")}) {
+		t.Fatal("conflicting link accepted as closure")
+	}
+
+	// The conflict retains the group, link, and refs for repair.
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := reg.PendingFinalizations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Final == nil || pending[0].Final.DeltaHash == "" {
+		t.Fatalf("pending = %+v, want retained group with delta identity", pending)
+	}
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].Hash != "foreign-hash" {
+		t.Fatalf("links = %+v, want the foreign link preserved", links)
+	}
+	if refs := snapshotRefsIn(t, w.repoPath, w.semDir); len(refs) == 0 {
+		t.Fatal("refs released despite blocked closure")
 	}
 }
 

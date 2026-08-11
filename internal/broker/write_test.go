@@ -856,3 +856,71 @@ func TestWriteEventsToRepo_SubdirLaunchIsNotCrossRepo(t *testing.T) {
 		t.Errorf("expected NULL source_repo_path for subdirectory launch, got %q", sess.SourceRepoPath.String)
 	}
 }
+
+func TestWriteEvidenceLinksToRepo(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	tempRepoWithDB(t, repoPath)
+	ctx := context.Background()
+
+	if _, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{{
+		EventID: "evt-1", SourceKey: "/data/s.jsonl", Provider: "claude_code",
+		Timestamp: 2000, Kind: "assistant", Role: "assistant",
+		ProviderSessionID: "sess-abc", SessionStartedAt: 1500,
+		SessionMetaJSON: `{"source_key":"/data/s.jsonl"}`,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	link := EvidenceLink{
+		EventID: "evt-1", EvidenceKind: "tool_delta",
+		EvidenceHash: "hash-a", GroupID: "g-1", CreatedAt: 2500,
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{link}); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{link}); err != nil {
+		t.Fatalf("idempotent rewrite: %v", err)
+	}
+
+	conflicting := link
+	conflicting.EvidenceHash = "hash-b"
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{conflicting}); !errors.Is(err, ErrEvidenceLinkConflict) {
+		t.Fatalf("conflicting hash: err = %v, want ErrEvidenceLinkConflict", err)
+	}
+
+	// A missing event rolls back the entire batch.
+	batch := []EvidenceLink{
+		{EventID: "evt-1", EvidenceKind: "tool_delta", EvidenceHash: "hash-a", GroupID: "g-2", CreatedAt: 2600},
+		{EventID: "evt-missing", EvidenceKind: "tool_delta", EvidenceHash: "hash-a", GroupID: "g-2", CreatedAt: 2600},
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, batch); err == nil {
+		t.Fatal("link to missing event accepted")
+	}
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	rows, err := h.Queries.ListEvidenceLinksByEvent(ctx, "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EvidenceHash != "hash-a" || rows[0].GroupID != "g-1" {
+		t.Fatalf("links = %+v, want only the original row", rows)
+	}
+
+	// Event deletion removes its evidence links.
+	if _, err := h.DB.ExecContext(ctx, "DELETE FROM agent_events WHERE event_id = 'evt-1'"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = h.Queries.ListEvidenceLinksByEvent(ctx, "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("links after event deletion = %+v, want none", rows)
+	}
+}

@@ -81,6 +81,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getCommitLinksByCheckpointStmt, err = db.PrepareContext(ctx, getCommitLinksByCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCommitLinksByCheckpoint: %w", err)
 	}
+	if q.getEvidenceLinkStmt, err = db.PrepareContext(ctx, getEvidenceLink); err != nil {
+		return nil, fmt.Errorf("error preparing query GetEvidenceLink: %w", err)
+	}
 	if q.getLatestCheckpointForRepoStmt, err = db.PrepareContext(ctx, getLatestCheckpointForRepo); err != nil {
 		return nil, fmt.Errorf("error preparing query GetLatestCheckpointForRepo: %w", err)
 	}
@@ -129,6 +132,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.insertCommitLinkStmt, err = db.PrepareContext(ctx, insertCommitLink); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertCommitLink: %w", err)
 	}
+	if q.insertEvidenceLinkIfAbsentStmt, err = db.PrepareContext(ctx, insertEvidenceLinkIfAbsent); err != nil {
+		return nil, fmt.Errorf("error preparing query InsertEvidenceLinkIfAbsent: %w", err)
+	}
 	if q.insertRepositoryStmt, err = db.PrepareContext(ctx, insertRepository); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertRepository: %w", err)
 	}
@@ -173,6 +179,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listEventsInWindowForAnnotationsStmt, err = db.PrepareContext(ctx, listEventsInWindowForAnnotations); err != nil {
 		return nil, fmt.Errorf("error preparing query ListEventsInWindowForAnnotations: %w", err)
+	}
+	if q.listEvidenceLinksByEventStmt, err = db.PrepareContext(ctx, listEvidenceLinksByEvent); err != nil {
+		return nil, fmt.Errorf("error preparing query ListEvidenceLinksByEvent: %w", err)
+	}
+	if q.listEvidenceLinksByGroupStmt, err = db.PrepareContext(ctx, listEvidenceLinksByGroup); err != nil {
+		return nil, fmt.Errorf("error preparing query ListEvidenceLinksByGroup: %w", err)
 	}
 	if q.listFailedManifestReasonsStmt, err = db.PrepareContext(ctx, listFailedManifestReasons); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFailedManifestReasons: %w", err)
@@ -403,6 +415,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getCommitLinksByCheckpointStmt: %w", cerr)
 		}
 	}
+	if q.getEvidenceLinkStmt != nil {
+		if cerr := q.getEvidenceLinkStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getEvidenceLinkStmt: %w", cerr)
+		}
+	}
 	if q.getLatestCheckpointForRepoStmt != nil {
 		if cerr := q.getLatestCheckpointForRepoStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getLatestCheckpointForRepoStmt: %w", cerr)
@@ -483,6 +500,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing insertCommitLinkStmt: %w", cerr)
 		}
 	}
+	if q.insertEvidenceLinkIfAbsentStmt != nil {
+		if cerr := q.insertEvidenceLinkIfAbsentStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing insertEvidenceLinkIfAbsentStmt: %w", cerr)
+		}
+	}
 	if q.insertRepositoryStmt != nil {
 		if cerr := q.insertRepositoryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing insertRepositoryStmt: %w", cerr)
@@ -556,6 +578,16 @@ func (q *Queries) Close() error {
 	if q.listEventsInWindowForAnnotationsStmt != nil {
 		if cerr := q.listEventsInWindowForAnnotationsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listEventsInWindowForAnnotationsStmt: %w", cerr)
+		}
+	}
+	if q.listEvidenceLinksByEventStmt != nil {
+		if cerr := q.listEvidenceLinksByEventStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listEvidenceLinksByEventStmt: %w", cerr)
+		}
+	}
+	if q.listEvidenceLinksByGroupStmt != nil {
+		if cerr := q.listEvidenceLinksByGroupStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listEvidenceLinksByGroupStmt: %w", cerr)
 		}
 	}
 	if q.listFailedManifestReasonsStmt != nil {
@@ -831,6 +863,7 @@ type Queries struct {
 	getCheckpointSummaryStmt                     *sql.Stmt
 	getCommitLinkByCommitHashStmt                *sql.Stmt
 	getCommitLinksByCheckpointStmt               *sql.Stmt
+	getEvidenceLinkStmt                          *sql.Stmt
 	getLatestCheckpointForRepoStmt               *sql.Stmt
 	getLatestCommitLinkStmt                      *sql.Stmt
 	getManifestCommitLinkStmt                    *sql.Stmt
@@ -847,6 +880,7 @@ type Queries struct {
 	insertAgentEventStmt                         *sql.Stmt
 	insertCheckpointStmt                         *sql.Stmt
 	insertCommitLinkStmt                         *sql.Stmt
+	insertEvidenceLinkIfAbsentStmt               *sql.Stmt
 	insertRepositoryStmt                         *sql.Stmt
 	insertSessionCheckpointStmt                  *sql.Stmt
 	listAgentEventsBySessionStmt                 *sql.Stmt
@@ -862,6 +896,8 @@ type Queries struct {
 	listEventsBySessionASCStmt                   *sql.Stmt
 	listEventsInWindowStmt                       *sql.Stmt
 	listEventsInWindowForAnnotationsStmt         *sql.Stmt
+	listEvidenceLinksByEventStmt                 *sql.Stmt
+	listEvidenceLinksByGroupStmt                 *sql.Stmt
 	listFailedManifestReasonsStmt                *sql.Stmt
 	listPackagedManifestsStmt                    *sql.Stmt
 	listPendingCommitLinkedCheckpointsStmt       *sql.Stmt
@@ -930,6 +966,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getCheckpointSummaryStmt:                     q.getCheckpointSummaryStmt,
 		getCommitLinkByCommitHashStmt:                q.getCommitLinkByCommitHashStmt,
 		getCommitLinksByCheckpointStmt:               q.getCommitLinksByCheckpointStmt,
+		getEvidenceLinkStmt:                          q.getEvidenceLinkStmt,
 		getLatestCheckpointForRepoStmt:               q.getLatestCheckpointForRepoStmt,
 		getLatestCommitLinkStmt:                      q.getLatestCommitLinkStmt,
 		getManifestCommitLinkStmt:                    q.getManifestCommitLinkStmt,
@@ -946,6 +983,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		insertAgentEventStmt:                         q.insertAgentEventStmt,
 		insertCheckpointStmt:                         q.insertCheckpointStmt,
 		insertCommitLinkStmt:                         q.insertCommitLinkStmt,
+		insertEvidenceLinkIfAbsentStmt:               q.insertEvidenceLinkIfAbsentStmt,
 		insertRepositoryStmt:                         q.insertRepositoryStmt,
 		insertSessionCheckpointStmt:                  q.insertSessionCheckpointStmt,
 		listAgentEventsBySessionStmt:                 q.listAgentEventsBySessionStmt,
@@ -961,6 +999,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listEventsBySessionASCStmt:                   q.listEventsBySessionASCStmt,
 		listEventsInWindowStmt:                       q.listEventsInWindowStmt,
 		listEventsInWindowForAnnotationsStmt:         q.listEventsInWindowForAnnotationsStmt,
+		listEvidenceLinksByEventStmt:                 q.listEvidenceLinksByEventStmt,
+		listEvidenceLinksByGroupStmt:                 q.listEvidenceLinksByGroupStmt,
 		listFailedManifestReasonsStmt:                q.listFailedManifestReasonsStmt,
 		listPackagedManifestsStmt:                    q.listPackagedManifestsStmt,
 		listPendingCommitLinkedCheckpointsStmt:       q.listPendingCommitLinkedCheckpointsStmt,
