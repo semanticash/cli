@@ -8,6 +8,8 @@ type DiffResult struct {
 	Files        []FileDiff // all files present in the diff
 	FilesCreated []string   // paths created (from /dev/null)
 	FilesDeleted []string   // paths deleted (to /dev/null)
+	// Complete reports whether the entire diff was scanned.
+	Complete bool
 }
 
 // FileDiff holds the added lines for a single file in a unified diff,
@@ -21,6 +23,8 @@ type FileDiff struct {
 // AddedGroup is a contiguous block of added lines within a diff hunk.
 type AddedGroup struct {
 	Lines []string // "+" lines with prefix stripped
+	// NewStart is the new-file line number of Lines[0], or zero if unknown.
+	NewStart int
 }
 
 // FileScore holds per-file attribution scores.
