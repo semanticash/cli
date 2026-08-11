@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/doctor"
 	"github.com/semanticash/cli/internal/store/blobs"
 	"github.com/semanticash/cli/internal/toolsnap"
 	"github.com/semanticash/cli/internal/util"
@@ -56,11 +57,38 @@ func resolveToolWindowTarget(ctx context.Context, bh *broker.Handle, cwd string)
 	}, nil
 }
 
+// toolWindowBench describes a hook's capture result.
+type toolWindowBench struct {
+	outcome       string
+	partialReason string
+	filesChanged  int
+	bytesRead     int64
+	groupMembers  int
+}
+
+// emitToolWindowBench records one tool-window hook result.
+func emitToolWindowBench(target *toolWindowTarget, event *Event, phase string, start time.Time, bench *toolWindowBench) {
+	if target == nil || bench.outcome == "" {
+		return
+	}
+	doctor.EmitBenchRecord(target.repoPath, doctor.BenchRecord{
+		Kind: "toolwindow", Phase: phase, Tool: event.ToolName,
+		SessionID: event.SessionID, TurnID: event.TurnID, ToolUseID: event.ToolUseID,
+		DurationMS:    doctor.Milliseconds(time.Since(start)),
+		Outcome:       bench.outcome,
+		PartialReason: bench.partialReason,
+		FilesChanged:  bench.filesChanged,
+		BytesRead:     bench.bytesRead,
+		GroupMembers:  bench.groupMembers,
+	})
+}
+
 // handleToolStepStarted captures a pre-tool snapshot without failing the provider command.
 func handleToolStepStarted(ctx context.Context, providerName string, event *Event, bh *broker.Handle) error {
 	// Include repository and database lookup in the capture deadline.
 	wctx, cancel := context.WithTimeout(ctx, toolWindowDeadline)
 	defer cancel()
+	start := time.Now()
 
 	state, err := LoadCaptureState(event.SessionID)
 	if errors.Is(err, ErrNoCaptureState) {
@@ -88,19 +116,26 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 		}
 		return nil
 	}
+	// Include hooks that do not write database rows in timing output.
+	doctor.AddBenchStats(wctx, target.repoPath, doctor.BenchStats{})
+	bench := &toolWindowBench{}
+	defer emitToolWindowBench(target, event, "pre", start, bench)
 
 	rc, err := toolsnap.ResolveRepoContext(wctx, target.repoPath)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: resolve repository", "err", err)
 		return nil
 	}
 	store, err := toolsnap.OpenStore(wctx, rc, target.semDir)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: open snapshot store", "err", err)
 		return nil
 	}
 	reg, err := toolsnap.OpenRegistry(target.semDir)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: open registry", "err", err)
 		return nil
 	}
@@ -113,16 +148,26 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 		TurnID:       event.TurnID,
 		ToolUseID:    event.ToolUseID,
 	}
-	if _, err := reg.CaptureAndBegin(wctx, store, key, event.ToolName, event.Timestamp); err != nil {
+	win, err := reg.CaptureAndBegin(wctx, store, key, event.ToolName, event.Timestamp)
+	switch {
+	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {
+			bench.outcome = "lock_timeout"
+			bench.partialReason = pe.Reason
 			// The registry is unavailable, so use the independent activity log.
 			util.AppendActivityLog(target.semDir,
 				"tool-window pre capture skipped (%s): tool_use=%s", pe.Reason, event.ToolUseID)
 			return nil
 		}
+		bench.outcome = "error"
 		slog.Warn("tool window: pre capture", "tool_use", event.ToolUseID, "err", err)
 		return nil
+	case win.Key.ToolUseID == "":
+		// Settled key: closed or tombstoned identities never reopen.
+		bench.outcome = "skipped_settled"
+	default:
+		bench.outcome = "registered"
 	}
 	return nil
 }
@@ -135,6 +180,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	}
 	wctx, cancel := context.WithTimeout(ctx, toolWindowDeadline)
 	defer cancel()
+	start := time.Now()
 
 	state, err := LoadCaptureState(event.SessionID)
 	if err != nil {
@@ -151,6 +197,8 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	if err != nil || target == nil {
 		return false
 	}
+	bench := &toolWindowBench{}
+	defer emitToolWindowBench(target, event, "post", start, bench)
 	key := toolsnap.ToolKey{
 		RepositoryID: target.repositoryID,
 		Provider:     strings.ReplaceAll(providerName, "-", "_"),
@@ -161,16 +209,19 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 
 	rc, err := toolsnap.ResolveRepoContext(wctx, target.repoPath)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: resolve repository", "err", err)
 		return false
 	}
 	store, err := toolsnap.OpenStore(wctx, rc, target.semDir)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: open snapshot store", "err", err)
 		return false
 	}
 	reg, err := toolsnap.OpenRegistry(target.semDir)
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: open registry", "err", err)
 		return false
 	}
@@ -178,19 +229,24 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	// A tombstone prevents a late post hook from reading newer changes.
 	if tombstoned, err := reg.HasTombstone(key); err != nil || tombstoned {
 		if tombstoned {
+			bench.outcome = "tombstoned"
 			util.AppendActivityLog(target.semDir,
 				"tool-window post skipped (tombstoned): tool_use=%s", event.ToolUseID)
+		} else {
+			bench.outcome = "error"
 		}
 		return false
 	}
 
 	eventID, ok := closingEventID(events, event.ToolUseID)
 	if !ok {
+		bench.outcome = "error"
 		slog.Warn("tool window: no hook event for closing tool use", "tool_use", event.ToolUseID)
 		return false
 	}
 	repoBlobs, err := blobs.NewStore(filepath.Join(target.semDir, "objects"))
 	if err != nil {
+		bench.outcome = "error"
 		slog.Warn("tool window: open repo blob store", "err", err)
 		return false
 	}
@@ -206,19 +262,29 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	cleanupRefs := map[string]string{}
 	closed, err := reg.Complete(wctx, key, info, writeEvents,
 		func(members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
-			return finalizeGroup(wctx, store, repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs)
+			return finalizeGroup(wctx, store, repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs, bench)
 		})
 	switch {
 	case err == nil:
-		// Release refs only after registry closure is durable.
 		if closed {
+			if bench.partialReason != "" {
+				bench.outcome = "closed_partial"
+			} else {
+				bench.outcome = "closed_complete"
+			}
+			// Release refs only after registry closure is durable.
 			releaseGroupRefs(wctx, store, cleanupRefs)
+		} else {
+			bench.outcome = "non_final"
 		}
 		return true
 	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
+		bench.outcome = "missing_pre"
+		bench.partialReason = "pre_snapshot_missing"
 		// Preserve missing-pre evidence without blocking the ordinary write path.
 		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, "pre_snapshot_missing", events, globalBlobs)
 	case errors.Is(err, toolsnap.ErrWindowTombstoned):
+		bench.outcome = "tombstoned"
 		// Preserve the event without creating evidence for an abandoned window.
 		util.AppendActivityLog(target.semDir,
 			"tool-window post skipped (tombstoned): tool_use=%s", event.ToolUseID)
@@ -226,6 +292,8 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {
+			bench.outcome = "lock_timeout"
+			bench.partialReason = pe.Reason
 			// Prevent a later post hook from capturing newer changes.
 			if terr := reg.WriteTombstone(key, event.Timestamp); terr != nil {
 				slog.Warn("tool window: tombstone", "err", terr)
@@ -234,6 +302,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 				"tool-window post lock timeout: tool_use=%s tombstoned", event.ToolUseID)
 			return false
 		}
+		bench.outcome = "error"
 		slog.Warn("tool window: complete", "tool_use", event.ToolUseID, "err", err)
 		return false
 	}
@@ -242,9 +311,10 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 
 // finalizeGroup persists a group's events, delta, and evidence links.
 // Retries use durable state, and refs remain until registry closure succeeds.
-func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string) (toolsnap.FinalizeResult, error) {
+func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string, bench *toolWindowBench) (toolsnap.FinalizeResult, error) {
 	groupID := members[0].GroupID
 	earliest := members[0]
+	bench.groupMembers = len(members)
 
 	var files []toolsnap.FileDelta
 	var bytesRead int64
@@ -323,6 +393,7 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 			files, bytesRead, truncated = nil, 0, false
 		}
 	}
+	bench.filesChanged, bench.bytesRead, bench.partialReason = len(files), bytesRead, partialReason
 	delta := assembleDelta(members, files, bytesRead, truncated, partialReason, capturedAt)
 	canonical, err := delta.CanonicalBytes()
 	if err != nil {

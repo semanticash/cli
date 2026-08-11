@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/doctor"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/util"
 )
@@ -44,11 +45,25 @@ func SweepToolWindows(ctx context.Context) {
 		cancel()
 		if err != nil {
 			wlog("worker: toolwindow sweep %s: %v\n", r.Path, err)
+			// Record failures that occur before a recovery report is available.
+			doctor.EmitBenchRecord(r.Path, doctor.BenchRecord{
+				Kind: "toolwindow_sweep", Outcome: "error", SweepErrors: 1,
+			})
 			continue
 		}
 		if report.PartialsReplayed+report.GroupsResumed+report.GroupsTerminal+report.LinksSkipped+report.Errors > 0 {
 			wlog("worker: toolwindow sweep %s: replayed=%d resumed=%d terminal=%d links_skipped=%d errors=%d\n",
 				r.Path, report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal, report.LinksSkipped, report.Errors)
 		}
+		// Record recovery progress and snapshot-store size.
+		doctor.EmitBenchRecord(r.Path, doctor.BenchRecord{
+			Kind:             "toolwindow_sweep",
+			PartialsReplayed: report.PartialsReplayed,
+			GroupsResumed:    report.GroupsResumed,
+			GroupsTerminal:   report.GroupsTerminal,
+			LinksSkipped:     report.LinksSkipped,
+			SweepErrors:      report.Errors,
+			StoreBytes:       report.Maintenance.StoreBytes,
+		})
 	}
 }

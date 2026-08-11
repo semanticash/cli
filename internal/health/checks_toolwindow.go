@@ -119,9 +119,12 @@ func checkToolWindowDrift(ctx context.Context, opts Options) []Check {
 
 	since := time.Now().Add(-24 * time.Hour).UnixMilli()
 	var unmatched int
+	// Drift applies only to providers with a pre-tool hook.
 	if err := h.DB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM agent_events e
+		 JOIN agent_sessions s ON s.session_id = e.session_id
 		 WHERE e.tool_name = 'Bash' AND e.event_source = 'hook' AND e.ts > ?
+		 AND s.provider = 'claude_code'
 		 AND NOT EXISTS (
 		   SELECT 1 FROM agent_event_evidence_links l
 		   WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'

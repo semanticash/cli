@@ -148,6 +148,23 @@ func TestCheckToolWindows(t *testing.T) {
 			t.Fatalf("checks = %+v, want per-event drift warning", checks)
 		}
 
+		// Providers without a pre hook do not count as drift.
+		evtCodex := strings.Repeat("ef", 32)
+		if _, err := broker.WriteEventsToRepo(ctx, dir, []broker.RawEvent{{
+			EventID: evtCodex, SourceKey: "/data/c.jsonl", Provider: "codex",
+			Timestamp: time.Now().UnixMilli(), Kind: "assistant", Role: "assistant",
+			ToolUseID: "exec-1", ToolName: "Bash", EventSource: "hook",
+			ProviderSessionID: "c1", SessionStartedAt: 1,
+			SessionMetaJSON: `{"source_key":"x"}`,
+		}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		checks = checkToolWindows(ctx, Options{RepoPath: dir})
+		c = findCheck(t, checks, "drift")
+		if !strings.Contains(c.Message, "1 Bash hook event") {
+			t.Fatalf("checks = %+v, want codex event excluded from drift", checks)
+		}
+
 		// Pending groups suppress drift until closure.
 		reg, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica"))
 		if err != nil {

@@ -22,6 +22,9 @@ import (
 // can block until the hook runner times out.
 const stdinReadDeadline = 250 * time.Millisecond
 
+// processStart approximates process startup for hook timing.
+var processStart = time.Now()
+
 // NewCaptureCmd creates the `semantica capture <provider> <event-name>` command.
 // This command is used by provider hook configurations and is not intended
 // for interactive use.
@@ -36,7 +39,7 @@ func NewCaptureCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			providerName := args[0]
 			hookName := args[1]
-			ctx := cmd.Context()
+			ctx := hooks.WithHookStart(cmd.Context(), processStart)
 
 			// Broker-wide enabled check: any active repo in the registry?
 			// Do not gate on the cwd repo's local .semantica/ settings:
