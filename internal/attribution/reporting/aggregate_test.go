@@ -465,6 +465,37 @@ func TestBuildCheckpointResult_EventsButNoToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildCommitResult_DeltaSourceCounters(t *testing.T) {
+	in := CommitResultInput{
+		FileScores: []FileScoreInput{
+			{
+				Path: "gofmt.go", TotalLines: 5,
+				ExactLines: 3, FormattedLines: 2,
+				DeltaExactLines: 3, DeltaFormattedLines: 1,
+				ProviderLines: map[string]int{"claude_code": 5},
+			},
+			{
+				Path: "direct.go", TotalLines: 2,
+				ExactLines:    2,
+				ProviderLines: map[string]int{"claude_code": 2},
+			},
+		},
+	}
+
+	r := BuildCommitResult(in)
+
+	f := r.Files[0]
+	if f.AIDeltaExactLines != 3 || f.AIDeltaFormattedLines != 1 {
+		t.Fatalf("file delta counters = %d/%d, want 3/1", f.AIDeltaExactLines, f.AIDeltaFormattedLines)
+	}
+	if r.AIDeltaExactLines != 3 || r.AIDeltaFormattedLines != 1 {
+		t.Fatalf("commit delta totals = %d/%d, want 3/1", r.AIDeltaExactLines, r.AIDeltaFormattedLines)
+	}
+	if r.AIExactLines != 5 || r.AIFormattedLines != 2 || r.AILines != 7 {
+		t.Fatalf("quality totals changed: %+v", r)
+	}
+}
+
 func TestBuildCommitResult_EditedOnlyWithTotalLines(t *testing.T) {
 	// Non-created file with TotalLines=0 should NOT appear in FilesEdited.
 	in := CommitResultInput{

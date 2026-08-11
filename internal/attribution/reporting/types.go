@@ -26,6 +26,9 @@ type FileScoreInput struct {
 	ProviderLines               map[string]int // provider -> line-level AI lines
 	ProviderOnlyLinesByProvider map[string]int // provider -> provider-only lines
 	DeletedNonBlank             int            // deleted non-blank lines (display only, not attributed)
+	// DeltaExactLines and DeltaFormattedLines are the subsets backed by tool deltas.
+	DeltaExactLines     int
+	DeltaFormattedLines int
 }
 
 // ProviderAttribution holds per-provider AI line counts.
@@ -68,14 +71,15 @@ type AggregateResult struct {
 type EvidenceClass string
 
 const (
-	EvidenceExact          EvidenceClass = "exact"           // trimmed exact line match
-	EvidenceNormalized     EvidenceClass = "normalized"      // whitespace-normalized match
-	EvidenceModified       EvidenceClass = "modified"        // overlap-based modified attribution
-	EvidenceProviderTouch  EvidenceClass = "provider_touch"  // explicit file-edit tool event from provider
-	EvidenceProviderCoarse EvidenceClass = "provider_coarse" // session-level linkage without direct file-edit event
-	EvidenceCarryForward   EvidenceClass = "carry_forward"   // attributed from previous checkpoint window
-	EvidenceDeletion       EvidenceClass = "deletion"        // inferred from bash rm / provider deletion
-	EvidenceNone           EvidenceClass = "none"            // no AI evidence (human file)
+	EvidenceExact          EvidenceClass = "exact"            // trimmed exact line match
+	EvidenceNormalized     EvidenceClass = "normalized"       // whitespace-normalized match
+	EvidenceModified       EvidenceClass = "modified"         // overlap-based modified attribution
+	EvidenceToolDeltaTouch EvidenceClass = "tool_delta_touch" // tool delta without line evidence
+	EvidenceProviderTouch  EvidenceClass = "provider_touch"   // explicit file-edit tool event from provider
+	EvidenceProviderCoarse EvidenceClass = "provider_coarse"  // session-level linkage without direct file-edit event
+	EvidenceCarryForward   EvidenceClass = "carry_forward"    // attributed from previous checkpoint window
+	EvidenceDeletion       EvidenceClass = "deletion"         // inferred from bash rm / provider deletion
+	EvidenceNone           EvidenceClass = "none"             // no AI evidence (human file)
 )
 
 // TouchOrigin describes how a file entered the AI-touched set.
@@ -85,6 +89,7 @@ type TouchOrigin string
 const (
 	TouchOriginProviderEdit TouchOrigin = "provider_edit" // explicit file-edit tool event (Cursor, Kiro, etc.)
 	TouchOriginLineLevel    TouchOrigin = "line_level"    // Claude Edit/Write with payload content
+	TouchOriginToolDelta    TouchOrigin = "tool_delta"    // verified tool-window capture
 	TouchOriginDeletion     TouchOrigin = "deletion"      // bash rm or provider deletion event
 	TouchOriginCoarse       TouchOrigin = "coarse"        // session-level linkage only
 )
@@ -123,19 +128,22 @@ type CommitResult struct {
 	AIFormattedLines    int
 	AIModifiedLines     int
 	AIProviderOnlyLines int // provider-touch only, excluded from headline
-	AILines             int // exact + formatted + modified
-	HumanLines          int
-	TotalLines          int
-	AIPercentage        float64 // (exact + formatted + modified) / total * 100
-	FilesAITouched      int
-	FilesTotal          int // created + edited (excludes deleted)
-	FilesCreated        []FileChangeOutput
-	FilesEdited         []FileChangeOutput
-	FilesDeleted        []FileChangeOutput
-	Files               []FileAttributionOutput
-	ProviderDetails     []ProviderAttribution
-	Evidence            string // evidence-strength level: "High", "Medium", "Low"
-	FallbackCount       int    // number of AI-attributed files with provider-touch or weaker evidence
+	// Tool-delta subsets of the exact and formatted totals.
+	AIDeltaExactLines     int
+	AIDeltaFormattedLines int
+	AILines               int // exact + formatted + modified
+	HumanLines            int
+	TotalLines            int
+	AIPercentage          float64 // (exact + formatted + modified) / total * 100
+	FilesAITouched        int
+	FilesTotal            int // created + edited (excludes deleted)
+	FilesCreated          []FileChangeOutput
+	FilesEdited           []FileChangeOutput
+	FilesDeleted          []FileChangeOutput
+	Files                 []FileAttributionOutput
+	ProviderDetails       []ProviderAttribution
+	Evidence              string // evidence-strength level: "High", "Medium", "Low"
+	FallbackCount         int    // number of AI-attributed files with provider-touch or weaker evidence
 }
 
 // FileAttributionOutput holds per-file attribution scores in the commit result.
@@ -150,12 +158,15 @@ type FileAttributionOutput struct {
 	AIFormattedLines    int
 	AIModifiedLines     int
 	AIProviderOnlyLines int
-	HumanLines          int
-	TotalLines          int
-	DeletedNonBlank     int
-	AIPercent           float64         // (exact + formatted + modified) / total * 100
-	PrimaryEvidence     EvidenceClass   // highest-quality evidence for display
-	AllEvidence         []EvidenceClass // all contributing evidence classes (for evaluation)
+	// Tool-delta subsets of AIExactLines and AIFormattedLines.
+	AIDeltaExactLines     int
+	AIDeltaFormattedLines int
+	HumanLines            int
+	TotalLines            int
+	DeletedNonBlank       int
+	AIPercent             float64         // (exact + formatted + modified) / total * 100
+	PrimaryEvidence       EvidenceClass   // highest-quality evidence for display
+	AllEvidence           []EvidenceClass // all contributing evidence classes (for evaluation)
 	// Providers mirrors FileChangeOutput.Providers for the per-file detail row.
 	// Empty means the file is human-only or the provider is unknown.
 	Providers []string

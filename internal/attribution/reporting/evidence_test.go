@@ -60,6 +60,65 @@ func TestResolveFileEvidence_DeletionWhenZeroLines(t *testing.T) {
 	}
 }
 
+func TestResolveFileEvidence_ToolDeltaTouchWhenZeroLines(t *testing.T) {
+	fs := FileScoreInput{TotalLines: 3, HumanLines: 3}
+	got := ResolveFileEvidence(fs, TouchOriginToolDelta, false)
+	if got != EvidenceToolDeltaTouch {
+		t.Errorf("got %q, want %q", got, EvidenceToolDeltaTouch)
+	}
+}
+
+func TestResolveFileEvidence_LineLevelBeatsToolDeltaTouch(t *testing.T) {
+	fs := FileScoreInput{ExactLines: 2}
+	got := ResolveFileEvidence(fs, TouchOriginToolDelta, false)
+	if got != EvidenceExact {
+		t.Errorf("got %q, want %q", got, EvidenceExact)
+	}
+}
+
+func TestResolveFileEvidence_ToolDeltaTouchBeatsCarryForward(t *testing.T) {
+	fs := FileScoreInput{}
+	got := ResolveFileEvidence(fs, TouchOriginToolDelta, true)
+	if got != EvidenceToolDeltaTouch {
+		t.Errorf("got %q, want %q", got, EvidenceToolDeltaTouch)
+	}
+}
+
+func TestCollectFileEvidence_ToolDeltaTouch(t *testing.T) {
+	fs := FileScoreInput{ExactLines: 1}
+	classes := CollectFileEvidence(fs, TouchOriginToolDelta, false)
+	has := make(map[EvidenceClass]bool)
+	for _, c := range classes {
+		has[c] = true
+	}
+	if !has[EvidenceExact] || !has[EvidenceToolDeltaTouch] {
+		t.Errorf("classes = %v, want exact + tool_delta_touch", classes)
+	}
+}
+
+func TestIsFallbackEvidence_ToolDeltaTouch(t *testing.T) {
+	if !IsFallbackEvidence(EvidenceToolDeltaTouch) {
+		t.Error("tool_delta_touch must be fallback evidence")
+	}
+}
+
+func TestCommitEvidence_ToolDeltaTouchCounts(t *testing.T) {
+	files := []FileAttributionOutput{
+		{PrimaryEvidence: EvidenceExact, AIExactLines: 10},
+		{
+			PrimaryEvidence: EvidenceToolDeltaTouch,
+			AllEvidence:     []EvidenceClass{EvidenceToolDeltaTouch},
+		},
+	}
+	level, fallbackCount := CommitEvidence(files)
+	if fallbackCount != 1 {
+		t.Errorf("fallbackCount = %d, want 1", fallbackCount)
+	}
+	if level == "" {
+		t.Error("level must be computed for tool_delta_touch files")
+	}
+}
+
 func TestResolveFileEvidence_NoneWhenNoEvidence(t *testing.T) {
 	fs := FileScoreInput{TotalLines: 5, HumanLines: 5}
 	got := ResolveFileEvidence(fs, "", false)
@@ -235,10 +294,10 @@ func TestEvidenceExplanation(t *testing.T) {
 		fallback int
 		want     string
 	}{
-		{"High", 0, "all files matched by direct line comparison"},
-		{"Medium", 1, "1 file attributed without direct line evidence"},
-		{"Medium", 3, "3 files attributed without direct line evidence"},
-		{"Low", 2, "most files attributed via indirect provider signals"},
+		{"High", 0, "all files matched by line-level evidence"},
+		{"Medium", 1, "1 file attributed without line-level evidence"},
+		{"Medium", 3, "3 files attributed without line-level evidence"},
+		{"Low", 2, "most files attributed via file-level signals"},
 		{"", 0, ""},
 	}
 	for _, tt := range tests {
