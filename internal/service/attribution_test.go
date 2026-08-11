@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
+	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -902,6 +903,39 @@ func TestCreatedCarryForwardCandidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Scoring conversion preserves completeness and line coordinates.
+func TestScoringDiffRoundTrip(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/a.go b/a.go",
+		"--- a/a.go",
+		"+++ b/a.go",
+		"@@ -3,2 +5,4 @@",
+		" ctx",
+		"+added one",
+		"-removed",
+		"+added two",
+		"diff --git a/b.go b/b.go",
+		"--- /dev/null",
+		"+++ b/b.go",
+		"@@ -0,0 +1,1 @@",
+		"+package b",
+		"",
+	}, "\n")
+	sd := attrscoring.ParseDiff([]byte(diff))
+	if !sd.Complete {
+		t.Fatalf("fixture diff parsed incomplete")
+	}
+	if got := sd.Files[0].Groups[0].NewStart; got != 6 {
+		t.Fatalf("NewStart = %d, want 6", got)
+	}
+	for _, complete := range []bool{true, false} {
+		sd.Complete = complete
+		if got := toScoringDiff(fromScoringDiff(sd)); !reflect.DeepEqual(got, sd) {
+			t.Fatalf("round trip (complete=%v):\n got %+v\nwant %+v", complete, got, sd)
+		}
 	}
 }
 

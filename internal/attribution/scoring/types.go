@@ -27,23 +27,8 @@ type AddedGroup struct {
 	NewStart int
 }
 
-// FileScore holds per-file attribution scores.
-//
-// ProviderOnlyLines counts lines attributed via provider-touch
-// signals alone (the AI session edited the file but no line-level
-// payload is available, e.g. Cursor / Copilot / Gemini / Kiro).
-// Tracked separately from ModifiedLines so the headline AI% is
-// computed from line-overlap evidence only; provider-only lines
-// are surfaced in the per-file output but excluded from the
-// commit-level percentage to avoid inflating the headline on
-// thin evidence.
-//
-// ProviderLines and ProviderOnlyLinesByProvider mirror that
-// split at the per-provider level: a cursor file-touch increments
-// only ProviderOnlyLinesByProvider["cursor"], while a claude
-// line-level match increments only ProviderLines["claude_code"].
-// Aggregating both maps separately keeps the per-provider
-// breakdown consistent with the headline split.
+// FileScore holds per-file attribution scores. Provider-only lines are
+// reported separately and do not contribute to the headline percentage.
 type FileScore struct {
 	Path                        string
 	TotalLines                  int
@@ -54,13 +39,25 @@ type FileScore struct {
 	HumanLines                  int
 	ProviderLines               map[string]int // provider -> line-level AI lines
 	ProviderOnlyLinesByProvider map[string]int // provider -> provider-only lines
+	// DeltaExactLines and DeltaFormattedLines identify tool-delta matches.
+	DeltaExactLines     int
+	DeltaFormattedLines int
+	// DeltaAlignmentRefused marks delta evidence that must degrade to touch.
+	DeltaAlignmentRefused bool
+	// ContestedLines counts lines where multiple evidence candidates
+	// competed before winner selection.
+	ContestedLines int
 }
 
 // MatchStats collects match counters from scoring.
 // Callers combine these with EventStats from the events package.
 type MatchStats struct {
-	ExactMatches        int
-	NormalizedMatches   int
-	ModifiedMatches     int
-	ProviderOnlyMatches int
+	ExactMatches           int
+	NormalizedMatches      int
+	ModifiedMatches        int
+	ProviderOnlyMatches    int
+	DeltaExactMatches      int
+	DeltaNormalizedMatches int
+	DeltaAlignmentsRefused int
+	ContestedLines         int
 }

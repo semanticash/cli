@@ -146,7 +146,9 @@ select
     l.event_id,
     l.evidence_hash,
     l.group_id,
-    s.provider
+    s.provider,
+    e.ts,
+    e.insert_seq
 from agent_event_evidence_links l
     join agent_events e on e.event_id = l.event_id
     join agent_sessions s
@@ -161,7 +163,7 @@ where e.repository_id = ?
                  or (e.ts = ?5 and e.insert_seq <= ?6)))
          or (cast(?2 as integer) = 0
             and e.ts > ?3 and e.ts <= ?5))
-order by e.ts, e.insert_seq, l.event_id
+order by e.ts, e.insert_seq, l.event_id, l.group_id
 `
 
 type ListEvidenceLinksInWindowParams struct {
@@ -174,13 +176,16 @@ type ListEvidenceLinksInWindowParams struct {
 }
 
 type ListEvidenceLinksInWindowRow struct {
-	EventID      string `json:"event_id"`
-	EvidenceHash string `json:"evidence_hash"`
-	GroupID      string `json:"group_id"`
-	Provider     string `json:"provider"`
+	EventID      string        `json:"event_id"`
+	EvidenceHash string        `json:"evidence_hash"`
+	GroupID      string        `json:"group_id"`
+	Provider     string        `json:"provider"`
+	Ts           int64         `json:"ts"`
+	InsertSeq    sql.NullInt64 `json:"insert_seq"`
 }
 
-// Lists tool-delta links and session providers in event-window order.
+// Lists tool-delta links and session providers in event-window order,
+// with event recency for deterministic winner selection.
 func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenceLinksInWindowParams) ([]ListEvidenceLinksInWindowRow, error) {
 	rows, err := q.query(ctx, q.listEvidenceLinksInWindowStmt, listEvidenceLinksInWindow,
 		arg.RepositoryID,
@@ -202,6 +207,8 @@ func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenc
 			&i.EvidenceHash,
 			&i.GroupID,
 			&i.Provider,
+			&i.Ts,
+			&i.InsertSeq,
 		); err != nil {
 			return nil, err
 		}

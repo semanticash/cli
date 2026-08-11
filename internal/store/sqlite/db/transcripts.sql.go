@@ -26,7 +26,8 @@ select
     e.tokens_cache_create,
     e.summary,
     e.provider_event_id,
-    e.payload_hash
+    e.payload_hash,
+    e.insert_seq
 from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.repository_id = ?
@@ -65,11 +66,13 @@ type ListEventsInWindowRow struct {
 	Summary           sql.NullString `json:"summary"`
 	ProviderEventID   sql.NullString `json:"provider_event_id"`
 	PayloadHash       sql.NullString `json:"payload_hash"`
+	InsertSeq         sql.NullInt64  `json:"insert_seq"`
 }
 
 // Returns all events for a repository within a time window, without
 // requiring session_checkpoints links. Used by attribution to query
-// events directly by repository and time range.
+// events directly by repository and time range. insert_seq feeds
+// deterministic winner selection for equal-quality evidence.
 func (q *Queries) ListEventsInWindow(ctx context.Context, arg ListEventsInWindowParams) ([]ListEventsInWindowRow, error) {
 	rows, err := q.query(ctx, q.listEventsInWindowStmt, listEventsInWindow,
 		arg.RepositoryID,
@@ -102,6 +105,7 @@ func (q *Queries) ListEventsInWindow(ctx context.Context, arg ListEventsInWindow
 			&i.Summary,
 			&i.ProviderEventID,
 			&i.PayloadHash,
+			&i.InsertSeq,
 		); err != nil {
 			return nil, err
 		}

@@ -22,12 +22,15 @@ select count(*) > 0 as exists_flag from agent_events
 where event_id = ?;
 
 -- name: ListEvidenceLinksInWindow :many
--- Lists tool-delta links and session providers in event-window order.
+-- Lists tool-delta links and session providers in event-window order,
+-- with event recency for deterministic winner selection.
 select
     l.event_id,
     l.evidence_hash,
     l.group_id,
-    s.provider
+    s.provider,
+    e.ts,
+    e.insert_seq
 from agent_event_evidence_links l
     join agent_events e on e.event_id = l.event_id
     join agent_sessions s
@@ -42,4 +45,4 @@ where e.repository_id = ?
                  or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
          or (cast(sqlc.arg(use_cursor) as integer) = 0
             and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)))
-order by e.ts, e.insert_seq, l.event_id;
+order by e.ts, e.insert_seq, l.event_id, l.group_id;

@@ -19,7 +19,8 @@ order by e.ts, s.provider, e.session_id, e.event_id;
 -- name: ListEventsInWindow :many
 -- Returns all events for a repository within a time window, without
 -- requiring session_checkpoints links. Used by attribution to query
--- events directly by repository and time range.
+-- events directly by repository and time range. insert_seq feeds
+-- deterministic winner selection for equal-quality evidence.
 select
     e.event_id,
     e.session_id,
@@ -35,7 +36,8 @@ select
     e.tokens_cache_create,
     e.summary,
     e.provider_event_id,
-    e.payload_hash
+    e.payload_hash,
+    e.insert_seq
 from agent_events e
     join agent_sessions s on s.session_id = e.session_id
 where e.repository_id = ?

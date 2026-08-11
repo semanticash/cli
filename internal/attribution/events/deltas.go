@@ -10,12 +10,15 @@ import (
 	"github.com/semanticash/cli/internal/toolsnap"
 )
 
-// DeltaLink binds a tool-delta blob to an event and its session provider.
+// DeltaLink binds a tool-delta blob to an event and its session
+// provider, with the event's recency for winner selection.
 type DeltaLink struct {
 	EventID      string
 	EvidenceHash string
 	GroupID      string
 	Provider     string
+	Ts           int64
+	InsertSeq    int64
 }
 
 // DeltaBlobGetter loads a CAS blob by hash.
@@ -23,11 +26,15 @@ type DeltaBlobGetter interface {
 	Get(ctx context.Context, hash string) ([]byte, error)
 }
 
-// DeltaClaim is one ordered occurrence of verified tool-produced text.
-type DeltaClaim struct {
-	Line     string // raw line content, occurrence-ordered
-	Provider string
+// DeltaClaimGroup contains one group's ordered claims for a file.
+type DeltaClaimGroup struct {
 	GroupID  string
+	Provider string
+	// Recency of the latest member event.
+	Ts        int64
+	InsertSeq int64
+	EventID   string
+	Lines     []string // ordered added lines, hunk order
 }
 
 // Stable rejection reasons for excluded delta groups.
@@ -43,6 +50,7 @@ const (
 	DeltaRejectConcurrentGroup = "concurrent_group"
 	DeltaRejectAmbiguousActors = "ambiguous_actors"
 	DeltaRejectPartial         = "partial"
+	DeltaRejectCrossGroupEvent = "cross_group_event"
 )
 
 // DeltaDiagnostics counts eligible and rejected groups.
@@ -62,7 +70,7 @@ func (d *DeltaDiagnostics) reject(reason string) {
 // DeltaCandidates holds verified evidence for one attribution window.
 // Claims and providers retain first-seen order.
 type DeltaCandidates struct {
-	Claims map[string][]DeltaClaim // file -> ordered claims
+	Claims map[string][]DeltaClaimGroup // file -> claim groups, capture order
 	// Touched contains files without usable line evidence.
 	Touched map[string][]string // file -> providers, first-seen order
 	// Deleted contains files removed by complete deltas.
@@ -86,7 +94,7 @@ func addProvider(m map[string][]string, path, provider string) {
 // Cancellation returns an error rather than partial candidates.
 func BuildDeltaCandidates(ctx context.Context, links []DeltaLink, blobs DeltaBlobGetter) (*DeltaCandidates, error) {
 	out := &DeltaCandidates{
-		Claims:  map[string][]DeltaClaim{},
+		Claims:  map[string][]DeltaClaimGroup{},
 		Touched: map[string][]string{},
 		Deleted: map[string][]string{},
 	}
@@ -96,7 +104,27 @@ func BuildDeltaCandidates(ctx context.Context, links []DeltaLink, blobs DeltaBlo
 		hash      string
 		providers map[string]string // event id -> session provider
 		rejected  string
+		// Latest member event by (ts, insert_seq, event_id).
+		ts        int64
+		insertSeq int64
+		eventID   string
 	}
+	// Collect ownership first so every group sharing an event is rejected,
+	// including groups connected through chained reuse.
+	eventGroups := map[string][]string{}
+	for _, l := range links {
+		known := false
+		for _, gid := range eventGroups[l.EventID] {
+			if gid == l.GroupID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			eventGroups[l.EventID] = append(eventGroups[l.EventID], l.GroupID)
+		}
+	}
+
 	order := []string{}
 	groups := map[string]*groupLinks{}
 	for _, l := range links {
@@ -110,12 +138,19 @@ func BuildDeltaCandidates(ctx context.Context, links []DeltaLink, blobs DeltaBlo
 			continue
 		}
 		switch {
+		case len(eventGroups[l.EventID]) > 1:
+			g.rejected = DeltaRejectCrossGroupEvent
 		case !isHex64(l.EvidenceHash):
 			g.rejected = DeltaRejectBadHash
 		case l.EvidenceHash != g.hash:
 			g.rejected = DeltaRejectDivergentHashes
 		default:
 			g.providers[l.EventID] = l.Provider
+			if l.Ts > g.ts ||
+				(l.Ts == g.ts && l.InsertSeq > g.insertSeq) ||
+				(l.Ts == g.ts && l.InsertSeq == g.insertSeq && l.EventID > g.eventID) {
+				g.ts, g.insertSeq, g.eventID = l.Ts, l.InsertSeq, l.EventID
+			}
 		}
 	}
 
@@ -183,17 +218,44 @@ func BuildDeltaCandidates(ctx context.Context, links []DeltaLink, blobs DeltaBlo
 			case f.Binary || f.Truncated || !textualChange(f):
 				addProvider(out.Touched, f.Path, provider)
 			default:
-				claims, nonBlank := fileClaims(f, provider, gid)
+				lines, nonBlank := fileLines(f)
 				if !nonBlank {
 					// Keep file-level evidence when no lines can align.
 					addProvider(out.Touched, f.Path, provider)
 					continue
 				}
-				out.Claims[f.Path] = append(out.Claims[f.Path], claims...)
+				out.Claims[f.Path] = append(out.Claims[f.Path], DeltaClaimGroup{
+					GroupID: gid, Provider: provider,
+					Ts: g.ts, InsertSeq: g.insertSeq, EventID: g.eventID,
+					Lines: lines,
+				})
 			}
 		}
 	}
 	return out, nil
+}
+
+// SuppressInferredDeletions removes command-inferred touches when a
+// verified delta records the same deletion. Explicit touches remain.
+func SuppressInferredDeletions(cands *Candidates, deltas *DeltaCandidates) {
+	if cands == nil || deltas == nil {
+		return
+	}
+	for path := range deltas.Deleted {
+		prov, inferred := cands.InferredDeletions[path]
+		if !inferred {
+			continue
+		}
+		// Restore any explicit editor hidden by the inferred deletion.
+		if cands.ProviderTouchedFiles[path] == prov {
+			if editor, explicit := cands.ExplicitTouches[path]; explicit {
+				cands.ProviderTouchedFiles[path] = editor.Provider
+			} else {
+				delete(cands.ProviderTouchedFiles, path)
+			}
+		}
+		delete(cands.InferredDeletions, path)
+	}
 }
 
 // bindGroup requires exact event membership and matching actor providers.
@@ -217,19 +279,19 @@ func bindGroup(delta *toolsnap.Delta, linked map[string]string) string {
 	return ""
 }
 
-// fileClaims returns ordered added lines and whether any are nonblank.
-func fileClaims(f toolsnap.FileDelta, provider, groupID string) ([]DeltaClaim, bool) {
-	var claims []DeltaClaim
+// fileLines returns ordered added lines and whether any are nonblank.
+func fileLines(f toolsnap.FileDelta) ([]string, bool) {
+	var lines []string
 	nonBlank := false
 	for _, h := range f.Hunks {
 		for _, line := range h.NewLines {
 			if strings.TrimSpace(line) != "" {
 				nonBlank = true
 			}
-			claims = append(claims, DeltaClaim{Line: line, Provider: provider, GroupID: groupID})
+			lines = append(lines, line)
 		}
 	}
-	return claims, nonBlank
+	return lines, nonBlank
 }
 
 // textualChange accepts creates and regular-file changes.

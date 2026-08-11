@@ -678,6 +678,7 @@ func LoadDeltaCandidates(ctx context.Context, h *sqlstore.Handle, bs *blobs.Stor
 		links[i] = attrevents.DeltaLink{
 			EventID: r.EventID, EvidenceHash: r.EvidenceHash,
 			GroupID: r.GroupID, Provider: r.Provider,
+			Ts: r.Ts, InsertSeq: r.InsertSeq.Int64,
 		}
 	}
 	return attrevents.BuildDeltaCandidates(ctx, links, bs)
@@ -719,6 +720,9 @@ func toEventRows(ctx context.Context, bs *blobs.Store, rows []sqldb.ListEventsIn
 			ToolUses:    r.ToolUses.String,
 			PayloadHash: r.PayloadHash.String,
 			Model:       r.Model.String,
+			EventID:     r.EventID,
+			Ts:          r.Ts,
+			InsertSeq:   r.InsertSeq.Int64,
 		}
 		// Only load payloads for assistant events with file-modifying tools.
 		// Provider file-touch events (Cursor, Copilot, etc.) don't need payloads.
@@ -780,7 +784,7 @@ func toScoringDiff(dr diffResult) attrscoring.DiffResult {
 	for i, f := range dr.files {
 		groups := make([]attrscoring.AddedGroup, len(f.groups))
 		for j, g := range f.groups {
-			groups[j] = attrscoring.AddedGroup{Lines: g.lines}
+			groups[j] = attrscoring.AddedGroup{Lines: g.lines, NewStart: g.newStart}
 		}
 		files[i] = attrscoring.FileDiff{
 			Path:            f.path,
@@ -792,6 +796,7 @@ func toScoringDiff(dr diffResult) attrscoring.DiffResult {
 		Files:        files,
 		FilesCreated: dr.filesCreated,
 		FilesDeleted: dr.filesDeleted,
+		Complete:     dr.complete,
 	}
 }
 
@@ -1571,13 +1576,15 @@ type diffResult struct {
 	files        []fileDiff // all files present in the diff
 	filesCreated []string   // paths that went from /dev/null -> b/path (new files)
 	filesDeleted []string   // paths that went from a/path -> /dev/null (removed files)
+	complete     bool       // whole diff scanned; positional evidence requires it
 }
 
 // addedGroup is a contiguous block of added lines within a diff hunk.
 // Context and removal lines break groups, so each group represents lines
 // that are adjacent in the output file.
 type addedGroup struct {
-	lines []string // "+" lines with prefix stripped
+	lines    []string // "+" lines with prefix stripped
+	newStart int      // new-file line number of lines[0], zero if unknown
 }
 
 // fileDiff holds the added lines for a single file in a unified diff,
@@ -1602,7 +1609,7 @@ func fromScoringDiff(sd attrscoring.DiffResult) diffResult {
 	for i, f := range sd.Files {
 		groups := make([]addedGroup, len(f.Groups))
 		for j, g := range f.Groups {
-			groups[j] = addedGroup{lines: g.Lines}
+			groups[j] = addedGroup{lines: g.Lines, newStart: g.NewStart}
 		}
 		files[i] = fileDiff{
 			path:            f.Path,
@@ -1614,5 +1621,6 @@ func fromScoringDiff(sd attrscoring.DiffResult) diffResult {
 		files:        files,
 		filesCreated: sd.FilesCreated,
 		filesDeleted: sd.FilesDeleted,
+		complete:     sd.Complete,
 	}
 }

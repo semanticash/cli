@@ -71,7 +71,10 @@ func putDelta(t *testing.T, m *memBlobs, d *toolsnap.Delta) string {
 }
 
 func link(eventID, hash, group string) DeltaLink {
-	return DeltaLink{EventID: eventID, EvidenceHash: hash, GroupID: group, Provider: "claude_code"}
+	return DeltaLink{
+		EventID: eventID, EvidenceHash: hash, GroupID: group,
+		Provider: "claude_code", Ts: 100, InsertSeq: 7,
+	}
 }
 
 func build(t *testing.T, m *memBlobs, links []DeltaLink) *DeltaCandidates {
@@ -92,13 +95,35 @@ func TestBuildDeltaCandidates_OrderedClaims(t *testing.T) {
 	if out.Diags.GroupsEligible != 1 || len(out.Diags.Rejected) != 0 {
 		t.Fatalf("diags = %+v", out.Diags)
 	}
-	want := []DeltaClaim{
-		{Line: "return nil", Provider: "claude_code", GroupID: "g1"},
-		{Line: "x := 1", Provider: "claude_code", GroupID: "g1"},
-		{Line: "return nil", Provider: "claude_code", GroupID: "g1"},
-	}
+	want := []DeltaClaimGroup{{
+		GroupID: "g1", Provider: "claude_code", Ts: 100, InsertSeq: 7, EventID: "evt-1",
+		Lines: []string{"return nil", "x := 1", "return nil"},
+	}}
 	if !reflect.DeepEqual(out.Claims["pkg/a.go"], want) {
 		t.Fatalf("claims = %+v", out.Claims["pkg/a.go"])
+	}
+}
+
+// Group recency comes from its latest member link.
+func TestBuildDeltaCandidates_GroupRecencyIsLatestMember(t *testing.T) {
+	m := &memBlobs{}
+	pair := baseDelta("evt-a", []toolsnap.FileDelta{editFile("f.go", "x")})
+	pair.ToolUses = append(pair.ToolUses, toolsnap.ToolUse{
+		ToolUseID: "toolu_b", ToolName: "Bash", EventID: "evt-b", Actor: 0,
+	})
+	hash := putDelta(t, m, pair)
+	la := link("evt-a", hash, "g")
+	la.Ts, la.InsertSeq = 300, 5
+	lb := link("evt-b", hash, "g")
+	lb.Ts, lb.InsertSeq = 200, 9
+	out := build(t, m, []DeltaLink{la, lb})
+	groups := out.Claims["f.go"]
+	if len(groups) != 1 {
+		t.Fatalf("claims = %+v", out.Claims)
+	}
+	g := groups[0]
+	if g.Ts != 300 || g.InsertSeq != 5 || g.EventID != "evt-a" {
+		t.Fatalf("recency = (%d,%d,%s), want the latest member", g.Ts, g.InsertSeq, g.EventID)
 	}
 }
 
@@ -118,8 +143,8 @@ func TestBuildDeltaCandidates_DedupAndCaptureOrder(t *testing.T) {
 		t.Fatalf("blob loads = %v, want one per group", m.gets)
 	}
 	lines := []string{}
-	for _, c := range out.Claims["f.go"] {
-		lines = append(lines, c.Line)
+	for _, g := range out.Claims["f.go"] {
+		lines = append(lines, g.Lines...)
 	}
 	if !reflect.DeepEqual(lines, []string{"first", "second"}) {
 		t.Fatalf("claims = %v, want capture order preserved", lines)
@@ -212,6 +237,47 @@ func codexLinkFor(hash, eventID string) DeltaLink {
 	return DeltaLink{EventID: eventID, EvidenceHash: hash, GroupID: "g", Provider: "codex"}
 }
 
+// Every group sharing an event is rejected.
+func TestBuildDeltaCandidates_CrossGroupEventRejected(t *testing.T) {
+	m := &memBlobs{}
+	h1 := putDelta(t, m, baseDelta("evt-1", []toolsnap.FileDelta{editFile("f.go", "x")}))
+	d2 := baseDelta("evt-1", []toolsnap.FileDelta{editFile("g.go", "y")})
+	d2.ToolUses[0].ToolUseID = "toolu_2"
+	h2 := putDelta(t, m, d2)
+	out := build(t, m, []DeltaLink{
+		link("evt-1", h1, "g1"),
+		link("evt-1", h2, "g2"),
+	})
+	if out.Diags.GroupsEligible != 0 || out.Diags.Rejected[DeltaRejectCrossGroupEvent] != 2 {
+		t.Fatalf("diags = %+v, want both groups rejected as cross_group_event", out.Diags)
+	}
+	if len(out.Claims)+len(out.Touched)+len(out.Deleted) != 0 {
+		t.Fatalf("corrupt groups contributed evidence: %+v", out)
+	}
+
+	// Chained reuse also rejects indirectly connected groups.
+	pair := baseDelta("evt-1", []toolsnap.FileDelta{editFile("h.go", "z")})
+	pair.ToolUses = append(pair.ToolUses, toolsnap.ToolUse{
+		ToolUseID: "toolu_p2", ToolName: "Bash", EventID: "evt-2", Actor: 0,
+	})
+	hPair := putDelta(t, m, pair)
+	d3 := baseDelta("evt-2", []toolsnap.FileDelta{editFile("i.go", "w")})
+	d3.ToolUses[0].ToolUseID = "toolu_3"
+	h3 := putDelta(t, m, d3)
+	out = build(t, m, []DeltaLink{
+		link("evt-1", h1, "g1"),
+		link("evt-1", hPair, "g2"),
+		link("evt-2", hPair, "g2"),
+		link("evt-2", h3, "g3"),
+	})
+	if out.Diags.GroupsEligible != 0 || out.Diags.Rejected[DeltaRejectCrossGroupEvent] != 3 {
+		t.Fatalf("diags = %+v, want all three groups rejected", out.Diags)
+	}
+	if len(out.Claims)+len(out.Touched)+len(out.Deleted) != 0 {
+		t.Fatalf("chained corrupt groups contributed evidence: %+v", out)
+	}
+}
+
 func TestBuildDeltaCandidates_FileClassification(t *testing.T) {
 	m := &memBlobs{}
 	files := []toolsnap.FileDelta{
@@ -260,7 +326,7 @@ func TestBuildDeltaCandidates_FileClassification(t *testing.T) {
 	if !reflect.DeepEqual(out.Deleted["gone.go"], []string{"claude_code"}) {
 		t.Fatalf("deleted = %+v", out.Deleted)
 	}
-	if len(out.Claims["typed.sh"]) != 1 || out.Claims["typed.sh"][0].Line != "#!/bin/sh" {
+	if len(out.Claims["typed.sh"]) != 1 || !reflect.DeepEqual(out.Claims["typed.sh"][0].Lines, []string{"#!/bin/sh"}) {
 		t.Fatalf("regular typechange lost line evidence: %+v", out.Claims)
 	}
 	if len(out.Claims["madefile.go"]) != 1 {

@@ -1,11 +1,7 @@
-// Package events extracts AI candidate data from attribution event rows.
-// It is a pure domain package with no database, blob store, or git dependencies.
-// Callers load the input data and pass it in.
+// Package events extracts attribution candidates from event rows.
 package events
 
-// EventRow is a self-contained event for candidate building.
-// Callers map source rows into this type and attach any pre-loaded payload
-// bytes before calling BuildCandidatesFromRows.
+// EventRow contains the event data needed to build candidates.
 type EventRow struct {
 	Provider    string
 	Role        string // "assistant", "user", "tool", etc.
@@ -13,26 +9,36 @@ type EventRow struct {
 	PayloadHash string // CAS hash (for diagnostics, not used for loading)
 	Payload     []byte // pre-loaded by the caller; nil if unavailable
 	Model       string // LLM model name (e.g. "opus 4.6")
+	// Identity and recency used to resolve competing evidence.
+	EventID   string
+	Ts        int64
+	InsertSeq int64
 }
 
-// Candidates holds the AI-authored text extracted from events.
-// Deleted paths from bash `rm` commands are folded into ProviderTouchedFiles
-// (they contribute to "AI touched this file", not a separate category).
-//
-// LineProviders carries per-line provider ownership so the scorer can
-// credit each line's matched provider(s) individually. Without it,
-// FileProvider's "last writer wins" overwrites per-event provider
-// info and the scorer collapses every matched line in a file onto a
-// single provider - which is wrong when multiple providers touched
-// the same file (e.g. Claude wrote 150 lines and Codex later edited
-// a comment; the file then displays as "codex" with all 150 lines
-// credited to Codex).
+// LineStamp is one direct witness for a line; recency compares by
+// (Ts, InsertSeq, EventID).
+type LineStamp struct {
+	Provider  string
+	Ts        int64
+	InsertSeq int64
+	EventID   string
+}
+
+// Candidates holds line and file evidence extracted from events.
+// LineProviders preserves per-line ownership; FileProvider is the
+// fallback for callers without per-line data.
 type Candidates struct {
 	AILines              map[string]map[string]struct{}            // file -> set of trimmed lines
 	LineProviders        map[string]map[string]map[string]struct{} // file -> line -> set of providers that emitted that line
+	LineStamps           map[string]map[string][]LineStamp         // file -> line -> direct witnesses
 	ProviderTouchedFiles map[string]string                         // file -> provider (file-level, includes deletions)
 	FileProvider         map[string]string                         // file -> provider (line-level; last-writer-wins, see LineProviders for per-line breakdown)
 	ProviderModel        map[string]string                         // provider -> model
+	// InferredDeletions identifies file touches inferred from bash commands.
+	InferredDeletions map[string]string // file -> provider
+	// ExplicitTouches retains the latest file-edit witness so suppression
+	// can restore it after removing an inferred deletion.
+	ExplicitTouches map[string]LineStamp
 }
 
 // EventStats collects diagnostic counters from event processing.
