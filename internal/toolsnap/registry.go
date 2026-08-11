@@ -98,6 +98,9 @@ type CompletionInfo struct {
 // registered window; callers degrade to pre_snapshot_missing.
 var ErrNoPendingSnapshot = errors.New("toolsnap: no pending snapshot for key")
 
+// ErrWindowTombstoned reports a post hook for an abandoned window.
+var ErrWindowTombstoned = errors.New("toolsnap: window tombstoned")
+
 // ErrRegistryCorrupt reports invalid persisted window or final state.
 var ErrRegistryCorrupt = errors.New("toolsnap: registry state corrupt")
 
@@ -109,14 +112,14 @@ type Registry struct {
 // OpenRegistry prepares the registry directories under semDir.
 func OpenRegistry(semDir string) (*Registry, error) {
 	dir := filepath.Join(semDir, "tool-windows")
-	// Recovery directories must exist before registry publication fails.
+	// Pre-create recovery paths used after registry publication failures.
 	for _, d := range []string{dir, filepath.Join(dir, "tombstones"), filepath.Join(dir, "receipts"), filepath.Join(dir, "closures"), filepath.Join(dir, "partials")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, fmt.Errorf("toolsnap: create registry dir: %w", err)
 		}
 	}
 	r := &Registry{dir: dir}
-	// Pre-create the lock so recovery does not depend on directory writes.
+	// Keep receipt locking available when the registry directory is read-only.
 	if f, err := os.OpenFile(r.receiptLockPath(), os.O_RDWR|os.O_CREATE, 0o644); err != nil {
 		return nil, fmt.Errorf("toolsnap: create receipt lock: %w", err)
 	} else if err := f.Close(); err != nil {
@@ -173,11 +176,8 @@ type FinalizeResult struct {
 	// Done means the group's evidence is fully durable; the group is
 	// removed in the same registry transaction.
 	Done bool
-	// Final, when not Done, is persisted so a retry resumes from the
-	// captured identity instead of rereading the workspace. A zero
-	// Final with an error means not even a capture identity exists;
-	// the caller must convert the group to deterministic partial
-	// evidence via PartialReason before line attribution is possible.
+	// Final preserves captured state for retry. A zero value requires
+	// deterministic partial evidence instead of another workspace read.
 	Final GroupFinal
 }
 
@@ -304,46 +304,13 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		_ = platform.UnlockFile(receiptLock)
 		_ = receiptLock.Close()
 	}()
-	// Registry passes never use the standalone write deadline exception.
+	// Registry operations stop if receipt-lock waiting exhausts the deadline.
 	if err := ctx.Err(); err != nil {
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired during receipt lock acquisition"}
 	}
 
-	var state registryState
-	raw, err := os.ReadFile(r.statePath())
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &state); err != nil {
-			return false, fmt.Errorf("toolsnap: corrupt registry state: %w", err)
-		}
-	case os.IsNotExist(err):
-	default:
-		return false, fmt.Errorf("toolsnap: read registry state: %w", err)
-	}
-	// States without sequences use array order. Mixed sequence states fail validation.
-	migrated := false
-	if state.NextSeq == 0 && len(state.Windows) > 0 {
-		legacy := true
-		for _, w := range state.Windows {
-			if w.Seq != 0 {
-				legacy = false
-				break
-			}
-		}
-		if legacy {
-			for i := range state.Windows {
-				state.Windows[i].Seq = int64(i)
-			}
-			state.NextSeq = int64(len(state.Windows))
-			migrated = true
-		}
-	}
-	// Apply recovery receipts before exposing state to the operation.
-	applied, err := r.applyReceipts(&state)
+	state, applied, migrated, err := r.loadState(r.writeClosureMarker)
 	if err != nil {
-		return false, err
-	}
-	if err := state.validate(); err != nil {
 		return false, err
 	}
 
@@ -353,7 +320,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	if !persist {
 		return false, fnErr
 	}
-	// Never publish state that later operations would reject.
+	// Validate every state transition before publication.
 	if err := state.validate(); err != nil {
 		return false, errors.Join(fnErr, err)
 	}
@@ -389,16 +356,131 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	return true, fnErr
 }
 
+// loadState normalizes, reconciles, and validates registry state.
+// A non-nil publishMarker persists closure markers for completed receipts.
+func (r *Registry) loadState(publishMarker func(key ToolKey, groupID string, at int64) error) (state registryState, applied []string, migrated bool, _ error) {
+	raw, err := os.ReadFile(r.statePath())
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return state, nil, false, fmt.Errorf("%w: registry state unreadable: %v", ErrRegistryCorrupt, err)
+		}
+	case os.IsNotExist(err):
+	default:
+		return state, nil, false, fmt.Errorf("toolsnap: read registry state: %w", err)
+	}
+	// Legacy states derive capture order from array order.
+	if state.NextSeq == 0 && len(state.Windows) > 0 {
+		legacy := true
+		for _, w := range state.Windows {
+			if w.Seq != 0 {
+				legacy = false
+				break
+			}
+		}
+		if legacy {
+			for i := range state.Windows {
+				state.Windows[i].Seq = int64(i)
+			}
+			state.NextSeq = int64(len(state.Windows))
+			migrated = true
+		}
+	}
+	// Reconcile recovery receipts before returning state.
+	applied, err = r.applyReceipts(&state, publishMarker)
+	if err != nil {
+		return state, nil, false, err
+	}
+	if err := state.validate(); err != nil {
+		return state, nil, false, err
+	}
+	return state, applied, migrated, nil
+}
+
+// keySettled reports whether a key is closed or abandoned.
+func (r *Registry) keySettled(key ToolKey) (bool, error) {
+	closedBefore, err := r.hasClosureMarker(key)
+	if err != nil || closedBefore {
+		return closedBefore, err
+	}
+	return r.HasTombstone(key)
+}
+
+// AbandonedGroup describes a stale group with active members.
+type AbandonedGroup struct {
+	GroupID string
+	Members int
+}
+
+// RemoveAbandonedGroups atomically tombstones and removes stale groups
+// that still have active members. A tombstone failure preserves the group.
+func (r *Registry) RemoveAbandonedGroups(ctx context.Context, cutoff, at int64) ([]AbandonedGroup, error) {
+	var removed []AbandonedGroup
+	var tombErrs []error
+	_, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		groups := map[string][]PendingToolSnapshot{}
+		for _, w := range state.Windows {
+			groups[w.GroupID] = append(groups[w.GroupID], w)
+		}
+		drop := map[string]bool{}
+		for gid, members := range groups {
+			allStale, anyActive := true, false
+			for _, m := range members {
+				if m.StartedAt >= cutoff {
+					allStale = false
+				}
+				if m.Status == "active" {
+					anyActive = true
+				}
+			}
+			if !allStale || !anyActive {
+				continue
+			}
+			ok := true
+			for _, m := range members {
+				if err := r.WriteTombstone(m.Key, at); err != nil {
+					tombErrs = append(tombErrs, err)
+					ok = false
+				}
+			}
+			if !ok {
+				continue
+			}
+			drop[gid] = true
+			removed = append(removed, AbandonedGroup{GroupID: gid, Members: len(members)})
+		}
+		if len(drop) == 0 {
+			return false, nil
+		}
+		kept := state.Windows[:0]
+		for _, w := range state.Windows {
+			if !drop[w.GroupID] {
+				kept = append(kept, w)
+			}
+		}
+		state.Windows = kept
+		for gid := range drop {
+			delete(state.Finals, gid)
+		}
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(removed, func(i, j int) bool { return removed[i].GroupID < removed[j].GroupID })
+	return removed, errors.Join(tombErrs...)
+}
+
 // CaptureAndBegin captures and registers a pre-tool snapshot while
 // holding the registry lock. Duplicate deliveries reuse the existing entry.
 func (r *Registry) CaptureAndBegin(ctx context.Context, s *Store, key ToolKey, toolName string, startedAt int64) (PendingToolSnapshot, error) {
 	if err := key.validate(); err != nil {
 		return PendingToolSnapshot{}, err
 	}
-	// Avoid store work for an already-closed key.
-	if closedBefore, err := r.hasClosureMarker(key); err != nil {
+	// Do not capture an already settled identity.
+	if settled, err := r.keySettled(key); err != nil {
 		return PendingToolSnapshot{}, err
-	} else if closedBefore {
+	} else if settled {
 		return PendingToolSnapshot{}, nil
 	}
 	// The registry lock protects only the store in the same .semantica directory.
@@ -408,12 +490,12 @@ func (r *Registry) CaptureAndBegin(ctx context.Context, s *Store, key ToolKey, t
 	}
 	var result PendingToolSnapshot
 	_, err := r.withLock(ctx, func(state *registryState) (bool, error) {
-		// Closure may occur after the unlocked fast check.
-		closedBefore, merr := r.hasClosureMarker(key)
-		if merr != nil {
-			return false, merr
+		// Recheck after acquiring the registry lock.
+		settled, serr := r.keySettled(key)
+		if serr != nil {
+			return false, serr
 		}
-		if closedBefore {
+		if settled {
 			return false, nil
 		}
 		for _, w := range state.Windows {
@@ -495,9 +577,7 @@ func (r *Registry) Begin(ctx context.Context, entry PendingToolSnapshot) (string
 }
 
 // Complete persists a member and finalizes its group in capture order.
-// persistMember runs before a non-final completion becomes visible.
-// finalize must not recapture when retry is true. recordIntent is valid
-// only during finalize. Done removes the group; Final preserves retry state.
+// Retries must use durable state rather than recapturing the workspace.
 func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInfo, persistMember func(PendingToolSnapshot) error, finalize func(members []PendingToolSnapshot, prior *GroupFinal, retry bool, recordIntent func() error) (FinalizeResult, error)) (bool, error) {
 	if info.EventID == "" || info.At <= 0 {
 		return false, fmt.Errorf("toolsnap: completion without event identity or timestamp")
@@ -526,6 +606,14 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 			if closedBefore {
 				removed = true
 				return false, nil
+			}
+			// Distinguish abandonment from a missing pre snapshot.
+			tombstoned, terr := r.HasTombstone(key)
+			if terr != nil {
+				return false, terr
+			}
+			if tombstoned {
+				return false, ErrWindowTombstoned
 			}
 			return false, ErrNoPendingSnapshot
 		}
@@ -841,9 +929,9 @@ func receiptRank(rec completionReceipt) int {
 	}
 }
 
-// applyReceipts merges recovery receipts into state. The caller deletes
-// them only after publishing that state.
-func (r *Registry) applyReceipts(state *registryState) ([]string, error) {
+// applyReceipts overlays recovery receipts on registry state. A non-nil
+// publishMarker records closures before completed groups are removed.
+func (r *Registry) applyReceipts(state *registryState, publishMarker func(key ToolKey, groupID string, at int64) error) ([]string, error) {
 	entries, err := os.ReadDir(r.receiptsDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -922,10 +1010,12 @@ func (r *Registry) applyReceipts(state *registryState) ([]string, error) {
 		switch {
 		case rec.Done:
 			// Mark members closed before removing durable group state.
-			for _, w := range state.Windows {
-				if w.GroupID == rec.GroupID {
-					if err := r.writeClosureMarker(w.Key, rec.GroupID, rec.Info.At); err != nil {
-						return nil, err
+			if publishMarker != nil {
+				for _, w := range state.Windows {
+					if w.GroupID == rec.GroupID {
+						if err := publishMarker(w.Key, rec.GroupID, rec.Info.At); err != nil {
+							return nil, err
+						}
 					}
 				}
 			}
@@ -1020,9 +1110,7 @@ func (r *Registry) PendingFinalizations(ctx context.Context) ([]PendingFinalizat
 	return pending, nil
 }
 
-// ResumeFinalization retries a complete group without another post hook.
-// The callback receives retry=true and must never recapture the workspace.
-// Without durable post state, it must produce terminal partial evidence.
+// ResumeFinalization retries a complete group from durable state.
 func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, finalize func(members []PendingToolSnapshot, prior *GroupFinal, retry bool, recordIntent func() error) (FinalizeResult, error)) (bool, error) {
 	removed := false
 	var finalDone bool

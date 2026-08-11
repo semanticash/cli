@@ -109,11 +109,14 @@ func NewWorkerDrainCmd(rootOpts *RootOptions) *cobra.Command {
 			if lingerSeconds < 0 {
 				linger = service.DefaultDrainLinger
 			}
-			return service.DrainUntilStable(
+			err := service.DrainUntilStable(
 				cmd.Context(),
 				linger,
 				service.DefaultMarkerRunner(providers.NewHookRegistry()),
 			)
+			// Recover tool windows on every drain wake-up.
+			service.SweepToolWindows(cmd.Context())
+			return err
 		},
 	}
 

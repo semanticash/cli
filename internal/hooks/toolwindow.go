@@ -218,6 +218,11 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
 		// Preserve missing-pre evidence without blocking the ordinary write path.
 		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, "pre_snapshot_missing", events, globalBlobs)
+	case errors.Is(err, toolsnap.ErrWindowTombstoned):
+		// Preserve the event without creating evidence for an abandoned window.
+		util.AppendActivityLog(target.semDir,
+			"tool-window post skipped (tombstoned): tool_use=%s", event.ToolUseID)
+		return false
 	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {
@@ -318,7 +323,7 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 			files, bytesRead, truncated = nil, 0, false
 		}
 	}
-	delta := assembleDelta(event, members, files, bytesRead, truncated, partialReason, capturedAt)
+	delta := assembleDelta(members, files, bytesRead, truncated, partialReason, capturedAt)
 	canonical, err := delta.CanonicalBytes()
 	if err != nil {
 		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
@@ -416,8 +421,8 @@ func finalIdentity(postTree, deltaHash, partialReason string, capturedAt int64) 
 }
 
 // assembleDelta builds the canonical delta for a closed group from
-// registry members and the closing hook event.
-func assembleDelta(event *Event, members []toolsnap.PendingToolSnapshot, files []toolsnap.FileDelta, bytesRead int64, truncated bool, partialReason string, capturedAt int64) *toolsnap.Delta {
+// its registry members.
+func assembleDelta(members []toolsnap.PendingToolSnapshot, files []toolsnap.FileDelta, bytesRead int64, truncated bool, partialReason string, capturedAt int64) *toolsnap.Delta {
 	actorIndex := map[toolsnap.Actor]int{}
 	var actors []toolsnap.Actor
 	var uses []toolsnap.ToolUse
@@ -467,6 +472,12 @@ func assembleDelta(event *Event, members []toolsnap.PendingToolSnapshot, files [
 // persistPartialDelta records linked evidence when no pre snapshot exists.
 // A first-delivery record keeps retries and duplicate hooks deterministic.
 func persistPartialDelta(ctx context.Context, reg *toolsnap.Registry, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, event *Event, eventID, reason string, events []broker.RawEvent, globalBlobs *blobs.Store) bool {
+	// A durable link makes duplicate delivery a no-op.
+	if exists, err := broker.HasEvidenceLink(ctx, target.repoPath, broker.EvidenceLink{
+		EventID: eventID, EvidenceKind: evidenceKindToolDelta, GroupID: reason + ":" + eventID,
+	}); err == nil && exists {
+		return true
+	}
 	if _, err := broker.WriteEventsToRepo(ctx, target.repoPath, events, globalBlobs); err != nil {
 		slog.Warn("tool window: partial delta events", "err", err)
 		return false
@@ -498,6 +509,10 @@ func persistPartialDelta(ctx context.Context, reg *toolsnap.Registry, repoBlobs 
 	}}); err != nil {
 		slog.Warn("tool window: partial delta link", "err", err)
 		return false
+	}
+	// The durable link supersedes the recovery record.
+	if err := reg.RemovePendingPartial(rec.EventID); err != nil {
+		slog.Warn("tool window: remove partial record", "err", err)
 	}
 	util.AppendActivityLog(target.semDir,
 		"tool-window partial (%s): tool_use=%s", reason, key.ToolUseID)

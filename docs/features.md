@@ -355,5 +355,5 @@ Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider 
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.
 - The background worker attempts to reconcile pending capture state owned by the repository it is processing. Cross-repository, unowned, and orphaned segments are reported by `semantica doctor` and may leave evidence incomplete.
-- `semantica tidy --apply` can remove abandoned capture state, prune stale broker entries, and mark old pending commit snapshots as failed without touching complete lineage history.
+- `semantica tidy --apply` can recover or remove stale tool windows, remove abandoned capture state, prune stale broker entries, and mark old pending commit snapshots as failed without touching complete lineage history.
 - Capture is per-machine - activity from a different machine using the same repo is not captured unless that machine also has Semantica enabled.

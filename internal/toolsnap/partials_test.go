@@ -74,31 +74,50 @@ func TestPendingPartialRejectsInvalidRecords(t *testing.T) {
 	}
 }
 
-func TestMaintainPrunesAgedPartialRecords(t *testing.T) {
+// Maintenance preserves pending partial records for recovery.
+func TestMaintainKeepsPartialRecords(t *testing.T) {
 	root := testRepo(t)
 	s := openTestStore(t, root)
 	reg, err := OpenRegistry(filepath.Join(root, ".semantica"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldID, newID := hexEventID("0a"), hexEventID("0b")
-	if _, err := reg.LoadOrRecordPendingPartial(partialRec(oldID, 5000)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reg.LoadOrRecordPendingPartial(partialRec(newID, 6000)); err != nil {
+	id := hexEventID("0a")
+	if _, err := reg.LoadOrRecordPendingPartial(partialRec(id, 5000)); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-DefaultStaleWindowAge - time.Hour)
-	if err := os.Chtimes(filepath.Join(reg.partialsDir(), oldID), old, old); err != nil {
+	if err := os.Chtimes(filepath.Join(reg.partialsDir(), id), old, old); err != nil {
 		t.Fatal(err)
 	}
 
-	report, err := s.Maintain(context.Background(), reg, 0)
-	if err != nil || report.PartialsPruned != 1 {
-		t.Fatalf("report = %+v err = %v, want one pruned partial", report, err)
+	if _, err := s.Maintain(context.Background(), reg, 0); err != nil {
+		t.Fatal(err)
 	}
 	recs, err := reg.PendingPartialRecords()
-	if err != nil || len(recs) != 1 || recs[0].EventID != newID {
-		t.Fatalf("records after prune = %+v err = %v", recs, err)
+	if err != nil || len(recs) != 1 || recs[0].EventID != id {
+		t.Fatalf("records after maintenance = %+v err = %v, want the aged record kept", recs, err)
+	}
+}
+
+// RemovePendingPartial consumes a record and rejects unsafe names.
+func TestRemovePendingPartial(t *testing.T) {
+	r := testRegistry(t)
+	id := hexEventID("0b")
+	if _, err := r.LoadOrRecordPendingPartial(partialRec(id, 5000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RemovePendingPartial(id); err != nil {
+		t.Fatal(err)
+	}
+	if recs, err := r.PendingPartialRecords(); err != nil || len(recs) != 0 {
+		t.Fatalf("records after remove = %+v err = %v", recs, err)
+	}
+	// Removal is idempotent; invalid identities are rejected.
+	if err := r.RemovePendingPartial(id); err != nil {
+		t.Fatalf("idempotent remove: %v", err)
+	}
+	if err := r.RemovePendingPartial("../escape"); err == nil {
+		t.Fatal("unsafe event id accepted")
 	}
 }

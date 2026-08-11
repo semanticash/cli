@@ -16,3 +16,7 @@ where group_id = ? order by event_id;
 -- name: ListEvidenceLinksByEvent :many
 select * from agent_event_evidence_links
 where event_id = ? order by evidence_kind, group_id;
+
+-- name: AgentEventExists :one
+select count(*) > 0 as exists_flag from agent_events
+where event_id = ?;

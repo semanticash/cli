@@ -223,8 +223,10 @@ keep delayed captures from being treated as line evidence.
 Bounded maintenance defers during capture, removes stale unreferenced refs, and
 prunes expired objects without operating on the user repository.
 
-Claude Code pre-Bash hooks register pending snapshots in this store. Post-tool
-delta generation and attribution scoring do not consume them yet.
+Claude Code pre- and post-Bash hooks capture canonical deltas and link them to
+their tool events. Recovery runs during worker drains and when
+`semantica tidy --apply` runs. Attribution scoring does not consume tool deltas
+yet.
 
 ### Settings (`settings.json`)
 

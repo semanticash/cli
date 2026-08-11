@@ -14,6 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/toolsnap"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -38,6 +39,9 @@ type TidyResult struct {
 	BrokerEntriesPruned  int          `json:"broker_entries_pruned"`
 	CaptureStatesRemoved int          `json:"capture_states_removed"`
 	CheckpointsMarked    int          `json:"checkpoints_marked_failed"`
+	ToolWindowsRecovered int          `json:"tool_windows_recovered,omitempty"`
+	ToolWindowsRemoved   int          `json:"tool_windows_removed,omitempty"`
+	TombstonesRemoved    int          `json:"tombstones_removed,omitempty"`
 	Errors               int          `json:"errors,omitempty"`
 	Actions              []TidyAction `json:"actions,omitempty"`
 }
@@ -54,8 +58,12 @@ func (s *TidyService) Tidy(ctx context.Context, in TidyInput) (*TidyResult, erro
 
 	s.tidyBroker(ctx, in.Apply, result)
 	s.tidyCaptureStates(ctx, in.Apply, result)
-	if err := s.tidyRepo(ctx, in, result); err != nil {
+	repoRoot, err := s.tidyRepo(ctx, in, result)
+	if err != nil {
 		return result, err
+	}
+	if repoRoot != "" {
+		s.tidyToolWindows(ctx, in.Apply, repoRoot, result)
 	}
 
 	return result, nil
@@ -159,8 +167,8 @@ func isCaptureStale(st *hooks.CaptureState, thresholdMs int64) bool {
 	return isConfirmedMissing(st.TranscriptRef)
 }
 
-// tidyRepo handles per-repo cleanup for stale pending checkpoints.
-func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyResult) error {
+// tidyRepo cleans stale pending checkpoints and returns the enabled repo root.
+func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyResult) (string, error) {
 	repoPath := in.RepoPath
 	if repoPath == "" {
 		repoPath = "."
@@ -168,7 +176,7 @@ func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyRe
 
 	repo, err := git.OpenRepo(repoPath)
 	if err != nil {
-		return nil // not a git repo - skip repo-level cleanup
+		return "", nil // not a git repo - skip repo-level cleanup
 	}
 	repoRoot := repo.Root()
 
@@ -176,18 +184,18 @@ func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyRe
 	dbPath := filepath.Join(semDir, "lineage.db")
 
 	if !util.IsEnabled(semDir) {
-		return nil
+		return "", nil
 	}
 
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
 	if err != nil {
-		return nil // DB inaccessible - skip
+		return repoRoot, nil // DB inaccessible - skip
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 
 	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
 	if err != nil {
-		return nil
+		return repoRoot, nil
 	}
 
 	// Mark stale pending checkpoints as failed.
@@ -219,7 +227,119 @@ func (s *TidyService) tidyRepo(ctx context.Context, in TidyInput, result *TidyRe
 		}
 	}
 
-	return nil
+	return repoRoot, nil
+}
+
+// tidyToolWindows reports or repairs recoverable and abandoned tool windows.
+func (s *TidyService) tidyToolWindows(ctx context.Context, apply bool, repoRoot string, result *TidyResult) {
+	snap, err := toolsnap.InspectRegistry(filepath.Join(repoRoot, ".semantica"))
+	if err != nil {
+		result.Errors++
+		return
+	}
+	if !snap.Exists {
+		return
+	}
+	now := time.Now()
+
+	if apply {
+		report, err := hooks.SweepToolWindows(ctx, repoRoot)
+		if err != nil {
+			result.Errors++
+		} else {
+			result.Errors += report.Errors
+			result.ToolWindowsRecovered = report.PartialsReplayed + report.GroupsResumed + report.GroupsTerminal
+			if result.ToolWindowsRecovered > 0 {
+				result.Actions = append(result.Actions, TidyAction{
+					Category: "toolwindow", ID: "recovery",
+					Detail: fmt.Sprintf("replayed %d partials, resumed %d groups, %d terminal",
+						report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal),
+				})
+			}
+		}
+	} else {
+		result.ToolWindowsRecovered = len(snap.Partials) + len(snap.CompleteGroups())
+		if result.ToolWindowsRecovered > 0 {
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "toolwindow", ID: "recovery",
+				Detail: fmt.Sprintf("%d partial records and %d groups recoverable",
+					len(snap.Partials), len(snap.CompleteGroups())),
+			})
+		}
+	}
+
+	// Open the mutable registry only for apply.
+	var reg *toolsnap.Registry
+	if apply {
+		reg, err = toolsnap.OpenRegistry(filepath.Join(repoRoot, ".semantica"))
+		if err != nil {
+			result.Errors++
+			return
+		}
+	}
+
+	// Remove stale groups with active members. Completed groups remain recoverable.
+	cutoff := now.Add(-toolsnap.DefaultStaleWindowAge).UnixMilli()
+	if apply {
+		removed, err := reg.RemoveAbandonedGroups(ctx, cutoff, now.UnixMilli())
+		if err != nil {
+			result.Errors++
+		}
+		for _, g := range removed {
+			result.ToolWindowsRemoved += g.Members
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "toolwindow", ID: util.ShortID(g.GroupID),
+				Detail: fmt.Sprintf("abandoned group, %d member(s), pre hook without post", g.Members),
+			})
+		}
+	} else {
+		groups := map[string][]toolsnap.PendingToolSnapshot{}
+		for _, w := range snap.Windows {
+			groups[w.GroupID] = append(groups[w.GroupID], w)
+		}
+		for gid, members := range groups {
+			allStale, anyActive := true, false
+			for _, m := range members {
+				if m.StartedAt >= cutoff {
+					allStale = false
+				}
+				if m.Status == "active" {
+					anyActive = true
+				}
+			}
+			if !allStale || !anyActive {
+				continue
+			}
+			result.ToolWindowsRemoved += len(members)
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "toolwindow", ID: util.ShortID(gid),
+				Detail: fmt.Sprintf("abandoned group, %d member(s), pre hook without post", len(members)),
+			})
+		}
+	}
+
+	// Retain tombstones for the same period as stale windows.
+	result.Errors += len(snap.MalformedTombstones)
+	expired := 0
+	for _, tb := range snap.Tombstones {
+		if tb.At >= cutoff {
+			continue
+		}
+		if apply {
+			if err := reg.RemoveTombstone(tb.Key); err != nil {
+				result.Errors++
+				continue
+			}
+		}
+		expired++
+	}
+	if expired > 0 {
+		result.TombstonesRemoved = expired
+		result.Actions = append(result.Actions, TidyAction{
+			Category: "toolwindow", ID: "tombstones",
+			Detail: fmt.Sprintf("%d aged tombstone(s)", expired),
+		})
+	}
 }
 
 // isConfirmedMissing returns true only for os.ErrNotExist. Permission errors,

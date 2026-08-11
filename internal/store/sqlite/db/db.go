@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.advanceBackfillCursorStmt, err = db.PrepareContext(ctx, advanceBackfillCursor); err != nil {
 		return nil, fmt.Errorf("error preparing query AdvanceBackfillCursor: %w", err)
 	}
+	if q.agentEventExistsStmt, err = db.PrepareContext(ctx, agentEventExists); err != nil {
+		return nil, fmt.Errorf("error preparing query AgentEventExists: %w", err)
+	}
 	if q.claimCheckpointStmt, err = db.PrepareContext(ctx, claimCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query ClaimCheckpoint: %w", err)
 	}
@@ -323,6 +326,11 @@ func (q *Queries) Close() error {
 	if q.advanceBackfillCursorStmt != nil {
 		if cerr := q.advanceBackfillCursorStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing advanceBackfillCursorStmt: %w", cerr)
+		}
+	}
+	if q.agentEventExistsStmt != nil {
+		if cerr := q.agentEventExistsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing agentEventExistsStmt: %w", cerr)
 		}
 	}
 	if q.claimCheckpointStmt != nil {
@@ -845,6 +853,7 @@ type Queries struct {
 	db                                           DBTX
 	tx                                           *sql.Tx
 	advanceBackfillCursorStmt                    *sql.Stmt
+	agentEventExistsStmt                         *sql.Stmt
 	claimCheckpointStmt                          *sql.Stmt
 	completeBackfillStmt                         *sql.Stmt
 	completeCheckpointStmt                       *sql.Stmt
@@ -948,6 +957,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                                           tx,
 		tx:                                           tx,
 		advanceBackfillCursorStmt:                    q.advanceBackfillCursorStmt,
+		agentEventExistsStmt:                         q.agentEventExistsStmt,
 		claimCheckpointStmt:                          q.claimCheckpointStmt,
 		completeBackfillStmt:                         q.completeBackfillStmt,
 		completeCheckpointStmt:                       q.completeCheckpointStmt,

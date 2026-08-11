@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/toolsnap"
 )
 
 // TestTidy_DryRunDoesNotMutate verifies that dry-run reports stale checkpoints
@@ -381,4 +383,141 @@ func getCheckpointStatus(t *testing.T, ctx context.Context, dir, cpID string) st
 		t.Fatalf("get checkpoint %s: %v", cpID, err)
 	}
 	return cp.Status
+}
+
+// TestTidy_ToolWindowAbandonedAndTombstones covers dry-run and apply.
+func TestTidy_ToolWindowAbandonedAndTombstones(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	enableSemantica(t, ctx, dir)
+
+	reg, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleAt := time.Now().Add(-toolsnap.DefaultStaleWindowAge - time.Hour).UnixMilli()
+	abandoned := toolsnap.ToolKey{
+		RepositoryID: "r1", Provider: "claude_code",
+		SessionID: "s1", TurnID: "t1", ToolUseID: "tu-old",
+	}
+	if _, err := reg.Begin(ctx, toolsnap.PendingToolSnapshot{
+		Key: abandoned, ToolName: "Bash",
+		SnapshotRef: "refs/semantica/tool-windows/x", TreeHash: "t", HeadHash: "h",
+		ObjectFormat: "sha1", StartedAt: staleAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aged := toolsnap.ToolKey{
+		RepositoryID: "r1", Provider: "claude_code",
+		SessionID: "s1", TurnID: "t1", ToolUseID: "tu-tomb",
+	}
+	if err := reg.WriteTombstone(aged, staleAt); err != nil {
+		t.Fatal(err)
+	}
+	fresh := toolsnap.ToolKey{
+		RepositoryID: "r1", Provider: "claude_code",
+		SessionID: "s1", TurnID: "t1", ToolUseID: "tu-fresh",
+	}
+	if err := reg.WriteTombstone(fresh, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewTidyService()
+	dry, err := svc.Tidy(ctx, TidyInput{RepoPath: dir, Apply: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.ToolWindowsRemoved != 1 || dry.TombstonesRemoved != 1 {
+		t.Fatalf("dry-run = %+v, want one abandoned window and one aged tombstone", dry)
+	}
+	if wins, err := reg.Stale(ctx, time.Now().UnixMilli()); err != nil || len(wins) != 1 {
+		t.Fatalf("dry-run mutated windows: %+v err=%v", wins, err)
+	}
+	if tombstoned, err := reg.HasTombstone(aged); err != nil || !tombstoned {
+		t.Fatalf("dry-run mutated tombstones: %v err=%v", tombstoned, err)
+	}
+
+	applied, err := svc.Tidy(ctx, TidyInput{RepoPath: dir, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.ToolWindowsRemoved != 1 || applied.TombstonesRemoved != 1 || applied.Errors != 0 {
+		t.Fatalf("apply = %+v", applied)
+	}
+	if wins, err := reg.Stale(ctx, time.Now().UnixMilli()); err != nil || len(wins) != 0 {
+		t.Fatalf("abandoned window not removed: %+v err=%v", wins, err)
+	}
+	// Keep the new tombstone and remove the expired one.
+	if tombstoned, err := reg.HasTombstone(abandoned); err != nil || !tombstoned {
+		t.Fatalf("removed member not tombstoned: %v err=%v", tombstoned, err)
+	}
+	if tombstoned, err := reg.HasTombstone(aged); err != nil || tombstoned {
+		t.Fatalf("aged tombstone not expired: %v err=%v", tombstoned, err)
+	}
+	if tombstoned, err := reg.HasTombstone(fresh); err != nil || !tombstoned {
+		t.Fatalf("fresh tombstone expired: %v err=%v", tombstoned, err)
+	}
+}
+
+// TestTidy_ToolWindowRecoveryThroughApply replays a pending partial.
+func TestTidy_ToolWindowRecoveryThroughApply(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	enableSemantica(t, ctx, dir)
+
+	reg, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evtID := strings.Repeat("ab", 32)
+	if _, err := reg.LoadOrRecordPendingPartial(toolsnap.PendingPartialRecord{
+		Key: toolsnap.ToolKey{
+			RepositoryID: "r1", Provider: "claude_code",
+			SessionID: "s1", TurnID: "t1", ToolUseID: "tu-pp",
+		},
+		EventID: evtID, Reason: "pre_snapshot_missing",
+		ToolName: "Bash", CommandSummary: "cmd", Timestamp: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.WriteEventsToRepo(ctx, dir, []broker.RawEvent{{
+		EventID: evtID, SourceKey: "/data/s1.jsonl", Provider: "claude_code",
+		Timestamp: 5000, Kind: "assistant", Role: "assistant",
+		TurnID: "t1", ToolUseID: "tu-pp", ToolName: "Bash", EventSource: "hook",
+		ProviderSessionID: "s1", SessionStartedAt: 1500,
+		SessionMetaJSON: `{"source_key":"x"}`,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewTidyService()
+	dry, err := svc.Tidy(ctx, TidyInput{RepoPath: dir, Apply: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.ToolWindowsRecovered != 1 {
+		t.Fatalf("dry-run = %+v, want one recoverable item", dry)
+	}
+
+	applied, err := svc.Tidy(ctx, TidyInput{RepoPath: dir, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.ToolWindowsRecovered != 1 || applied.Errors != 0 {
+		t.Fatalf("apply = %+v, want one recovered item", applied)
+	}
+
+	dbPath := filepath.Join(dir, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	links, err := h.Queries.ListEvidenceLinksByEvent(ctx, evtID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].GroupID != "pre_snapshot_missing:"+evtID {
+		t.Fatalf("links = %+v", links)
+	}
 }

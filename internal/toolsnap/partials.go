@@ -111,6 +111,18 @@ func (r *Registry) PendingPartialRecords() ([]PendingPartialRecord, error) {
 	return out, nil
 }
 
+// RemovePendingPartial deletes a recovery record after its link is durable.
+func (r *Registry) RemovePendingPartial(eventID string) error {
+	if !isHexDigest(eventID) {
+		return fmt.Errorf("toolsnap: pending partial event id must be a 64-char lowercase hex digest")
+	}
+	err := os.Remove(filepath.Join(r.partialsDir(), eventID))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("toolsnap: remove pending partial: %w", err)
+	}
+	return nil
+}
+
 func (r *Registry) readPendingPartial(path, eventID string) (PendingPartialRecord, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

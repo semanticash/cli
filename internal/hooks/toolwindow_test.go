@@ -648,6 +648,14 @@ func TestMissingPreSnapshotPersistsLinkedPartial(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("closing event rows = %d, want 1", count)
 	}
+	// The durable link consumed the pending record.
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs, err := reg.PendingPartialRecords(); err != nil || len(recs) != 0 {
+		t.Fatalf("records after link = %+v err = %v, want consumed", recs, err)
+	}
 
 	// Reparse the duplicate with a later timestamp and active turn.
 	if err := SaveCaptureState(&CaptureState{
@@ -717,6 +725,9 @@ func TestPartialReplayUsesRecordedFields(t *testing.T) {
 	}
 	if links := linksIn(t, w.semDir); len(links) != 1 || links[0].EventID != evtRP {
 		t.Fatalf("links = %+v", links)
+	}
+	if recs, err := reg.PendingPartialRecords(); err != nil || len(recs) != 0 {
+		t.Fatalf("records after replay = %+v err = %v, want consumed", recs, err)
 	}
 }
 

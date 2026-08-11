@@ -388,6 +388,47 @@ func WriteEvidenceLinksToRepo(ctx context.Context, repoPath string, links []Evid
 	return nil
 }
 
+// HasEvidenceLink reports whether the link key already exists.
+func HasEvidenceLink(ctx context.Context, repoPath string, l EvidenceLink) (bool, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return false, fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	_, err = h.Queries.GetEvidenceLink(ctx, sqldb.GetEvidenceLinkParams{
+		EventID: l.EventID, EvidenceKind: l.EvidenceKind, GroupID: l.GroupID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read evidence link for event %s: %w", l.EventID, err)
+	}
+	return true, nil
+}
+
+// MissingEventIDs returns the given IDs that have no event row.
+func MissingEventIDs(ctx context.Context, repoPath string, ids []string) (map[string]bool, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return nil, fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	missing := map[string]bool{}
+	for _, id := range ids {
+		exists, err := h.Queries.AgentEventExists(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("check event %s: %w", id, err)
+		}
+		if !exists {
+			missing[id] = true
+		}
+	}
+	return missing, nil
+}
+
 // relativizeToolPaths converts absolute file_path values in tool_uses JSON
 // to repo-relative paths. This is needed for Cursor IDE events where
 // enrichFromCodeHashes stores absolute paths (correct for routing) but

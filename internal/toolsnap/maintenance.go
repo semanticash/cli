@@ -26,13 +26,12 @@ var maintenanceMaxHold = time.Second
 // MaintenanceReport describes one maintenance pass.
 type MaintenanceReport struct {
 	// Deferred reports an incomplete pass. Counters include completed work.
-	Deferred       bool
-	ActiveWindows  int
-	RefsDeleted    int
-	RefsKept       int
-	MarkersPruned  int
-	PartialsPruned int
-	PruneRan       bool
+	Deferred      bool
+	ActiveWindows int
+	RefsDeleted   int
+	RefsKept      int
+	MarkersPruned int
+	PruneRan      bool
 	// StoreBytes is the store object size after the pass.
 	StoreBytes int64
 }
@@ -45,7 +44,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 	}
 	report := MaintenanceReport{}
 
-	// Reserve only part of the pass deadline for lock acquisition.
+	// Leave most of the deadline for maintenance work.
 	passCtx, cancel := context.WithTimeout(ctx, maintenanceMaxHold)
 	defer cancel()
 	lockCtx, lockCancel := context.WithTimeout(passCtx, maintenanceLockWait)
@@ -58,7 +57,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 			}
 		}
 		if report.ActiveWindows > 0 {
-			// Capture in progress: maintenance never competes with it.
+			// Defer while capture owns the registry.
 			report.Deferred = true
 			return false, nil
 		}
@@ -102,15 +101,8 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 			report.RefsDeleted++
 		}
 
-		// Recovery sweeps must run before pending partials are aged out.
-		for _, sub := range []struct {
-			dir     string
-			counter *int
-		}{{"closures", &report.MarkersPruned}, {"partials", &report.PartialsPruned}} {
-			entries, err := os.ReadDir(filepath.Join(reg.dir, sub.dir))
-			if err != nil {
-				continue
-			}
+		// Pending partials remain until their evidence links are durable.
+		if entries, err := os.ReadDir(filepath.Join(reg.dir, "closures")); err == nil {
 			for _, e := range entries {
 				if err := passCtx.Err(); err != nil {
 					return false, err
@@ -119,13 +111,13 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 				if err != nil || fi.ModTime().After(staleCutoff) {
 					continue
 				}
-				if os.Remove(filepath.Join(reg.dir, sub.dir, e.Name())) == nil {
-					*sub.counter++
+				if os.Remove(filepath.Join(reg.dir, "closures", e.Name())) == nil {
+					report.MarkersPruned++
 				}
 			}
 		}
 
-		// Use an explicit grace period; routine maintenance never prunes now.
+		// Use an explicit grace period for unreachable objects.
 		cutoff := time.Now().Add(-grace).UTC().Format(time.RFC3339)
 		if maintenanceBeforePrune != nil {
 			maintenanceBeforePrune()
@@ -153,7 +145,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 		// A timed-out subprocess may report a signal instead of a deadline.
 		passExpired := passCtx.Err() != nil || errors.Is(err, context.DeadlineExceeded)
 		if lockContended || passExpired {
-			// Preserve completed counters and defer the remaining work.
+			// Return completed work and defer the remainder.
 			report.Deferred = true
 			return report, nil
 		}

@@ -9,6 +9,18 @@ import (
 	"context"
 )
 
+const agentEventExists = `-- name: AgentEventExists :one
+select count(*) > 0 as exists_flag from agent_events
+where event_id = ?
+`
+
+func (q *Queries) AgentEventExists(ctx context.Context, eventID string) (bool, error) {
+	row := q.queryRow(ctx, q.agentEventExistsStmt, agentEventExists, eventID)
+	var exists_flag bool
+	err := row.Scan(&exists_flag)
+	return exists_flag, err
+}
+
 const getEvidenceLink = `-- name: GetEvidenceLink :one
 select event_id, evidence_kind, evidence_hash, group_id, created_at from agent_event_evidence_links
 where event_id = ? and evidence_kind = ? and group_id = ?
