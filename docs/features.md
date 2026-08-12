@@ -18,7 +18,7 @@ When you run `semantica blame` or `semantica explain`, Semantica diffs the commi
 | Formatted | `ai_formatted` | Match after stripping all whitespace - catches linter/formatter changes (e.g., `func foo(){` vs `func foo() {`) |
 | Modified | `ai_modified` | Line is in a diff hunk that overlaps with AI output but doesn't match exactly - the developer likely edited AI-generated code |
 
-AI code hashes are built from assistant-role events containing `Edit` (new_string field) and `Write` (content field) tool calls captured during provider hook events. `Bash` tool calls are only used to detect file deletions (via `rm` commands), not to build line-level code matches.
+Direct attribution uses assistant `Edit` and `Write` output. In the default v1 algorithm, `Bash` events only support deletion inference. Opt-in v2 attribution also uses verified workspace deltas captured around Claude Code Bash tools, including changes made by invoked scripts, formatters, and generators.
 
 ### What you see
 

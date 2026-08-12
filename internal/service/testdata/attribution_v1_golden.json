@@ -1,0 +1,63 @@
+{
+  "commit_hash": "COMMIT",
+  "checkpoint_id": "CHECKPOINT",
+  "ai_exact_lines": 2,
+  "ai_formatted_lines": 0,
+  "ai_modified_lines": 0,
+  "ai_lines": 2,
+  "human_lines": 0,
+  "total_lines": 2,
+  "ai_percentage": 100,
+  "files_ai_touched": 1,
+  "files_total": 1,
+  "files_created": [
+    {
+      "path": "handler.go",
+      "ai": true,
+      "providers": [
+        "claude_code"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "handler.go",
+      "operation": "created",
+      "classification": "ai",
+      "ai_exact_lines": 2,
+      "ai_formatted_lines": 0,
+      "ai_modified_lines": 0,
+      "ai_lines": 2,
+      "human_lines": 0,
+      "total_lines": 2,
+      "deleted_non_blank": 0,
+      "ai_percentage": 100,
+      "evidence_class": "exact",
+      "evidence_classes": [
+        "exact"
+      ],
+      "providers": [
+        "claude_code"
+      ]
+    }
+  ],
+  "provider_details": [
+    {
+      "Provider": "claude_code",
+      "Model": "",
+      "AILines": 2,
+      "ProviderOnlyLines": 0
+    }
+  ],
+  "diagnostics": {
+    "events_considered": 1,
+    "events_assistant": 1,
+    "payloads_loaded": 1,
+    "ai_tool_events": 1,
+    "exact_matches": 2,
+    "normalized_matches": 0,
+    "modified_matches": 0
+  },
+  "evidence": "High",
+  "attribution_version": "v1"
+}
