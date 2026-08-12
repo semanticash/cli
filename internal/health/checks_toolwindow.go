@@ -128,18 +128,18 @@ func checkToolWindowDrift(ctx context.Context, opts Options) []Check {
 
 	since := time.Now().Add(-24 * time.Hour).UnixMilli()
 	var unmatched, captured int
-	// Drift applies only to providers with a pre-tool hook.
-	// Only unprefixed group IDs identify complete captures.
+	// Only pre_snapshot_missing indicates a missing pre-tool hook.
+	// GLOB keeps underscores in the reason literal.
 	if err := h.DB.QueryRowContext(ctx,
 		`SELECT
 		   COUNT(*) FILTER (WHERE NOT EXISTS (
 		     SELECT 1 FROM agent_event_evidence_links l
 		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
-		       AND l.group_id NOT LIKE '%:%')),
+		       AND l.group_id NOT GLOB 'pre_snapshot_missing:*')),
 		   COUNT(*) FILTER (WHERE EXISTS (
 		     SELECT 1 FROM agent_event_evidence_links l
 		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
-		       AND l.group_id NOT LIKE '%:%'))
+		       AND l.group_id NOT GLOB 'pre_snapshot_missing:*'))
 		 FROM agent_events e
 		 JOIN agent_sessions s ON s.session_id = e.session_id
 		 WHERE e.tool_name = 'Bash' AND e.event_source = 'hook' AND e.ts > ?

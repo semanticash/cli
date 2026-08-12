@@ -246,6 +246,68 @@ func TestCheckToolWindows(t *testing.T) {
 		}
 	})
 
+	t.Run("reclaimed partials count as captured, not drift", func(t *testing.T) {
+		dir := enabledRepo(t)
+		t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))
+		if err := sqlstore.MigratePath(ctx, filepath.Join(dir, ".semantica", "lineage.db")); err != nil {
+			t.Fatal(err)
+		}
+		seedRepoRow(t, ctx, dir)
+		evtID := strings.Repeat("ab", 32)
+		if _, err := broker.WriteEventsToRepo(ctx, dir, []broker.RawEvent{{
+			EventID: evtID, SourceKey: "/data/s.jsonl", Provider: "claude_code",
+			Timestamp: time.Now().UnixMilli(), Kind: "assistant", Role: "assistant",
+			ToolUseID: "toolu_rc", ToolName: "Bash", EventSource: "hook",
+			ProviderSessionID: "s1", SessionStartedAt: 1,
+			SessionMetaJSON: `{"source_key":"x"}`,
+		}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		// A reclaimed window proves the pre hook fired.
+		if err := broker.WriteEvidenceLinksToRepo(ctx, dir, []broker.EvidenceLink{{
+			EventID: evtID, EvidenceKind: "tool_delta", EvidenceHash: "h1",
+			GroupID: "stale_active_window:" + evtID, CreatedAt: time.Now().UnixMilli(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range checkToolWindows(ctx, Options{RepoPath: dir}) {
+			if c.ID == "drift" {
+				t.Fatalf("reclaimed partial reported as drift: %+v", c)
+			}
+		}
+	})
+
+	t.Run("near-match reason prefix is not read as missing-pre drift", func(t *testing.T) {
+		dir := enabledRepo(t)
+		t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))
+		if err := sqlstore.MigratePath(ctx, filepath.Join(dir, ".semantica", "lineage.db")); err != nil {
+			t.Fatal(err)
+		}
+		seedRepoRow(t, ctx, dir)
+		evtID := strings.Repeat("ab", 32)
+		if _, err := broker.WriteEventsToRepo(ctx, dir, []broker.RawEvent{{
+			EventID: evtID, SourceKey: "/data/s.jsonl", Provider: "claude_code",
+			Timestamp: time.Now().UnixMilli(), Kind: "assistant", Role: "assistant",
+			ToolUseID: "toolu_nm", ToolName: "Bash", EventSource: "hook",
+			ProviderSessionID: "s1", SessionStartedAt: 1,
+			SessionMetaJSON: `{"source_key":"x"}`,
+		}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		// A near-match reason counts as captured evidence.
+		if err := broker.WriteEvidenceLinksToRepo(ctx, dir, []broker.EvidenceLink{{
+			EventID: evtID, EvidenceKind: "tool_delta", EvidenceHash: "h1",
+			GroupID: "preXsnapshotYmissing:" + evtID, CreatedAt: time.Now().UnixMilli(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range checkToolWindows(ctx, Options{RepoPath: dir}) {
+			if c.ID == "drift" {
+				t.Fatalf("near-match reason misclassified as missing-pre drift: %+v", c)
+			}
+		}
+	})
+
 	t.Run("malformed tombstone fails", func(t *testing.T) {
 		dir := enabledRepo(t)
 		if _, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica")); err != nil {
