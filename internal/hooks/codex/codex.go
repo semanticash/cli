@@ -78,9 +78,9 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	// Lifecycle assigns the active Semantica turn.
 	event := &hooks.Event{
 		SessionID:     string(payload.SessionID),
-		TranscriptRef: payload.TranscriptPath,
-		Prompt:        payload.Prompt,
-		Model:         payload.Model,
+		TranscriptRef: string(payload.TranscriptPath),
+		Prompt:        string(payload.Prompt),
+		Model:         string(payload.Model),
 		Timestamp:     time.Now().UnixMilli(),
 		CWD:           payload.CWD,
 		ToolName:      payload.ToolName,
@@ -113,26 +113,26 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	return event, nil
 }
 
-// codexHookPayload contains the fields used across Codex hook events.
-// Codex may encode hook IDs as strings or integers.
+// codexHookPayload contains the fields used by Codex hook events. Custom
+// string types tolerate scalar values where Codex varies its payload types.
 type codexHookPayload struct {
 	SessionID flexString `json:"session_id"`
 	// TurnID is retained for compatibility but not mapped to Event.TurnID.
 	TurnID               flexString      `json:"turn_id"`
-	TranscriptPath       string          `json:"transcript_path"`
+	TranscriptPath       pathString      `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`
-	Model                string          `json:"model"`
-	Source               string          `json:"source"`
-	Prompt               string          `json:"prompt"`
+	Model                looseString     `json:"model"`
+	Source               looseString     `json:"source"`
+	Prompt               contentString   `json:"prompt"`
 	ToolName             string          `json:"tool_name"`
 	ToolUseID            flexString      `json:"tool_use_id"`
 	ToolInput            json.RawMessage `json:"tool_input"`
 	ToolResponse         json.RawMessage `json:"tool_response"`
-	LastAssistantMessage string          `json:"last_assistant_message"`
+	LastAssistantMessage looseString     `json:"last_assistant_message"`
 }
 
-// flexString decodes a string or non-negative integer ID. Null and absent
-// values decode to an empty string.
+// flexString accepts string and non-negative integer identifiers. Other JSON
+// values are rejected; null and omitted fields decode to an empty string.
 type flexString string
 
 func (s *flexString) UnmarshalJSON(b []byte) error {
@@ -168,6 +168,75 @@ func isNonNegativeInteger(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// looseString converts JSON scalars to strings. Null and composite values
+// decode to an empty string so optional metadata cannot reject a hook.
+type looseString string
+
+func (s *looseString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" || b[0] == '{' || b[0] == '[' {
+		*s = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			*s = ""
+			return nil
+		}
+		*s = looseString(str)
+		return nil
+	}
+	// Scalar (number or bool): keep its literal token.
+	*s = looseString(b)
+	return nil
+}
+
+// contentString converts JSON scalars to strings and rejects composite
+// values. Null and omitted fields decode to an empty string.
+type contentString string
+
+func (s *contentString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*s = ""
+		return nil
+	}
+	if b[0] == '{' || b[0] == '[' {
+		return fmt.Errorf("invalid content token %q: want a string or scalar, not a composite", b)
+	}
+	if b[0] == '"' {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		*s = contentString(str)
+		return nil
+	}
+	// Scalar (number or bool): keep its literal token.
+	*s = contentString(b)
+	return nil
+}
+
+// pathString accepts a JSON string. Other values decode to an empty string,
+// allowing source-key generation to fall back to the session identifier.
+type pathString string
+
+func (s *pathString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || b[0] != '"' {
+		*s = ""
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		*s = ""
+		return nil
+	}
+	*s = pathString(str)
+	return nil
 }
 
 // isCapturableTool reports whether PostToolUse has a supported evidence shape.

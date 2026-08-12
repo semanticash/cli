@@ -16,6 +16,7 @@ import (
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/hooks/builder"
 	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -1164,6 +1165,100 @@ func TestParseHookEvent_NumericIdsParse(t *testing.T) {
 				t.Errorf("ToolUseID = %q, want %q", ev.ToolUseID, "890")
 			}
 		})
+	}
+}
+
+// Codex hook fields apply different conversion rules based on their role.
+func TestParseHookEvent_FieldTolerancePolicies(t *testing.T) {
+	// override adds one field to an otherwise valid pre-tool-use payload.
+	override := func(fieldJSON string) string {
+		return `{"session_id":"s","cwd":"/repo","tool_name":"Bash","tool_use_id":"c1",` +
+			`"tool_input":{"command":"x"},` + fieldJSON + `}`
+	}
+	parse := func(fieldJSON string) (*hooks.Event, error) {
+		return (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use",
+			strings.NewReader(override(fieldJSON)))
+	}
+
+	// Optional metadata accepts scalars and ignores other values.
+	t.Run("metadata_tolerates_all", func(t *testing.T) {
+		for _, field := range []string{"model", "source", "last_assistant_message"} {
+			for _, tok := range []string{`5`, `true`, `"x"`, `{}`, `[1]`, `null`} {
+				ev, err := parse(`"` + field + `":` + tok)
+				if err != nil {
+					t.Errorf("%s=%s: unexpected error %v", field, tok, err)
+				}
+				if ev == nil {
+					t.Errorf("%s=%s: dropped, want an event", field, tok)
+				}
+			}
+		}
+		// Model is the optional metadata field exposed on the event.
+		if ev, _ := parse(`"model":7`); ev == nil || ev.Model != "7" {
+			t.Errorf("model=7 -> %+v, want Model %q", ev, "7")
+		}
+		if ev, _ := parse(`"model":{}`); ev == nil || ev.Model != "" {
+			t.Errorf("model={} -> %+v, want empty Model", ev)
+		}
+	})
+
+	// Prompt accepts scalars and rejects composite values.
+	t.Run("prompt_coerces_scalar", func(t *testing.T) {
+		ev, err := parse(`"prompt":42`)
+		if err != nil {
+			t.Fatalf("scalar prompt: %v", err)
+		}
+		if ev.Prompt != "42" {
+			t.Errorf("Prompt = %q, want %q", ev.Prompt, "42")
+		}
+	})
+	t.Run("prompt_rejects_composite", func(t *testing.T) {
+		for _, tok := range []string{`{}`, `[1,2]`} {
+			if ev, err := parse(`"prompt":` + tok); err == nil {
+				t.Errorf("prompt=%s: want a parse error (fail closed), got ev=%v", tok, ev)
+			}
+		}
+	})
+
+	// A non-string transcript path is treated as absent.
+	t.Run("transcript_path_string_or_empty", func(t *testing.T) {
+		if ev, err := parse(`"transcript_path":"/t/x.jsonl"`); err != nil || ev.TranscriptRef != "/t/x.jsonl" {
+			t.Errorf(`transcript_path string -> ev=%+v err=%v, want "/t/x.jsonl"`, ev, err)
+		}
+		for _, tok := range []string{`7`, `true`, `{}`, `[1]`, `null`} {
+			ev, err := parse(`"transcript_path":` + tok)
+			if err != nil {
+				t.Errorf("transcript_path=%s: unexpected error %v", tok, err)
+				continue
+			}
+			if ev == nil || ev.TranscriptRef != "" {
+				t.Errorf("transcript_path=%s -> %+v, want empty TranscriptRef", tok, ev)
+			}
+		}
+	})
+}
+
+// Missing transcript paths use the session identifier as the source key.
+func TestCodexSourceKey_SessionScopedWhenTranscriptEmpty(t *testing.T) {
+	mk := func(session string) *hooks.Event {
+		return &hooks.Event{
+			Type: hooks.ToolStepCompleted, SessionID: session,
+			ToolName: "Bash", ToolUseID: "call_1", Timestamp: 1,
+		}
+	}
+	a := builder.ComputeEventID(codexSourceKey(mk("sess-A")), mk("sess-A"))
+	b := builder.ComputeEventID(codexSourceKey(mk("sess-B")), mk("sess-B"))
+	if a == b {
+		t.Errorf("event ids collided across sessions with a reused tool-use id: %s", a)
+	}
+	// The same session and tool-use identifier remain stable.
+	if a2 := builder.ComputeEventID(codexSourceKey(mk("sess-A")), mk("sess-A")); a != a2 {
+		t.Errorf("event id not stable within a session: %s vs %s", a, a2)
+	}
+	// A transcript path takes precedence when present.
+	withPath := &hooks.Event{Type: hooks.ToolStepCompleted, SessionID: "s", TranscriptRef: "/t/x.jsonl", ToolUseID: "call_1"}
+	if got := codexSourceKey(withPath); got != "/t/x.jsonl" {
+		t.Errorf("source key = %q, want the transcript path", got)
 	}
 }
 

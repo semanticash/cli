@@ -383,7 +383,8 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 
 // makeBaseRawEvent builds the common Codex event envelope.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
-	meta := map[string]any{"source_key": event.TranscriptRef}
+	sourceKey := codexSourceKey(event)
+	meta := map[string]any{"source_key": sourceKey}
 	if event.CWD != "" {
 		meta["project_path"] = event.CWD
 	}
@@ -391,10 +392,22 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 
 	return builder.BaseRawEvent(builder.BaseInput{
 		Event:             event,
-		SourceKey:         event.TranscriptRef,
+		SourceKey:         sourceKey,
 		Provider:          providerName,
 		ProviderSessionID: event.SessionID,
 		SessionMetaJSON:   string(metaJSON),
 		SourceProjectPath: event.CWD,
 	})
+}
+
+// codexSourceKey uses the transcript path when available. The session fallback
+// keeps event identifiers distinct when Codex omits the path.
+func codexSourceKey(event *hooks.Event) string {
+	if event.TranscriptRef != "" {
+		return event.TranscriptRef
+	}
+	if event.SessionID != "" {
+		return "codex-session:" + event.SessionID
+	}
+	return ""
 }

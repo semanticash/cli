@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Codex `PreToolUse` capture no longer fails to parse: Codex sends `session_id` (and other ids) as a JSON number on some hooks, which previously dropped every pre-tool snapshot and surfaced as `codex/pre-tool-use` hook errors in `semantica doctor`. Numeric ids now decode to their string form.
+- Codex hooks now accept numeric identifiers and metadata without dropping valid `PreToolUse` events. Invalid identifiers still fail closed.
+- Codex event identifiers now fall back to the session when `transcript_path` is unavailable, preventing collisions across sessions.
 - Codex `.codex/hooks.json` is written with literal shell metacharacters (`>`, `&`, `<`) instead of `\uXXXX` escapes, so the installed hook commands read as intended.
 - Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
 - Batched commit-subject lookup for lineage-record listings, avoiding one git subprocess per row on large local histories.

@@ -143,8 +143,8 @@ func TestCaptureCmd_CodexParseFailure_ExitsZeroAndSilentStdout(t *testing.T) {
 	}
 	_ = broker.Close(bh)
 
-	// The cwd passes preflight, but model has the wrong JSON type.
-	payload := `{"cwd":"` + canon + `","model":123,"tool_name":"Bash","tool_use_id":"c1"}`
+	// The cwd passes preflight, but the malformed session id must fail closed.
+	payload := `{"cwd":"` + canon + `","session_id":{},"tool_name":"Bash","tool_use_id":"c1"}`
 
 	stdout, stderr := runCaptureCapturingStd(t, payload, "codex", "pre-tool-use")
 
