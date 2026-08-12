@@ -29,10 +29,11 @@ Detected by resolving the `codex` executable on `PATH`, by checking for `~/.code
 
 ### Hooks
 
-Semantica registers four Codex hooks:
+Semantica registers five Codex hooks:
 
 - **`SessionStart`** - Opens lifecycle tracking. The dispatcher treats this as metadata-only today.
 - **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
+- **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for shell-tool evidence.
 - **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
 - **`Stop`** - Marks the turn complete and packages captured events.
 
@@ -40,7 +41,7 @@ Codex hooks are user-global, so they can fire in any Codex session on the machin
 
 ### Attribution
 
-Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. `Bash` commands are captured as command provenance and currently contribute file-touch evidence only for recognized deletion commands such as `rm`.
+Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. Pre- and post-Bash hooks capture bounded workspace deltas; opt-in v2 scoring can attribute surviving changes made by scripts, formatters, and generators.
 
 ### Skills and Handoff
 
@@ -51,7 +52,7 @@ Codex `apply_patch` operations are parsed per file. Add and update sections with
 ### Limitations
 
 - Codex rollout/session files are not used for replay today. Hook payloads are the capture source.
-- Shell commands that write files indirectly, such as `echo > file`, `tee`, or `cp`, are captured as Bash provenance but do not synthesize file-touch or line-level attribution unless Codex also emits a file-edit hook for the affected file.
+- Tool-delta scoring is disabled by default. Enable `attribution_v2` to score verified Codex Bash workspace deltas.
 - User-global hooks require the enabled-repo cwd gate. If Codex runs outside an enabled repo, Semantica exits silently and records nothing.
 
 ---

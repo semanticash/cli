@@ -4,14 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/store/blobs"
+	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
+	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/toolsnap"
 )
 
 // withCodexHome redirects CODEX_HOME to a temporary directory for the
@@ -80,7 +86,26 @@ trust_level = "trusted"
 "gpt-5.5" = 1
 `
 
-func TestInstallHooks_WritesFourHooksWithExpectedShape(t *testing.T) {
+// PreToolUse is installed for Bash only.
+func TestHookEvents_PreToolUseIsBashOnly(t *testing.T) {
+	var pre *codexHookEvent
+	for i := range hookEvents {
+		if hookEvents[i].pascalEvent == "PreToolUse" {
+			pre = &hookEvents[i]
+		}
+	}
+	if pre == nil {
+		t.Fatal("hookEvents missing PreToolUse")
+	}
+	if pre.matcher != "Bash" {
+		t.Errorf("PreToolUse matcher = %q, want Bash", pre.matcher)
+	}
+	if pre.snakeEvent != "pre_tool_use" || pre.captureName != "pre-tool-use" {
+		t.Errorf("PreToolUse names = %q/%q, want pre_tool_use/pre-tool-use", pre.snakeEvent, pre.captureName)
+	}
+}
+
+func TestInstallHooks_WritesAllHooksWithExpectedShape(t *testing.T) {
 	home := withCodexHome(t)
 	p := &Provider{}
 
@@ -989,4 +1014,362 @@ func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T)
 	if event.TurnID == providerTurnID {
 		t.Errorf("event TurnID = provider turn id %q; fix did not take effect", providerTurnID)
 	}
+}
+
+// Bash PreToolUse carries the identity required for window pairing.
+func TestParseHookEvent_PreToolUseBashMapsToToolStepStarted(t *testing.T) {
+	payload := map[string]any{
+		"session_id":  "sess-pre-1",
+		"turn_id":     "provider-turn",
+		"cwd":         "/repo/work",
+		"tool_name":   "Bash",
+		"tool_use_id": "call_pre_bash_1",
+		"tool_input":  json.RawMessage(`{"command":"gofmt -w ."}`),
+	}
+	data, _ := json.Marshal(payload)
+	event, err := (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event == nil {
+		t.Fatal("pre-tool-use Bash parsed to nil")
+	}
+	if event.Type != hooks.ToolStepStarted {
+		t.Errorf("type = %v, want ToolStepStarted", event.Type)
+	}
+	if event.SessionID != "sess-pre-1" || event.ToolUseID != "call_pre_bash_1" ||
+		event.ToolName != "Bash" || event.CWD != "/repo/work" {
+		t.Errorf("identity fields lost: %+v", event)
+	}
+	if !strings.Contains(string(event.ToolInput), "gofmt -w .") {
+		t.Errorf("tool_input command lost: %s", event.ToolInput)
+	}
+	if len(event.ToolResponse) != 0 {
+		t.Errorf("pre half carried a tool_response: %s", event.ToolResponse)
+	}
+	if event.TurnID != "" {
+		t.Errorf("TurnID = %q, want empty (provider turn dropped)", event.TurnID)
+	}
+}
+
+// Non-Bash pre-tool hooks do not open snapshot windows.
+func TestParseHookEvent_PreToolUseNonBashIgnored(t *testing.T) {
+	for _, tool := range []string{"apply_patch", "Write", "Edit", "read_file", ""} {
+		t.Run("tool="+tool, func(t *testing.T) {
+			payload := map[string]any{
+				"session_id": "s", "tool_name": tool,
+				"tool_use_id": "c1", "tool_input": json.RawMessage(`{}`),
+			}
+			data, _ := json.Marshal(payload)
+			event, err := (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(string(data)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if event != nil {
+				t.Fatalf("pre-tool-use %q produced an event, want nil (Bash-only)", tool)
+			}
+		})
+	}
+}
+
+// Pre and post hooks inherit one capture-state turn.
+func TestParseAndDispatch_CodexPrePostSharePairingIdentity(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	const sessionID = "sess-pair"
+	const captureTurnID = "semantica-turn-1"
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: sessionID, Provider: "codex", TurnID: captureTurnID, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bh, err := broker.Open(context.Background(), filepath.Join(t.TempDir(), "repos.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broker.Close(bh) })
+
+	dispatch := func(hookName string) *hooks.Event {
+		payload := map[string]any{
+			"session_id": sessionID, "turn_id": "codex-provider-turn",
+			"tool_name": "Bash", "tool_use_id": "call_pair_1",
+			"tool_input": json.RawMessage(`{"command":"echo hi"}`),
+		}
+		data, _ := json.Marshal(payload)
+		ev, err := (&Provider{}).ParseHookEvent(context.Background(), hookName, strings.NewReader(string(data)))
+		if err != nil || ev == nil {
+			t.Fatalf("parse %s: ev=%v err=%v", hookName, ev, err)
+		}
+		if err := hooks.Dispatch(context.Background(), &Provider{}, ev, bh, nil); err != nil {
+			t.Fatalf("dispatch %s: %v", hookName, err)
+		}
+		return ev
+	}
+
+	pre := dispatch("pre-tool-use")
+	post := dispatch("post-tool-use")
+
+	if pre.Type != hooks.ToolStepStarted || post.Type != hooks.ToolStepCompleted {
+		t.Fatalf("types = %v/%v", pre.Type, post.Type)
+	}
+	if pre.SessionID != post.SessionID || pre.ToolUseID != post.ToolUseID ||
+		pre.TurnID != post.TurnID || pre.ToolName != post.ToolName {
+		t.Fatalf("pre/post identity diverged: pre=%+v post=%+v", pre, post)
+	}
+	if pre.ToolUseID != "call_pair_1" {
+		t.Errorf("ToolUseID = %q, want the shared tool_use_id", pre.ToolUseID)
+	}
+	// Both hooks use the capture-state turn.
+	if pre.TurnID != captureTurnID || post.TurnID != captureTurnID {
+		t.Errorf("turns = %q/%q, want the capture-state turn %q", pre.TurnID, post.TurnID, captureTurnID)
+	}
+}
+
+// Existing installations gain PreToolUse on the next enable.
+func TestInstallHooks_UpgradeAddsPreToolUseToLegacyInstall(t *testing.T) {
+	home := withCodexHome(t)
+	p := &Provider{}
+	ctx := context.Background()
+
+	orig := hookEvents
+	// Restore shared test state on every exit.
+	t.Cleanup(func() { hookEvents = orig })
+	legacy := make([]codexHookEvent, 0, len(orig))
+	for _, e := range orig {
+		if e.pascalEvent != "PreToolUse" {
+			legacy = append(legacy, e)
+		}
+	}
+	hookEvents = legacy
+	if _, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica"); err != nil {
+		t.Fatalf("legacy install: %v", err)
+	}
+	if _, ok := readHooksJSON(t, home).Hooks["PreToolUse"]; ok {
+		t.Fatal("legacy install already had PreToolUse")
+	}
+	hookEvents = orig
+
+	n, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica")
+	if err != nil {
+		t.Fatalf("upgrade install: %v", err)
+	}
+	if n != len(hookEvents) {
+		t.Fatalf("upgrade reported %d hooks, want %d", n, len(hookEvents))
+	}
+	shape := readHooksJSON(t, home)
+	if len(shape.Hooks) != len(legacy)+1 {
+		t.Errorf("upgrade left %d event groups, want %d (legacy + PreToolUse)", len(shape.Hooks), len(legacy)+1)
+	}
+	pre, ok := shape.Hooks["PreToolUse"]
+	if !ok || len(pre) != 1 || pre[0].Matcher != "Bash" {
+		t.Fatalf("PreToolUse not added on upgrade: %+v", shape.Hooks["PreToolUse"])
+	}
+	if !strings.Contains(pre[0].Hooks[0].Command, "pre-tool-use") {
+		t.Errorf("PreToolUse command missing capture name: %q", pre[0].Hooks[0].Command)
+	}
+	for _, ev := range legacy {
+		if _, ok := shape.Hooks[ev.pascalEvent]; !ok {
+			t.Errorf("upgrade dropped existing event %q", ev.pascalEvent)
+		}
+	}
+	if _, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica"); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := len(readHooksJSON(t, home).Hooks["PreToolUse"]); got != 1 {
+		t.Errorf("PreToolUse groups after re-install = %d, want 1", got)
+	}
+}
+
+// Parsed Codex Bash hooks produce a complete linked delta.
+func TestParseAndDispatch_CodexBashWindowProducesCompleteDelta(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	repoPath, semDir, bh := newCodexRepoWorld(t, home)
+	t.Cleanup(func() { _ = broker.Close(bh) })
+	ctx := context.Background()
+
+	const sessionID = "sess-window"
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: sessionID, Provider: "codex",
+		TurnID: "turn-1", CWD: repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	objDir, err := broker.GlobalObjectsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobStore, err := blobs.NewStore(objDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	dispatch := func(hookName, payload string) {
+		ev, err := p.ParseHookEvent(ctx, hookName, strings.NewReader(payload))
+		if err != nil || ev == nil {
+			t.Fatalf("parse %s: ev=%v err=%v", hookName, ev, err)
+		}
+		if err := hooks.Dispatch(ctx, p, ev, bh, blobStore); err != nil {
+			t.Fatalf("dispatch %s: %v", hookName, err)
+		}
+	}
+
+	pre := `{"session_id":"` + sessionID + `","cwd":"` + repoPath +
+		`","tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"}}`
+	dispatch("pre-tool-use", pre)
+
+	if err := os.WriteFile(filepath.Join(repoPath, "gen.txt"), []byte("generated line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	post := `{"session_id":"` + sessionID + `","cwd":"` + repoPath +
+		`","tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
+	dispatch("post-tool-use", post)
+
+	deltas := codexDeltasIn(t, semDir)
+	if len(deltas) != 1 || deltas[0].Status != "complete" {
+		t.Fatalf("deltas = %+v, want one complete", deltas)
+	}
+	if len(deltas[0].Actors) != 1 || deltas[0].Actors[0].Provider != "codex" {
+		t.Fatalf("actors = %+v, want codex", deltas[0].Actors)
+	}
+	found := false
+	for _, f := range deltas[0].Files {
+		if f.Path == "gen.txt" && f.Operation == "create" &&
+			len(f.Hunks) == 1 && f.Hunks[0].NewLines[0] == "generated line" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("files = %+v, want gen.txt creation", deltas[0].Files)
+	}
+	links := codexLinksIn(t, semDir)
+	if len(links) != 1 || links[0].kind != "tool_delta" ||
+		links[0].groupID == "" || strings.Contains(links[0].groupID, ":") {
+		t.Fatalf("links = %+v, want one complete (unprefixed) tool_delta link", links)
+	}
+	if links[0].eventID == "" || links[0].hash == "" {
+		t.Fatalf("link missing event/hash: %+v", links[0])
+	}
+}
+
+// newCodexRepoWorld creates and registers an enabled test repository.
+func newCodexRepoWorld(t *testing.T, home string) (repoPath, semDir string, bh *broker.Handle) {
+	t.Helper()
+	ctx := context.Background()
+
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoPath = filepath.Join(base, "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoPath, "init", "-q", "-b", "main")
+	gitRun(t, repoPath, "config", "user.email", "t@example.com")
+	gitRun(t, repoPath, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repoPath, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoPath, "add", ".")
+	gitRun(t, repoPath, "commit", "-q", "-m", "init")
+
+	semDir = filepath.Join(repoPath, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: uuid.NewString(), RootPath: repoPath, CreatedAt: 1000, EnabledAt: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatal(err)
+	}
+
+	bh, err = broker.Open(ctx, filepath.Join(home, "repos.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.Register(ctx, bh, repoPath, repoPath); err != nil {
+		t.Fatal(err)
+	}
+	return repoPath, semDir, bh
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// codexDeltasIn scans the repo CAS for canonical tool deltas.
+func codexDeltasIn(t *testing.T, semDir string) []*toolsnap.Delta {
+	t.Helper()
+	objects := filepath.Join(semDir, "objects")
+	bs, err := blobs.NewStore(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas []*toolsnap.Delta
+	_ = filepath.WalkDir(objects, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		raw, err := bs.Get(context.Background(), filepath.Base(path))
+		if err != nil {
+			return nil
+		}
+		if delta, err := toolsnap.ParseDelta(raw); err == nil {
+			deltas = append(deltas, delta)
+		}
+		return nil
+	})
+	return deltas
+}
+
+type codexLinkRow struct{ eventID, kind, hash, groupID string }
+
+func codexLinksIn(t *testing.T, semDir string) []codexLinkRow {
+	t.Helper()
+	ctx := context.Background()
+	h, err := sqlstore.Open(ctx, filepath.Join(semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	rows, err := h.DB.QueryContext(ctx,
+		"SELECT event_id, evidence_kind, evidence_hash, group_id FROM agent_event_evidence_links ORDER BY event_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []codexLinkRow
+	for rows.Next() {
+		var r codexLinkRow
+		if err := rows.Scan(&r.eventID, &r.kind, &r.hash, &r.groupID); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

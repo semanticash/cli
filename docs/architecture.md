@@ -229,8 +229,8 @@ without rereading the workspace.
 Bounded maintenance defers during capture, removes stale unreferenced refs, and
 prunes expired objects without operating on the user repository.
 
-Claude Code pre- and post-Bash hooks capture canonical deltas and link them to
-their tool events. Recovery runs during worker drains and with
+Claude Code and Codex pre- and post-Bash hooks capture canonical deltas and
+link them to their tool events. Recovery runs during worker drains and with
 `semantica tidy --apply`. Optional v2 scoring verifies and aligns these deltas
 against committed lines; partial or ambiguous evidence remains unscored.
 

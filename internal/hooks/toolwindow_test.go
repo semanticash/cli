@@ -400,6 +400,63 @@ func TestCompleteToolWindowProducesDelta(t *testing.T) {
 	}
 }
 
+// Codex Bash windows produce Codex-attributed deltas.
+func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess-cx", Provider: "codex",
+		TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleToolStepStarted(ctx, "codex", startedEvent("sess-cx", "toolu_cx", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.repoPath, "gen.txt"), []byte("generated line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	post := postBashEvent("sess-cx", "toolu_cx", w.repoPath, "make generate")
+	closing := broker.RawEvent{
+		EventID: "evt-cx", SourceKey: "/data/sess-cx.jsonl",
+		Provider: "codex", Timestamp: time.Now().UnixMilli(),
+		Kind: "assistant", Role: "assistant",
+		TurnID: "turn-1", ToolUseID: "toolu_cx", ToolName: "Bash",
+		EventSource: "hook", ProviderSessionID: "sess-cx",
+		SessionStartedAt: 1500, SessionMetaJSON: `{"source_key":"x"}`,
+	}
+	if !completeToolWindow(ctx, "codex", post, w.bh, nil, []broker.RawEvent{closing}) {
+		t.Fatal("codex window completion not handled")
+	}
+
+	deltas := findDeltas(t, w.semDir)
+	if len(deltas) != 1 || deltas[0].Status != "complete" {
+		t.Fatalf("deltas = %+v, want one complete", deltas)
+	}
+	if len(deltas[0].Actors) != 1 || deltas[0].Actors[0].Provider != "codex" {
+		t.Fatalf("actors = %+v, want codex", deltas[0].Actors)
+	}
+	found := false
+	for _, f := range deltas[0].Files {
+		if f.Path == "gen.txt" && f.Operation == "create" &&
+			len(f.Hunks) == 1 && f.Hunks[0].NewLines[0] == "generated line" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("files = %+v, want gen.txt creation", deltas[0].Files)
+	}
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].EventID != "evt-cx" ||
+		links[0].GroupID == "" || strings.Contains(links[0].GroupID, ":") {
+		t.Fatalf("links = %+v, want one complete (unprefixed) tool_delta link", links)
+	}
+}
+
 // TestCompleteToolWindowConcurrentGroup covers overlapping Bash tools.
 func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
 	home := t.TempDir()

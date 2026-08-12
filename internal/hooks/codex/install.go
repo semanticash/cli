@@ -56,6 +56,8 @@ type codexHookEvent struct {
 var hookEvents = []codexHookEvent{
 	{"SessionStart", "session_start", "session-start", ""},
 	{"UserPromptSubmit", "user_prompt_submit", "user-prompt-submit", ""},
+	// Bash needs a pre-execution snapshot; direct edit tools do not.
+	{"PreToolUse", "pre_tool_use", "pre-tool-use", "Bash"},
 	{"PostToolUse", "post_tool_use", "post-tool-use", "apply_patch|Bash|Write|Edit"},
 	{"Stop", "stop", "stop", ""},
 }
@@ -113,10 +115,11 @@ func codexHomeDir() (string, error) {
 //
 // On success, the user has:
 //
-//   - ~/.codex/hooks.json with four entries (SessionStart,
-//     UserPromptSubmit, PostToolUse, Stop) pointing at the Semantica
-//     binary. Existing user hook entries under the same events are
-//     preserved; Semantica's entries are appended after them.
+//   - ~/.codex/hooks.json with one entry per installed event
+//     (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop)
+//     pointing at the Semantica binary. Existing user hook entries under
+//     the same events are preserved; Semantica's entries are appended
+//     after them.
 //   - ~/.codex/config.toml updated with [features] hooks = true and one
 //     [hooks.state.*] trusted_hash per installed hook, so Codex does not
 //     prompt for hook review on the next session. Trust keys reflect

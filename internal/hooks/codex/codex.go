@@ -63,6 +63,7 @@ func (p *Provider) IsAvailable() bool {
 // Hook event mapping:
 //   - session_start      -> SessionOpened (lifecycle no-op in the dispatcher)
 //   - user_prompt_submit -> PromptSubmitted
+//   - pre_tool_use       -> ToolStepStarted (Bash only; pre-execution snapshot)
 //   - post_tool_use      -> ToolStepCompleted
 //   - stop               -> AgentCompleted
 //
@@ -108,6 +109,12 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		event.Type = hooks.SessionOpened
 	case "user-prompt-submit":
 		event.Type = hooks.PromptSubmitted
+	case "pre-tool-use":
+		// Bash pre-hooks open the snapshot paired by tool_use_id.
+		if payload.ToolName != "Bash" {
+			return nil, nil
+		}
+		event.Type = hooks.ToolStepStarted
 	case "post-tool-use":
 		// Filter to the tools the direct emitter knows how to shape.
 		// PostToolUse fires for every tool name our matcher regex

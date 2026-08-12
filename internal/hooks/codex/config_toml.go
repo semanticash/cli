@@ -120,7 +120,7 @@ type configMutation struct {
 	// commands the caller treats as Semantica's. Pre-existing entries
 	// under hooksFilePath whose stored trusted_hash matches one of
 	// these are eligible for removal during cleanup. Install
-	// computes this from the canonical hashes of the four events;
+	// computes this from the canonical hashes of the installed events;
 	// uninstall computes it from the actual command strings observed
 	// in hooks.json before pruning.
 	recognizedHashes map[string]struct{}
