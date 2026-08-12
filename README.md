@@ -12,7 +12,7 @@ It answers the question Git cannot: **who or what wrote this code, and how did i
 It works by installing lightweight Git hooks that record commit lineage, ingest AI agent data, and compute attribution locally.
 Core capture works with zero configuration beyond `semantica enable`.
 
-Project website: [semantica.sh](https://www.semantica.sh)
+Website: [semantica.sh](https://www.semantica.sh)
 
 ---
 
