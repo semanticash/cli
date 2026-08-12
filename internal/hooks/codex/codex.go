@@ -5,6 +5,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -76,7 +77,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 
 	// Lifecycle assigns the active Semantica turn.
 	event := &hooks.Event{
-		SessionID:     payload.SessionID,
+		SessionID:     string(payload.SessionID),
 		TranscriptRef: payload.TranscriptPath,
 		Prompt:        payload.Prompt,
 		Model:         payload.Model,
@@ -85,7 +86,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		ToolName:      payload.ToolName,
 		ToolInput:     payload.ToolInput,
 		ToolResponse:  payload.ToolResponse,
-		ToolUseID:     payload.ToolUseID,
+		ToolUseID:     string(payload.ToolUseID),
 	}
 
 	switch hookName {
@@ -113,20 +114,60 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 }
 
 // codexHookPayload contains the fields used across Codex hook events.
+// Codex may encode hook IDs as strings or integers.
 type codexHookPayload struct {
-	SessionID string `json:"session_id"`
+	SessionID flexString `json:"session_id"`
 	// TurnID is retained for compatibility but not mapped to Event.TurnID.
-	TurnID               string          `json:"turn_id"`
+	TurnID               flexString      `json:"turn_id"`
 	TranscriptPath       string          `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`
 	Model                string          `json:"model"`
 	Source               string          `json:"source"`
 	Prompt               string          `json:"prompt"`
 	ToolName             string          `json:"tool_name"`
-	ToolUseID            string          `json:"tool_use_id"`
+	ToolUseID            flexString      `json:"tool_use_id"`
 	ToolInput            json.RawMessage `json:"tool_input"`
 	ToolResponse         json.RawMessage `json:"tool_response"`
 	LastAssistantMessage string          `json:"last_assistant_message"`
+}
+
+// flexString decodes a string or non-negative integer ID. Null and absent
+// values decode to an empty string.
+type flexString string
+
+func (s *flexString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*s = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		*s = flexString(str)
+		return nil
+	}
+	// Reject every non-string form except non-negative integers.
+	if !isNonNegativeInteger(b) {
+		return fmt.Errorf("invalid id token %q: want a string or non-negative integer", b)
+	}
+	*s = flexString(b)
+	return nil
+}
+
+// isNonNegativeInteger reports whether b contains only ASCII digits.
+func isNonNegativeInteger(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // isCapturableTool reports whether PostToolUse has a supported evidence shape.

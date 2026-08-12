@@ -1144,6 +1144,132 @@ func TestParseAndDispatch_CodexPrePostSharePairingIdentity(t *testing.T) {
 	}
 }
 
+// Numeric hook IDs retain their decimal representation.
+func TestParseHookEvent_NumericIdsParse(t *testing.T) {
+	for _, hook := range []string{"pre-tool-use", "post-tool-use"} {
+		t.Run(hook, func(t *testing.T) {
+			payload := `{"session_id":12345,"turn_id":67,"cwd":"/repo",` +
+				`"tool_name":"Bash","tool_use_id":890,"tool_input":{"command":"gofmt -w ."}}`
+			ev, err := (&Provider{}).ParseHookEvent(context.Background(), hook, strings.NewReader(payload))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if ev == nil {
+				t.Fatal("numeric-id payload dropped, want an event")
+			}
+			if ev.SessionID != "12345" {
+				t.Errorf("SessionID = %q, want %q", ev.SessionID, "12345")
+			}
+			if ev.ToolUseID != "890" {
+				t.Errorf("ToolUseID = %q, want %q", ev.ToolUseID, "890")
+			}
+		})
+	}
+}
+
+// Unsupported ID forms reject the payload.
+func TestParseHookEvent_MalformedIdFailsClosed(t *testing.T) {
+	for _, tok := range []string{`{}`, `true`, `[1,2]`, `1.5`, `-3`} {
+		t.Run(tok, func(t *testing.T) {
+			payload := `{"session_id":` + tok + `,"cwd":"/repo","tool_name":"Bash","tool_use_id":"c1","tool_input":{}}`
+			ev, err := (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(payload))
+			if err == nil {
+				t.Errorf("session_id=%s parsed, want a fail-closed error (ev=%v)", tok, ev)
+			}
+			if ev != nil {
+				t.Errorf("session_id=%s produced an event, want nil", tok)
+			}
+		})
+	}
+}
+
+// Numeric pre-hook IDs pair with equivalent string post-hook IDs.
+func TestParseAndDispatch_CodexNumericPrePairsWithStringPost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	repoPath, semDir, bh := newCodexRepoWorld(t, home)
+	t.Cleanup(func() { _ = broker.Close(bh) })
+	ctx := context.Background()
+
+	const sessionStr = "55501"
+	if err := hooks.SaveCaptureState(&hooks.CaptureState{
+		SessionID: sessionStr, Provider: "codex",
+		TurnID: "turn-1", CWD: repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	objDir, err := broker.GlobalObjectsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobStore, err := blobs.NewStore(objDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	dispatch := func(hookName, payload string) {
+		ev, err := p.ParseHookEvent(ctx, hookName, strings.NewReader(payload))
+		if err != nil || ev == nil {
+			t.Fatalf("parse %s: ev=%v err=%v", hookName, ev, err)
+		}
+		if err := hooks.Dispatch(ctx, p, ev, bh, blobStore); err != nil {
+			t.Fatalf("dispatch %s: %v", hookName, err)
+		}
+	}
+
+	// The pre-hook uses numeric IDs.
+	pre := `{"session_id":55501,"cwd":"` + repoPath +
+		`","tool_name":"Bash","tool_use_id":88802,"tool_input":{"command":"make generate"}}`
+	dispatch("pre-tool-use", pre)
+
+	if err := os.WriteFile(filepath.Join(repoPath, "gen.txt"), []byte("generated line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The post-hook uses equivalent string IDs.
+	post := `{"session_id":"55501","cwd":"` + repoPath +
+		`","tool_name":"Bash","tool_use_id":"88802","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
+	dispatch("post-tool-use", post)
+
+	deltas := codexDeltasIn(t, semDir)
+	if len(deltas) != 1 || deltas[0].Status != "complete" {
+		t.Fatalf("deltas = %+v, want one complete (numeric pre must pair with string post)", deltas)
+	}
+	found := false
+	for _, f := range deltas[0].Files {
+		if f.Path == "gen.txt" && f.Operation == "create" &&
+			len(f.Hunks) == 1 && f.Hunks[0].NewLines[0] == "generated line" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("files = %+v, want gen.txt creation", deltas[0].Files)
+	}
+	links := codexLinksIn(t, semDir)
+	if len(links) != 1 || links[0].kind != "tool_delta" ||
+		links[0].groupID == "" || strings.Contains(links[0].groupID, ":") {
+		t.Fatalf("links = %+v, want one complete (unprefixed) tool_delta link", links)
+	}
+}
+
+// Installed commands keep shell metacharacters literal.
+func TestInstallHooks_DoesNotHTMLEscapeCommands(t *testing.T) {
+	repoRoot, _ := codexRepo(t)
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	raw := mustReadFile(t, filepath.Join(repoHooksDir(repoRoot), hooksFileName))
+	// Build the escape prefix from bytes to avoid a source-level escape.
+	if strings.Contains(raw, string([]byte{'\\', 'u'})) {
+		t.Errorf("hooks.json contains a unicode escape; want literal characters:\n%s", raw)
+	}
+	if !strings.Contains(raw, ">/dev/null 2>&1") {
+		t.Errorf("hooks.json missing the literal guarded redirection:\n%s", raw)
+	}
+}
+
 // Existing repo installations gain PreToolUse on the next enable.
 func TestInstallHooks_UpgradeAddsPreToolUseToLegacyInstall(t *testing.T) {
 	repoRoot, _ := codexRepo(t)

@@ -82,12 +82,12 @@ func (s hookFileShape) MarshalJSON() ([]byte, error) {
 	if hooks == nil {
 		hooks = map[string][]matcherGroup{}
 	}
-	hb, err := json.Marshal(hooks)
+	hb, err := jsonNoEscape(hooks)
 	if err != nil {
 		return nil, err
 	}
 	out["hooks"] = hb
-	return json.Marshal(out)
+	return jsonNoEscape(out)
 }
 
 type matcherGroup struct {
@@ -129,18 +129,18 @@ func (g matcherGroup) MarshalJSON() ([]byte, error) {
 		// Preserve the original matcher token.
 		out["matcher"] = g.matcherRaw
 	case g.Matcher != "":
-		mb, err := json.Marshal(g.Matcher)
+		mb, err := jsonNoEscape(g.Matcher)
 		if err != nil {
 			return nil, err
 		}
 		out["matcher"] = mb
 	}
-	hb, err := json.Marshal(g.Hooks)
+	hb, err := jsonNoEscape(g.Hooks)
 	if err != nil {
 		return nil, err
 	}
 	out["hooks"] = hb
-	return json.Marshal(out)
+	return jsonNoEscape(out)
 }
 
 type commandEntry struct {
@@ -175,17 +175,41 @@ func (c commandEntry) MarshalJSON() ([]byte, error) {
 	for k, v := range c.extra {
 		out[k] = v
 	}
-	tb, err := json.Marshal(c.Type)
+	tb, err := jsonNoEscape(c.Type)
 	if err != nil {
 		return nil, err
 	}
 	out["type"] = tb
-	cb, err := json.Marshal(c.Command)
+	cb, err := jsonNoEscape(c.Command)
 	if err != nil {
 		return nil, err
 	}
 	out["command"] = cb
-	return json.Marshal(out)
+	return jsonNoEscape(out)
+}
+
+// jsonNoEscape marshals compact JSON without escaping HTML metacharacters.
+// Nested hook marshalers use it so shell commands remain readable.
+func jsonNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// marshalHooksIndent renders readable hooks.json output.
+func marshalHooksIndent(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // codexHomeDir returns $CODEX_HOME or ~/.codex.
@@ -281,7 +305,7 @@ var publishRepoHooks = func(repoDir, repoHooksPath string, merged hookFileShape)
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", repoDir, err)
 	}
-	out, err := json.MarshalIndent(merged, "", "  ")
+	out, err := marshalHooksIndent(merged)
 	if err != nil {
 		return fmt.Errorf("marshal hooks.json: %w", err)
 	}
@@ -505,7 +529,7 @@ func pruneHooksFile(hooksPath string) error {
 	if len(shape.Hooks) == 0 {
 		return os.Remove(hooksPath)
 	}
-	out, err := json.MarshalIndent(shape, "", "  ")
+	out, err := marshalHooksIndent(shape)
 	if err != nil {
 		return fmt.Errorf("marshal hooks.json: %w", err)
 	}
