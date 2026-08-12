@@ -37,7 +37,7 @@ Detected by resolving the `codex` executable on `PATH`, by checking for `~/.code
 
 Semantica registers five Codex hooks:
 
-- **`SessionStart`** - Opens lifecycle tracking. The dispatcher treats this as metadata-only today.
+- **`SessionStart`** - Records lifecycle metadata.
 - **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
 - **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for shell-tool evidence.
 - **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
@@ -57,7 +57,7 @@ Codex `apply_patch` operations are parsed per file. Add and update sections with
 
 ### Limitations
 
-- Codex rollout/session files are not used for replay today. Hook payloads are the capture source.
+- Codex rollout/session files are not replayed. Hook payloads are the capture source.
 - Tool-delta scoring is disabled by default. Enable `attribution_v2` to score verified Codex Bash workspace deltas.
 - Legacy user-global hooks still require an enabled repository and otherwise record nothing.
 
@@ -81,7 +81,7 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 - **`Stop`** - Replays the transcript from the saved offset and packages the completed turn.
 - **`SessionStart`** / **`SessionEnd`** - Lifecycle tracking and final flush.
 
-Claude Code is currently the richest provider integration. Direct step events are captured from hook payloads, while transcript replay fills in session flow, token usage, and any events that were not emitted directly.
+Claude Code combines direct hook events with transcript replay for session flow, token usage, and events not emitted by hooks.
 
 ### Attribution
 
@@ -120,9 +120,9 @@ For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 - **`subagentStop`** - Captures the parent `Agent` step and triggers child transcript discovery.
 - **`sessionStart`** / **`sessionEnd`** / **`preCompact`** - Lifecycle tracking, final flush, and offset reset handling.
 
-Cursor IDE is now handled with the same direct-provenance packaging model as Claude for prompt, file edit, shell, and subagent boundary events.
+Cursor IDE uses direct-provenance packaging for prompt, file edit, shell, and subagent boundary events.
 
-Cursor CLI still shares the same configuration file, but its hook surface is currently more limited. Semantica treats it as transcript-first today and does not assume full parity with the IDE for direct file-step capture.
+Cursor CLI shares the IDE configuration file but exposes a smaller hook surface. Semantica uses transcript capture for CLI sessions and does not assume IDE file-step parity.
 
 If Cursor IDE is already running when you enable Semantica, it may not pick up
 changes to `.cursor/hooks.json` immediately. Reload the Cursor window or restart

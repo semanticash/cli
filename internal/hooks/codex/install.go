@@ -233,7 +233,8 @@ func codexRepoDir(repoRoot string) (string, error) {
 }
 
 // InstallHooks merges repo-local hooks and enables Codex's global hook gate.
-// Existing hooks are preserved, and a failed repo write rolls back the gate.
+// Existing hooks are preserved. If repository publication fails after the
+// gate changes, the installer attempts to restore the prior global config.
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	bin := binaryPath
 	if bin == "" {
@@ -315,7 +316,7 @@ var publishRepoHooks = func(repoDir, repoHooksPath string, merged hookFileShape)
 // codexLockPollInterval bounds lock cancellation latency.
 const codexLockPollInterval = 25 * time.Millisecond
 
-// lockCodexConfig acquires the global config lock until ctx is cancelled.
+// lockCodexConfig acquires the global config lock while honoring ctx.
 func lockCodexConfig(ctx context.Context, home string) (func(), error) {
 	f, err := os.OpenFile(filepath.Join(home, installLockName), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {

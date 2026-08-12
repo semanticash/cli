@@ -7,7 +7,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 ## Platform support
 
 - Official release targets are **macOS, Linux, and Windows** (amd64, arm64).
-- `semantica launcher` is optional. It currently supports macOS (launchd), Linux (systemd user instance), and Windows (Task Scheduler). Other platforms keep using the default detached worker path.
+- `semantica launcher` is optional. It supports macOS (launchd), Linux (systemd user instance), and Windows (Task Scheduler). Other platforms use the default detached worker path.
 - Windows support requires Git for Windows, which provides the POSIX shell used by Git hooks.
 - Clipboard support for `semantica suggest commit` and `semantica suggest pr --copy` requires `pbcopy` (macOS), `wl-copy`/`xclip`/`xsel` (Linux), or `clip` (Windows). The commands still work without clipboard support - they print to stdout.
 
@@ -54,12 +54,12 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Codex project hooks require approval through `/hooks` in the CLI or Settings > Hooks in the desktop app.
 - Legacy user-global Semantica hooks remain installed to protect other repositories. Remove them after migrating all repositories; duplicate delivery is deduplicated but adds latency and lock contention.
 - Codex captures only when the hook payload `cwd` belongs to an enabled repository.
-- Codex rollout/session files are not replayed today. Hook payloads are the capture source.
-- Codex subagent capture is deferred until Codex exposes a stable child-agent feature and session-linking surface.
+- Codex rollout/session files are not replayed. Hook payloads are the capture source.
+- Codex subagent activity is not captured because Codex does not expose a stable child-agent and session-linking surface.
 
 ## Kiro CLI
 
-- Kiro CLI support currently uses a dedicated repo-local agent config at `.kiro/agents/semantica.json`. Semantica capture is active only when the current Kiro CLI session is using that config. You can select it with `kiro-cli chat --agent semantica`, or make it the repo default with `kiro-cli agent set-default semantica`.
+- Kiro CLI uses a dedicated repo-local agent config at `.kiro/agents/semantica.json`. Semantica capture is active only when the Kiro CLI session uses that config. Select it with `kiro-cli chat --agent semantica`, or make it the repo default with `kiro-cli agent set-default semantica`.
 - Kiro CLI hook payloads do not expose a conversation ID directly. Semantica pairs `userPromptSubmit` and `stop` by workspace-scoped capture state and resolves the active conversation best-effort from the current workspace.
 - Direct `postToolUse` hooks own parent Kiro CLI file and shell capture. Parent SQLite transcript replay is disabled to avoid duplicate events with mismatched provider tool IDs.
 - AgentCrew child sessions are replayed from Kiro JSONL files only when discovery has a single parent-shaped session anchor in the same cwd and prompt-to-stop window. Overlapping same-repo Kiro sessions or missing parent metadata cause child replay to fail closed.
@@ -78,5 +78,5 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Secret redaction is outbound only. Local raw capture, transcript payloads, and blob content in `.semantica/` remain unchanged.
 - Detection is best-effort and uses embedded Gitleaks rules. Unknown formats may be missed, and false positives can still remove some prompt context.
 - If outbound redaction cannot complete for a sync artifact, Semantica fails that upload closed instead of sending the raw artifact.
-- Path normalization covers the provenance fields Semantica knows how to rewrite today. New or provider-specific fields may require follow-up support.
+- Path normalization covers recognized provenance fields. Unrecognized provider-specific fields may remain unchanged.
 - Redaction lowers the chance of leaking credentials or local filesystem details, but it does not guarantee that synced prompts, command output, or edited content are free of sensitive business context.

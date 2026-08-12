@@ -135,18 +135,16 @@ var providerLaunches = map[string]providerLaunch{
 		binary:  "kiro-cli",
 		argsFor: func(p string) []string { return []string{"chat", ContinuePromptFor(p)} },
 	},
-	// OpenAI Codex: `codex "<prompt>"` accepts a positional starter
-	// prompt and drops the user into the interactive REPL. Codex
-	// has a `resume <SESSION_ID>` subcommand for picking up a prior
-	// session, but the launcher does not carry a provider session
-	// ID today, so the cold-start positional form is used.
+	// OpenAI Codex accepts a positional starter prompt. The launcher
+	// starts a new session because handoff bundles do not carry a
+	// resumable Codex session ID.
 	"codex": {
 		binary:  "codex",
 		argsFor: func(p string) []string { return []string{ContinuePromptFor(p)} },
 	},
 }
 
-// BuildLaunchSpec resolves a launch plan for the given provider.
+// BuildLaunchSpec builds launch configuration for the given provider.
 // The returned spec carries enough information for the command
 // layer to either exec the agent's binary (Spawn=true) or print a
 // manual-launch hint (Spawn=false). printOnly forces the
@@ -200,10 +198,7 @@ func spawnLaunch(provider, bin string, args []string, printOnly bool) *LaunchSpe
 	}
 }
 
-// manualLaunch is the print-only path for providers that have no
-// CLI we can spawn (currently just kiro-ide). The hint embeds the
-// absolute bundle path so the user can copy-paste the file
-// reference from any terminal.
+// manualLaunch builds instructions for a provider without a spawnable CLI.
 func manualLaunch(provider, bundlePath string) *LaunchSpec {
 	hint := fmt.Sprintf(
 		"Auto-launch for %s is not wired (no CLI for this surface). "+

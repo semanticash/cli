@@ -240,7 +240,7 @@ against committed lines; partial or ambiguous evidence remains unscored.
 {
   "enabled": true,
   "version": 1,
-  "providers": ["claude-code", "cursor", "gemini", "copilot"],
+  "providers": ["claude-code", "codex", "cursor", "copilot", "gemini-cli", "kiro-cli", "kiro-ide"],
   "connected": false,
   "connected_repo_id": "",
   "trailers": true,

@@ -2,7 +2,7 @@
 
 <!-- What does this PR do and why? -->
 
-## Test plan
+## Verification
 
 <!-- How was this tested? -->
 

@@ -114,7 +114,7 @@ notes.
 > [provider reload instructions](docs/providers.md#reloading-agents-after-enable)
 > for details.
 
-All capture and attribution data are stored locally in `.semantica/` - a directory alongside `.git`, added to `.gitignore` automatically. 
+All capture and attribution data are stored locally in `.semantica/` - a directory alongside `.git`, added to `.gitignore` automatically.
 Semantica never writes to Git history or creates side branches; lineage metadata lives in its own database and content-addressed blob store.
 
 Each completed AI turn is also packaged locally into a provenance bundle. The
@@ -281,7 +281,7 @@ semantica launcher refresh
 semantica launcher disable
 ```
 
-The launcher is optional and currently supports macOS (launchd), Linux
+The launcher is optional and supports macOS (launchd), Linux
 (systemd user instance), and Windows (Task Scheduler). `launcher status`
 reports three separate views of state: user settings, the definition file on
 disk, and the OS daemon manager itself. The default detached worker remains
@@ -320,10 +320,14 @@ user-scoped refresh command to run afterward.
 | Gemini CLI | `.gemini/settings.json` | Auto |
 | GitHub Copilot | `.github/hooks/semantica.json` | Auto |
 
-Providers are detected automatically during `semantica enable`. For each detected provider, Semantica installs lightweight hooks in the provider's configuration 
-so agent activity can be captured in real time. Session data is read passively - Semantica never modifies agent session logs or transcripts.
-Codex project hooks must be trusted with `/hooks` in the CLI or Settings > Hooks in the desktop app.
-Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. See the [provider-specific](docs/providers.md) docs for setup details.
+Providers are detected automatically during `semantica enable`. For each
+detected provider, Semantica installs lightweight hooks in the provider's
+configuration so agent activity can be captured in real time. Session data is
+read passively - Semantica never modifies agent session logs or transcripts.
+Codex project hooks must be trusted with `/hooks` in the CLI or Settings >
+Hooks in the desktop app. Kiro CLI uses a repo-local named agent config at
+`.kiro/agents/semantica.json`. See the
+[provider-specific](docs/providers.md) docs for setup details.
 
 
 ---

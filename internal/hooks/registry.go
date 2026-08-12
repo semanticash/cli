@@ -2,9 +2,8 @@ package hooks
 
 import "sort"
 
-// providerOrder defines the canonical display order. Names must
-// match the provider Name() exactly; unknown providers fall to
-// weight 100 and sort alphabetically among themselves.
+// providerOrder defines the canonical display order. Unknown providers sort
+// alphabetically after the listed providers.
 var providerOrder = map[string]int{
 	"claude-code": 0,
 	"codex":       1,
@@ -15,26 +14,13 @@ var providerOrder = map[string]int{
 	"kiro-ide":    6,
 }
 
-// Registry is the explicit-injection container for hook providers.
-// Production wiring lives in internal/providers/composition.go,
-// which builds a Registry over the full canonical set via
-// NewHookRegistry. Tests construct their own Registry inline with
-// NewRegistry over just the providers they need. There is no
-// package-level default registry; callers always pass an explicit
-// instance.
-//
-// Get and List are safe for concurrent reads after construction;
-// the constructor copies its arguments into an internal map so
-// callers can mutate the input slice without affecting the
-// registry.
+// Registry stores hook providers. It is safe for concurrent reads after
+// construction.
 type Registry struct {
 	providers map[string]HookProvider
 }
 
-// NewRegistry constructs a Registry over the given hook providers.
-// Order of List() output is canonical (see providerOrder), not the
-// argument order, so anchors that want deterministic iteration get
-// the same order every consumer sees.
+// NewRegistry constructs a registry. List returns providers in canonical order.
 func NewRegistry(providers ...HookProvider) *Registry {
 	r := &Registry{providers: make(map[string]HookProvider, len(providers))}
 	for _, p := range providers {
@@ -43,10 +29,7 @@ func NewRegistry(providers ...HookProvider) *Registry {
 	return r
 }
 
-// Get returns the registered provider for the given name, or nil
-// when nothing is registered under that name. Callers must handle
-// the nil case (a hook payload may report a provider this binary
-// wasn't built with, or a future provider that's unknown today).
+// Get returns the named provider, or nil when it is not registered.
 func (r *Registry) Get(name string) HookProvider {
 	if r == nil {
 		return nil
@@ -67,10 +50,7 @@ func (r *Registry) List() []HookProvider {
 	return out
 }
 
-// ListAvailable returns the subset of registered providers whose
-// IsAvailable() reports true on the current host, in canonical
-// order. Used by health checks and `semantica agents` to filter
-// the full set to what's actually installed.
+// ListAvailable returns providers available on this host in canonical order.
 func (r *Registry) ListAvailable() []HookProvider {
 	if r == nil {
 		return nil
