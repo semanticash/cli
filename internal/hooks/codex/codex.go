@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/semanticash/cli/internal/agents/api"
@@ -72,7 +73,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	}
 	var payload codexHookPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, fmt.Errorf("parse codex hook payload: %w", err)
+		return nil, fmt.Errorf("parse codex hook payload%s: %w", badPayloadFieldHint(data), err)
 	}
 
 	// Lifecycle assigns the active Semantica turn.
@@ -113,12 +114,36 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	return event, nil
 }
 
+// badPayloadFieldHint names strict identity fields whose values are objects
+// or arrays. It reports field names only.
+func badPayloadFieldHint(data []byte) string {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	var bad []string
+	for _, f := range []string{"session_id", "tool_use_id"} {
+		v, ok := raw[f]
+		if !ok {
+			continue
+		}
+		if t := bytes.TrimSpace(v); len(t) > 0 && (t[0] == '{' || t[0] == '[') {
+			bad = append(bad, f)
+		}
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	return " (composite field: " + strings.Join(bad, ", ") + ")"
+}
+
 // codexHookPayload contains the fields used by Codex hook events. Custom
 // string types tolerate scalar values where Codex varies its payload types.
 type codexHookPayload struct {
 	SessionID flexString `json:"session_id"`
-	// TurnID is retained for compatibility but not mapped to Event.TurnID.
-	TurnID               flexString      `json:"turn_id"`
+	// TurnID is accepted for compatibility but ignored; lifecycle uses the
+	// turn stored in capture state.
+	TurnID               looseString     `json:"turn_id"`
 	TranscriptPath       pathString      `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`
 	Model                looseString     `json:"model"`

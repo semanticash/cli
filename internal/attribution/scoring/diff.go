@@ -78,6 +78,21 @@ func ParseDiff(diffBytes []byte) DiffResult {
 			continue
 		}
 
+		if oldPath, newPath, ok := binaryDiffPaths(line); ok {
+			finalizeGroup()
+			path := newPath
+			if oldPath == "/dev/null" {
+				res.FilesCreated = append(res.FilesCreated, newPath)
+			} else if newPath == "/dev/null" {
+				res.FilesDeleted = append(res.FilesDeleted, oldPath)
+				path = oldPath
+			}
+			res.Files = append(res.Files, FileDiff{Path: path})
+			current = nil
+			newLine, newLineOK = 0, false
+			continue
+		}
+
 		if strings.HasPrefix(line, "diff --git") ||
 			strings.HasPrefix(line, "index ") ||
 			strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") {
@@ -119,6 +134,34 @@ func ParseDiff(diffBytes []byte) DiffResult {
 
 	res.Complete = scanner.Err() == nil
 	return res
+}
+
+// binaryDiffPaths extracts repository-relative paths from Git's binary-diff
+// marker. Binary changes do not include the --- and +++ headers used above.
+func binaryDiffPaths(line string) (oldPath, newPath string, ok bool) {
+	const (
+		prefix = "Binary files "
+		suffix = " differ"
+	)
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, suffix) {
+		return "", "", false
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(line, prefix), suffix)
+	if strings.HasPrefix(body, "/dev/null and b/") {
+		newPath = strings.TrimPrefix(body, "/dev/null and b/")
+		return "/dev/null", newPath, newPath != ""
+	}
+	if strings.HasPrefix(body, "a/") && strings.HasSuffix(body, " and /dev/null") {
+		oldPath = strings.TrimSuffix(strings.TrimPrefix(body, "a/"), " and /dev/null")
+		return oldPath, "/dev/null", oldPath != ""
+	}
+	sep := strings.LastIndex(body, " and b/")
+	if !strings.HasPrefix(body, "a/") || sep < 0 {
+		return "", "", false
+	}
+	oldPath = strings.TrimPrefix(body[:sep], "a/")
+	newPath = body[sep+len(" and b/"):]
+	return oldPath, newPath, oldPath != "" && newPath != ""
 }
 
 // hunkNewStart parses the new-file range from a standard hunk header.

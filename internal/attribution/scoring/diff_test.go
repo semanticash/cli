@@ -78,3 +78,34 @@ func TestParseDiff_MultipleFiles(t *testing.T) {
 		t.Errorf("paths = [%s, %s]", dr.Files[0].Path, dr.Files[1].Path)
 	}
 }
+
+func TestParseDiff_BinaryFiles(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/new.bin b/new.bin",
+		"new file mode 100644",
+		"Binary files /dev/null and b/new.bin differ",
+		"diff --git a/existing.bin b/existing.bin",
+		"Binary files a/existing.bin and b/existing.bin differ",
+		"diff --git a/old.bin b/old.bin",
+		"deleted file mode 100644",
+		"Binary files a/old.bin and /dev/null differ",
+		"",
+	}, "\n")
+
+	dr := ParseDiff([]byte(diff))
+	if len(dr.Files) != 3 {
+		t.Fatalf("files = %+v, want three binary files", dr.Files)
+	}
+	wantPaths := []string{"new.bin", "existing.bin", "old.bin"}
+	for i, want := range wantPaths {
+		if dr.Files[i].Path != want || len(dr.Files[i].Groups) != 0 {
+			t.Errorf("Files[%d] = %+v, want zero-line %q", i, dr.Files[i], want)
+		}
+	}
+	if len(dr.FilesCreated) != 1 || dr.FilesCreated[0] != "new.bin" {
+		t.Errorf("FilesCreated = %v, want [new.bin]", dr.FilesCreated)
+	}
+	if len(dr.FilesDeleted) != 1 || dr.FilesDeleted[0] != "old.bin" {
+		t.Errorf("FilesDeleted = %v, want [old.bin]", dr.FilesDeleted)
+	}
+}

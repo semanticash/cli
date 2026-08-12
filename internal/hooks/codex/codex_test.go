@@ -1262,7 +1262,7 @@ func TestCodexSourceKey_SessionScopedWhenTranscriptEmpty(t *testing.T) {
 	}
 }
 
-// Unsupported ID forms reject the payload.
+// Unsupported session identifier values reject the payload.
 func TestParseHookEvent_MalformedIdFailsClosed(t *testing.T) {
 	for _, tok := range []string{`{}`, `true`, `[1,2]`, `1.5`, `-3`} {
 		t.Run(tok, func(t *testing.T) {
@@ -1273,6 +1273,42 @@ func TestParseHookEvent_MalformedIdFailsClosed(t *testing.T) {
 			}
 			if ev != nil {
 				t.Errorf("session_id=%s produced an event, want nil", tok)
+			}
+			// Composite identifiers are named in diagnostics.
+			if (tok == `{}` || tok == `[1,2]`) && err != nil && !strings.Contains(err.Error(), "session_id") {
+				t.Errorf("composite session_id error did not name the field: %v", err)
+			}
+		})
+	}
+}
+
+// Diagnostics name strict fields without blaming the ignored turn_id.
+func TestParseHookEvent_HintNamesStrictFieldNotTurnID(t *testing.T) {
+	payload := `{"session_id":{},"turn_id":{},"cwd":"/repo","tool_name":"Bash","tool_use_id":"c1","tool_input":{}}`
+	_, err := (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(payload))
+	if err == nil {
+		t.Fatal("want a parse error from the composite session_id")
+	}
+	if !strings.Contains(err.Error(), "session_id") {
+		t.Errorf("hint did not name the failing session_id: %v", err)
+	}
+	if strings.Contains(err.Error(), "turn_id") {
+		t.Errorf("hint blamed tolerant turn_id: %v", err)
+	}
+}
+
+// The ignored turn_id accepts any JSON shape.
+func TestParseHookEvent_UnusedTurnIDTolerated(t *testing.T) {
+	for _, tok := range []string{`{}`, `[1]`, `true`, `5`, `"t"`, `null`} {
+		t.Run(tok, func(t *testing.T) {
+			payload := `{"session_id":"s","turn_id":` + tok +
+				`,"cwd":"/repo","tool_name":"Bash","tool_use_id":"c1","tool_input":{"command":"x"}}`
+			ev, err := (&Provider{}).ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(payload))
+			if err != nil {
+				t.Errorf("turn_id=%s: dropped the hook (%v); it is unused and must be tolerated", tok, err)
+			}
+			if ev == nil {
+				t.Errorf("turn_id=%s: no event, want one", tok)
 			}
 		})
 	}

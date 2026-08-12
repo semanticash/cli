@@ -162,6 +162,8 @@ func TestCaptureCmd_CodexParseFailure_ExitsZeroAndSilentStdout(t *testing.T) {
 // runCaptureCapturingStd runs capture with process-level standard streams.
 func runCaptureCapturingStd(t *testing.T, payload string, args ...string) (stdout, stderr string) {
 	t.Helper()
+	// Keep capture diagnostics out of the developer's config directory.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	origIn, origOut, origErr := os.Stdin, os.Stdout, os.Stderr
 	// Restore process-wide streams before returning.
 	defer func() { os.Stdin, os.Stdout, os.Stderr = origIn, origOut, origErr }()

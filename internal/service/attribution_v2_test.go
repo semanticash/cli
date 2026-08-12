@@ -96,7 +96,7 @@ func setupDeltaRepo(t *testing.T) (string, string) {
 		t.Fatalf("insert agent event: %v", err)
 	}
 
-	// The delta claims gen.go and records notes.txt as touch-only.
+	// The delta claims gen.go and records text and binary files as touch-only.
 	delta := &toolsnap.Delta{
 		Scope: "tool", Status: "complete",
 		Window: toolsnap.Window{StartedAt: 199_000, CompletedAt: 200_000, DurationMS: 1000},
@@ -120,6 +120,10 @@ func setupDeltaRepo(t *testing.T) (string, string) {
 				BeforeMode: "100644", AfterMode: "100644", Truncated: true,
 			},
 			{
+				Path: "asset.bin", Operation: "create",
+				AfterHash: "c", AfterMode: "100644", Binary: true,
+			},
+			{
 				// This content does not survive into the commit.
 				Path: "rewritten.go", Operation: "edit",
 				BeforeHash: "a", AfterHash: "b",
@@ -130,7 +134,7 @@ func setupDeltaRepo(t *testing.T) (string, string) {
 				}},
 			},
 		},
-		Limits: toolsnap.Limits{FilesObserved: 3, Truncated: true},
+		Limits: toolsnap.Limits{FilesObserved: 4, Truncated: true},
 	}
 	raw, err := delta.CanonicalBytes()
 	if err != nil {
@@ -150,8 +154,9 @@ func setupDeltaRepo(t *testing.T) (string, string) {
 	// Commit the bash-written files.
 	mustWriteFile(t, filepath.Join(dir, "gen.go"), []byte("package gen\nfunc Generated() {}\n"))
 	mustWriteFile(t, filepath.Join(dir, "notes.txt"), []byte("first note\nsecond note\n"))
+	mustWriteFile(t, filepath.Join(dir, "asset.bin"), []byte{0, 1, 2, 3})
 	mustWriteFile(t, filepath.Join(dir, "rewritten.go"), []byte("human rewrote everything\n"))
-	git("add", "gen.go", "notes.txt", "rewritten.go")
+	git("add", "gen.go", "notes.txt", "asset.bin", "rewritten.go")
 	git("commit", "-m", "bash-mediated changes")
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = dir
@@ -250,6 +255,14 @@ func TestAttributionV2_FlagOn(t *testing.T) {
 	}
 	if notes.EvidenceClass != string(attrreporting.EvidenceToolDeltaTouch) {
 		t.Errorf("notes.txt evidence = %q, want tool_delta_touch", notes.EvidenceClass)
+	}
+
+	asset := fileByPath(t, result.Files, "asset.bin")
+	if asset.TotalLines != 0 || asset.EvidenceClass != string(attrreporting.EvidenceToolDeltaTouch) {
+		t.Errorf("asset.bin = %+v, want zero-line tool_delta_touch", asset)
+	}
+	if asset.Classification != "ai" || len(asset.Providers) != 1 || asset.Providers[0] != "claude_code" {
+		t.Errorf("asset.bin attribution = %+v, want AI touch by claude_code", asset)
 	}
 
 	// Unmatched claims do not attribute later content.
