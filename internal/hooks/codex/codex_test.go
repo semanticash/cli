@@ -3,36 +3,35 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/toolsnap"
 )
 
-// withCodexHome redirects CODEX_HOME to a temporary directory for the
-// duration of a test. Returns the directory path; the original env value
-// is restored on test cleanup.
+// withCodexHome redirects CODEX_HOME for a test.
 func withCodexHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	// t.Setenv handles save/restore around the test on its own.
 	t.Setenv("CODEX_HOME", dir)
 	return dir
 }
 
-// readHooksJSON returns the parsed hooks.json file under the test's
-// CODEX_HOME. Helper because every install-side test needs it.
+// readHooksJSON parses the test hooks file.
 func readHooksJSON(t *testing.T, home string) hookFileShape {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(home, hooksFileName))
@@ -60,11 +59,7 @@ func readConfigDoc(t *testing.T, home string) map[string]any {
 	return doc
 }
 
-// realisticConfig mirrors the layout of a typical ~/.codex/config.toml:
-// a model pin, several plugin enablements, marketplace declarations, an
-// existing project trust entry, and a TUI key. The install must leave
-// every one of these intact (value-equivalent; key order and comments
-// are not guaranteed).
+// realisticConfig covers unrelated values that installation must preserve.
 const realisticConfig = `model = "gpt-5.4"
 model_reasoning_effort = "xhigh"
 
@@ -100,16 +95,16 @@ func TestHookEvents_PreToolUseIsBashOnly(t *testing.T) {
 	if pre.matcher != "Bash" {
 		t.Errorf("PreToolUse matcher = %q, want Bash", pre.matcher)
 	}
-	if pre.snakeEvent != "pre_tool_use" || pre.captureName != "pre-tool-use" {
-		t.Errorf("PreToolUse names = %q/%q, want pre_tool_use/pre-tool-use", pre.snakeEvent, pre.captureName)
+	if pre.captureName != "pre-tool-use" {
+		t.Errorf("PreToolUse captureName = %q, want pre-tool-use", pre.captureName)
 	}
 }
 
 func TestInstallHooks_WritesAllHooksWithExpectedShape(t *testing.T) {
-	home := withCodexHome(t)
+	repoRoot, _ := codexRepo(t)
 	p := &Provider{}
 
-	n, err := p.InstallHooks(context.Background(), "/anywhere/repo", "/usr/local/bin/semantica")
+	n, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica")
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -117,7 +112,7 @@ func TestInstallHooks_WritesAllHooksWithExpectedShape(t *testing.T) {
 		t.Fatalf("install reported %d hooks, want %d", n, len(hookEvents))
 	}
 
-	shape := readHooksJSON(t, home)
+	shape := readHooksJSON(t, repoHooksDir(repoRoot))
 	for _, ev := range hookEvents {
 		groups, ok := shape.Hooks[ev.pascalEvent]
 		if !ok {
@@ -146,69 +141,115 @@ func TestInstallHooks_WritesAllHooksWithExpectedShape(t *testing.T) {
 	}
 }
 
-func TestInstallHooks_TrustHashesMatchUpstreamFormat(t *testing.T) {
-	home := withCodexHome(t)
-	p := &Provider{}
+// codexRepo returns an isolated repository and CODEX_HOME.
+func codexRepo(t *testing.T) (repoRoot, home string) {
+	t.Helper()
+	return t.TempDir(), withCodexHome(t)
+}
 
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", "/usr/local/bin/semantica"); err != nil {
+// repoHooksDir is the .codex directory inside a repo root.
+func repoHooksDir(repoRoot string) string {
+	return filepath.Join(repoRoot, codexRepoDirName)
+}
+
+// mustReadFile reads a file or fails the test.
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// hooksFileHasSemantica reports whether path contains a Semantica hook.
+func hooksFileHasSemantica(t *testing.T, path string) bool {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var shape hookFileShape
+	if err := json.Unmarshal(data, &shape); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, groups := range shape.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if strings.Contains(h.Command, semanticaMarker) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// seedGlobalSemanticaHook writes a legacy user-global hook.
+func seedGlobalSemanticaHook(t *testing.T, home string) {
+	t.Helper()
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "semantica capture codex post-tool-use" }
+        ]
+      }
+    ]
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(home, hooksFileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Install enables hooks globally without preapproving project hooks.
+func TestInstallHooks_EnablesFeatureWithoutPreStampingTrust(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
 	doc := readConfigDoc(t, home)
-	hooksSection, _ := doc["hooks"].(map[string]any)
-	if hooksSection == nil {
-		t.Fatal("config.toml missing [hooks] section after install")
+	if features, _ := doc["features"].(map[string]any); features["hooks"] != true {
+		t.Errorf("[features] hooks not enabled globally: %+v", doc["features"])
 	}
-	state, _ := hooksSection["state"].(map[string]any)
-	if state == nil {
-		t.Fatal("config.toml missing [hooks.state] section after install")
+	if hooksSection, ok := doc["hooks"].(map[string]any); ok {
+		if state, ok := hooksSection["state"].(map[string]any); ok && len(state) > 0 {
+			t.Errorf("install pre-stamped trust state, want none: %+v", state)
+		}
 	}
-
-	hooksPath := filepath.Join(home, hooksFileName)
-	for _, ev := range hookEvents {
-		key := trustKey(hooksPath, ev.snakeEvent, 0, 0)
-		entry, ok := state[key].(map[string]any)
-		if !ok {
-			t.Errorf("missing trust entry for key %q", key)
-			continue
-		}
-		got, _ := entry["trusted_hash"].(string)
-		expectedCommand := commandsForBinary("/usr/local/bin/semantica")[indexOfEvent(ev)]
-		want := commandHookHash(ev.snakeEvent, ev.matcher, expectedCommand)
-		if got != want {
-			t.Errorf("trust hash for %q = %q, want %q", ev.snakeEvent, got, want)
-		}
-		if !strings.HasPrefix(got, "sha256:") {
-			t.Errorf("trust hash for %q lacks sha256: prefix: %q", ev.snakeEvent, got)
-		}
+	if _, err := os.Stat(filepath.Join(repoHooksDir(repoRoot), configFileName)); !os.IsNotExist(err) {
+		t.Errorf("repo-local config.toml should not be created; stat err = %v", err)
 	}
 }
 
-// indexOfEvent finds the position of ev in hookEvents so a test can
-// pair the event with the command it produces. Avoids hardcoding the
-// numeric indices in two places.
-func indexOfEvent(ev codexHookEvent) int {
-	for i, e := range hookEvents {
-		if e.pascalEvent == ev.pascalEvent {
-			return i
-		}
-	}
-	return -1
-}
-
-func TestInstallHooks_PreservesExistingUserConfig(t *testing.T) {
-	home := withCodexHome(t)
+func TestInstallHooks_PreservesExistingGlobalUserConfig(t *testing.T) {
+	repoRoot, home := codexRepo(t)
 	configPath := filepath.Join(home, configFileName)
 	if err := os.WriteFile(configPath, []byte(realisticConfig), 0o600); err != nil {
 		t.Fatalf("seed config.toml: %v", err)
 	}
 
 	p := &Provider{}
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", "/usr/local/bin/semantica"); err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
 	doc := readConfigDoc(t, home)
+	if features, _ := doc["features"].(map[string]any); features["hooks"] != true {
+		t.Errorf("[features] hooks not enabled after install: %+v", doc["features"])
+	}
 	if v, _ := doc["model"].(string); v != "gpt-5.4" {
 		t.Errorf("model lost: got %q", v)
 	}
@@ -234,48 +275,38 @@ func TestInstallHooks_PreservesExistingUserConfig(t *testing.T) {
 }
 
 func TestInstallHooks_IsIdempotent(t *testing.T) {
-	home := withCodexHome(t)
+	repoRoot, home := codexRepo(t)
 	p := &Provider{}
+	repoHooks := filepath.Join(repoHooksDir(repoRoot), hooksFileName)
+	globalConfig := filepath.Join(home, configFileName)
 
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
 		t.Fatalf("install 1: %v", err)
 	}
-	hooksBefore, err := os.ReadFile(filepath.Join(home, hooksFileName))
-	if err != nil {
-		t.Fatalf("read hooks.json after first install: %v", err)
-	}
-	configBefore, err := os.ReadFile(filepath.Join(home, configFileName))
-	if err != nil {
-		t.Fatalf("read config.toml after first install: %v", err)
-	}
+	hooksBefore := mustReadFile(t, repoHooks)
+	configBefore := mustReadFile(t, globalConfig)
 
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
 		t.Fatalf("install 2: %v", err)
 	}
-	hooksAfter, err := os.ReadFile(filepath.Join(home, hooksFileName))
-	if err != nil {
-		t.Fatalf("read hooks.json after second install: %v", err)
-	}
-	configAfter, err := os.ReadFile(filepath.Join(home, configFileName))
-	if err != nil {
-		t.Fatalf("read config.toml after second install: %v", err)
-	}
+	hooksAfter := mustReadFile(t, repoHooks)
+	configAfter := mustReadFile(t, globalConfig)
 
-	if string(hooksBefore) != string(hooksAfter) {
+	if hooksBefore != hooksAfter {
 		t.Errorf("hooks.json changed across identical re-install\nbefore:\n%s\nafter:\n%s", hooksBefore, hooksAfter)
 	}
-	if string(configBefore) != string(configAfter) {
+	if configBefore != configAfter {
 		t.Errorf("config.toml changed across identical re-install\nbefore:\n%s\nafter:\n%s", configBefore, configAfter)
 	}
 }
 
-func TestInstallHooks_PreservesUnrelatedHookEntries(t *testing.T) {
-	home := withCodexHome(t)
-	hooksPath := filepath.Join(home, hooksFileName)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+func TestInstallHooks_PreservesExistingRepoHooks(t *testing.T) {
+	repoRoot, _ := codexRepo(t)
+	dir := repoHooksDir(repoRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// A non-Semantica hook that the user (or another tool) installed.
+	// Preserve a tracked project hook.
 	existing := `{
   "hooks": {
     "PostToolUse": [
@@ -289,16 +320,16 @@ func TestInstallHooks_PreservesUnrelatedHookEntries(t *testing.T) {
   }
 }
 `
-	if err := os.WriteFile(hooksPath, []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, hooksFileName), []byte(existing), 0o644); err != nil {
 		t.Fatalf("seed hooks.json: %v", err)
 	}
 
 	p := &Provider{}
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	shape := readHooksJSON(t, home)
+	shape := readHooksJSON(t, dir)
 	postGroups := shape.Hooks["PostToolUse"]
 
 	var foundOther, foundSemantica bool
@@ -320,20 +351,303 @@ func TestInstallHooks_PreservesUnrelatedHookEntries(t *testing.T) {
 	}
 }
 
-func TestInstallHooks_TrustKeyTracksPositionWhenUserHookExists(t *testing.T) {
-	// Trust keys must follow Semantica's actual hook position, not assume
-	// group_index=0, hook_index=0. Existing user hooks keep their position,
-	// and Semantica receives trust state at the index where it lands.
-	home := withCodexHome(t)
-	hooksPath := filepath.Join(home, hooksFileName)
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+// failRepoPublish replaces project publication with a test failure.
+func failRepoPublish(t *testing.T, before func()) {
+	t.Helper()
+	orig := publishRepoHooks
+	t.Cleanup(func() { publishRepoHooks = orig })
+	publishRepoHooks = func(_, _ string, _ hookFileShape) error {
+		if before != nil {
+			before()
+		}
+		return errors.New("boom: repo publish failed")
 	}
-	preExisting := `{
+}
+
+// A failed project publish removes a newly created global config.
+func TestInstallHooks_RollsBackGlobalFeatureOnRepoFailure(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	globalConfig := filepath.Join(home, configFileName)
+	if _, err := os.Stat(globalConfig); !os.IsNotExist(err) {
+		t.Fatalf("expected no pre-existing global config, stat err = %v", err)
+	}
+	failRepoPublish(t, nil)
+
+	p := &Provider{}
+	_, err := p.InstallHooks(context.Background(), repoRoot, "")
+	if err == nil {
+		t.Fatal("expected install to fail when the repo publish fails")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error should carry the publish failure: %v", err)
+	}
+	if _, err := os.Stat(globalConfig); !os.IsNotExist(err) {
+		t.Errorf("global config survived a failed install; want rollback. stat err = %v", err)
+	}
+}
+
+// Rollback restores the content and mode of an existing config.
+func TestInstallHooks_RollbackRestoresPriorConfig(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig := filepath.Join(home, configFileName)
+	// Use a distinct mode so restoration is observable.
+	prior := "[features]\nhooks = false\n"
+	if err := os.WriteFile(globalConfig, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const priorMode = os.FileMode(0o640)
+	if err := os.Chmod(globalConfig, priorMode); err != nil {
+		t.Fatal(err)
+	}
+	failRepoPublish(t, nil)
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err == nil {
+		t.Fatal("expected install to fail")
+	}
+	if got := mustReadFile(t, globalConfig); got != prior {
+		t.Errorf("config not restored to prior bytes:\nwant:\n%s\ngot:\n%s", prior, got)
+	}
+	fi, err := os.Stat(globalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != priorMode {
+		t.Errorf("config mode after rollback = %o, want %o", fi.Mode().Perm(), priorMode)
+	}
+}
+
+// A cancelled install writes neither global nor project config.
+func TestInstallHooks_PreCancelledContextInstallsNothing(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := (&Provider{}).InstallHooks(ctx, repoRoot, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, configFileName)); !os.IsNotExist(err) {
+		t.Errorf("global config was written despite a cancelled context; stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoHooksDir(repoRoot), hooksFileName)); !os.IsNotExist(err) {
+		t.Errorf("repo hooks were written despite a cancelled context; stat err = %v", err)
+	}
+}
+
+// Rollback preserves a config changed by another writer.
+func TestInstallHooks_RollbackSkipsWhenConfigChangedConcurrently(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig := filepath.Join(home, configFileName)
+	external := "[features]\nhooks = true\n\n[unrelated]\nkey = \"user edit\"\n"
+	// Replace the config after the feature write but before rollback.
+	failRepoPublish(t, func() {
+		if err := os.WriteFile(globalConfig, []byte(external), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err == nil {
+		t.Fatal("expected install to fail")
+	}
+	if got := mustReadFile(t, globalConfig); got != external {
+		t.Errorf("rollback clobbered a concurrent external edit:\nwant:\n%s\ngot:\n%s", external, got)
+	}
+}
+
+// An enabled gate is not rewritten when project publication fails.
+func TestInstallHooks_NoRewriteWhenGateAlreadyEnabled(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig := filepath.Join(home, configFileName)
+	prior := "[features]\nhooks = true\n"
+	if err := os.WriteFile(globalConfig, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi0, err := os.Stat(globalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failRepoPublish(t, nil)
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err == nil {
+		t.Fatal("expected install to fail")
+	}
+	fi1, err := os.Stat(globalConfig)
+	if err != nil {
+		t.Fatalf("config removed though the gate was unchanged: %v", err)
+	}
+	if got := mustReadFile(t, globalConfig); got != prior {
+		t.Errorf("config content changed: %q", got)
+	}
+	if !fi1.ModTime().Equal(fi0.ModTime()) {
+		t.Errorf("config was rewritten (mtime changed) though the gate was already enabled")
+	}
+}
+
+// Lock contention honors the install deadline.
+func TestInstallHooks_HonorsContextWhileConfigLocked(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the install lock from a separate open file description.
+	lf, err := os.OpenFile(filepath.Join(home, installLockName), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lf.Close() })
+	if err := platform.LockFile(lf); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = platform.UnlockFile(lf) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := (&Provider{}).InstallHooks(ctx, repoRoot, ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want context deadline error while the lock is held, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("install did not honor the deadline promptly: %v", elapsed)
+	}
+}
+
+// Project installation leaves legacy global hooks unchanged.
+func TestInstallHooks_LeavesGlobalHooksIntact(t *testing.T) {
+	repoRoot, home := codexRepo(t)
+	seedGlobalSemanticaHook(t, home)
+	globalHooksPath := filepath.Join(home, hooksFileName)
+	globalBefore := mustReadFile(t, globalHooksPath)
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/usr/local/bin/semantica"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Global hooks remain byte-for-byte unchanged.
+	if got := mustReadFile(t, globalHooksPath); got != globalBefore {
+		t.Errorf("global hooks.json was modified by a repo-local install:\nbefore:\n%s\nafter:\n%s", globalBefore, got)
+	}
+	// Project hooks and the global feature gate are installed.
+	if !hooksFileHasSemantica(t, filepath.Join(repoHooksDir(repoRoot), hooksFileName)) {
+		t.Error("repo-local hooks missing after install")
+	}
+	gdoc := readConfigDoc(t, home)
+	if features, _ := gdoc["features"].(map[string]any); features["hooks"] != true {
+		t.Errorf("[features] hooks not enabled after install: %+v", gdoc["features"])
+	}
+}
+
+// Project installation preserves fields on entries it does not own.
+func TestInstallHooks_PreservesUnmodeledHookFields(t *testing.T) {
+	repoRoot, _ := codexRepo(t)
+	dir := repoHooksDir(repoRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Preserve fields Semantica does not model.
+	existing := `{
+  "description": "Entire hooks for this repo",
   "hooks": {
     "PostToolUse": [
       {
         "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/entire log",
+            "timeout": 30,
+            "async": true,
+            "statusMessage": "logging",
+            "commandWindows": ["entire.exe", "log"]
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+	hooksPath := filepath.Join(dir, hooksFileName)
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Inspect preserved fields without the installer's typed shape.
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(mustReadFile(t, hooksPath)), &raw); err != nil {
+		t.Fatalf("parse merged hooks.json: %v", err)
+	}
+	if raw["description"] != "Entire hooks for this repo" {
+		t.Errorf("top-level description lost: %v", raw["description"])
+	}
+	groups := raw["hooks"].(map[string]any)["PostToolUse"].([]any)
+	var team map[string]any
+	for _, g := range groups {
+		gm := g.(map[string]any)
+		hooksArr := gm["hooks"].([]any)
+		h0 := hooksArr[0].(map[string]any)
+		if cmd, _ := h0["command"].(string); cmd == "/usr/local/bin/entire log" {
+			team = h0
+		}
+	}
+	if team == nil {
+		t.Fatalf("team hook not found after merge: %+v", groups)
+	}
+	if team["timeout"] != float64(30) {
+		t.Errorf("timeout lost/changed: %v", team["timeout"])
+	}
+	if team["async"] != true {
+		t.Errorf("async lost/changed: %v", team["async"])
+	}
+	if team["statusMessage"] != "logging" {
+		t.Errorf("statusMessage lost: %v", team["statusMessage"])
+	}
+	if cw, ok := team["commandWindows"].([]any); !ok || len(cw) != 2 {
+		t.Errorf("commandWindows lost: %v", team["commandWindows"])
+	}
+	// Semantica entries are added alongside the existing hook.
+	if !hooksFileHasSemantica(t, hooksPath) {
+		t.Error("Semantica hooks missing after merge")
+	}
+}
+
+// Existing matcher tokens retain null, empty, and string forms.
+func TestInstallHooks_PreservesMatcherToken(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		matcher string // raw JSON token for the "matcher" field
+		want    any    // expected decoded value after the round-trip
+	}{
+		{"null", "null", nil},
+		{"empty", `""`, ""},
+		{"string", `"apply_patch"`, "apply_patch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot, _ := codexRepo(t)
+			dir := repoHooksDir(repoRoot)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			existing := `{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": ` + tc.matcher + `,
         "hooks": [
           { "type": "command", "command": "/usr/local/bin/other-tool log" }
         ]
@@ -342,199 +656,77 @@ func TestInstallHooks_TrustKeyTracksPositionWhenUserHookExists(t *testing.T) {
   }
 }
 `
-	if err := os.WriteFile(hooksPath, []byte(preExisting), 0o644); err != nil {
-		t.Fatalf("seed hooks.json: %v", err)
-	}
+			hooksPath := filepath.Join(dir, hooksFileName)
+			if err := os.WriteFile(hooksPath, []byte(existing), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
+			p := &Provider{}
+			if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(mustReadFile(t, hooksPath)), &raw); err != nil {
+				t.Fatalf("parse merged hooks.json: %v", err)
+			}
+			// Find the non-Semantica group.
+			var team map[string]any
+			for _, g := range raw["hooks"].(map[string]any)["PostToolUse"].([]any) {
+				gm := g.(map[string]any)
+				h0 := gm["hooks"].([]any)[0].(map[string]any)
+				if cmd, _ := h0["command"].(string); cmd == "/usr/local/bin/other-tool log" {
+					team = gm
+				}
+			}
+			if team == nil {
+				t.Fatal("passthrough group not found after merge")
+			}
+			got, present := team["matcher"]
+			if !present {
+				t.Fatalf("matcher field was dropped; want token %s", tc.matcher)
+			}
+			if got != tc.want {
+				t.Errorf("matcher = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUninstallHooks_RemovesRepoHooksOnly(t *testing.T) {
+	// Uninstall removes only project hooks.
+	repoRoot, home := codexRepo(t)
 	p := &Provider{}
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", "/usr/local/bin/semantica"); err != nil {
+
+	if _, err := p.InstallHooks(context.Background(), repoRoot, "/opt/special/semantica"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
+	// A legacy global hook may still serve another repository.
+	seedGlobalSemanticaHook(t, home)
+	globalHooksPath := filepath.Join(home, hooksFileName)
+	globalBefore := mustReadFile(t, globalHooksPath)
 
-	// Semantica's PostToolUse entry must land at index 1 because the
-	// user's hook still sits at index 0.
-	shape := readHooksJSON(t, home)
-	postGroups := shape.Hooks["PostToolUse"]
-	if len(postGroups) != 2 {
-		t.Fatalf("PostToolUse groups = %d, want 2 (user + semantica)", len(postGroups))
-	}
-	semanticaCmd := postGroups[1].Hooks[0].Command
-	if !strings.Contains(semanticaCmd, semanticaMarker) {
-		t.Fatalf("Semantica entry not at group 1; got: %+v", postGroups)
-	}
-
-	// Trust entry for PostToolUse must be keyed at group 1, hook 0.
-	doc := readConfigDoc(t, home)
-	state := doc["hooks"].(map[string]any)["state"].(map[string]any)
-
-	wrongKey := trustKey(hooksPath, "post_tool_use", 0, 0)
-	if _, exists := state[wrongKey]; exists {
-		t.Errorf("trust entry written at user's position (group 0, hook 0); state=%+v", state)
-	}
-	correctKey := trustKey(hooksPath, "post_tool_use", 1, 0)
-	entry, ok := state[correctKey].(map[string]any)
-	if !ok {
-		t.Fatalf("trust entry missing at Semantica's actual position (group 1, hook 0); state=%+v", state)
-	}
-	gotHash, _ := entry["trusted_hash"].(string)
-	wantHash := commandHookHash("post_tool_use", "apply_patch|Bash|Write|Edit", semanticaCmd)
-	if gotHash != wantHash {
-		t.Errorf("trust hash at correct position = %q, want %q", gotHash, wantHash)
-	}
-}
-
-func TestInstallHooks_RemovesStaleTrustEntriesFromShiftedPositions(t *testing.T) {
-	// Reinstalling after a hook position shift must clear stale trust
-	// state from the old position. Scenario:
-	//   1. Install with no user hooks    -> Semantica at PostToolUse (0,0); trust at (0,0)
-	//   2. User adds their own PostToolUse hook (bumps Semantica out)
-	//   3. Reinstall                     -> Semantica at PostToolUse (1,0); trust at (1,0)
-	//   The stale (0,0) entry must not survive step 3.
-	home := withCodexHome(t)
-	hooksPath := filepath.Join(home, hooksFileName)
-	configPath := filepath.Join(home, configFileName)
-	p := &Provider{}
-	ctx := context.Background()
-
-	if _, err := p.InstallHooks(ctx, "/anywhere", ""); err != nil {
-		t.Fatalf("install 1: %v", err)
-	}
-
-	// Confirm the first install put PostToolUse trust at (0,0).
-	oldKey := trustKey(hooksPath, "post_tool_use", 0, 0)
-	doc := readConfigDoc(t, home)
-	state := doc["hooks"].(map[string]any)["state"].(map[string]any)
-	if _, ok := state[oldKey]; !ok {
-		t.Fatalf("first install missing trust entry at (0,0); state=%+v", state)
-	}
-
-	// Inject a user hook ahead of Semantica's entry. This is what the
-	// user would experience if a separate tool wrote into hooks.json
-	// or they hand-edited the file to add their own command.
-	shape := readHooksJSON(t, home)
-	prepended := append([]matcherGroup{{
-		Matcher: "apply_patch",
-		Hooks: []commandEntry{{
-			Type:    "command",
-			Command: "/usr/local/bin/other-tool log",
-		}},
-	}}, shape.Hooks["PostToolUse"]...)
-	shape.Hooks["PostToolUse"] = prepended
-	out, err := json.MarshalIndent(shape, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(hooksPath, append(out, '\n'), 0o644); err != nil {
-		t.Fatalf("write hooks.json: %v", err)
-	}
-
-	if _, err := p.InstallHooks(ctx, "/anywhere", ""); err != nil {
-		t.Fatalf("install 2: %v", err)
-	}
-
-	// Reread state after the second install. Stale entry at (0,0) must
-	// be gone (its hash matched a recognized Semantica command), new
-	// entry at (1,0) must exist.
-	doc = readConfigDoc(t, home)
-	state = doc["hooks"].(map[string]any)["state"].(map[string]any)
-	if _, ok := state[oldKey]; ok {
-		t.Errorf("stale trust entry at (0,0) survived reinstall; state=%+v", state)
-	}
-	newKey := trustKey(hooksPath, "post_tool_use", 1, 0)
-	if _, ok := state[newKey]; !ok {
-		t.Errorf("new trust entry at (1,0) missing after reinstall; state=%+v", state)
-	}
-
-	// Also confirm we did not strand a config.toml without [hooks.state].
-	if _, err := os.Stat(configPath); err != nil {
-		t.Fatalf("config.toml missing after reinstall: %v", err)
-	}
-}
-
-func TestInstallHooks_RemovesStaleTrustWhenBinaryPathChanges(t *testing.T) {
-	// Stale trust cleanup must recognize both previous and current command
-	// hashes. This keeps old entries removable when the installed binary
-	// path changes between runs.
-	home := withCodexHome(t)
-	hooksPath := filepath.Join(home, hooksFileName)
-	p := &Provider{}
-	ctx := context.Background()
-
-	// First install with an absolute binary path. Records trust at
-	// PostToolUse position (0,0) with the hash of the absolute-path
-	// guarded command.
-	if _, err := p.InstallHooks(ctx, "/anywhere", "/opt/special/semantica"); err != nil {
-		t.Fatalf("install 1: %v", err)
-	}
-	oldKey := trustKey(hooksPath, "post_tool_use", 0, 0)
-
-	// User adds their own PostToolUse hook ahead of Semantica's so
-	// the next install will shift Semantica to (1,0).
-	shape := readHooksJSON(t, home)
-	prepended := append([]matcherGroup{{
-		Matcher: "apply_patch",
-		Hooks: []commandEntry{{
-			Type:    "command",
-			Command: "/usr/local/bin/other-tool log",
-		}},
-	}}, shape.Hooks["PostToolUse"]...)
-	shape.Hooks["PostToolUse"] = prepended
-	out, err := json.MarshalIndent(shape, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(hooksPath, append(out, '\n'), 0o644); err != nil {
-		t.Fatalf("write hooks.json: %v", err)
-	}
-
-	// Second install with the DEFAULT binary path. The PostToolUse
-	// command string changes (different binary inside the guard), so
-	// the new install's recognizedHashes alone would not match the
-	// trust entry the first install wrote at (0,0).
-	if _, err := p.InstallHooks(ctx, "/anywhere", ""); err != nil {
-		t.Fatalf("install 2: %v", err)
-	}
-
-	doc := readConfigDoc(t, home)
-	state := doc["hooks"].(map[string]any)["state"].(map[string]any)
-	if _, ok := state[oldKey]; ok {
-		t.Errorf("stale trust entry at (0,0) from prior absolute-binary install survived reinstall; state=%+v", state)
-	}
-	newKey := trustKey(hooksPath, "post_tool_use", 1, 0)
-	if _, ok := state[newKey]; !ok {
-		t.Errorf("new trust entry at (1,0) missing after reinstall; state=%+v", state)
-	}
-}
-
-func TestUninstallHooks_RemovesTrustEntryForAbsoluteBinaryInstall(t *testing.T) {
-	// Uninstall must remove trust entries for the exact command installed
-	// on disk, including installs that used an absolute binary path.
-	home := withCodexHome(t)
-	p := &Provider{}
-
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", "/opt/special/semantica"); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	if err := p.UninstallHooks(context.Background(), "/anywhere"); err != nil {
+	if err := p.UninstallHooks(context.Background(), repoRoot); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 
-	// config.toml must no longer carry the Semantica trust entries.
-	data, err := os.ReadFile(filepath.Join(home, configFileName))
-	if err != nil {
-		t.Fatalf("read config.toml: %v", err)
+	// An empty project hook file is deleted.
+	if _, err := os.Stat(filepath.Join(repoHooksDir(repoRoot), hooksFileName)); !os.IsNotExist(err) {
+		t.Errorf("repo hooks.json should be removed; stat err = %v", err)
 	}
-	if strings.Contains(string(data), semanticaMarker) {
-		t.Errorf("config.toml still references semantica after uninstall:\n%s", data)
-	}
-	if strings.Contains(string(data), "trusted_hash") {
-		t.Errorf("config.toml still has trust hashes after absolute-binary uninstall:\n%s", data)
+	// Global hooks remain byte-for-byte unchanged.
+	if got := mustReadFile(t, globalHooksPath); got != globalBefore {
+		t.Errorf("uninstall modified the shared global hooks.json:\nbefore:\n%s\nafter:\n%s", globalBefore, got)
 	}
 }
 
-func TestUninstallHooks_RemovesSemanticaContentOnly(t *testing.T) {
-	home := withCodexHome(t)
-	// Seed an unrelated hook so we can verify it survives.
+func TestUninstallHooks_PreservesUnrelatedRepoHooks(t *testing.T) {
+	repoRoot, _ := codexRepo(t)
+	dir := repoHooksDir(repoRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Preserve a team-owned project hook.
 	existing := `{
   "hooks": {
     "PostToolUse": [
@@ -548,23 +740,20 @@ func TestUninstallHooks_RemovesSemanticaContentOnly(t *testing.T) {
   }
 }
 `
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, hooksFileName), []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, hooksFileName), []byte(existing), 0o644); err != nil {
 		t.Fatalf("seed hooks.json: %v", err)
 	}
 
 	p := &Provider{}
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
+	if _, err := p.InstallHooks(context.Background(), repoRoot, ""); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if err := p.UninstallHooks(context.Background(), "/anywhere"); err != nil {
+	if err := p.UninstallHooks(context.Background(), repoRoot); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 
 	// Other tool's hook must survive.
-	shape := readHooksJSON(t, home)
+	shape := readHooksJSON(t, dir)
 	postGroups := shape.Hooks["PostToolUse"]
 	if len(postGroups) != 1 || len(postGroups[0].Hooks) != 1 ||
 		postGroups[0].Hooks[0].Command != "/usr/local/bin/other-tool log" {
@@ -579,123 +768,37 @@ func TestUninstallHooks_RemovesSemanticaContentOnly(t *testing.T) {
 	}
 }
 
-func TestUninstallHooks_LeavesUnknownTrustEntriesIntact(t *testing.T) {
-	home := withCodexHome(t)
-	p := &Provider{}
-
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-
-	// Simulate a third-party trust entry under [hooks.state.*] with a
-	// command hash unrelated to Semantica. Uninstall must not touch it.
-	configPath := filepath.Join(home, configFileName)
-	doc := readConfigDoc(t, home)
-	state := doc["hooks"].(map[string]any)["state"].(map[string]any)
-	state["/tmp/other-tool/hooks.json:post_tool_use:0:0"] = map[string]any{
-		"trusted_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-	}
-	out, err := toml.Marshal(doc)
-	if err != nil {
-		t.Fatalf("re-marshal config: %v", err)
-	}
-	if err := os.WriteFile(configPath, out, 0o600); err != nil {
-		t.Fatalf("rewrite config: %v", err)
-	}
-
-	if err := p.UninstallHooks(context.Background(), "/anywhere"); err != nil {
-		t.Fatalf("uninstall: %v", err)
-	}
-
-	doc = readConfigDoc(t, home)
-	hooksSection, _ := doc["hooks"].(map[string]any)
-	if hooksSection == nil {
-		t.Fatal("uninstall stripped the [hooks] table even though a third-party trust entry remained")
-	}
-	state, _ = hooksSection["state"].(map[string]any)
-	if state == nil {
-		t.Fatal("uninstall stripped [hooks.state] even though a third-party entry remained")
-	}
-	if _, ok := state["/tmp/other-tool/hooks.json:post_tool_use:0:0"]; !ok {
-		t.Error("third-party trust entry was removed by uninstall")
-	}
-}
-
-func TestUninstallHooks_LeavesModifiedSemanticaTrustEntry(t *testing.T) {
-	home := withCodexHome(t)
-	p := &Provider{}
-
-	if _, err := p.InstallHooks(context.Background(), "/anywhere", ""); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-
-	// Tamper with one trust hash to simulate a manual edit. Uninstall
-	// only removes entries whose hash matches what we computed, so the
-	// tampered entry must survive.
-	configPath := filepath.Join(home, configFileName)
-	hooksPath := filepath.Join(home, hooksFileName)
-	doc := readConfigDoc(t, home)
-	state := doc["hooks"].(map[string]any)["state"].(map[string]any)
-	tamperedKey := trustKey(hooksPath, "post_tool_use", 0, 0)
-	state[tamperedKey] = map[string]any{
-		"trusted_hash": "sha256:deadbeef",
-	}
-	out, err := toml.Marshal(doc)
-	if err != nil {
-		t.Fatalf("re-marshal: %v", err)
-	}
-	if err := os.WriteFile(configPath, out, 0o600); err != nil {
-		t.Fatalf("rewrite: %v", err)
-	}
-
-	if err := p.UninstallHooks(context.Background(), "/anywhere"); err != nil {
-		t.Fatalf("uninstall: %v", err)
-	}
-
-	doc = readConfigDoc(t, home)
-	hooksSection, _ := doc["hooks"].(map[string]any)
-	state, _ = hooksSection["state"].(map[string]any)
-	entry, ok := state[tamperedKey].(map[string]any)
-	if !ok {
-		t.Fatalf("tampered entry was removed even though its hash differed; state=%+v", state)
-	}
-	if entry["trusted_hash"] != "sha256:deadbeef" {
-		t.Errorf("tampered entry rewritten: got %v", entry["trusted_hash"])
-	}
-}
-
 func TestAreHooksInstalled_TrueAfterInstallFalseAfterUninstall(t *testing.T) {
-	home := withCodexHome(t)
-	_ = home
+	repoRoot, _ := codexRepo(t)
 	p := &Provider{}
 	ctx := context.Background()
 
-	if p.AreHooksInstalled(ctx, "/anywhere") {
+	if p.AreHooksInstalled(ctx, repoRoot) {
 		t.Error("clean state should report no hooks installed")
 	}
-	if _, err := p.InstallHooks(ctx, "/anywhere", ""); err != nil {
+	if _, err := p.InstallHooks(ctx, repoRoot, ""); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if !p.AreHooksInstalled(ctx, "/anywhere") {
+	if !p.AreHooksInstalled(ctx, repoRoot) {
 		t.Error("install should report hooks installed")
 	}
-	if err := p.UninstallHooks(ctx, "/anywhere"); err != nil {
+	if err := p.UninstallHooks(ctx, repoRoot); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
-	if p.AreHooksInstalled(ctx, "/anywhere") {
+	if p.AreHooksInstalled(ctx, repoRoot) {
 		t.Error("uninstall should leave no hooks")
 	}
 }
 
 func TestHookBinary_ReturnsInstalledBinary(t *testing.T) {
-	withCodexHome(t)
+	repoRoot, _ := codexRepo(t)
 	p := &Provider{}
 	ctx := context.Background()
 
-	if _, err := p.InstallHooks(ctx, "/anywhere", "/opt/special/semantica"); err != nil {
+	if _, err := p.InstallHooks(ctx, repoRoot, "/opt/special/semantica"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	got, err := p.HookBinary(ctx, "/anywhere")
+	got, err := p.HookBinary(ctx, repoRoot)
 	if err != nil {
 		t.Fatalf("hook binary: %v", err)
 	}
@@ -714,7 +817,7 @@ func TestShouldCapture_GatesByActiveRepoMembership(t *testing.T) {
 		t.Fatalf("mkdir subdir: %v", err)
 	}
 
-	// A second repo we never register, to verify off-repo cwds gate out.
+	// This repository is intentionally not registered.
 	otherRepo := t.TempDir()
 	mkGitDir(t, otherRepo)
 
@@ -790,9 +893,7 @@ func TestShouldCapture_GatesByActiveRepoMembership(t *testing.T) {
 	}
 }
 
-// mkGitDir creates a minimal .git marker so git.FindRoot recognizes the
-// directory as a repo root. We do not need a fully initialized
-// repository for the cwd-gate logic, only the on-disk signal.
+// mkGitDir creates the marker required by repository discovery.
 func mkGitDir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
@@ -806,69 +907,14 @@ func jsonWithCwd(cwd string) string {
 	return string(b)
 }
 
-func TestCommandHookHash_MatchesUpstreamFixture(t *testing.T) {
-	// Test vectors captured from a live Codex 0.130.0 install after an
-	// in-session /hooks approval. The probe hooks.json lived at
-	// /private/tmp/codex-hook-probe/repo/.codex/hooks.json (canonical
-	// path), and each hook command logged stdin to a per-event file.
-	matcher := "apply_patch|Bash|Write|Edit"
-	cases := []struct {
-		event   string
-		matcher string
-		command string
-		want    string
-	}{
-		{
-			event:   "session_start",
-			matcher: "",
-			command: "/tmp/codex-hook-probe/log.sh SessionStart",
-			want:    "sha256:535bdcc7eb7968fea940e8aa467cfd2c02d96d088425104334a085e39ce9105c",
-		},
-		{
-			event:   "user_prompt_submit",
-			matcher: "",
-			command: "/tmp/codex-hook-probe/log.sh UserPromptSubmit",
-			want:    "sha256:067417d6c6435d1cf039fb578965de8fc04082dbf0214a9f6cd9cbd88cca73a9",
-		},
-		{
-			event:   "post_tool_use",
-			matcher: matcher,
-			command: "/tmp/codex-hook-probe/log.sh PostToolUse",
-			want:    "sha256:c2b89791a5f1223ee3a2eab54da538f52f2a1d3a89153bf1094d909a2e3ac46b",
-		},
-		{
-			event:   "stop",
-			matcher: "",
-			command: "/tmp/codex-hook-probe/log.sh Stop",
-			want:    "sha256:a314d867cf6d56273f0ab136ab416dbfd45f3962779972ae7061d5e14dd1a1c5",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.event, func(t *testing.T) {
-			got := commandHookHash(tc.event, tc.matcher, tc.command)
-			if got != tc.want {
-				t.Errorf("commandHookHash(%q, %q, %q)\n  got  = %s\n  want = %s",
-					tc.event, tc.matcher, tc.command, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestIsAvailable_RespectsCODEXHOME(t *testing.T) {
-	// Force CODEX_HOME to a path that does not exist and confirm
-	// IsAvailable falls through to the binary lookup. The
-	// ResolveExecutable result depends on the runner's environment so
-	// we only assert that the function returns a bool without panic.
+	// Availability may still resolve the binary from the host PATH.
 	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "missing"))
 	p := &Provider{}
 	_ = p.IsAvailable()
 }
 
-// Codex's New() constructor is the explicit-injection entry point
-// used by providers.NewHookRegistry(); a Registry built around it
-// must surface the provider by its canonical name. This test
-// guards the constructor and its Name() pairing for explicit
-// registry composition.
+// New registers the provider under its canonical name.
 func TestProvider_RegistersUnderCanonicalName(t *testing.T) {
 	r := hooks.NewRegistry(New())
 	if r.Get(providerName) == nil {
@@ -876,30 +922,11 @@ func TestProvider_RegistersUnderCanonicalName(t *testing.T) {
 	}
 }
 
-// Codex post-tool-use payloads include a provider turn_id, but Semantica
-// packages provenance by the capture-state turn created for the prompt.
-// ParseHookEvent leaves Event.TurnID empty so lifecycle can attach that
-// active turn before direct emission.
-//
-// Two tests together lock the fix:
-//
-//   - TestParseHookEvent_PostToolUseDropsProviderTurnID covers the parse
-//     layer: payload turn_id never reaches hooks.Event.TurnID.
-//   - TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID
-//     covers the end-to-end chain: parse drops it, Dispatch fills from
-//     capture state, the event downstream code sees carries the prompt
-//     turn id.
-//
-// The test also asserts that supplied ToolUseID values round-trip for
-// all capturable tools. Missing ToolUseID behavior is intentionally
-// not covered here; dropping or synthesizing ids would be a separate
-// behavior choice.
+// Parsing drops the provider turn ID and preserves the tool-use ID.
 func TestParseHookEvent_PostToolUseDropsProviderTurnID(t *testing.T) {
 	cases := []struct {
 		toolName string
-		// The direct emitter may split apply_patch into per-file events
-		// later. This test only checks that the supplied invocation id
-		// survives parsing.
+		// Direct emission may later split one invocation by file.
 		toolUseID string
 	}{
 		{"apply_patch", "call_apply_patch_1"},
@@ -944,15 +971,12 @@ func TestParseHookEvent_PostToolUseDropsProviderTurnID(t *testing.T) {
 	}
 }
 
-// ParseHookEvent plus Dispatch should attach the active capture-state
-// turn to Codex tool events. That is the turn packaging uses for the
-// prompt manifest.
+// Dispatch attaches the active capture-state turn to tool events.
 func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T) {
-	// Isolate SEMANTICA_HOME so SaveCaptureState writes into a tempdir.
+	// Isolate capture state from the user's home.
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 
-	// Seed capture state with a Semantica-generated turn id, mimicking
-	// what lifecycle.go does on PromptSubmitted (turnID := uuid.NewString()).
+	// Seed the turn created for the active prompt.
 	const sessionID = "sess-codex-dispatch"
 	const captureTurnID = "semantica-prompt-turn-1"
 	if err := hooks.SaveCaptureState(&hooks.CaptureState{
@@ -966,9 +990,7 @@ func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T)
 		t.Fatalf("save capture state: %v", err)
 	}
 
-	// Parse a post-tool-use payload with a different provider turn_id.
-	// Dispatch should replace the empty parsed TurnID with the active
-	// capture-state turn.
+	// The provider turn differs from the active capture turn.
 	const providerTurnID = "codex-provider-turn"
 	payload := map[string]any{
 		"session_id":  sessionID,
@@ -993,8 +1015,7 @@ func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T)
 		t.Fatalf("parsed event TurnID = %q, want empty (parse layer must drop provider turn id)", event.TurnID)
 	}
 
-	// Open a broker handle so Dispatch can run through the normal
-	// routing path. The assertion is on the inherited turn id.
+	// Route through the normal dispatcher path.
 	registryPath := filepath.Join(t.TempDir(), "repos.json")
 	bh, err := broker.Open(context.Background(), registryPath)
 	if err != nil {
@@ -1002,8 +1023,7 @@ func TestParseAndDispatch_CodexToolStep_InheritsCaptureStateTurnID(t *testing.T)
 	}
 	t.Cleanup(func() { _ = broker.Close(bh) })
 
-	// Dispatch mutates the event before routing so downstream code sees
-	// the capture-state turn id.
+	// Downstream code must see the capture-state turn.
 	if err := hooks.Dispatch(context.Background(), p, event, bh, nil); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -1124,9 +1144,10 @@ func TestParseAndDispatch_CodexPrePostSharePairingIdentity(t *testing.T) {
 	}
 }
 
-// Existing installations gain PreToolUse on the next enable.
+// Existing repo installations gain PreToolUse on the next enable.
 func TestInstallHooks_UpgradeAddsPreToolUseToLegacyInstall(t *testing.T) {
-	home := withCodexHome(t)
+	repoRoot, _ := codexRepo(t)
+	dir := repoHooksDir(repoRoot)
 	p := &Provider{}
 	ctx := context.Background()
 
@@ -1140,22 +1161,22 @@ func TestInstallHooks_UpgradeAddsPreToolUseToLegacyInstall(t *testing.T) {
 		}
 	}
 	hookEvents = legacy
-	if _, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica"); err != nil {
+	if _, err := p.InstallHooks(ctx, repoRoot, "/usr/local/bin/semantica"); err != nil {
 		t.Fatalf("legacy install: %v", err)
 	}
-	if _, ok := readHooksJSON(t, home).Hooks["PreToolUse"]; ok {
+	if _, ok := readHooksJSON(t, dir).Hooks["PreToolUse"]; ok {
 		t.Fatal("legacy install already had PreToolUse")
 	}
 	hookEvents = orig
 
-	n, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica")
+	n, err := p.InstallHooks(ctx, repoRoot, "/usr/local/bin/semantica")
 	if err != nil {
 		t.Fatalf("upgrade install: %v", err)
 	}
 	if n != len(hookEvents) {
 		t.Fatalf("upgrade reported %d hooks, want %d", n, len(hookEvents))
 	}
-	shape := readHooksJSON(t, home)
+	shape := readHooksJSON(t, dir)
 	if len(shape.Hooks) != len(legacy)+1 {
 		t.Errorf("upgrade left %d event groups, want %d (legacy + PreToolUse)", len(shape.Hooks), len(legacy)+1)
 	}
@@ -1171,10 +1192,10 @@ func TestInstallHooks_UpgradeAddsPreToolUseToLegacyInstall(t *testing.T) {
 			t.Errorf("upgrade dropped existing event %q", ev.pascalEvent)
 		}
 	}
-	if _, err := p.InstallHooks(ctx, "/anywhere", "/usr/local/bin/semantica"); err != nil {
+	if _, err := p.InstallHooks(ctx, repoRoot, "/usr/local/bin/semantica"); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
-	if got := len(readHooksJSON(t, home).Hooks["PreToolUse"]); got != 1 {
+	if got := len(readHooksJSON(t, dir).Hooks["PreToolUse"]); got != 1 {
 		t.Errorf("PreToolUse groups after re-install = %d, want 1", got)
 	}
 }

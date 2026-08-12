@@ -8,16 +8,8 @@ import (
 	"github.com/semanticash/cli/internal/broker"
 )
 
-// TestApplyPatchEventsRouteToRegisteredRepo verifies that every
-// apply_patch emission shape routes to the registered repo. The hook
-// layer stores absolute FilePaths because broker.RouteEvents matches
-// against absolute canonical_path values and skips the SourceProjectPath
-// fallback when FilePaths is non-empty.
-//
-// The test covers every emission shape buildPatchFileEvent produces:
-// content-bearing Add (line-level), content-bearing Update
-// (line-level), and the two empty-content paths (deletion-only Update
-// and pure Delete).
+// TestApplyPatchEventsRouteToRegisteredRepo covers line and touch evidence
+// from add, update, and delete operations.
 func TestApplyPatchEventsRouteToRegisteredRepo(t *testing.T) {
 	repos := []broker.RegisteredRepo{{
 		RepoID:        "repo-1",

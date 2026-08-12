@@ -51,7 +51,9 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## OpenAI Codex
 
-- Codex hooks are user-global. Semantica captures only when the hook payload `cwd` resolves to a Semantica-enabled repo; sessions outside enabled repos exit silently and record nothing.
+- Codex project hooks require approval through `/hooks` in the CLI or Settings > Hooks in the desktop app.
+- Legacy user-global Semantica hooks remain installed to protect other repositories. Remove them after migrating all repositories; duplicate delivery is deduplicated but adds latency and lock contention.
+- Codex captures only when the hook payload `cwd` belongs to an enabled repository.
 - Codex rollout/session files are not replayed today. Hook payloads are the capture source.
 - Codex subagent capture is deferred until Codex exposes a stable child-agent feature and session-linking surface.
 

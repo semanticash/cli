@@ -1,6 +1,6 @@
 # AI Provider Integrations
 
-Semantica supports seven AI coding providers. Most providers use repo-local hooks in the provider's configuration file. Codex uses user-global hooks and gates capture by the session's enabled repo before any broker or blob side effects run. Captured events are routed to the repo's lineage database via the broker.
+Semantica supports seven AI coding providers, all using repo-local hooks in the provider's configuration file. Capture is additionally gated by the session's enabled repo before any broker or blob side effects run. Captured events are routed to the repo's lineage database via the broker.
 
 Semantica reads session transcripts passively - it never modifies agent session logs or transcript files.
 
@@ -19,9 +19,15 @@ The exact storage and offset model is provider-specific. Some providers read fro
 
 ## OpenAI Codex
 
-**Hook config**: `~/.codex/hooks.json` and `~/.codex/config.toml`
+**Hook config**: `<repo>/.codex/hooks.json` (repo-local project layer); `~/.codex/config.toml` for the global `[features] hooks = true` gate.
 
-Codex stores hook configuration in the user's global Codex home. Semantica installs hook entries for both the standalone `codex` CLI and the Codex desktop app, which share the same runtime and config directory.
+Semantica installs hooks in the repository and enables `[features] hooks = true` in the global Codex config. It does not modify user-global hooks.
+
+**Trust**: review project hooks with `/hooks` in the Codex CLI or Settings > Hooks in the desktop app. Semantica does not preapprove them.
+
+**Migration**: older releases installed user-global hooks. These remain active to avoid breaking other repositories. Capture deduplicates repeated deliveries, but the extra process adds latency and lock contention. Remove the legacy Semantica entry from `~/.codex/hooks.json` after migrating your repositories.
+
+Semantica installs the same hook entries for both the standalone `codex` CLI and the Codex desktop app, which share the same runtime and config format.
 
 ### Detection
 
@@ -37,7 +43,7 @@ Semantica registers five Codex hooks:
 - **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
 - **`Stop`** - Marks the turn complete and packages captured events.
 
-Codex hooks are user-global, so they can fire in any Codex session on the machine. Before parsing the payload or opening the blob store, Semantica resolves the payload `cwd` to a git repo root and checks it against active Semantica repos. Sessions outside enabled repos exit silently with no broker writes and no hook-error entry.
+Before parsing a payload or opening storage, Semantica verifies that its `cwd` belongs to an enabled repository. Other sessions exit without recording data.
 
 ### Attribution
 
@@ -53,7 +59,7 @@ Codex `apply_patch` operations are parsed per file. Add and update sections with
 
 - Codex rollout/session files are not used for replay today. Hook payloads are the capture source.
 - Tool-delta scoring is disabled by default. Enable `attribution_v2` to score verified Codex Bash workspace deltas.
-- User-global hooks require the enabled-repo cwd gate. If Codex runs outside an enabled repo, Semantica exits silently and records nothing.
+- Legacy user-global hooks still require an enabled repository and otherwise record nothing.
 
 ---
 

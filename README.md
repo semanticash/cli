@@ -313,7 +313,7 @@ user-scoped refresh command to run afterward.
 | Provider | Hook config | Detection |
 |----------|-------------|-----------|
 | Claude Code | `.claude/settings.local.json` | Auto |
-| OpenAI Codex | `~/.codex/hooks.json`, `~/.codex/config.toml` | Auto |
+| OpenAI Codex | `.codex/hooks.json`; `~/.codex/config.toml` feature gate | Auto |
 | Cursor (IDE and CLI) | `.cursor/hooks.json` | Auto |
 | Kiro IDE | `.kiro/hooks/*.kiro.hook` | Auto |
 | Kiro CLI | `.kiro/agents/semantica.json` | Auto |
@@ -322,6 +322,7 @@ user-scoped refresh command to run afterward.
 
 Providers are detected automatically during `semantica enable`. For each detected provider, Semantica installs lightweight hooks in the provider's configuration 
 so agent activity can be captured in real time. Session data is read passively - Semantica never modifies agent session logs or transcripts.
+Codex project hooks must be trusted with `/hooks` in the CLI or Settings > Hooks in the desktop app.
 Kiro CLI uses a repo-local named agent config at `.kiro/agents/semantica.json`. See the [provider-specific](docs/providers.md) docs for setup details.
 
 

@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Launcher backends now drain every 30 minutes to recover scheduled retries and expired leases. Linux launcher disablement also reports incomplete timer cleanup.
 - Added checkpoint audit readiness to `semantica status` and `semantica status --json`, with explicit manifest, attribution, provenance, and sync states under a named policy. JSON output also reports terminal queue blockage and its recorded error.
 
+### Changed
+
+- Codex hooks now install in `<repo>/.codex/hooks.json`, preserve existing project hooks, and require approval through `/hooks` or Settings > Hooks. The global hooks feature is enabled without removing legacy user-global hooks.
+
 ### Fixed
 
 - Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
