@@ -21,6 +21,14 @@ type ToolWindowStatus struct {
 	PendingPartials      int
 	Tombstones           int
 	MalformedTombstones  int
+	// DegradedGroups counts groups awaiting partial-evidence reclamation.
+	DegradedGroups int
+	// BlockedMembers counts completed members in degraded groups.
+	BlockedMembers int
+	// OldestActiveAge is the age of the oldest active member.
+	OldestActiveAge time.Duration
+	// OldestGroupAge is the age of the oldest open group member.
+	OldestGroupAge time.Duration
 }
 
 // InspectToolWindows reads tool-window state without modifying it.
@@ -30,13 +38,35 @@ func InspectToolWindows(_ context.Context, repoPath string) (ToolWindowStatus, e
 		return ToolWindowStatus{}, err
 	}
 	var status ToolWindowStatus
-	staleCutoff := time.Now().Add(-toolsnap.DefaultStaleWindowAge).UnixMilli()
+	now := time.Now()
+	staleCutoff := now.Add(-toolsnap.DefaultStaleWindowAge).UnixMilli()
+	activeGroups := map[string]bool{}
 	for _, w := range snap.Windows {
+		age := time.Duration(now.UnixMilli()-w.StartedAt) * time.Millisecond
+		if age > status.OldestGroupAge {
+			status.OldestGroupAge = age
+		}
 		if w.Status == "active" {
 			status.ActiveWindows++
+			activeGroups[w.GroupID] = true
+			if age > status.OldestActiveAge {
+				status.OldestActiveAge = age
+			}
 		}
 		if w.StartedAt < staleCutoff {
 			status.StaleWindows++
+		}
+	}
+	degraded := map[string]bool{}
+	for gid, meta := range snap.Groups {
+		if meta.Sealed || (now.UnixMilli() >= meta.JoinUntil && activeGroups[gid]) {
+			degraded[gid] = true
+		}
+	}
+	status.DegradedGroups = len(degraded)
+	for _, w := range snap.Windows {
+		if w.Status == "complete" && degraded[w.GroupID] {
+			status.BlockedMembers++
 		}
 	}
 	status.PendingFinalizations = len(snap.CompleteGroups())
@@ -51,6 +81,8 @@ type SweepReport struct {
 	PartialsReplayed   int
 	GroupsResumed      int
 	GroupsTerminal     int
+	GroupsReclaimed    int
+	MembersTombstoned  int
 	LinksSkipped       int
 	Errors             int
 	Maintenance        toolsnap.MaintenanceReport
@@ -69,6 +101,12 @@ func SweepToolWindows(ctx context.Context, repoPath string) (SweepReport, error)
 	if err != nil {
 		return report, err
 	}
+	target := &toolWindowTarget{repoPath: repoPath, semDir: semDir}
+
+	// Reclaim sealed groups before opening stores so store failures cannot
+	// keep later captures attached to them.
+	reclaimSealedGroups(ctx, reg, target, &report)
+
 	rc, err := toolsnap.ResolveRepoContext(ctx, repoPath)
 	if err != nil {
 		return report, err
@@ -81,7 +119,6 @@ func SweepToolWindows(ctx context.Context, repoPath string) (SweepReport, error)
 	if err != nil {
 		return report, err
 	}
-	target := &toolWindowTarget{repoPath: repoPath, semDir: semDir}
 
 	sweepPendingPartials(ctx, reg, repoBlobs, target, &report)
 	sweepPendingFinalizations(ctx, reg, store, repoBlobs, target, &report)
@@ -96,6 +133,22 @@ func SweepToolWindows(ctx context.Context, repoPath string) (SweepReport, error)
 	}
 	report.Maintenance = m
 	return report, nil
+}
+
+// reclaimSealedGroups converts sealed groups to partial evidence.
+func reclaimSealedGroups(ctx context.Context, reg *toolsnap.Registry, target *toolWindowTarget, report *SweepReport) {
+	reclaimed, err := reg.ReclaimSealedGroups(ctx, time.Now().UnixMilli())
+	if err != nil {
+		report.Errors++
+		slog.Warn("tool window sweep: reclaim sealed groups", "err", err)
+	}
+	for _, g := range reclaimed {
+		report.GroupsReclaimed++
+		report.MembersTombstoned += g.Tombstoned
+		util.AppendActivityLog(target.semDir,
+			"tool-window sweep reclaimed group %s: %d member(s) to partial evidence, %d tombstoned",
+			g.GroupID, g.Completed, g.Tombstoned)
+	}
 }
 
 // sweepPendingPartials persists recorded partial deltas and their links.

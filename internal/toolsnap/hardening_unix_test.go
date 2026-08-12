@@ -118,6 +118,105 @@ func TestClosedFalseWhenPublicationFails(t *testing.T) {
 	}
 }
 
+// A sealed receipt recovers a completion after publication fails.
+func TestSealedCompletionRecoversViaReceipt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	created := int64(1000)
+	if _, err := r.Begin(ctx, entry("tu1", created)); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted := false
+	persist := func(PendingToolSnapshot) error { persisted = true; return nil }
+	// Block registry publication while leaving receipts writable.
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// Complete the member after the join horizon.
+	postAt := created + 2*DefaultStaleActiveAge.Milliseconds()
+	_, cerr := r.Complete(ctx, key("tu1"), CompletionInfo{EventID: hexEvent(1), At: postAt}, persist, noFinalize(t))
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if cerr == nil {
+		t.Fatal("Complete succeeded despite an unwritable registry")
+	}
+	if !persisted {
+		t.Fatal("the member event was not persisted before completion")
+	}
+
+	// The failed publication leaves one recovery receipt.
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want the sealed receipt", entries, err)
+	}
+
+	// Reclamation converts the recovered completion to partial evidence.
+	reclaimed, err := r.ReclaimSealedGroups(ctx, postAt+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].Completed != 1 || reclaimed[0].Tombstoned != 1 {
+		t.Fatalf("reclaimed = %+v, want the recovered member as partial evidence", reclaimed)
+	}
+	recs, err := r.PendingPartialRecords()
+	if err != nil || len(recs) != 1 || recs[0].Reason != ReasonStaleActiveWindow || recs[0].EventID != hexEvent(1) {
+		t.Fatalf("records = %+v err = %v, want stale_active_window partial", recs, err)
+	}
+	// Successful recovery consumes the receipt.
+	if entries, err := os.ReadDir(r.receiptsDir()); err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after recovery = %v err = %v, want none", entries, err)
+	}
+}
+
+// Failed group-removal publication reports no reclamation.
+func TestReclaimReportsNothingOnPublicationFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	created := int64(1000)
+	if _, err := r.Begin(ctx, entry("tu1", created)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Block registry publication after recovery files are written.
+	r.afterRecoveryWrites = func() {
+		if err := os.Chmod(r.dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reclaimed, rerr := r.ReclaimSealedGroups(ctx, created+2*DefaultStaleActiveAge.Milliseconds())
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rerr == nil {
+		t.Fatal("reclamation succeeded despite an unwritable registry")
+	}
+	if len(reclaimed) != 0 {
+		t.Fatalf("reclaimed = %+v, want none reported on publication failure", reclaimed)
+	}
+	// The sealed group remains registered.
+	snap, err := InspectRegistry(filepath.Dir(r.dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Windows) != 1 || !snap.Groups[snap.Windows[0].GroupID].Sealed {
+		t.Fatalf("windows = %+v groups = %+v, want the group retained and sealed", snap.Windows, snap.Groups)
+	}
+}
+
 // A receipt recovers a durable member after publication failure.
 func TestCompletionReceiptReconciliation(t *testing.T) {
 	if os.Geteuid() == 0 {

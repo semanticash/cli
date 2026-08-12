@@ -23,6 +23,9 @@ const (
 	ReasonStoreUnavailable = "snapshot_store_unavailable"
 	// ReasonPostSnapshotLost marks a retry without durable post state.
 	ReasonPostSnapshotLost = "post_snapshot_lost"
+	// ReasonStaleActiveWindow marks evidence from a sealed group.
+	// Its unbounded span contributes no attribution.
+	ReasonStaleActiveWindow = "stale_active_window"
 )
 
 // PartialError reports a capture that must degrade to partial

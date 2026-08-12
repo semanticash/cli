@@ -44,26 +44,31 @@ func SweepToolWindows(ctx context.Context) {
 		report, err := hooks.SweepToolWindows(rctx, r.Path)
 		cancel()
 		if err != nil {
-			wlog("worker: toolwindow sweep %s: %v\n", r.Path, err)
-			// Record failures that occur before a recovery report is available.
+			wlog("worker: toolwindow sweep %s: reclaimed=%d tombstoned=%d err=%v\n",
+				r.Path, report.GroupsReclaimed, report.MembersTombstoned, err)
+			// Preserve recovery results recorded before the terminal failure.
 			doctor.EmitBenchRecord(r.Path, doctor.BenchRecord{
-				Kind: "toolwindow_sweep", Outcome: "error", SweepErrors: 1,
+				Kind: "toolwindow_sweep", Outcome: "error", SweepErrors: report.Errors + 1,
+				GroupsReclaimed:   report.GroupsReclaimed,
+				MembersTombstoned: report.MembersTombstoned,
 			})
 			continue
 		}
-		if report.PartialsReplayed+report.GroupsResumed+report.GroupsTerminal+report.LinksSkipped+report.Errors > 0 {
-			wlog("worker: toolwindow sweep %s: replayed=%d resumed=%d terminal=%d links_skipped=%d errors=%d\n",
-				r.Path, report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal, report.LinksSkipped, report.Errors)
+		if report.PartialsReplayed+report.GroupsResumed+report.GroupsTerminal+report.GroupsReclaimed+report.LinksSkipped+report.Errors > 0 {
+			wlog("worker: toolwindow sweep %s: replayed=%d resumed=%d terminal=%d reclaimed=%d tombstoned=%d links_skipped=%d errors=%d\n",
+				r.Path, report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal, report.GroupsReclaimed, report.MembersTombstoned, report.LinksSkipped, report.Errors)
 		}
 		// Record recovery progress and snapshot-store size.
 		doctor.EmitBenchRecord(r.Path, doctor.BenchRecord{
-			Kind:             "toolwindow_sweep",
-			PartialsReplayed: report.PartialsReplayed,
-			GroupsResumed:    report.GroupsResumed,
-			GroupsTerminal:   report.GroupsTerminal,
-			LinksSkipped:     report.LinksSkipped,
-			SweepErrors:      report.Errors,
-			StoreBytes:       report.Maintenance.StoreBytes,
+			Kind:              "toolwindow_sweep",
+			PartialsReplayed:  report.PartialsReplayed,
+			GroupsResumed:     report.GroupsResumed,
+			GroupsTerminal:    report.GroupsTerminal,
+			GroupsReclaimed:   report.GroupsReclaimed,
+			MembersTombstoned: report.MembersTombstoned,
+			LinksSkipped:      report.LinksSkipped,
+			SweepErrors:       report.Errors,
+			StoreBytes:        report.Maintenance.StoreBytes,
 		})
 	}
 }

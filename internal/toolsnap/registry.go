@@ -101,12 +101,18 @@ var ErrNoPendingSnapshot = errors.New("toolsnap: no pending snapshot for key")
 // ErrWindowTombstoned reports a post hook for an abandoned window.
 var ErrWindowTombstoned = errors.New("toolsnap: window tombstoned")
 
+// ErrWindowSealed reports a post hook for a sealed group.
+var ErrWindowSealed = errors.New("toolsnap: window group sealed")
+
 // ErrRegistryCorrupt reports invalid persisted window or final state.
 var ErrRegistryCorrupt = errors.New("toolsnap: registry state corrupt")
 
 // Registry coordinates repository-scoped tool windows across hook processes.
 type Registry struct {
 	dir string
+	// Test seams around unlocked recovery writes.
+	beforeRecoveryWrites func()
+	afterRecoveryWrites  func()
 }
 
 // OpenRegistry prepares the registry directories under semDir.
@@ -181,12 +187,55 @@ type FinalizeResult struct {
 	Final GroupFinal
 }
 
+// GroupMeta records an immutable join horizon and seal state.
+type GroupMeta struct {
+	CreatedAt int64 `json:"created_at"`
+	JoinUntil int64 `json:"join_until"`
+	// Sealed groups accept no members and produce only partial evidence.
+	Sealed bool `json:"sealed,omitempty"`
+}
+
 // registryState holds pending windows and closing states awaiting finalization.
 type registryState struct {
 	Windows []PendingToolSnapshot `json:"windows"`
+	Groups  map[string]GroupMeta  `json:"groups,omitempty"`
 	Finals  map[string]GroupFinal `json:"finals,omitempty"`
 	// NextSeq assigns the capture order under the lock.
 	NextSeq int64 `json:"next_seq,omitempty"`
+}
+
+// dropGroup removes a group's windows, final, and metadata together.
+func dropGroup(state *registryState, gid string) {
+	kept := state.Windows[:0]
+	for _, w := range state.Windows {
+		if w.GroupID != gid {
+			kept = append(kept, w)
+		}
+	}
+	state.Windows = kept
+	delete(state.Finals, gid)
+	delete(state.Groups, gid)
+}
+
+// sealExpiredGroups seals expired groups that still have active members.
+// It reports whether state changed.
+func sealExpiredGroups(state *registryState, now int64) bool {
+	active := map[string]bool{}
+	for _, w := range state.Windows {
+		if w.Status == "active" {
+			active[w.GroupID] = true
+		}
+	}
+	changed := false
+	for gid, meta := range state.Groups {
+		if meta.Sealed || now < meta.JoinUntil || !active[gid] {
+			continue
+		}
+		meta.Sealed = true
+		state.Groups[gid] = meta
+		changed = true
+	}
+	return changed
 }
 
 // validate checks window, grouping, and final-state invariants.
@@ -221,8 +270,32 @@ func (s *registryState) validate() error {
 			activeGroups[w.GroupID] = true
 		}
 	}
-	if len(activeGroups) > 1 {
-		return fmt.Errorf("%w: %d active groups", ErrRegistryCorrupt, len(activeGroups))
+	// Only one group with active members may remain open for joins.
+	unsealed := 0
+	for gid := range activeGroups {
+		if !s.Groups[gid].Sealed {
+			unsealed++
+		}
+	}
+	if unsealed > 1 {
+		return fmt.Errorf("%w: %d unsealed groups with active members", ErrRegistryCorrupt, unsealed)
+	}
+	groupsSeen := map[string]bool{}
+	for _, w := range s.Windows {
+		groupsSeen[w.GroupID] = true
+	}
+	for gid, meta := range s.Groups {
+		if !groupsSeen[gid] {
+			return fmt.Errorf("%w: metadata for absent group %s", ErrRegistryCorrupt, gid)
+		}
+		if meta.CreatedAt <= 0 || meta.JoinUntil <= meta.CreatedAt {
+			return fmt.Errorf("%w: group %s has an invalid join horizon", ErrRegistryCorrupt, gid)
+		}
+	}
+	for gid := range groupsSeen {
+		if _, ok := s.Groups[gid]; !ok {
+			return fmt.Errorf("%w: group %s without metadata", ErrRegistryCorrupt, gid)
+		}
 	}
 	seqs := map[int64]bool{}
 	maxSeq := int64(-1)
@@ -386,6 +459,26 @@ func (r *Registry) loadState(publishMarker func(key ToolKey, groupID string, at 
 			migrated = true
 		}
 	}
+	// Derive missing group metadata from the earliest member.
+	for _, w := range state.Windows {
+		if _, ok := state.Groups[w.GroupID]; ok {
+			continue
+		}
+		created := w.StartedAt
+		for _, m := range state.Windows {
+			if m.GroupID == w.GroupID && m.StartedAt < created {
+				created = m.StartedAt
+			}
+		}
+		if state.Groups == nil {
+			state.Groups = map[string]GroupMeta{}
+		}
+		state.Groups[w.GroupID] = GroupMeta{
+			CreatedAt: created,
+			JoinUntil: created + DefaultStaleActiveAge.Milliseconds(),
+		}
+		migrated = true
+	}
 	// Reconcile recovery receipts before returning state.
 	applied, err = r.applyReceipts(&state, publishMarker)
 	if err != nil {
@@ -406,69 +499,156 @@ func (r *Registry) keySettled(key ToolKey) (bool, error) {
 	return r.HasTombstone(key)
 }
 
-// AbandonedGroup describes a stale group with active members.
-type AbandonedGroup struct {
-	GroupID string
-	Members int
+// joinGroup joins an overlapping open group or creates a new one.
+func joinGroup(state *registryState, key ToolKey, startedAt int64) string {
+	sealExpiredGroups(state, startedAt)
+	for _, w := range state.Windows {
+		if w.Status == "active" && w.Key.RepositoryID == key.RepositoryID && !state.Groups[w.GroupID].Sealed {
+			return w.GroupID
+		}
+	}
+	gid := "g-" + key.hash()
+	if state.Groups == nil {
+		state.Groups = map[string]GroupMeta{}
+	}
+	state.Groups[gid] = GroupMeta{
+		CreatedAt: startedAt,
+		JoinUntil: startedAt + DefaultStaleActiveAge.Milliseconds(),
+	}
+	return gid
 }
 
-// RemoveAbandonedGroups atomically tombstones and removes stale groups
-// that still have active members. A tombstone failure preserves the group.
-func (r *Registry) RemoveAbandonedGroups(ctx context.Context, cutoff, at int64) ([]AbandonedGroup, error) {
-	var removed []AbandonedGroup
-	var tombErrs []error
-	_, err := r.withLock(ctx, func(state *registryState) (bool, error) {
-		groups := map[string][]PendingToolSnapshot{}
+// ReclaimedGroup summarizes one removed sealed group.
+type ReclaimedGroup struct {
+	GroupID string
+	// Completed members converted to pending partials.
+	Completed int
+	// Tombstoned member identities.
+	Tombstoned int
+}
+
+// ReclaimSealedGroups records partial evidence, tombstones every member,
+// and removes sealed groups. Recovery writes occur outside the registry
+// lock. Removal revalidates the captured member state before publication.
+func (r *Registry) ReclaimSealedGroups(ctx context.Context, now int64) ([]ReclaimedGroup, error) {
+	// Seal expired groups and snapshot their members under the lock.
+	var sealed map[string][]PendingToolSnapshot
+	if _, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		changed := sealExpiredGroups(state, now)
+		sealed = map[string][]PendingToolSnapshot{}
 		for _, w := range state.Windows {
-			groups[w.GroupID] = append(groups[w.GroupID], w)
-		}
-		drop := map[string]bool{}
-		for gid, members := range groups {
-			allStale, anyActive := true, false
-			for _, m := range members {
-				if m.StartedAt >= cutoff {
-					allStale = false
-				}
-				if m.Status == "active" {
-					anyActive = true
-				}
-			}
-			if !allStale || !anyActive {
-				continue
-			}
-			ok := true
-			for _, m := range members {
-				if err := r.WriteTombstone(m.Key, at); err != nil {
-					tombErrs = append(tombErrs, err)
-					ok = false
-				}
-			}
-			if !ok {
-				continue
-			}
-			drop[gid] = true
-			removed = append(removed, AbandonedGroup{GroupID: gid, Members: len(members)})
-		}
-		if len(drop) == 0 {
-			return false, nil
-		}
-		kept := state.Windows[:0]
-		for _, w := range state.Windows {
-			if !drop[w.GroupID] {
-				kept = append(kept, w)
+			if state.Groups[w.GroupID].Sealed {
+				sealed[w.GroupID] = append(sealed[w.GroupID], w)
 			}
 		}
-		state.Windows = kept
-		for gid := range drop {
-			delete(state.Finals, gid)
-		}
-		return true, nil
-	})
-	if err != nil {
+		return changed, nil
+	}); err != nil {
 		return nil, err
 	}
-	sort.Slice(removed, func(i, j int) bool { return removed[i].GroupID < removed[j].GroupID })
-	return removed, errors.Join(tombErrs...)
+	if len(sealed) == 0 {
+		return nil, nil
+	}
+
+	// Write idempotent recovery files without holding the registry lock.
+	if r.beforeRecoveryWrites != nil {
+		r.beforeRecoveryWrites()
+	}
+	var persistErrs []error
+	committed := map[string]ReclaimedGroup{}
+	for gid, members := range sealed {
+		if ctx.Err() != nil {
+			break
+		}
+		g := ReclaimedGroup{GroupID: gid}
+		ok := true
+		for _, m := range members {
+			if ctx.Err() != nil {
+				ok = false
+				break
+			}
+			if m.Status != "complete" || m.EventID == "" {
+				continue
+			}
+			if _, err := r.LoadOrRecordPendingPartial(PendingPartialRecord{
+				Key: m.Key, EventID: m.EventID,
+				Reason: ReasonStaleActiveWindow, ToolName: m.ToolName,
+				CommandSummary: m.CommandSummary, Timestamp: m.CompletedAt,
+			}); err != nil {
+				persistErrs = append(persistErrs, err)
+				ok = false
+			} else {
+				g.Completed++
+			}
+		}
+		for _, m := range members {
+			if ctx.Err() != nil {
+				ok = false
+				break
+			}
+			if err := r.WriteTombstone(m.Key, now); err != nil {
+				persistErrs = append(persistErrs, err)
+				ok = false
+			} else {
+				g.Tombstoned++
+			}
+		}
+		if ok {
+			committed[gid] = g
+		}
+	}
+
+	if r.afterRecoveryWrites != nil {
+		r.afterRecoveryWrites()
+	}
+
+	// Revalidate member completion state before removing each group.
+	type memberSig struct {
+		status      string
+		eventID     string
+		completedAt int64
+	}
+	sigOf := func(w PendingToolSnapshot) memberSig {
+		return memberSig{status: w.Status, eventID: w.EventID, completedAt: w.CompletedAt}
+	}
+	var candidates []ReclaimedGroup
+	if _, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		candidates = nil
+		current := map[string]map[ToolKey]memberSig{}
+		for _, w := range state.Windows {
+			if state.Groups[w.GroupID].Sealed {
+				if current[w.GroupID] == nil {
+					current[w.GroupID] = map[ToolKey]memberSig{}
+				}
+				current[w.GroupID][w.Key] = sigOf(w)
+			}
+		}
+		changed := false
+		for gid, g := range committed {
+			cur, present := current[gid]
+			if !present || len(cur) != len(sealed[gid]) {
+				continue // gone or altered; a later pass handles it
+			}
+			unchanged := true
+			for _, m := range sealed[gid] {
+				if cur[m.Key] != sigOf(m) {
+					unchanged = false
+					break
+				}
+			}
+			if !unchanged {
+				continue
+			}
+			dropGroup(state, gid)
+			candidates = append(candidates, g)
+			changed = true
+		}
+		return changed, nil
+	}); err != nil {
+		// Publication failed, so no group was durably reclaimed.
+		return nil, errors.Join(append([]error{err}, persistErrs...)...)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].GroupID < candidates[j].GroupID })
+	return candidates, errors.Join(persistErrs...)
 }
 
 // CaptureAndBegin captures and registers a pre-tool snapshot while
@@ -504,13 +684,7 @@ func (r *Registry) CaptureAndBegin(ctx context.Context, s *Store, key ToolKey, t
 				return false, nil
 			}
 		}
-		groupID := "g-" + key.hash()
-		for _, w := range state.Windows {
-			if w.Status == "active" && w.Key.RepositoryID == key.RepositoryID {
-				groupID = w.GroupID
-				break
-			}
-		}
+		groupID := joinGroup(state, key, startedAt)
 		snap, err := s.CaptureBefore(ctx)
 		if err != nil {
 			return false, err
@@ -557,13 +731,7 @@ func (r *Registry) Begin(ctx context.Context, entry PendingToolSnapshot) (string
 				return false, nil
 			}
 		}
-		// state.validate() guarantees at most one active group.
-		for _, w := range state.Windows {
-			if w.Status == "active" && w.Key.RepositoryID == entry.Key.RepositoryID {
-				groupID = w.GroupID
-				break
-			}
-		}
+		groupID = joinGroup(state, entry.Key, entry.StartedAt)
 		entry.GroupID = groupID
 		entry.Seq = state.NextSeq
 		state.NextSeq++
@@ -584,10 +752,13 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 	}
 	removed := false
 	memberPersisted := false
+	sealedHit := false
 	var finalDone bool
 	var finalIdentity *GroupFinal
 	finalGroupID := ""
 	published, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		// Do not capture an expired window's unbounded span.
+		sealedNow := sealExpiredGroups(state, info.At)
 		idx := -1
 		retry := false
 		for i, w := range state.Windows {
@@ -601,27 +772,39 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 			// Closure markers make late duplicate posts idempotent.
 			closedBefore, merr := r.hasClosureMarker(key)
 			if merr != nil {
-				return false, merr
+				return sealedNow, merr
 			}
 			if closedBefore {
 				removed = true
-				return false, nil
+				return sealedNow, nil
 			}
 			// Distinguish abandonment from a missing pre snapshot.
 			tombstoned, terr := r.HasTombstone(key)
 			if terr != nil {
-				return false, terr
+				return sealedNow, terr
 			}
 			if tombstoned {
-				return false, ErrWindowTombstoned
+				return sealedNow, ErrWindowTombstoned
 			}
-			return false, ErrNoPendingSnapshot
+			return sealedNow, ErrNoPendingSnapshot
 		}
 		if !retry {
 			state.Windows[idx].Status = "complete"
 			state.Windows[idx].CompletedAt = info.At
 			state.Windows[idx].EventID = info.EventID
 			state.Windows[idx].CommandSummary = info.CommandSummary
+		}
+		if state.Groups[state.Windows[idx].GroupID].Sealed {
+			// Persist the event before exposing a sealed completion.
+			sealedHit = true
+			finalGroupID = state.Windows[idx].GroupID
+			if !retry && persistMember != nil {
+				if err := persistMember(state.Windows[idx]); err != nil {
+					return false, err
+				}
+				memberPersisted = true
+			}
+			return !retry, nil
 		}
 
 		groupID := state.Windows[idx].GroupID
@@ -671,14 +854,7 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 					return true, err
 				}
 			}
-			kept := state.Windows[:0]
-			for _, w := range state.Windows {
-				if w.GroupID != groupID {
-					kept = append(kept, w)
-				}
-			}
-			state.Windows = kept
-			delete(state.Finals, groupID)
+			dropGroup(state, groupID)
 			removed = true
 			return true, nil
 		}
@@ -711,6 +887,8 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 			rec = &completionReceipt{Key: key, Info: info, GroupID: finalGroupID, Done: true}
 		case finalIdentity != nil && !published:
 			rec = &completionReceipt{Key: key, Info: info, GroupID: finalGroupID, GroupFinal: finalIdentity}
+		case sealedHit && memberPersisted && !published:
+			rec = &completionReceipt{Key: key, Info: info, GroupID: finalGroupID, Sealed: true}
 		case memberPersisted && !published:
 			rec = &completionReceipt{Key: key, Info: info}
 		}
@@ -720,6 +898,9 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 			}
 		}
 		return false, err
+	}
+	if sealedHit {
+		return false, ErrWindowSealed
 	}
 	return removed, nil
 }
@@ -731,6 +912,8 @@ type completionReceipt struct {
 	GroupID    string         `json:"group_id,omitempty"`
 	Done       bool           `json:"done,omitempty"`
 	GroupFinal *GroupFinal    `json:"group_final,omitempty"`
+	// Sealed restores the group seal with this completion.
+	Sealed bool `json:"sealed,omitempty"`
 }
 
 func (r *Registry) receiptsDir() string     { return filepath.Join(r.dir, "receipts") }
@@ -770,10 +953,13 @@ func (r *Registry) acquireReceiptLock(ctx context.Context) (*os.File, error) {
 	}
 }
 
-// validateShape enforces the three receipt forms: member completion
-// (no group outcome), group done, or group final identity.
+// validateShape accepts member, sealed, final, and done receipts.
 func (rec completionReceipt) validateShape() error {
 	switch {
+	case rec.Sealed:
+		if rec.GroupID != "" && !rec.Done && rec.GroupFinal == nil {
+			return nil // sealed member completion
+		}
 	case rec.GroupID == "" && !rec.Done && rec.GroupFinal == nil:
 		return nil // member completion
 	case rec.GroupID != "" && rec.Done && rec.GroupFinal == nil:
@@ -916,8 +1102,7 @@ func (r *Registry) writeReceiptLocked(rec completionReceipt) error {
 	return nil
 }
 
-// receiptRank orders receipt shapes along the finalization state
-// machine: intent, then persisted identity, then done.
+// receiptRank orders recoverable outcomes after member-only receipts.
 func receiptRank(rec completionReceipt) int {
 	switch {
 	case rec.Done:
@@ -1008,6 +1193,16 @@ func (r *Registry) applyReceipts(state *registryState, publishMarker func(key To
 			continue
 		}
 		switch {
+		case rec.Sealed:
+			// Restore the seal lost with the completion update.
+			meta := state.Groups[rec.GroupID]
+			if !meta.Sealed {
+				meta.Sealed = true
+				if state.Groups == nil {
+					state.Groups = map[string]GroupMeta{}
+				}
+				state.Groups[rec.GroupID] = meta
+			}
 		case rec.Done:
 			// Mark members closed before removing durable group state.
 			if publishMarker != nil {
@@ -1019,14 +1214,7 @@ func (r *Registry) applyReceipts(state *registryState, publishMarker func(key To
 					}
 				}
 			}
-			kept := state.Windows[:0]
-			for _, w := range state.Windows {
-				if w.GroupID != rec.GroupID {
-					kept = append(kept, w)
-				}
-			}
-			state.Windows = kept
-			delete(state.Finals, rec.GroupID)
+			dropGroup(state, rec.GroupID)
 		case rec.GroupFinal != nil:
 			var existing GroupFinal
 			if state.Finals != nil {
@@ -1085,7 +1273,8 @@ func (r *Registry) PendingFinalizations(ctx context.Context) ([]PendingFinalizat
 			}
 		}
 		for gid, members := range byGroup {
-			if activeGroups[gid] {
+			// Sealed groups are reclaimed as partial evidence.
+			if activeGroups[gid] || state.Groups[gid].Sealed {
 				continue
 			}
 			sort.Slice(members, func(i, j int) bool {
@@ -1118,6 +1307,9 @@ func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, final
 	var closingKey ToolKey
 	var closingInfo CompletionInfo
 	published, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		if state.Groups[groupID].Sealed {
+			return false, fmt.Errorf("toolsnap: group %s is sealed; only reclamation may finalize it", groupID)
+		}
 		var members []PendingToolSnapshot
 		for _, w := range state.Windows {
 			if w.GroupID != groupID {
@@ -1155,14 +1347,7 @@ func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, final
 					return true, err
 				}
 			}
-			kept := state.Windows[:0]
-			for _, w := range state.Windows {
-				if w.GroupID != groupID {
-					kept = append(kept, w)
-				}
-			}
-			state.Windows = kept
-			delete(state.Finals, groupID)
+			dropGroup(state, groupID)
 			removed = true
 			return true, nil
 		}
@@ -1207,14 +1392,7 @@ func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, final
 // RemoveGroup deletes stale group members and their pending final identity.
 func (r *Registry) RemoveGroup(ctx context.Context, groupID string) error {
 	_, err := r.withLock(ctx, func(state *registryState) (bool, error) {
-		kept := state.Windows[:0]
-		for _, w := range state.Windows {
-			if w.GroupID != groupID {
-				kept = append(kept, w)
-			}
-		}
-		state.Windows = kept
-		delete(state.Finals, groupID)
+		dropGroup(state, groupID)
 		return true, nil
 	})
 	return err

@@ -289,6 +289,12 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		util.AppendActivityLog(target.semDir,
 			"tool-window post skipped (tombstoned): tool_use=%s", event.ToolUseID)
 		return false
+	case errors.Is(err, toolsnap.ErrWindowSealed):
+		bench.outcome = "sealed"
+		// Reclamation records partial evidence without reading the workspace.
+		util.AppendActivityLog(target.semDir,
+			"tool-window post sealed (join horizon passed): tool_use=%s", event.ToolUseID)
+		return false
 	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {

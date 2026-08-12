@@ -13,6 +13,10 @@ import (
 // DefaultStaleWindowAge is the retention period for pending snapshots.
 const DefaultStaleWindowAge = 24 * time.Hour
 
+// DefaultStaleActiveAge bounds a group's join horizon.
+// Later completions produce partial evidence.
+const DefaultStaleActiveAge = time.Hour
+
 // DefaultPruneGrace protects objects for at least the pending-snapshot period.
 const DefaultPruneGrace = DefaultStaleWindowAge
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/toolsnap"
@@ -248,6 +249,135 @@ func TestSweepReplaysPendingPartial(t *testing.T) {
 	}
 	if links := linksIn(t, w.semDir); len(links) != 1 {
 		t.Fatalf("links after second sweep = %+v", links)
+	}
+}
+
+// A sweep reclaims a sealed group and links its completed members.
+func TestSweepReclaimsStuckActiveGroup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	old := now - 2*toolsnap.DefaultStaleActiveAge.Milliseconds()
+	mkKey := func(tool string) toolsnap.ToolKey {
+		return toolsnap.ToolKey{
+			RepositoryID: w.repoID, Provider: "claude_code",
+			SessionID: "sess-rc", TurnID: "turn-1", ToolUseID: tool,
+		}
+	}
+	stuck := toolsnap.PendingToolSnapshot{
+		Key: mkKey("toolu_stuck"), ToolName: "Bash",
+		SnapshotRef: "refs/semantica/tool-windows/x", TreeHash: "t", HeadHash: "h",
+		ObjectFormat: "sha1", StartedAt: old,
+	}
+	if _, err := reg.Begin(ctx, stuck); err != nil {
+		t.Fatal(err)
+	}
+	done := stuck
+	done.Key = mkKey("toolu_done")
+	done.StartedAt = old + 1
+	if _, err := reg.Begin(ctx, done); err != nil {
+		t.Fatal(err)
+	}
+	evtID := strings.Repeat("fa", 32)
+	if _, err := reg.Complete(ctx, done.Key,
+		toolsnap.CompletionInfo{EventID: evtID, At: old + 2, CommandSummary: "cmd"}, nil,
+		func([]toolsnap.PendingToolSnapshot, *toolsnap.GroupFinal, bool, func() error) (toolsnap.FinalizeResult, error) {
+			t.Fatal("finalize invoked for a pinned group")
+			return toolsnap.FinalizeResult{}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.WriteEventsToRepo(ctx, w.repoPath, []broker.RawEvent{bashRawEvent(evtID, "toolu_done", "sess-rc")}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := SweepToolWindows(ctx, w.repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.GroupsReclaimed != 1 || report.MembersTombstoned != 2 || report.PartialsReplayed != 1 || report.Errors != 0 {
+		t.Fatalf("report = %+v, want one reclaimed group replayed in the same pass", report)
+	}
+	links := linksIn(t, w.semDir)
+	if len(links) != 1 || links[0].EventID != evtID ||
+		links[0].GroupID != toolsnap.ReasonStaleActiveWindow+":"+evtID {
+		t.Fatalf("links = %+v, want stale_active_window partial evidence", links)
+	}
+	for _, k := range []toolsnap.ToolKey{stuck.Key, done.Key} {
+		if ts, err := reg.HasTombstone(k); err != nil || !ts {
+			t.Fatalf("tombstone %s missing: %v err = %v", k.ToolUseID, ts, err)
+		}
+	}
+	if wins := windowsIn(t, w.semDir); len(wins) != 0 {
+		t.Fatalf("windows = %+v, want the pinned group removed", wins)
+	}
+
+	// Repeated sweeps are no-ops.
+	again, err := SweepToolWindows(ctx, w.repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GroupsReclaimed != 0 || again.PartialsReplayed != 0 || again.Errors != 0 {
+		t.Fatalf("second sweep = %+v, want a no-op", again)
+	}
+	if links := linksIn(t, w.semDir); len(links) != 1 {
+		t.Fatalf("links after second sweep = %+v", links)
+	}
+}
+
+// Reclamation succeeds before a later snapshot-store failure.
+func TestSweepReclaimsDespiteBrokenStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "repo")
+	ctx := context.Background()
+
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(tool string, at int64) toolsnap.PendingToolSnapshot {
+		return toolsnap.PendingToolSnapshot{
+			Key: toolsnap.ToolKey{
+				RepositoryID: w.repoID, Provider: "claude_code",
+				SessionID: "s", TurnID: "t", ToolUseID: tool,
+			},
+			ToolName: "Bash", SnapshotRef: "refs/x", TreeHash: "th",
+			HeadHash: "hh", ObjectFormat: "sha1", StartedAt: at,
+		}
+	}
+	if _, err := reg.Begin(ctx, mk("tu-a", 1000)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Begin(ctx, mk("tu-b", 1001)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the snapshot store with a file.
+	storePath := filepath.Join(w.semDir, "tool-snapshots.git")
+	if err := os.RemoveAll(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, []byte("not a git dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := SweepToolWindows(ctx, w.repoPath)
+	if err == nil {
+		t.Fatal("sweep succeeded despite a broken snapshot store")
+	}
+	if report.GroupsReclaimed != 1 || report.MembersTombstoned != 2 {
+		t.Fatalf("report = %+v, want reclamation before store init", report)
+	}
+	if wins := windowsIn(t, w.semDir); len(wins) != 0 {
+		t.Fatalf("windows = %+v, want the reclaimed group removed", wins)
 	}
 }
 

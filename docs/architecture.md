@@ -221,6 +221,11 @@ A repository-scoped registry serializes overlapping tool windows under an
 OS-backed lock. Closing tree identities survive retries, and timeout tombstones
 keep delayed captures from being treated as line evidence.
 
+Overlapping windows share a group with an immutable join horizon. If a member
+remains active past that horizon, Semantica seals the group, starts later
+captures in a fresh group, and recovers completed members as partial evidence
+without rereading the workspace.
+
 Bounded maintenance defers during capture, removes stale unreferenced refs, and
 prunes expired objects without operating on the user repository.
 

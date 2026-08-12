@@ -102,10 +102,9 @@ func TestCompleteAfterAbandonmentReportsTombstone(t *testing.T) {
 	if _, err := r.Begin(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	cutoff := time.Now().Add(-DefaultStaleWindowAge).UnixMilli()
-	removed, err := r.RemoveAbandonedGroups(ctx, cutoff, time.Now().UnixMilli())
-	if err != nil || len(removed) != 1 {
-		t.Fatalf("removed = %+v err = %v", removed, err)
+	reclaimed, err := r.ReclaimSealedGroups(ctx, time.Now().UnixMilli())
+	if err != nil || len(reclaimed) != 1 {
+		t.Fatalf("reclaimed = %+v err = %v", reclaimed, err)
 	}
 
 	// Complete after abandonment.
@@ -139,8 +138,8 @@ func TestCaptureAndBeginRefusesTombstonedKey(t *testing.T) {
 	}
 }
 
-// Abandonment removal preserves groups completed by receipts.
-func TestRemoveAbandonedGroupsSparesReceiptCompleted(t *testing.T) {
+// Reclamation preserves a group completed by a receipt.
+func TestReclaimSealedGroupsSparesReceiptCompleted(t *testing.T) {
 	r := testRegistry(t)
 	ctx := context.Background()
 
@@ -158,25 +157,24 @@ func TestRemoveAbandonedGroupsSparesReceiptCompleted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cutoff := time.Now().Add(-DefaultStaleWindowAge).UnixMilli()
-	removed, err := r.RemoveAbandonedGroups(ctx, cutoff, time.Now().UnixMilli())
-	if err != nil || len(removed) != 0 {
-		t.Fatalf("removed = %+v err = %v, want the receipt-completed group spared", removed, err)
+	reclaimed, err := r.ReclaimSealedGroups(ctx, time.Now().UnixMilli())
+	if err != nil || len(reclaimed) != 0 {
+		t.Fatalf("reclaimed = %+v err = %v, want the receipt-completed group spared", reclaimed, err)
 	}
 	pending, err := r.PendingFinalizations(ctx)
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending = %+v err = %v, want the group recoverable", pending, err)
 	}
 
-	// Remove a stale group with an active member.
+	// A separate expired active group remains reclaimable.
 	goneEntry := entry("tu-gone", 100)
 	goneEntry.StartedAt = staleAt
 	if _, err := r.Begin(ctx, goneEntry); err != nil {
 		t.Fatal(err)
 	}
-	removed, err = r.RemoveAbandonedGroups(ctx, cutoff, time.Now().UnixMilli())
-	if err != nil || len(removed) != 1 || removed[0].Members != 1 {
-		t.Fatalf("removed = %+v err = %v, want one abandoned group", removed, err)
+	reclaimed, err = r.ReclaimSealedGroups(ctx, time.Now().UnixMilli())
+	if err != nil || len(reclaimed) != 1 || reclaimed[0].Tombstoned != 1 {
+		t.Fatalf("reclaimed = %+v err = %v, want one stuck group", reclaimed, err)
 	}
 	if tombstoned, err := r.HasTombstone(abandonedKey); err != nil || !tombstoned {
 		t.Fatalf("abandoned member not tombstoned: %v err = %v", tombstoned, err)

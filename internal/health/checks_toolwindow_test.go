@@ -89,6 +89,58 @@ func TestCheckToolWindows(t *testing.T) {
 		}
 	})
 
+	t.Run("degraded groups warn before retention without claiming capture stopped", func(t *testing.T) {
+		dir := enabledRepo(t)
+		reg, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UnixMilli()
+		mkKey := func(tool string) toolsnap.ToolKey {
+			return toolsnap.ToolKey{
+				RepositoryID: "r1", Provider: "claude_code",
+				SessionID: "s1", TurnID: "t1", ToolUseID: tool,
+			}
+		}
+		// Create an expired group with active and completed members.
+		created := now - 2*toolsnap.DefaultStaleActiveAge.Milliseconds()
+		stuck := toolsnap.PendingToolSnapshot{
+			Key: mkKey("tu-stuck"), ToolName: "Bash",
+			SnapshotRef: "refs/semantica/tool-windows/x", TreeHash: "t", HeadHash: "h",
+			ObjectFormat: "sha1", StartedAt: created,
+		}
+		if _, err := reg.Begin(ctx, stuck); err != nil {
+			t.Fatal(err)
+		}
+		blocked := stuck
+		blocked.Key = mkKey("tu-blocked")
+		blocked.StartedAt = created + 1
+		if _, err := reg.Begin(ctx, blocked); err != nil {
+			t.Fatal(err)
+		}
+		// Complete one member while the group remains open.
+		if _, err := reg.Complete(ctx, blocked.Key,
+			toolsnap.CompletionInfo{EventID: strings.Repeat("cd", 32), At: created + 2},
+			nil, func([]toolsnap.PendingToolSnapshot, *toolsnap.GroupFinal, bool, func() error) (toolsnap.FinalizeResult, error) {
+				t.Fatal("finalize invoked for an open group")
+				return toolsnap.FinalizeResult{}, nil
+			}); err != nil {
+			t.Fatal(err)
+		}
+
+		checks := checkToolWindows(ctx, Options{RepoPath: dir})
+		c := findCheck(t, checks, "recovery")
+		if c.Status != StatusWarn || !strings.Contains(c.Message, "degraded group") {
+			t.Fatalf("checks = %+v, want degraded-group warning", checks)
+		}
+		if !strings.Contains(c.Message, "1 completed member") {
+			t.Fatalf("message = %q, want blocked member count", c.Message)
+		}
+		if !strings.Contains(c.Message, "fresh groups") {
+			t.Fatalf("message = %q, want reassurance that fresh captures are unaffected", c.Message)
+		}
+	})
+
 	t.Run("drift ignores missing-pre links", func(t *testing.T) {
 		dir := enabledRepo(t)
 		t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))

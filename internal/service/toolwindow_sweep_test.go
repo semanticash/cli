@@ -53,6 +53,24 @@ func TestSweepEmitsBenchRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Add an expired group with two active members.
+	mkWindow := func(tool string, startedAt int64) toolsnap.PendingToolSnapshot {
+		return toolsnap.PendingToolSnapshot{
+			Key: toolsnap.ToolKey{
+				RepositoryID: "r1", Provider: "claude_code",
+				SessionID: "s1", TurnID: "t1", ToolUseID: tool,
+			},
+			ToolName: "Bash", SnapshotRef: "refs/x", TreeHash: "th",
+			HeadHash: "hh", ObjectFormat: "sha1", StartedAt: startedAt,
+		}
+	}
+	if _, err := reg.Begin(ctx, mkWindow("tu-rc-a", 1000)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Begin(ctx, mkWindow("tu-rc-b", 1001)); err != nil {
+		t.Fatal(err)
+	}
+
 	SweepToolWindows(ctx)
 
 	f, err := os.Open(doctor.BenchLogPath(dir))
@@ -72,10 +90,81 @@ func TestSweepEmitsBenchRecord(t *testing.T) {
 			if r.PartialsReplayed != 1 || r.SweepErrors != 0 {
 				t.Fatalf("sweep record = %+v, want one replayed partial", r)
 			}
+			if r.GroupsReclaimed != 1 || r.MembersTombstoned != 2 {
+				t.Fatalf("sweep record = %+v, want reclamation scale recorded", r)
+			}
 		}
 	}
 	if !found {
 		t.Fatal("no toolwindow_sweep record emitted")
+	}
+}
+
+// Error telemetry retains reclamation completed before a store failure.
+func TestSweepErrorRecordIncludesReclamation(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	enableSemantica(t, ctx, dir)
+	benchDir := filepath.Join(dir, ".semantica", "doctor")
+	if err := os.MkdirAll(benchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(benchDir, "bench.enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := toolsnap.OpenRegistry(filepath.Join(dir, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(tool string, at int64) toolsnap.PendingToolSnapshot {
+		return toolsnap.PendingToolSnapshot{
+			Key: toolsnap.ToolKey{
+				RepositoryID: "r1", Provider: "claude_code",
+				SessionID: "s1", TurnID: "t1", ToolUseID: tool,
+			},
+			ToolName: "Bash", SnapshotRef: "refs/x", TreeHash: "th",
+			HeadHash: "hh", ObjectFormat: "sha1", StartedAt: at,
+		}
+	}
+	if _, err := reg.Begin(ctx, mk("tu-a", 1000)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Begin(ctx, mk("tu-b", 1001)); err != nil {
+		t.Fatal(err)
+	}
+	// Fail store initialization after reclamation.
+	storePath := filepath.Join(dir, ".semantica", "tool-snapshots.git")
+	if err := os.RemoveAll(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, []byte("not a git dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	SweepToolWindows(ctx)
+
+	f, err := os.Open(doctor.BenchLogPath(dir))
+	if err != nil {
+		t.Fatalf("bench log: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	found := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var r doctor.BenchRecord
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatalf("bench record malformed: %v", err)
+		}
+		if r.Kind == "toolwindow_sweep" && r.Outcome == "error" {
+			found = true
+			if r.GroupsReclaimed != 1 || r.MembersTombstoned != 2 {
+				t.Fatalf("error record = %+v, want reclamation accounted before the failure", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no error record with reclamation counts emitted")
 	}
 }
 

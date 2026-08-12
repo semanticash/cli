@@ -55,6 +55,15 @@ func checkToolWindows(ctx context.Context, opts Options) []Check {
 	var checks []Check
 	backlog := status.PendingPartials + status.PendingFinalizations
 	switch {
+	case status.DegradedGroups > 0:
+		checks = append(checks, Check{
+			Category: "toolwindow",
+			ID:       "recovery",
+			Status:   StatusWarn,
+			Message: fmt.Sprintf("tool windows: %d degraded group(s) past their join horizon (oldest active %s) hold %d completed member(s) as partial-only evidence; new captures form fresh groups and are unaffected",
+				status.DegradedGroups, status.OldestActiveAge.Round(time.Minute), status.BlockedMembers),
+			Remediation: "the worker sweep reclaims these on its next pass; `semantica tidy --apply` reclaims them now",
+		})
 	case backlog > 0:
 		checks = append(checks, Check{
 			Category: "toolwindow",
@@ -120,16 +129,17 @@ func checkToolWindowDrift(ctx context.Context, opts Options) []Check {
 	since := time.Now().Add(-24 * time.Hour).UnixMilli()
 	var unmatched, captured int
 	// Drift applies only to providers with a pre-tool hook.
+	// Only unprefixed group IDs identify complete captures.
 	if err := h.DB.QueryRowContext(ctx,
 		`SELECT
 		   COUNT(*) FILTER (WHERE NOT EXISTS (
 		     SELECT 1 FROM agent_event_evidence_links l
 		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
-		       AND l.group_id NOT LIKE 'pre_snapshot_missing:%')),
+		       AND l.group_id NOT LIKE '%:%')),
 		   COUNT(*) FILTER (WHERE EXISTS (
 		     SELECT 1 FROM agent_event_evidence_links l
 		     WHERE l.event_id = e.event_id AND l.evidence_kind = 'tool_delta'
-		       AND l.group_id NOT LIKE 'pre_snapshot_missing:%'))
+		       AND l.group_id NOT LIKE '%:%'))
 		 FROM agent_events e
 		 JOIN agent_sessions s ON s.session_id = e.session_id
 		 WHERE e.tool_name = 'Bash' AND e.event_source = 'hook' AND e.ts > ?

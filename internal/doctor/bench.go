@@ -52,12 +52,14 @@ type BenchRecord struct {
 	GroupMembers  int    `json:"group_members,omitempty"`
 
 	// Tool-window recovery fields.
-	PartialsReplayed int   `json:"partials_replayed,omitempty"`
-	GroupsResumed    int   `json:"groups_resumed,omitempty"`
-	GroupsTerminal   int   `json:"groups_terminal,omitempty"`
-	LinksSkipped     int   `json:"links_skipped,omitempty"`
-	SweepErrors      int   `json:"sweep_errors,omitempty"`
-	StoreBytes       int64 `json:"store_bytes,omitempty"`
+	PartialsReplayed  int   `json:"partials_replayed,omitempty"`
+	GroupsResumed     int   `json:"groups_resumed,omitempty"`
+	GroupsTerminal    int   `json:"groups_terminal,omitempty"`
+	GroupsReclaimed   int   `json:"groups_reclaimed,omitempty"`
+	MembersTombstoned int   `json:"members_tombstoned,omitempty"`
+	LinksSkipped      int   `json:"links_skipped,omitempty"`
+	SweepErrors       int   `json:"sweep_errors,omitempty"`
+	StoreBytes        int64 `json:"store_bytes,omitempty"`
 }
 
 // BenchScope aggregates per-repo stats while one hook or turn is being handled.

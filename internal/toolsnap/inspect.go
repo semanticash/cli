@@ -13,6 +13,7 @@ type RegistrySnapshot struct {
 	// Exists reports whether the registry directory is present.
 	Exists              bool
 	Windows             []PendingToolSnapshot
+	Groups              map[string]GroupMeta
 	Finals              map[string]GroupFinal
 	Partials            []PendingPartialRecord
 	Tombstones          []Tombstone
@@ -38,6 +39,7 @@ func InspectRegistry(semDir string) (RegistrySnapshot, error) {
 		return snap, err
 	}
 	snap.Windows = state.Windows
+	snap.Groups = state.Groups
 	snap.Finals = state.Finals
 
 	entries, err := os.ReadDir(filepath.Join(dir, "partials"))
@@ -94,7 +96,7 @@ func (s RegistrySnapshot) CompleteGroups() []PendingFinalization {
 	}
 	var out []PendingFinalization
 	for gid, members := range byGroup {
-		if active[gid] {
+		if active[gid] || s.Groups[gid].Sealed {
 			continue
 		}
 		p := PendingFinalization{GroupID: gid, Members: members}

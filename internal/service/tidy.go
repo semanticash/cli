@@ -245,7 +245,8 @@ func (s *TidyService) tidyToolWindows(ctx context.Context, apply bool, repoRoot 
 	if apply {
 		report, err := hooks.SweepToolWindows(ctx, repoRoot)
 		if err != nil {
-			result.Errors++
+			// Include recovery errors that preceded the terminal failure.
+			result.Errors += report.Errors + 1
 		} else {
 			result.Errors += report.Errors
 			result.ToolWindowsRecovered = report.PartialsReplayed + report.GroupsResumed + report.GroupsTerminal
@@ -256,6 +257,15 @@ func (s *TidyService) tidyToolWindows(ctx context.Context, apply bool, repoRoot 
 						report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal),
 				})
 			}
+		}
+		// Report reclamation even if later sweep work failed.
+		if report.GroupsReclaimed > 0 {
+			result.ToolWindowsRemoved += report.MembersTombstoned
+			result.Actions = append(result.Actions, TidyAction{
+				Category: "toolwindow", ID: "reclaim",
+				Detail: fmt.Sprintf("reclaimed %d stuck group(s), %d member(s) tombstoned",
+					report.GroupsReclaimed, report.MembersTombstoned),
+			})
 		}
 	} else {
 		result.ToolWindowsRecovered = len(snap.Partials) + len(snap.CompleteGroups())
@@ -278,51 +288,39 @@ func (s *TidyService) tidyToolWindows(ctx context.Context, apply bool, repoRoot 
 		}
 	}
 
-	// Remove stale groups with active members. Completed groups remain recoverable.
-	cutoff := now.Add(-toolsnap.DefaultStaleWindowAge).UnixMilli()
-	if apply {
-		removed, err := reg.RemoveAbandonedGroups(ctx, cutoff, now.UnixMilli())
-		if err != nil {
-			result.Errors++
-		}
-		for _, g := range removed {
-			result.ToolWindowsRemoved += g.Members
-			result.Actions = append(result.Actions, TidyAction{
-				Category: "toolwindow", ID: util.ShortID(g.GroupID),
-				Detail: fmt.Sprintf("abandoned group, %d member(s), pre hook without post", g.Members),
-			})
-		}
-	} else {
-		groups := map[string][]toolsnap.PendingToolSnapshot{}
+	// Dry runs report groups that an applied sweep would reclaim.
+	if !apply {
+		groupMembers := map[string][]toolsnap.PendingToolSnapshot{}
 		for _, w := range snap.Windows {
-			groups[w.GroupID] = append(groups[w.GroupID], w)
+			groupMembers[w.GroupID] = append(groupMembers[w.GroupID], w)
 		}
-		for gid, members := range groups {
-			allStale, anyActive := true, false
-			for _, m := range members {
-				if m.StartedAt >= cutoff {
-					allStale = false
-				}
-				if m.Status == "active" {
-					anyActive = true
-				}
+		activeGroups := map[string]bool{}
+		for _, w := range snap.Windows {
+			if w.Status == "active" {
+				activeGroups[w.GroupID] = true
 			}
-			if !allStale || !anyActive {
+		}
+		nowMs := now.UnixMilli()
+		for gid, members := range groupMembers {
+			meta := snap.Groups[gid]
+			degraded := meta.Sealed || (nowMs >= meta.JoinUntil && activeGroups[gid])
+			if !degraded {
 				continue
 			}
 			result.ToolWindowsRemoved += len(members)
 			result.Actions = append(result.Actions, TidyAction{
 				Category: "toolwindow", ID: util.ShortID(gid),
-				Detail: fmt.Sprintf("abandoned group, %d member(s), pre hook without post", len(members)),
+				Detail: fmt.Sprintf("degraded group, %d member(s), reclaimable", len(members)),
 			})
 		}
 	}
 
-	// Retain tombstones for the same period as stale windows.
+	// Retain tombstones long enough to reject delayed post hooks.
+	tombstoneCutoff := now.Add(-toolsnap.DefaultStaleWindowAge).UnixMilli()
 	result.Errors += len(snap.MalformedTombstones)
 	expired := 0
 	for _, tb := range snap.Tombstones {
-		if tb.At >= cutoff {
+		if tb.At >= tombstoneCutoff {
 			continue
 		}
 		if apply {
