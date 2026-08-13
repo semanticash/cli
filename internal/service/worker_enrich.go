@@ -117,9 +117,17 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 		return enrichResult{}, fmt.Errorf("list files: %w", err)
 	}
 
-	// Manifest.
+	// Commit-linked checkpoints reuse only files Git verifies as unchanged
+	// across the commit range and current worktree.
 	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.RepositorySequence)
-	mr, err := blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, prevManifest.files)
+	reusableFiles := prevManifest.files
+	if in.CommitHash != "" {
+		reusableFiles, err = reusableCommitRangeFiles(ctx, h, repo, prevManifest, in.CheckpointID, in.CommitHash)
+		if err != nil {
+			return enrichResult{}, fmt.Errorf("reusable manifest files: %w", err)
+		}
+	}
+	mr, err := blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, reusableFiles)
 	if err != nil {
 		return enrichResult{}, err
 	}

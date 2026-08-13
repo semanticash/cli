@@ -36,6 +36,9 @@ type ManifestResult struct {
 // permMask extracts the permission bits we store in the manifest.
 const permMask = os.ModeSetuid | os.ModeSetgid | os.ModeSticky | os.ModePerm
 
+// marshalManifest lets tests cancel during serialization.
+var marshalManifest = func(m Manifest) ([]byte, error) { return json.Marshal(m) }
+
 // BuildManifest reads each file via readFile, stores blobs, builds a manifest,
 // and stores the manifest blob itself. Returns the manifest hash and total size.
 //
@@ -43,6 +46,10 @@ const permMask = os.ModeSetuid | os.ModeSetgid | os.ModeSticky | os.ModePerm
 // reuse the previous blob hash without re-reading or re-hashing the file.
 // Symlinks are always re-read regardless of previous state.
 func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []string, readFile func(rel string) ([]byte, error), prevFiles []ManifestFile) (*ManifestResult, error) {
+	// Reject cancellation before publishing even an empty manifest.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	now := time.Now().UnixMilli()
 	m := Manifest{
 		Version:   1,
@@ -59,6 +66,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 
 	var totalBytes int64
 	for _, rel := range paths {
+		// Avoid hashing the remaining files after cancellation.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		absPath := filepath.Join(repoRoot, rel)
 
 		fi, err := os.Lstat(absPath)
@@ -110,6 +121,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 				}
 				return nil, fmt.Errorf("read file %s: %w", rel, err)
 			}
+			// Store.Put ignores its context, so check after reading.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			hash, size, err := bs.Put(ctx, b)
 			if err != nil {
 				return nil, fmt.Errorf("store blob for %s: %w", rel, err)
@@ -122,11 +137,15 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 		m.Files = append(m.Files, mf)
 	}
 
-	manifestBytes, err := json.Marshal(m)
+	manifestBytes, err := marshalManifest(m)
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 
+	// Store.Put ignores its context, so check again after serialization.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	manifestHash, _, err := bs.Put(ctx, manifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("store manifest: %w", err)
