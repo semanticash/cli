@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-08-13
 
 ### Added
 
@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Codex hooks now install in `<repo>/.codex/hooks.json`, preserve existing project hooks, and require approval through `/hooks` or Settings > Hooks. The global hooks feature is enabled without removing legacy user-global hooks.
+- `semantica enable --force` now preserves repository settings, including workspace connections, attribution mode, trailers, and automations. Unreadable settings are replaced with defaults after a warning.
 
 ### Fixed
 

@@ -232,6 +232,129 @@ func TestEnable_ForceReenables(t *testing.T) {
 	}
 }
 
+func TestEnable_ForcePreservesSettings(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Customize every preserved field away from its default.
+	settings, err := util.ReadSettings(semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := true
+	trailers := false
+	settings.AttributionV2 = &v2
+	settings.Trailers = &trailers
+	settings.Connected = true
+	settings.ConnectedRepoID = "hosted-repo-123"
+	if settings.Automations == nil {
+		settings.Automations = &util.Automations{}
+	}
+	settings.Automations.Playbook.Enabled = false
+	if err := util.WriteSettings(semDir, settings); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Enable(ctx, EnableOptions{Force: true}); err != nil {
+		t.Fatalf("force re-enable: %v", err)
+	}
+
+	got, err := util.ReadSettings(semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled {
+		t.Error("repo not enabled after force re-enable")
+	}
+	if got.AttributionV2 == nil || !*got.AttributionV2 {
+		t.Error("attribution_v2 opt-in lost across --force")
+	}
+	if got.Trailers == nil || *got.Trailers {
+		t.Error("trailers preference lost across --force")
+	}
+	if !got.Connected || got.ConnectedRepoID != "hosted-repo-123" {
+		t.Errorf("workspace connection lost across --force: connected=%v repo=%q", got.Connected, got.ConnectedRepoID)
+	}
+	if got.Automations == nil || got.Automations.Playbook.Enabled {
+		t.Error("disabled playbook automation re-enabled across --force")
+	}
+}
+
+func TestEnable_ForceStatFailureAborts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-loop stat injection requires unix")
+	}
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A self-referential symlink makes os.Stat fail with ELOOP, not ENOENT.
+	sp := util.SettingsPath(semDir)
+	if err := os.Remove(sp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("settings.json", sp); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.Enable(ctx, EnableOptions{Force: true})
+	if err == nil || !strings.Contains(err.Error(), "stat settings.json") {
+		t.Fatalf("err = %v, want stat settings.json failure", err)
+	}
+	target, err := os.Readlink(sp)
+	if err != nil || target != "settings.json" {
+		t.Fatalf("settings.json was rewritten: target=%q err=%v", target, err)
+	}
+}
+
+func TestEnable_ForceUnreadableSettingsFallsBackToDefaults(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(util.SettingsPath(semDir), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Enable(ctx, EnableOptions{Force: true}); err != nil {
+		t.Fatalf("force re-enable with corrupt settings: %v", err)
+	}
+	got, err := util.ReadSettings(semDir)
+	if err != nil {
+		t.Fatalf("settings unreadable after repair: %v", err)
+	}
+	if !got.Enabled {
+		t.Error("repo not enabled after repair")
+	}
+	if got.AttributionV2 != nil || got.Connected {
+		t.Errorf("defaults expected after corrupt-settings repair, got %+v", got)
+	}
+}
+
 func TestEnable_FailsOutsideGitRepo(t *testing.T) {
 	dir := t.TempDir() // not a git repo
 	ctx := context.Background()
