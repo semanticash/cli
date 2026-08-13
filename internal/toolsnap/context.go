@@ -207,7 +207,9 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 
 // gitOutputEnv runs git in dir under an explicit environment.
 func gitOutputEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// Enable long Windows paths without changing the store configuration.
+	full := append([]string{"-c", "core.longpaths=true"}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
 	cmd.Env = env
 	platform.HideWindow(cmd)

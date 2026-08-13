@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/semanticash/cli/internal/broker"
 )
+
+// jsonQuote returns s as a JSON string literal.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // readHookPayload is the bounded stdin reader used by `semantica
 // capture`. These tests cover the behaviors capture relies on:
@@ -104,8 +111,8 @@ func TestCaptureCmd_CodexPreToolUse_ExitsZeroAndNeverDenies(t *testing.T) {
 	}
 	_ = broker.Close(bh)
 
-	payload := `{"session_id":"sess-deny","turn_id":"t","cwd":"` + canon +
-		`","tool_name":"Bash","tool_use_id":"call_deny_1","tool_input":{"command":"gofmt -w ."}}`
+	payload := `{"session_id":"sess-deny","turn_id":"t","cwd":` + jsonQuote(canon) +
+		`,"tool_name":"Bash","tool_use_id":"call_deny_1","tool_input":{"command":"gofmt -w ."}}`
 
 	stdout, _ := runCaptureCapturingStd(t, payload, "codex", "pre-tool-use")
 
@@ -144,7 +151,7 @@ func TestCaptureCmd_CodexParseFailure_ExitsZeroAndSilentStdout(t *testing.T) {
 	_ = broker.Close(bh)
 
 	// The cwd passes preflight, but the malformed session id must fail closed.
-	payload := `{"cwd":"` + canon + `","session_id":{},"tool_name":"Bash","tool_use_id":"c1"}`
+	payload := `{"cwd":` + jsonQuote(canon) + `,"session_id":{},"tool_name":"Bash","tool_use_id":"c1"}`
 
 	stdout, stderr := runCaptureCapturingStd(t, payload, "codex", "pre-tool-use")
 

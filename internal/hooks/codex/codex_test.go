@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,12 @@ import (
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/toolsnap"
 )
+
+// jsonQuote returns s as a JSON string literal.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // withCodexHome redirects CODEX_HOME for a test.
 func withCodexHome(t *testing.T) string {
@@ -416,7 +423,8 @@ func TestInstallHooks_RollbackRestoresPriorConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != priorMode {
+	// Unix permission bits are not meaningful on Windows.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != priorMode {
 		t.Errorf("config mode after rollback = %o, want %o", fi.Mode().Perm(), priorMode)
 	}
 }
@@ -1350,8 +1358,8 @@ func TestParseAndDispatch_CodexNumericPrePairsWithStringPost(t *testing.T) {
 	}
 
 	// The pre-hook uses numeric IDs.
-	pre := `{"session_id":55501,"cwd":"` + repoPath +
-		`","tool_name":"Bash","tool_use_id":88802,"tool_input":{"command":"make generate"}}`
+	pre := `{"session_id":55501,"cwd":` + jsonQuote(repoPath) +
+		`,"tool_name":"Bash","tool_use_id":88802,"tool_input":{"command":"make generate"}}`
 	dispatch("pre-tool-use", pre)
 
 	if err := os.WriteFile(filepath.Join(repoPath, "gen.txt"), []byte("generated line\n"), 0o644); err != nil {
@@ -1359,8 +1367,8 @@ func TestParseAndDispatch_CodexNumericPrePairsWithStringPost(t *testing.T) {
 	}
 
 	// The post-hook uses equivalent string IDs.
-	post := `{"session_id":"55501","cwd":"` + repoPath +
-		`","tool_name":"Bash","tool_use_id":"88802","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
+	post := `{"session_id":"55501","cwd":` + jsonQuote(repoPath) +
+		`,"tool_name":"Bash","tool_use_id":"88802","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
 	dispatch("post-tool-use", post)
 
 	deltas := codexDeltasIn(t, semDir)
@@ -1493,16 +1501,16 @@ func TestParseAndDispatch_CodexBashWindowProducesCompleteDelta(t *testing.T) {
 		}
 	}
 
-	pre := `{"session_id":"` + sessionID + `","cwd":"` + repoPath +
-		`","tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"}}`
+	pre := `{"session_id":"` + sessionID + `","cwd":` + jsonQuote(repoPath) +
+		`,"tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"}}`
 	dispatch("pre-tool-use", pre)
 
 	if err := os.WriteFile(filepath.Join(repoPath, "gen.txt"), []byte("generated line\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	post := `{"session_id":"` + sessionID + `","cwd":"` + repoPath +
-		`","tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
+	post := `{"session_id":"` + sessionID + `","cwd":` + jsonQuote(repoPath) +
+		`,"tool_name":"Bash","tool_use_id":"call_window_1","tool_input":{"command":"make generate"},"tool_response":{"output":"ok"}}`
 	dispatch("post-tool-use", post)
 
 	deltas := codexDeltasIn(t, semDir)

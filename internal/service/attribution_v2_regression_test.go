@@ -449,7 +449,9 @@ func TestV2Regression_V1GoldenResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden (regenerate with UPDATE_GOLDEN=1): %v", err)
 	}
-	if string(got) != string(want) {
+	// Ignore checkout line-ending conversion.
+	normalize := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+	if normalize(string(got)) != normalize(string(want)) {
 		t.Errorf("v1 result drifted from golden:\n got: %s\nwant: %s", got, want)
 	}
 }

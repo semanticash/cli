@@ -141,6 +141,12 @@ func TestCaptureAfterByteLimitFailsPartial(t *testing.T) {
 
 // TestSubmoduleLifecycleIsTouchOnlyEvidence covers gitlink changes.
 func TestSubmoduleLifecycleIsTouchOnlyEvidence(t *testing.T) {
+	// Set identity for commits made in the cloned submodule.
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+
 	sub := t.TempDir()
 	run(t, sub, "git", "init", "-q", "-b", "main")
 	run(t, sub, "git", "config", "user.email", "t@example.com")

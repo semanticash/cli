@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Tool snapshots now support long Git ref paths on Windows.
 - Codex hooks now accept numeric identifiers and metadata without dropping valid `PreToolUse` events. Unused `turn_id` values are ignored, while malformed session and tool identifiers still fail closed with clearer diagnostics.
 - Codex event identifiers now fall back to the session when `transcript_path` is unavailable, preventing collisions across sessions.
 - Binary changes now remain visible in attribution results and use `tool_delta_touch` when verified tool-delta evidence is available.
