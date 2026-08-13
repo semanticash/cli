@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-08-12
+## [0.6.0] - Unreleased
 
 ### Added
 
@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Turn packaging now falls back to the prompt-time working directory when completion events omit it.
 - Git hook installation now preserves existing user hooks through interrupted or failed updates by validating backups before replacing the active hook.
 - Capture reconciliation now stays within the locked repository, preserves replayable interrupted-turn ownership, and reports deferred or orphaned evidence instead of discarding it silently.
+- Fixed stale checkpoint manifests when files are rewritten without changing size or modification time. Manifest reuse now requires Git-verified unchanged content and falls back to rehashing when verification is unavailable.
 
 ### Security
 

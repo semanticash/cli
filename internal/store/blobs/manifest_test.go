@@ -8,6 +8,146 @@ import (
 	"testing"
 )
 
+func TestBuildManifest_CancelledContextAborts(t *testing.T) {
+	blobDir := filepath.Join(t.TempDir(), "blobs")
+	repoDir := t.TempDir()
+
+	bs, err := NewStore(blobDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, repoDir, "a.txt", "aaa\n", 0o644)
+
+	reads := 0
+	readFile := func(rel string) ([]byte, error) {
+		reads++
+		return os.ReadFile(filepath.Join(repoDir, rel))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := BuildManifest(ctx, bs, repoDir, []string{"a.txt"}, readFile, nil); err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if reads != 0 {
+		t.Errorf("readFile ran %d times under a cancelled context, want 0", reads)
+	}
+}
+
+func TestBuildManifest_CancelledContextNoEmptyManifest(t *testing.T) {
+	bs, err := NewStore(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := BuildManifest(ctx, bs, t.TempDir(), nil, nil, nil)
+	if err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if res != nil {
+		t.Errorf("result = %+v under a cancelled context, want nil", res)
+	}
+}
+
+// Cancellation during serialization must stop the manifest write.
+func TestBuildManifest_CancelDuringMarshalAborts(t *testing.T) {
+	blobDir := filepath.Join(t.TempDir(), "blobs")
+	bs, err := NewStore(blobDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	orig := marshalManifest
+	t.Cleanup(func() { marshalManifest = orig })
+	marshalManifest = func(m Manifest) ([]byte, error) {
+		cancel()
+		return orig(m)
+	}
+
+	// With no paths, only the post-marshal check can observe cancellation.
+	res, err := BuildManifest(ctx, bs, t.TempDir(), nil, nil, nil)
+	if err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if res != nil {
+		t.Errorf("result = %+v, want nil", res)
+	}
+	entries := 0
+	_ = filepath.WalkDir(blobDir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			entries++
+		}
+		return nil
+	})
+	if entries != 0 {
+		t.Errorf("blob store holds %d object(s); the manifest must not persist when cancellation hits during marshaling", entries)
+	}
+}
+
+// A vanished file can bypass the post-read check but not the final check.
+func TestBuildManifest_CancelBeforePersistAborts(t *testing.T) {
+	blobDir := filepath.Join(t.TempDir(), "blobs")
+	repoDir := t.TempDir()
+
+	bs, err := NewStore(blobDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, repoDir, "a.txt", "aaa\n", 0o644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	readFile := func(rel string) ([]byte, error) {
+		cancel()
+		return nil, os.ErrNotExist
+	}
+	if _, err := BuildManifest(ctx, bs, repoDir, []string{"a.txt"}, readFile, nil); err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	entries := 0
+	_ = filepath.WalkDir(blobDir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			entries++
+		}
+		return nil
+	})
+	if entries != 0 {
+		t.Errorf("blob store holds %d object(s); the manifest must not persist after cancellation", entries)
+	}
+}
+
+// Cancellation during a read stops both file and manifest writes.
+func TestBuildManifest_CancelInsideFinalReaderAborts(t *testing.T) {
+	blobDir := filepath.Join(t.TempDir(), "blobs")
+	repoDir := t.TempDir()
+
+	bs, err := NewStore(blobDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, repoDir, "a.txt", "aaa\n", 0o644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	readFile := func(rel string) ([]byte, error) {
+		b, err := os.ReadFile(filepath.Join(repoDir, rel))
+		cancel()
+		return b, err
+	}
+	if _, err := BuildManifest(ctx, bs, repoDir, []string{"a.txt"}, readFile, nil); err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	entries := 0
+	_ = filepath.WalkDir(blobDir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			entries++
+		}
+		return nil
+	})
+	if entries != 0 {
+		t.Errorf("blob store holds %d object(s) after cancellation inside the final read, want 0", entries)
+	}
+}
+
 func TestBuildManifest_BasicFiles(t *testing.T) {
 	blobDir := filepath.Join(t.TempDir(), "blobs")
 	repoDir := t.TempDir()

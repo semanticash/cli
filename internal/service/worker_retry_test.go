@@ -84,10 +84,13 @@ func TestWorkerRun_AttemptsExhaustTerminally(t *testing.T) {
 	}
 	t.Cleanup(func() { workerProcess = orig })
 
+	// Poll until terminal because a scheduled retry may not yet be due.
+	// Deferred runs do not invoke workerProcess or consume an attempt.
 	svc := NewWorkerService(nil)
-	for i := 0; i < retryMaxAttempts; i++ {
+	deadline := time.Now().Add(10 * time.Second)
+	for readCheckpoint(t, h, "ck-x").Status != "failed" && time.Now().Before(deadline) {
 		_ = svc.Run(ctx, WorkerInput{CheckpointID: "ck-x", RepoRoot: dir})
-		time.Sleep(5 * time.Millisecond) // let the tiny backoff elapse
+		time.Sleep(2 * time.Millisecond)
 	}
 
 	cp := readCheckpoint(t, h, "ck-x")
