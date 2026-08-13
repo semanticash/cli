@@ -201,14 +201,28 @@ func (s *EnableService) initLocalState(
 		return nil, fmt.Errorf("create .semantica dirs: %w", err)
 	}
 
-	// Hooks are installed before activation, so keep the repo disabled here.
-	if err := util.WriteSettings(semDir, util.Settings{
-		Enabled: false,
-		Version: 1,
+	// Reinitialization resets local state while preserving repository settings.
+	settings := util.Settings{
 		Automations: &util.Automations{
 			Playbook: util.PlaybookAutomation{Enabled: true},
 		},
-	}); err != nil {
+	}
+	if _, statErr := os.Stat(util.SettingsPath(semDir)); statErr == nil {
+		prev, readErr := util.ReadSettings(semDir)
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "semantica: warning: existing settings.json is unreadable (%v); reinitializing with defaults\n", readErr)
+		} else {
+			settings = prev
+			fmt.Fprintln(os.Stderr, "semantica: preserved existing settings across reinitialization")
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		// Do not overwrite settings when their existence cannot be determined.
+		return nil, fmt.Errorf("stat settings.json: %w", statErr)
+	}
+	// Hooks are installed before activation, so keep the repo disabled here.
+	settings.Enabled = false
+	settings.Version = 1
+	if err := util.WriteSettings(semDir, settings); err != nil {
 		return nil, fmt.Errorf("write settings.json: %w", err)
 	}
 
