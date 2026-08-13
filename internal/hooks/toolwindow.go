@@ -16,8 +16,11 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// toolWindowDeadline bounds one pre-tool capture.
-const toolWindowDeadline = 2 * time.Second
+// toolWindowDeadline bounds one pre- or post-tool capture.
+var toolWindowDeadline = 2 * time.Second
+
+// toolWindowPreCapture overrides the pre-capture context in tests.
+var toolWindowPreCapture func(context.Context) context.Context
 
 // toolWindowTarget identifies the repository that owns a tool window.
 type toolWindowTarget struct {
@@ -148,7 +151,11 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 		TurnID:       event.TurnID,
 		ToolUseID:    event.ToolUseID,
 	}
-	win, err := reg.CaptureAndBegin(wctx, store, key, event.ToolName, event.Timestamp)
+	captureCtx := wctx
+	if toolWindowPreCapture != nil {
+		captureCtx = toolWindowPreCapture(wctx)
+	}
+	win, err := reg.CaptureAndBegin(captureCtx, store, key, event.ToolName, event.Timestamp)
 	switch {
 	case err != nil:
 		var pe *toolsnap.PartialError

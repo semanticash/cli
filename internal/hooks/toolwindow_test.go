@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/semanticash/cli/internal/broker"
-	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -198,7 +197,15 @@ func TestHandleToolStepStartedNoActiveTurn(t *testing.T) {
 	}
 }
 
-// A held registry lock produces only the activity-log diagnostic.
+// setToolWindowDeadline overrides the capture deadline for one test.
+func setToolWindowDeadline(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := toolWindowDeadline
+	toolWindowDeadline = d
+	t.Cleanup(func() { toolWindowDeadline = orig })
+}
+
+// A registry lock timeout records a diagnostic and no window.
 func TestHandleToolStepStartedLockTimeoutDiagnostic(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
@@ -210,22 +217,16 @@ func TestHandleToolStepStartedLockTimeoutDiagnostic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	lockPath := filepath.Join(w.semDir, "tool-windows", "registry.lock")
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	holder, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = holder.Close() }()
-	if err := platform.LockFile(holder); err != nil {
-		t.Fatal(err)
-	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess-l", "toolu_l", w.repoPath), w.bh); err != nil {
+	// Cancel before capture to exercise the lock-timeout path.
+	toolWindowPreCapture = func(ctx context.Context) context.Context {
+		c, cancel := context.WithCancel(ctx)
+		cancel()
+		return c
+	}
+	t.Cleanup(func() { toolWindowPreCapture = nil })
+
+	if err := handleToolStepStarted(context.Background(), "claude-code", startedEvent("sess-l", "toolu_l", w.repoPath), w.bh); err != nil {
 		t.Fatalf("handler: %v", err)
 	}
 
@@ -235,9 +236,6 @@ func TestHandleToolStepStartedLockTimeoutDiagnostic(t *testing.T) {
 	}
 	if !strings.Contains(string(logBytes), toolsnap.ReasonLockTimeout) {
 		t.Fatalf("activity log = %q, want %s diagnostic", logBytes, toolsnap.ReasonLockTimeout)
-	}
-	if err := platform.UnlockFile(holder); err != nil {
-		t.Fatal(err)
 	}
 	if wins := windowsIn(t, w.semDir); len(wins) != 0 {
 		t.Fatalf("windows = %+v, want none after lock timeout", wins)
@@ -311,6 +309,7 @@ func findDeltas(t *testing.T, semDir string) []*toolsnap.Delta {
 
 // TestCompleteToolWindowProducesDelta covers the complete hook lifecycle.
 func TestCompleteToolWindowProducesDelta(t *testing.T) {
+	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
@@ -402,6 +401,7 @@ func TestCompleteToolWindowProducesDelta(t *testing.T) {
 
 // Codex Bash windows produce Codex-attributed deltas.
 func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
+	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
@@ -459,6 +459,7 @@ func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
 
 // TestCompleteToolWindowConcurrentGroup covers overlapping Bash tools.
 func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
+	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
