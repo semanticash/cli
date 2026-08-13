@@ -44,6 +44,14 @@ func (w *manifestWorld) git(t *testing.T, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// stageFile writes the worktree file's content to the index without relying on
+// Git's stat cache, which may miss restored-mtime rewrites on Windows.
+func (w *manifestWorld) stageFile(t *testing.T, rel string) {
+	t.Helper()
+	hash := w.git(t, "hash-object", "-w", "--path="+rel, "--", rel)
+	w.git(t, "update-index", "--cacheinfo", "100644,"+hash+","+rel)
+}
+
 // newManifestWorld creates tracked rewrite and control files, an untracked
 // file, and a completed checkpoint linked to the initial commit.
 func newManifestWorld(t *testing.T) *manifestWorld {
@@ -241,7 +249,7 @@ func TestManifestReuse_CommitRangeInvalidatesRestoredMtimeRewrite(t *testing.T) 
 	// Rewrite one tracked file and one untracked file without changing metadata.
 	rewriteSameSizeRestoreMtime(t, w.repoPath, "a.txt", "alpha two\n")
 	rewriteSameSizeRestoreMtime(t, w.repoPath, "u.txt", "untracked v2\n")
-	w.git(t, "add", "a.txt")
+	w.stageFile(t, "a.txt")
 	w.git(t, "commit", "-q", "-m", "c2")
 	curCommit := w.git(t, "rev-parse", "HEAD")
 	w.linkCur(t, curCommit)
