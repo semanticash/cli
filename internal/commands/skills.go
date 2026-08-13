@@ -11,13 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewSkillsCmd builds the `semantica skills` command tree. The
-// visible subcommands (`install`, `uninstall`) provision and remove
-// SKILL.md files in detected agent skills directories; the
-// hidden subcommands (`handoff`, plus future skill-specific commands)
-// back the SKILL.md bodies themselves. Hidden subcommands stay
-// reachable: cobra's hidden flag only affects help output, so SKILL.md
-// invocations resolve as expected.
+// NewSkillsCmd builds the `semantica skills` command tree. Hidden
+// subcommands back installed SKILL.md entrypoints and remain callable.
 func NewSkillsCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",

@@ -32,3 +32,6 @@ GEMINI.md
 
 # Semantica
 .claude/settings.local.json
+
+# Semantica
+.codex/hooks.json

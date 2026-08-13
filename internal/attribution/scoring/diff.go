@@ -3,21 +3,26 @@ package scoring
 import (
 	"bufio"
 	"bytes"
+	"strconv"
 	"strings"
 )
 
-// ParseDiff parses a unified diff (as produced by "git diff") into per-file
-// added lines, and identifies newly created and deleted files.
+// ParseDiff extracts added lines, file operations, and new-file coordinates
+// from a unified diff.
 //
 // It recognizes:
 //   - "--- /dev/null" + "+++ b/path" -> file created
 //   - "--- a/path" + "+++ /dev/null" -> file deleted
 //   - Lines starting with "+" (excluding the +++ header) -> added lines
+//
+// Added groups record the first new-file line from their hunk header.
 func ParseDiff(diffBytes []byte) DiffResult {
 	var res DiffResult
 	var current *FileDiff
 	var currentOldPath string
 	inAddedRun := false
+	newLine := 0       // next new-file line number within the current hunk
+	newLineOK := false // coordinates valid only after a well-formed header
 
 	finalizeGroup := func() {
 		if !inAddedRun || current == nil {
@@ -28,6 +33,8 @@ func ParseDiff(diffBytes []byte) DiffResult {
 	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(diffBytes))
+	// Surface oversized generated lines as an incomplete parse.
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -61,23 +68,57 @@ func ParseDiff(diffBytes []byte) DiffResult {
 				current = nil
 			}
 			currentOldPath = ""
+			newLine, newLineOK = 0, false
+			continue
+		}
+
+		if strings.HasPrefix(line, "@@") {
+			finalizeGroup()
+			newLine, newLineOK = hunkNewStart(line)
+			continue
+		}
+
+		if oldPath, newPath, ok := binaryDiffPaths(line); ok {
+			finalizeGroup()
+			path := newPath
+			if oldPath == "/dev/null" {
+				res.FilesCreated = append(res.FilesCreated, newPath)
+			} else if newPath == "/dev/null" {
+				res.FilesDeleted = append(res.FilesDeleted, oldPath)
+				path = oldPath
+			}
+			res.Files = append(res.Files, FileDiff{Path: path})
+			current = nil
+			newLine, newLineOK = 0, false
 			continue
 		}
 
 		if strings.HasPrefix(line, "diff --git") ||
-			strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "@@") ||
+			strings.HasPrefix(line, "index ") ||
 			strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") {
 			finalizeGroup()
 			continue
 		}
 
+		if strings.HasPrefix(line, `\`) {
+			// "\ No newline at end of file" advances nothing.
+			continue
+		}
+
 		if current != nil && strings.HasPrefix(line, "+") {
 			if !inAddedRun {
-				current.Groups = append(current.Groups, AddedGroup{})
+				start := 0
+				if newLineOK {
+					start = newLine
+				}
+				current.Groups = append(current.Groups, AddedGroup{NewStart: start})
 				inAddedRun = true
 			}
 			g := &current.Groups[len(current.Groups)-1]
 			g.Lines = append(g.Lines, line[1:])
+			if newLineOK {
+				newLine++
+			}
 		} else if current != nil && strings.HasPrefix(line, "-") {
 			finalizeGroup()
 			if trimmed := strings.TrimSpace(line[1:]); trimmed != "" {
@@ -85,8 +126,91 @@ func ParseDiff(diffBytes []byte) DiffResult {
 			}
 		} else {
 			finalizeGroup()
+			if newLineOK {
+				newLine++ // context line exists in the new file
+			}
 		}
 	}
 
+	res.Complete = scanner.Err() == nil
 	return res
+}
+
+// binaryDiffPaths extracts repository-relative paths from Git's binary-diff
+// marker. Binary changes do not include the --- and +++ headers used above.
+func binaryDiffPaths(line string) (oldPath, newPath string, ok bool) {
+	const (
+		prefix = "Binary files "
+		suffix = " differ"
+	)
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, suffix) {
+		return "", "", false
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(line, prefix), suffix)
+	if strings.HasPrefix(body, "/dev/null and b/") {
+		newPath = strings.TrimPrefix(body, "/dev/null and b/")
+		return "/dev/null", newPath, newPath != ""
+	}
+	if strings.HasPrefix(body, "a/") && strings.HasSuffix(body, " and /dev/null") {
+		oldPath = strings.TrimSuffix(strings.TrimPrefix(body, "a/"), " and /dev/null")
+		return oldPath, "/dev/null", oldPath != ""
+	}
+	sep := strings.LastIndex(body, " and b/")
+	if !strings.HasPrefix(body, "a/") || sep < 0 {
+		return "", "", false
+	}
+	oldPath = strings.TrimPrefix(body[:sep], "a/")
+	newPath = body[sep+len(" and b/"):]
+	return oldPath, newPath, oldPath != "" && newPath != ""
+}
+
+// hunkNewStart parses the new-file range from a standard hunk header.
+func hunkNewStart(line string) (int, bool) {
+	if !strings.HasPrefix(line, "@@ ") {
+		return 0, false
+	}
+	rest := line[3:]
+	end := strings.Index(rest, " @@")
+	if end < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(rest[:end])
+	if len(fields) != 2 ||
+		!strings.HasPrefix(fields[0], "-") || !strings.HasPrefix(fields[1], "+") {
+		return 0, false
+	}
+	if _, ok := parseHunkRange(fields[0][1:]); !ok {
+		return 0, false
+	}
+	return parseHunkRange(fields[1][1:])
+}
+
+// parseHunkRange parses "start[,count]" and returns the start.
+func parseHunkRange(s string) (int, bool) {
+	start, count, hasCount := strings.Cut(s, ",")
+	if !allDigits(start) || (hasCount && !allDigits(count)) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(start)
+	if err != nil {
+		return 0, false
+	}
+	if hasCount {
+		if _, err := strconv.Atoi(count); err != nil {
+			return 0, false
+		}
+	}
+	return n, true
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

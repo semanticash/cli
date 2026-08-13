@@ -39,12 +39,12 @@ type RawEvent struct {
 	ProvenanceHash string // CAS pointer to raw hook payload for backend reconstruction
 
 	// Session context - needed to create/update sessions in target repos.
-	ProviderSessionID  string
-	ParentSessionID    string // empty if no parent
-	SessionStartedAt   int64
-	SessionMetaJSON    string
-	SourceProjectPath  string // decoded project path for no-path fallback routing
-	Model              string // LLM model name (e.g. "opus 4.6", "gemini-2.5-pro")
+	ProviderSessionID string
+	ParentSessionID   string // empty if no parent
+	SessionStartedAt  int64
+	SessionMetaJSON   string
+	SourceProjectPath string // decoded project path for no-path fallback routing
+	Model             string // LLM model name (e.g. "opus 4.6", "gemini-2.5-pro")
 }
 
 // RepoMatch pairs a registered repo with the events routed to it.

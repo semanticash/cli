@@ -14,10 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/hooks"
 )
 
-// memBlobStore is an in-memory BlobPutter that hashes inputs the same
-// way the production blob store does (sha256, hex-encoded) and keeps
-// the bytes around so tests can fetch them back by hash and exercise
-// the downstream extractor.
+// memBlobStore stores test blobs by their production SHA-256 key.
 type memBlobStore struct {
 	mu    sync.Mutex
 	blobs map[string][]byte
@@ -47,9 +44,7 @@ func (m *memBlobStore) Get(hash string) ([]byte, bool) {
 	return b, ok
 }
 
-// applyPatchEvent builds the hooks.Event a real PostToolUse[apply_patch]
-// hook delivery would produce, with the supplied envelope as the
-// tool_input.command.
+// applyPatchEvent builds a PostToolUse[apply_patch] event.
 func applyPatchEvent(envelope, cwd string) *hooks.Event {
 	input, _ := json.Marshal(map[string]string{"command": envelope})
 	return &hooks.Event{
@@ -104,10 +99,7 @@ func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 		t.Errorf("FilePaths = %v, want [%s]", ev.FilePaths, wantAbs)
 	}
 
-	// Load the stored blob and exercise the actual scorer-side
-	// extractor. The line set it produces must include every line in
-	// the patch envelope so the matcher credits this file as
-	// line-level evidence rather than provider-touch.
+	// Verify the stored payload through the production extractor.
 	blob, ok := bs.Get(ev.PayloadHash)
 	if !ok {
 		t.Fatalf("blob %q not found in test store", ev.PayloadHash)
@@ -117,10 +109,7 @@ func TestBuildHookEvents_ApplyPatchAddProducesExtractableBlob(t *testing.T) {
 	if !ok {
 		t.Fatalf("extractor did not surface main.go; got keys %v", keysOf(fileLines))
 	}
-	// Extracted lines are TrimSpace'd by events.AddLines before
-	// landing in the candidate set, so the leading indentation is
-	// gone by the time the scorer matches against the diff (which is
-	// trimmed the same way upstream).
+	// Candidate extraction trims indentation before matching.
 	for _, expect := range []string{"package main", "func main() {", "println(\"hi\")", "}"} {
 		if _, present := lines[expect]; !present {
 			t.Errorf("expected line %q missing from extracted set %v", expect, keysOf2(lines))
@@ -189,8 +178,7 @@ func TestBuildHookEvents_ApplyPatchDeleteEmitsFileTouchWithoutPayload(t *testing
 }
 
 func TestBuildHookEvents_ApplyPatchMoveYieldsDistinctEventIDs(t *testing.T) {
-	// Move emits two records from one apply_patch call. Each half must
-	// get a distinct stable identity so the broker keeps both records.
+	// Move source and destination must have distinct stable identities.
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
 		"*** Update File: old/path.go",
@@ -217,12 +205,8 @@ func TestBuildHookEvents_ApplyPatchMoveYieldsDistinctEventIDs(t *testing.T) {
 	}
 }
 
-// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate verifies
-// the shared canonical files[] provenance blob used by hosted diff
-// readers. A multi-file apply_patch (Add + Update) must produce one
-// blob containing both entries in canonical shape, and every per-file
-// RawEvent must share the same provenance hash so sibling files can be
-// fetched for a whole-patch view in one request.
+// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate verifies that
+// every file event shares one canonical multi-file provenance blob.
 func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
@@ -248,7 +232,7 @@ func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
 		t.Fatalf("expected at least 2 per-file events, got %d", len(out))
 	}
 
-	// Every per-file event must share the same canonical files[] hash.
+	// Every file event shares the same provenance hash.
 	provHash := out[0].ProvenanceHash
 	if provHash == "" {
 		t.Fatal("provenance hash empty")
@@ -286,7 +270,7 @@ func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
 		t.Fatalf("len(files) = %d, want 2", len(doc.Files))
 	}
 
-	// Add entry: operation=create with content set.
+	// Added files include their content.
 	add := doc.Files[0]
 	if add.Operation != "create" {
 		t.Errorf("add.operation = %q, want create", add.Operation)
@@ -298,7 +282,7 @@ func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
 		t.Errorf("add.diff_available = false, want true")
 	}
 
-	// Update entry: operation=edit with both old_text and new_text.
+	// Updated files include old and new text.
 	upd := doc.Files[1]
 	if upd.Operation != "edit" {
 		t.Errorf("update.operation = %q, want edit", upd.Operation)
@@ -314,9 +298,8 @@ func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_AddUpdate(t *testing.T) {
 	}
 }
 
-// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_Delete pins that
-// Delete sections surface as non-diffable entries with an explanatory
-// reason rather than silently dropping.
+// TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_Delete preserves deletes
+// as metadata-only provenance.
 func TestBuildHookEvents_ApplyPatchCanonicalFilesBlob_Delete(t *testing.T) {
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
@@ -383,8 +366,7 @@ func TestBuildHookEvents_ApplyPatchMoveSplitsIntoDeleteAndAdd(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("Move should produce delete+add (2 events); got %d", len(out))
 	}
-	// Order is determined by buildApplyPatchEvents: the source delete
-	// comes before the destination add.
+	// The source delete precedes the destination add.
 	wantOld := repoAbs("old", "path.go")
 	wantNew := repoAbs("new", "path.go")
 	if out[0].FilePaths[0] != wantOld || out[0].PayloadHash != "" {
@@ -396,10 +378,7 @@ func TestBuildHookEvents_ApplyPatchMoveSplitsIntoDeleteAndAdd(t *testing.T) {
 }
 
 func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing.T) {
-	// Empty-content patch records must use a provider-touch tool shape.
-	// BuildCandidatesFromRows reads ToolUses rather than FilePaths for
-	// this path, and assistant Write events without a PayloadHash stop
-	// before candidate extraction.
+	// Empty-content records use provider-touch evidence.
 	envelope := strings.Join([]string{
 		"*** Begin Patch",
 		"*** Delete File: legacy.go",
@@ -414,10 +393,7 @@ func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing
 		t.Fatalf("got %d emitted events, want 1", len(out))
 	}
 
-	// Translate the RawEvent into the EventRow shape the scorer's
-	// candidate builder consumes. The mapping mirrors what the
-	// production routing layer does when it loads rows from the
-	// event store.
+	// Mirror the stored event shape consumed by candidate building.
 	rows := []events.EventRow{{
 		Provider:    out[0].Provider,
 		Role:        out[0].Role,
@@ -437,17 +413,7 @@ func TestBuildHookEvents_EmptyContentEventLandsInProviderTouchedFiles(t *testing
 }
 
 func TestBuildHookEvents_ApplyPatchFromSubdirCwdAttributesUnderRepoRoot(t *testing.T) {
-	// When Codex is launched from a subdirectory of the repo, the
-	// envelope's per-file header carries a path relative to that
-	// subdirectory (or an absolute path under it on the desktop
-	// runtime). The downstream scorer keys attribution by the
-	// repo-relative path that git would print in `git diff`, so the
-	// pipeline must produce "pkg/main.go" candidates - not "main.go" -
-	// when cwd is "/<repo>/pkg".
-	//
-	// Both attribution paths should resolve through the repo root:
-	// content-bearing edits through ExtractClaudeActions, and
-	// provider-touch events through ExtractProviderFileTouches.
+	// Paths captured from a subdirectory must retain that repo-relative prefix.
 	subdirCwd := filepath.Join(fixtureRepo, "pkg")
 
 	t.Run("content-bearing Update", func(t *testing.T) {
@@ -508,9 +474,7 @@ func TestBuildHookEvents_ApplyPatchFromSubdirCwdAttributesUnderRepoRoot(t *testi
 }
 
 func TestBuildHookEvents_ApplyPatchEmptyContentStillEmitsTouchEvent(t *testing.T) {
-	// Add/Update sections with no new content still touch a file. They
-	// should emit provider-touch evidence rather than disappear from
-	// attribution.
+	// Changes without new content still provide file-touch evidence.
 	cases := []struct {
 		name     string
 		envelope string

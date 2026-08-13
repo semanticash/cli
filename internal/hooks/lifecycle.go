@@ -273,9 +273,16 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		return nil
 
+	case ToolStepStarted:
+		benchCtx, benchScope := doctor.WithBenchScope(ctx)
+		hookStart := hookStartTime(ctx)
+		err := handleToolStepStarted(benchCtx, provider.Name(), event, bh)
+		emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+		return err
+
 	case ToolStepCompleted:
 		benchCtx, benchScope := doctor.WithBenchScope(ctx)
-		hookStart := time.Now()
+		hookStart := hookStartTime(ctx)
 
 		// Handle state-changing PostToolUse events (Write, Edit, Bash).
 		// Route the hook-derived records without advancing transcript state.
@@ -306,6 +313,12 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 			return nil
 		}
 		if len(events) == 0 {
+			return nil
+		}
+		// Bash completion may persist events while closing its tool window.
+		if event.ToolName == "Bash" &&
+			completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
+			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
 			return nil
 		}
 		err = routeAndWriteEvents(benchCtx, events, bh, blobStore)
@@ -999,6 +1012,20 @@ func deleteSubagentCaptureStates(provider HookProvider, parentTranscriptRef stri
 	}
 }
 
+type hookStartKey struct{}
+
+// WithHookStart attaches the timing origin for a hook invocation.
+func WithHookStart(ctx context.Context, start time.Time) context.Context {
+	return context.WithValue(ctx, hookStartKey{}, start)
+}
+
+func hookStartTime(ctx context.Context) time.Time {
+	if start, ok := ctx.Value(hookStartKey{}).(time.Time); ok {
+		return start
+	}
+	return time.Now()
+}
+
 func emitHookBenchRecords(scope *doctor.BenchScope, event *Event, duration time.Duration) {
 	for repoPath, stats := range scope.Snapshot() {
 		doctor.EmitBenchRecord(repoPath, doctor.BenchRecord{
@@ -1006,6 +1033,8 @@ func emitHookBenchRecords(scope *doctor.BenchScope, event *Event, duration time.
 			Event:      benchEventName(event.Type),
 			Tool:       event.ToolName,
 			TurnID:     event.TurnID,
+			SessionID:  event.SessionID,
+			ToolUseID:  event.ToolUseID,
 			DurationMS: doctor.Milliseconds(duration),
 			DBMS:       doctor.Milliseconds(stats.DBDuration),
 			BlobMS:     doctor.Milliseconds(stats.BlobDuration),
@@ -1031,6 +1060,8 @@ func benchEventName(eventType EventType) string {
 	switch eventType {
 	case PromptSubmitted:
 		return "PromptSubmitted"
+	case ToolStepStarted:
+		return "ToolStepStarted"
 	case ToolStepCompleted:
 		return "ToolStepCompleted"
 	case SubagentPromptSubmitted:

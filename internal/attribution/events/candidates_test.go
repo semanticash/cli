@@ -45,6 +45,61 @@ func TestBuildCandidatesFromRows_ClaudeLineLevel(t *testing.T) {
 	if cands.FileProvider["main.go"] != "claude_code" {
 		t.Errorf("FileProvider = %v", cands.FileProvider)
 	}
+	if cands.ExplicitTouches["main.go"].Provider != "claude_code" {
+		t.Errorf("ExplicitTouches = %v, want the Edit/Write editor recorded", cands.ExplicitTouches)
+	}
+}
+
+// Multiple events that emit one line retain separate witnesses.
+func TestBuildCandidatesFromRows_LineStampsAllWitnesses(t *testing.T) {
+	repoRoot := "/test/repo"
+	toolUses := `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"main.go","file_op":"write"}]}`
+	row := func(provider, eventID string, ts, seq int64) EventRow {
+		return EventRow{
+			Provider: provider, Role: "assistant", ToolUses: toolUses,
+			PayloadHash: "h", Payload: makePayload(repoRoot, "main.go", "shared line\n"),
+			EventID: eventID, Ts: ts, InsertSeq: seq,
+		}
+	}
+	rows := []EventRow{
+		row("claude_code", "evt-late", 200, 1),
+		row("codex", "evt-early", 100, 9),
+	}
+	cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
+	got := cands.LineStamps["main.go"]["shared line"]
+	want := []LineStamp{
+		{Provider: "claude_code", Ts: 200, InsertSeq: 1, EventID: "evt-late"},
+		{Provider: "codex", Ts: 100, InsertSeq: 9, EventID: "evt-early"},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("stamps = %+v, want all witnesses in event order %+v", got, want)
+	}
+}
+
+// Explicit touches use event recency rather than input order.
+func TestBuildCandidatesFromRows_ExplicitTouchLatestWitness(t *testing.T) {
+	repoRoot := "/test/repo"
+	toolUses := `{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"main.go","file_op":"write"}]}`
+	row := func(provider, eventID string, ts, seq int64) EventRow {
+		return EventRow{
+			Provider: provider, Role: "assistant", ToolUses: toolUses,
+			PayloadHash: "h", Payload: makePayload(repoRoot, "main.go", "x\n"),
+			EventID: eventID, Ts: ts, InsertSeq: seq,
+		}
+	}
+	// Later insert_seq arrives first in input order.
+	rows := []EventRow{
+		row("codex", "evt-b", 100, 9),
+		row("claude_code", "evt-a", 100, 1),
+	}
+	cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
+	if got := cands.ExplicitTouches["main.go"]; got.Provider != "codex" || got.EventID != "evt-b" {
+		t.Fatalf("explicit touch = %+v, want the later insert_seq witness", got)
+	}
+	// File-level attribution uses the same winner.
+	if got := cands.ProviderTouchedFiles["main.go"]; got != "codex" {
+		t.Fatalf("ProviderTouchedFiles = %q, want the recency winner codex", got)
+	}
 }
 
 func TestBuildCandidatesFromRows_ProviderFileTouchOnly(t *testing.T) {
@@ -152,13 +207,7 @@ func TestBuildCandidatesFromRows_NonAssistantSkipped(t *testing.T) {
 	if stats.EventsAssistant != 0 { t.Errorf("EventsAssistant = %d, want 0", stats.EventsAssistant) }
 }
 
-// TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile
-// covers the candidates-layer foundation of the per-line provider
-// attribution. Two providers each contribute different lines to the
-// same file: the AILines union holds both line sets while
-// LineProviders preserves which provider authored which line. Without
-// this, the scorer's per-line credit logic would have nothing to key
-// off and ProviderLines would collapse onto "last writer wins" again.
+// Multiple providers retain ownership of their respective lines.
 func TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile(t *testing.T) {
 	repoRoot := "/test/repo"
 	rows := []EventRow{
@@ -180,8 +229,7 @@ func TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile(t *testing.T
 
 	cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
 
-	// AILines unions every line; FileProvider is last-writer-wins
-	// (kept intentionally as documented in types.go).
+	// AILines contains lines from both providers.
 	if len(cands.AILines["main.go"]) != 3 {
 		t.Errorf("AILines[main.go] = %d, want 3 (union of both providers)", len(cands.AILines["main.go"]))
 	}
@@ -190,8 +238,7 @@ func TestBuildCandidatesFromRows_LineProvidersMultiProviderSameFile(t *testing.T
 			cands.FileProvider["main.go"], "codex")
 	}
 
-	// LineProviders is the new per-line breakdown. Each line maps to
-	// exactly the provider that emitted it.
+	// Each line retains its provider.
 	perLine, ok := cands.LineProviders["main.go"]
 	if !ok {
 		t.Fatalf("LineProviders missing main.go entry; got %v", cands.LineProviders)

@@ -1,0 +1,363 @@
+//go:build !windows
+
+package toolsnap
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// A FIFO cannot be represented as a Git tree entry.
+func TestFifoReplacingTrackedFileFailsPartial(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	abs := filepath.Join(root, "a.txt")
+	if err := os.Remove(abs); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(abs, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.CaptureBefore(context.Background())
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonUnsupportedPath {
+		t.Fatalf("err = %v, want PartialError %s", err, ReasonUnsupportedPath)
+	}
+}
+
+// Newline-named files use the same byte budget as other files.
+func TestNewlinePathBytesCountTowardBudget(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	s.MaxBytesRead = 8
+	writeFile(t, root, "line1\nline2.txt", strings.Repeat("overflow\n", 4))
+	_, err := s.CaptureBefore(context.Background())
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonByteLimit {
+		t.Fatalf("err = %v, want PartialError %s", err, ReasonByteLimit)
+	}
+}
+
+// Newline-named files must enter exact blob-size accounting.
+func TestNewlinePathBlobEntersExactAccounting(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	content := "newline path content\n"
+	writeFile(t, root, "line1\nline2.txt", content)
+
+	entries, written, err := s.hashWorktreePaths(context.Background(), []string{"line1\nline2.txt"})
+	if err != nil {
+		t.Fatalf("hash paths: %v", err)
+	}
+	if len(entries) != 1 || len(written) != 1 {
+		t.Fatalf("entries = %v, written = %v, want one of each", entries, written)
+	}
+	size, err := s.blobSizeSum(context.Background(), written)
+	if err != nil {
+		t.Fatalf("blob size sum: %v", err)
+	}
+	if size != int64(len(content)) {
+		t.Errorf("accounted bytes = %d, want %d", size, len(content))
+	}
+}
+
+// A Done receipt completes removal after publication failure.
+func TestClosedFalseWhenPublicationFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := r.Begin(ctx, entry("tu1", 100)); err != nil {
+		t.Fatal(err)
+	}
+
+	finalized := false
+	closed, err := r.Complete(ctx, key("tu1"), CompletionInfo{EventID: "e", At: 200}, nil, func([]PendingToolSnapshot, *GroupFinal, bool, func() error) (FinalizeResult, error) {
+		finalized = true
+		// Fail state publication after finalization.
+		if err := os.Chmod(r.dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return FinalizeResult{Done: true}, nil
+	})
+	defer func() { _ = os.Chmod(r.dir, 0o755) }()
+	if !finalized {
+		t.Fatal("finalize did not run")
+	}
+	if closed || err == nil {
+		t.Fatalf("closed=%v err=%v, want closed=false with publication error", closed, err)
+	}
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The next operation applies the Done receipt.
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want the Done receipt", entries, err)
+	}
+	stale, err := r.Stale(ctx, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("group stranded after Done receipt: %+v", stale)
+	}
+	entries, err = os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after recovery = %v err = %v, want none", entries, err)
+	}
+}
+
+// A sealed receipt recovers a completion after publication fails.
+func TestSealedCompletionRecoversViaReceipt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	created := int64(1000)
+	if _, err := r.Begin(ctx, entry("tu1", created)); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted := false
+	persist := func(PendingToolSnapshot) error { persisted = true; return nil }
+	// Block registry publication while leaving receipts writable.
+	if err := os.Chmod(r.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// Complete the member after the join horizon.
+	postAt := created + 2*DefaultStaleActiveAge.Milliseconds()
+	_, cerr := r.Complete(ctx, key("tu1"), CompletionInfo{EventID: hexEvent(1), At: postAt}, persist, noFinalize(t))
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if cerr == nil {
+		t.Fatal("Complete succeeded despite an unwritable registry")
+	}
+	if !persisted {
+		t.Fatal("the member event was not persisted before completion")
+	}
+
+	// The failed publication leaves one recovery receipt.
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want the sealed receipt", entries, err)
+	}
+
+	// Reclamation converts the recovered completion to partial evidence.
+	reclaimed, err := r.ReclaimSealedGroups(ctx, postAt+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].Completed != 1 || reclaimed[0].Tombstoned != 1 {
+		t.Fatalf("reclaimed = %+v, want the recovered member as partial evidence", reclaimed)
+	}
+	recs, err := r.PendingPartialRecords()
+	if err != nil || len(recs) != 1 || recs[0].Reason != ReasonStaleActiveWindow || recs[0].EventID != hexEvent(1) {
+		t.Fatalf("records = %+v err = %v, want stale_active_window partial", recs, err)
+	}
+	// Successful recovery consumes the receipt.
+	if entries, err := os.ReadDir(r.receiptsDir()); err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after recovery = %v err = %v, want none", entries, err)
+	}
+}
+
+// Failed group-removal publication reports no reclamation.
+func TestReclaimReportsNothingOnPublicationFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	created := int64(1000)
+	if _, err := r.Begin(ctx, entry("tu1", created)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Block registry publication after recovery files are written.
+	r.afterRecoveryWrites = func() {
+		if err := os.Chmod(r.dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reclaimed, rerr := r.ReclaimSealedGroups(ctx, created+2*DefaultStaleActiveAge.Milliseconds())
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rerr == nil {
+		t.Fatal("reclamation succeeded despite an unwritable registry")
+	}
+	if len(reclaimed) != 0 {
+		t.Fatalf("reclaimed = %+v, want none reported on publication failure", reclaimed)
+	}
+	// The sealed group remains registered.
+	snap, err := InspectRegistry(filepath.Dir(r.dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Windows) != 1 || !snap.Groups[snap.Windows[0].GroupID].Sealed {
+		t.Fatalf("windows = %+v groups = %+v, want the group retained and sealed", snap.Windows, snap.Groups)
+	}
+}
+
+// A receipt recovers a durable member after publication failure.
+func TestCompletionReceiptReconciliation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Keep the group open while the first member completes.
+	if _, err := r.Begin(ctx, entry("tu1", 100)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Begin(ctx, entry("tu2", 110)); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted := false
+	_, err = r.Complete(ctx, key("tu1"), CompletionInfo{EventID: "evt-1", At: 200, CommandSummary: "first"},
+		func(PendingToolSnapshot) error {
+			persisted = true
+			// Fail state publication after the event write.
+			return os.Chmod(r.dir, 0o500)
+		}, noFinalize(t))
+	defer func() { _ = os.Chmod(r.dir, 0o755) }()
+	if !persisted || err == nil {
+		t.Fatalf("persisted=%v err=%v, want durable member with publication failure", persisted, err)
+	}
+	if err := os.Chmod(r.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts = %v err = %v, want one", entries, err)
+	}
+
+	// The next completion applies the receipt before closing the group.
+	var members []PendingToolSnapshot
+	closed, err := r.Complete(ctx, key("tu2"), CompletionInfo{EventID: "evt-2", At: 300}, nil, doneFinalize(&members))
+	if err != nil || !closed {
+		t.Fatalf("closure: closed=%v err=%v", closed, err)
+	}
+	byUse := map[string]PendingToolSnapshot{}
+	for _, m := range members {
+		byUse[m.Key.ToolUseID] = m
+	}
+	m1 := byUse["tu1"]
+	if m1.Status != "complete" || m1.EventID != "evt-1" || m1.CommandSummary != "first" || m1.CompletedAt != 200 {
+		t.Fatalf("receipted member = %+v", m1)
+	}
+	entries, err = os.ReadDir(r.receiptsDir())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("receipts after reconciliation = %v err = %v, want none", entries, err)
+	}
+}
+
+// A failed registry publication leaves one ref for bounded cleanup.
+func TestCaptureAndBeginPublicationFailureLeavesBoundedOrphan(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	semDir := filepath.Join(root, ".semantica")
+	reg, err := OpenRegistry(semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Keep locking available while preventing registry publication.
+	if f, err := os.OpenFile(reg.lockPath(), os.O_RDWR|os.O_CREATE, 0o644); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = f.Close()
+	}
+	if err := os.Chmod(reg.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(reg.dir, 0o755) }()
+
+	writeFile(t, root, "a.txt", "captured then orphaned\n")
+	_, err = reg.CaptureAndBegin(ctx, s, key("tu-orphan"), "Bash", 100)
+	if err == nil {
+		t.Fatal("publication failure not reported")
+	}
+	if err := os.Chmod(reg.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Registry state remains unchanged.
+	stale, err := reg.Stale(ctx, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("registry gained windows despite failed publication: %+v", stale)
+	}
+	// Maintenance retains the fresh orphan.
+	refs, err := s.ListRefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs = %v, want the single orphan", refs)
+	}
+	report, err := s.Maintain(ctx, reg, 0)
+	if err != nil || report.Deferred || report.RefsKept != 1 || report.RefsDeleted != 0 {
+		t.Fatalf("fresh orphan handling: report=%+v err=%v", report, err)
+	}
+	// Maintenance removes the stale orphan.
+	for ref := range refs {
+		old := time.Now().Add(-DefaultStaleWindowAge - time.Hour)
+		if err := os.Chtimes(filepath.Join(s.Dir, filepath.FromSlash(ref)), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err = s.Maintain(ctx, reg, 0)
+	if err != nil || report.RefsDeleted != 1 {
+		t.Fatalf("aged orphan handling: report=%+v err=%v", report, err)
+	}
+}
+
+// Symlink targets count toward the byte budget before objects are written.
+func TestSymlinkTargetBytesCountTowardBudget(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	s.MaxBytesRead = 8
+	if err := os.Symlink("a-target-path-longer-than-the-budget", filepath.Join(root, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.CaptureBefore(context.Background())
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonByteLimit {
+		t.Fatalf("err = %v, want PartialError %s", err, ReasonByteLimit)
+	}
+	// Nothing may have been written: the store must hold zero loose
+	// objects after the rejected capture.
+	count := run(t, root, "git", "--git-dir", s.Dir, "count-objects")
+	if !strings.HasPrefix(count, "0 objects") {
+		t.Errorf("store objects after rejected capture: %q, want none", count)
+	}
+}

@@ -1,6 +1,6 @@
 # AI Provider Integrations
 
-Semantica supports seven AI coding providers. Most providers use repo-local hooks in the provider's configuration file. Codex uses user-global hooks and gates capture by the session's enabled repo before any broker or blob side effects run. Captured events are routed to the repo's lineage database via the broker.
+Semantica supports seven AI coding providers, all using repo-local hooks in the provider's configuration file. Capture is additionally gated by the session's enabled repo before any broker or blob side effects run. Captured events are routed to the repo's lineage database via the broker.
 
 Semantica reads session transcripts passively - it never modifies agent session logs or transcript files.
 
@@ -19,9 +19,15 @@ The exact storage and offset model is provider-specific. Some providers read fro
 
 ## OpenAI Codex
 
-**Hook config**: `~/.codex/hooks.json` and `~/.codex/config.toml`
+**Hook config**: `<repo>/.codex/hooks.json` (repo-local project layer); `~/.codex/config.toml` for the global `[features] hooks = true` gate.
 
-Codex stores hook configuration in the user's global Codex home. Semantica installs hook entries for both the standalone `codex` CLI and the Codex desktop app, which share the same runtime and config directory.
+Semantica installs hooks in the repository and enables `[features] hooks = true` in the global Codex config. It does not modify user-global hooks.
+
+**Trust**: review project hooks with `/hooks` in the Codex CLI or Settings > Hooks in the desktop app. Semantica does not preapprove them.
+
+**Migration**: older releases installed user-global hooks. These remain active to avoid breaking other repositories. Capture deduplicates repeated deliveries, but the extra process adds latency and lock contention. Remove the legacy Semantica entry from `~/.codex/hooks.json` after migrating your repositories.
+
+Semantica installs the same hook entries for both the standalone `codex` CLI and the Codex desktop app, which share the same runtime and config format.
 
 ### Detection
 
@@ -29,18 +35,19 @@ Detected by resolving the `codex` executable on `PATH`, by checking for `~/.code
 
 ### Hooks
 
-Semantica registers four Codex hooks:
+Semantica registers five Codex hooks:
 
-- **`SessionStart`** - Opens lifecycle tracking. The dispatcher treats this as metadata-only today.
+- **`SessionStart`** - Records lifecycle metadata.
 - **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
+- **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for shell-tool evidence.
 - **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
 - **`Stop`** - Marks the turn complete and packages captured events.
 
-Codex hooks are user-global, so they can fire in any Codex session on the machine. Before parsing the payload or opening the blob store, Semantica resolves the payload `cwd` to a git repo root and checks it against active Semantica repos. Sessions outside enabled repos exit silently with no broker writes and no hook-error entry.
+Before parsing a payload or opening storage, Semantica verifies that its `cwd` belongs to an enabled repository. Other sessions exit without recording data.
 
 ### Attribution
 
-Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. `Bash` commands are captured as command provenance and currently contribute file-touch evidence only for recognized deletion commands such as `rm`.
+Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. Pre- and post-Bash hooks capture bounded workspace deltas; opt-in v2 scoring can attribute surviving changes made by scripts, formatters, and generators.
 
 ### Skills and Handoff
 
@@ -50,9 +57,9 @@ Codex `apply_patch` operations are parsed per file. Add and update sections with
 
 ### Limitations
 
-- Codex rollout/session files are not used for replay today. Hook payloads are the capture source.
-- Shell commands that write files indirectly, such as `echo > file`, `tee`, or `cp`, are captured as Bash provenance but do not synthesize file-touch or line-level attribution unless Codex also emits a file-edit hook for the affected file.
-- User-global hooks require the enabled-repo cwd gate. If Codex runs outside an enabled repo, Semantica exits silently and records nothing.
+- Codex rollout/session files are not replayed. Hook payloads are the capture source.
+- Tool-delta scoring is disabled by default. Enable `attribution_v2` to score verified Codex Bash workspace deltas.
+- Legacy user-global hooks still require an enabled repository and otherwise record nothing.
 
 ---
 
@@ -68,16 +75,17 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 
 - **`UserPromptSubmit`** - Saves the current transcript offset and records the prompt.
 - **`PostToolUse[Write]`**, **`PostToolUse[Edit]`**, **`PostToolUse[Bash]`** - Capture direct file and shell provenance from hook payloads.
+- **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for pending shell-tool evidence.
 - **`PreToolUse[Agent]`** - Captures the delegated subagent prompt.
 - **`PostToolUse[Agent]`** - Captures the delegated subagent boundary.
 - **`Stop`** - Replays the transcript from the saved offset and packages the completed turn.
 - **`SessionStart`** / **`SessionEnd`** - Lifecycle tracking and final flush.
 
-Claude Code is currently the richest provider integration. Direct step events are captured from hook payloads, while transcript replay fills in session flow, token usage, and any events that were not emitted directly.
+Claude Code combines direct hook events with transcript replay for session flow, token usage, and events not emitted by hooks.
 
 ### Attribution
 
-Claude Code tool calls include file paths and content. Semantica uses direct `Write` and `Edit` hook payloads plus transcript replay to build AI-generated code hashes (`ai_code_hashes`). During attribution, each changed line in a commit is compared against these hashes to determine AI authorship.
+Claude Code tool calls include file paths and content. Semantica uses direct `Write` and `Edit` payloads plus transcript replay for line attribution. Pre- and post-Bash hooks also capture bounded workspace deltas. Experimental tool-delta scoring can attribute surviving Bash-written lines and retain file-level evidence when line matching is unavailable.
 
 ---
 
@@ -112,9 +120,9 @@ For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 - **`subagentStop`** - Captures the parent `Agent` step and triggers child transcript discovery.
 - **`sessionStart`** / **`sessionEnd`** / **`preCompact`** - Lifecycle tracking, final flush, and offset reset handling.
 
-Cursor IDE is now handled with the same direct-provenance packaging model as Claude for prompt, file edit, shell, and subagent boundary events.
+Cursor IDE uses direct-provenance packaging for prompt, file edit, shell, and subagent boundary events.
 
-Cursor CLI still shares the same configuration file, but its hook surface is currently more limited. Semantica treats it as transcript-first today and does not assume full parity with the IDE for direct file-step capture.
+Cursor CLI shares the IDE configuration file but exposes a smaller hook surface. Semantica uses transcript capture for CLI sessions and does not assume IDE file-step parity.
 
 If Cursor IDE is already running when you enable Semantica, it may not pick up
 changes to `.cursor/hooks.json` immediately. Reload the Cursor window or restart

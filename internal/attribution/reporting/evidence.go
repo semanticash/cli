@@ -26,7 +26,10 @@ func ResolveFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 		return EvidenceModified
 	}
 
-	// No scored lines -- check touch-based evidence.
+	// Tool-delta capture is the strongest file-level signal.
+	if aiLines == 0 && touch == TouchOriginToolDelta {
+		return EvidenceToolDeltaTouch
+	}
 	if aiLines == 0 && isCarryForward {
 		return EvidenceCarryForward
 	}
@@ -73,6 +76,9 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	if fs.ModifiedLines > 0 {
 		classes = append(classes, EvidenceModified)
 	}
+	if touch == TouchOriginToolDelta {
+		classes = append(classes, EvidenceToolDeltaTouch)
+	}
 	if touch == TouchOriginProviderEdit {
 		classes = append(classes, EvidenceProviderTouch)
 	}
@@ -101,7 +107,7 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 // CommitEvidence.
 func IsFallbackEvidence(c EvidenceClass) bool {
 	switch c {
-	case EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion:
+	case EvidenceToolDeltaTouch, EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion:
 		return true
 	}
 	return false
@@ -111,7 +117,9 @@ func IsFallbackEvidence(c EvidenceClass) bool {
 // from per-file evidence using a weighted formula.
 //
 // Line-evidence score (0-1): LineScore = (1.00*Exact + 0.85*Normalized + 0.55*Modified) / max(1, AILines)
-// File-evidence penalty (0-1): FallbackPenalty = (0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
+// File-evidence penalty (0-1): FallbackPenalty = (0.18*Tdt + 0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
+//
+// Tool-delta and provider touches use the same weight.
 // Combined score: Score = clamp(LineScore - FallbackPenalty, 0, 1)
 //
 // Buckets:
@@ -131,7 +139,7 @@ func IsFallbackEvidence(c EvidenceClass) bool {
 func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount int) {
 	var exactLines, normLines, modLines int
 	var aiFiles int
-	var tpd, tpc, cf, del int
+	var tdt, tpd, tpc, cf, del int
 
 	for _, f := range files {
 		if f.PrimaryEvidence == EvidenceNone {
@@ -144,6 +152,9 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 
 		bucket := selectFallbackBucket(f)
 		switch bucket {
+		case EvidenceToolDeltaTouch:
+			tdt++
+			fallbackCount++
 		case EvidenceProviderTouch:
 			tpd++
 			fallbackCount++
@@ -174,7 +185,7 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 	if fileDenom < 1 {
 		fileDenom = 1
 	}
-	fallbackPenalty := (0.18*float64(tpd) + 0.30*float64(tpc) + 0.25*float64(cf) + 0.35*float64(del)) / float64(fileDenom)
+	fallbackPenalty := (0.18*float64(tdt) + 0.18*float64(tpd) + 0.30*float64(tpc) + 0.25*float64(cf) + 0.35*float64(del)) / float64(fileDenom)
 
 	score := lineScore - fallbackPenalty
 	if score < 0 {
@@ -201,9 +212,8 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 // Returns EvidenceNone when no fallback class is present, in which
 // case the file does not contribute to the penalty term.
 //
-// Strength order (strongest fallback first): provider_touch >
-// provider_coarse > carry_forward > deletion. Each file counts at
-// most once.
+// Each file uses its strongest fallback class: tool_delta_touch,
+// provider_touch, provider_coarse, carry_forward, then deletion.
 func selectFallbackBucket(f FileAttributionOutput) EvidenceClass {
 	classes := f.AllEvidence
 	if len(classes) == 0 && IsFallbackEvidence(f.PrimaryEvidence) {
@@ -213,6 +223,7 @@ func selectFallbackBucket(f FileAttributionOutput) EvidenceClass {
 		return f.PrimaryEvidence
 	}
 	priority := []EvidenceClass{
+		EvidenceToolDeltaTouch,
 		EvidenceProviderTouch,
 		EvidenceProviderCoarse,
 		EvidenceCarryForward,
@@ -228,21 +239,18 @@ func selectFallbackBucket(f FileAttributionOutput) EvidenceClass {
 	return EvidenceNone
 }
 
-// EvidenceExplanation returns a short sentence explaining the evidence level.
+// EvidenceExplanation describes an evidence level.
 func EvidenceExplanation(level string, fallbackCount int) string {
 	switch level {
 	case "High":
-		return "all files matched by direct line comparison"
+		return "all files matched by line-level evidence"
 	case "Medium":
 		if fallbackCount == 1 {
-			return "1 file attributed without direct line evidence"
+			return "1 file attributed without line-level evidence"
 		}
-		return fmt.Sprintf("%d files attributed without direct line evidence", fallbackCount)
+		return fmt.Sprintf("%d files attributed without line-level evidence", fallbackCount)
 	case "Low":
-		if fallbackCount == 1 {
-			return "most files attributed via indirect provider signals"
-		}
-		return "most files attributed via indirect provider signals"
+		return "most files attributed via file-level signals"
 	default:
 		return ""
 	}

@@ -111,14 +111,16 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 
 	for _, fs := range in.FileScores {
 		fa := FileAttributionOutput{
-			Path:                fs.Path,
-			AIExactLines:        fs.ExactLines,
-			AIFormattedLines:    fs.FormattedLines,
-			AIModifiedLines:     fs.ModifiedLines,
-			AIProviderOnlyLines: fs.ProviderOnlyLines,
-			HumanLines:          fs.HumanLines,
-			TotalLines:          fs.TotalLines,
-			DeletedNonBlank:     fs.DeletedNonBlank,
+			Path:                  fs.Path,
+			AIExactLines:          fs.ExactLines,
+			AIFormattedLines:      fs.FormattedLines,
+			AIModifiedLines:       fs.ModifiedLines,
+			AIProviderOnlyLines:   fs.ProviderOnlyLines,
+			AIDeltaExactLines:     fs.DeltaExactLines,
+			AIDeltaFormattedLines: fs.DeltaFormattedLines,
+			HumanLines:            fs.HumanLines,
+			TotalLines:            fs.TotalLines,
+			DeletedNonBlank:       fs.DeletedNonBlank,
 		}
 
 		aiAuthored := fs.ExactLines + fs.FormattedLines + fs.ModifiedLines
@@ -150,6 +152,8 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		r.AIFormattedLines += fa.AIFormattedLines
 		r.AIModifiedLines += fa.AIModifiedLines
 		r.AIProviderOnlyLines += fa.AIProviderOnlyLines
+		r.AIDeltaExactLines += fa.AIDeltaExactLines
+		r.AIDeltaFormattedLines += fa.AIDeltaFormattedLines
 		r.AILines += aiAuthored
 		r.HumanLines += fa.HumanLines
 		r.TotalLines += fa.TotalLines

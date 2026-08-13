@@ -71,6 +71,11 @@ func TestWorkerRun_SkipsDrainAfterLivePushRetry(t *testing.T) {
 	}
 	s.Connected = true
 	s.ConnectedRepoID = connectedRepoID
+	// Prevent this worker test from starting a detached test binary.
+	if s.Automations == nil {
+		s.Automations = &util.Automations{}
+	}
+	s.Automations.Playbook.Enabled = false
 	if err := util.WriteSettings(semDir, s); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}

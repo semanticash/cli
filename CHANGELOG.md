@@ -5,10 +5,12 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-07-02
+## [0.6.0] - 2026-08-12
 
 ### Added
 
+- Added bounded workspace snapshots for Claude Code and Codex Bash tools. Semantica captures before and after states in an isolated Git store, persists canonical deltas with crash-safe recovery, and seals incomplete groups so later captures continue independently.
+- Added opt-in tool-delta attribution with ordered line matching, file-level fallback evidence, historical carry-forward, provider involvement, and explicit `v2` result versioning. It is disabled by default.
 - Added conservative PR audit timeline annotations to attribution uploads, including `possible_rework` and `attempted_removed` evidence with resolvable step references.
 - Improved the interactive lineage-record picker to load up to 500 recent records with scrolling and filtering; older records remain reachable by passing an explicit ref.
 - Added `semantica launcher refresh` to re-bind the optional background worker launcher after upgrades or local installs.
@@ -19,8 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Launcher backends now drain every 30 minutes to recover scheduled retries and expired leases. Linux launcher disablement also reports incomplete timer cleanup.
 - Added checkpoint audit readiness to `semantica status` and `semantica status --json`, with explicit manifest, attribution, provenance, and sync states under a named policy. JSON output also reports terminal queue blockage and its recorded error.
 
+### Changed
+
+- Codex hooks now install in `<repo>/.codex/hooks.json`, preserve existing project hooks, and require approval through `/hooks` or Settings > Hooks. The global hooks feature is enabled without removing legacy user-global hooks.
+
 ### Fixed
 
+- Tool snapshots now support long Git ref paths on Windows.
+- Codex hooks now accept numeric identifiers and metadata without dropping valid `PreToolUse` events. Unused `turn_id` values are ignored, while malformed session and tool identifiers still fail closed with clearer diagnostics.
+- Codex event identifiers now fall back to the session when `transcript_path` is unavailable, preventing collisions across sessions.
+- Binary changes now remain visible in attribution results and use `tool_delta_touch` when verified tool-delta evidence is available.
+- Codex `.codex/hooks.json` is written with literal shell metacharacters (`>`, `&`, `<`) instead of `\uXXXX` escapes, so the installed hook commands read as intended.
 - Codex `apply_patch` rework detection now reads existing canonical provenance, improving `possible_rework` coverage without changing line attribution scoring.
 - Batched commit-subject lookup for lineage-record listings, avoiding one git subprocess per row on large local histories.
 - Launcher dispatch now detects a replaced Semantica binary before kicking the background worker and re-registers the service, avoiding queued post-commit work after upgrades. The shell installer and `make install` also refresh the launcher when safe, or print a user-scoped repair command when run as root.
@@ -32,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 
 - Raised the minimum Go toolchain to Go 1.26.5 to pick up standard-library security fixes.
+- Hardened skills archive extraction against path traversal by anchoring writes to the temporary extraction directory.
 
 ## [0.5.5] - 2026-07-14
 

@@ -16,9 +16,10 @@ const (
 	ToolStepCompleted       // state-changing PostToolUse (Write, Edit, Bash)
 	SubagentPromptSubmitted // PreToolUse[Agent] prompt event
 	IncrementalCapture      // mid-turn trigger to scan transcript from saved offset
+	ToolStepStarted         // PreToolUse for tools with paired window capture (Bash)
 )
 
-// HookPhase returns a short stable string for the event's lifecycle phase.
+// HookPhase returns a short stable string for the event's lifecycle point.
 // Used by providers to disambiguate event IDs when the same tool_use_id
 // appears in both a pre and post hook (e.g., PreToolUse[Agent] and
 // PostToolUse[Agent] share a tool_use_id but are different events).
@@ -28,6 +29,8 @@ func (t EventType) HookPhase() string {
 		return "prompt"
 	case SubagentPromptSubmitted:
 		return "pre"
+	case ToolStepStarted:
+		return "pre-step"
 	case ToolStepCompleted:
 		return "step"
 	case SubagentCompleted:

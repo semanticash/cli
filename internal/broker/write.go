@@ -18,6 +18,21 @@ import (
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
 
+// RepositoryIDForPath returns the repository UUID stored in its lineage database.
+func RepositoryIDForPath(ctx context.Context, repoPath string) (string, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return "", fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("get repo %s: %w", repoPath, err)
+	}
+	return repo.RepositoryID, nil
+}
+
 // WriteEventsToRepo writes broker-routed events into the target repo's
 // lineage DB. Groups events by source and session, upserts the necessary
 // records, and inserts events with INSERT OR IGNORE for idempotency.
@@ -303,6 +318,115 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 	})
 
 	return sessionIDs, nil
+}
+
+// EvidenceLink attaches a content-addressed evidence blob to an event row.
+type EvidenceLink struct {
+	EventID      string
+	EvidenceKind string
+	EvidenceHash string
+	GroupID      string
+	CreatedAt    int64
+}
+
+// ErrEvidenceLinkConflict reports a link key with a different stored hash.
+var ErrEvidenceLinkConflict = errors.New("evidence link conflicts with existing row")
+
+// WriteEvidenceLinksToRepo atomically writes idempotent evidence links.
+// Existing links must contain the same evidence hash.
+func WriteEvidenceLinksToRepo(ctx context.Context, repoPath string, links []EvidenceLink) error {
+	if len(links) == 0 {
+		return nil
+	}
+	switch state := CheckRepoState(ctx, repoPath); state.Verdict {
+	case RepoStateStale:
+		return &ErrRepoStale{RepoPath: repoPath, Reason: state.Reason}
+	case RepoStateUnknown:
+		return fmt.Errorf("check repo state %s: %w", repoPath, state.Err)
+	}
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer sqlstore.RollbackTx(tx)
+	txq := h.Queries.WithTx(tx)
+	for _, l := range links {
+		if l.EventID == "" || l.EvidenceKind == "" || l.EvidenceHash == "" || l.GroupID == "" || l.CreatedAt <= 0 {
+			return fmt.Errorf("evidence link incomplete for event %q", l.EventID)
+		}
+		if err := txq.InsertEvidenceLinkIfAbsent(ctx, sqldb.InsertEvidenceLinkIfAbsentParams{
+			EventID:      l.EventID,
+			EvidenceKind: l.EvidenceKind,
+			EvidenceHash: l.EvidenceHash,
+			GroupID:      l.GroupID,
+			CreatedAt:    l.CreatedAt,
+		}); err != nil {
+			return fmt.Errorf("insert evidence link for event %s: %w", l.EventID, err)
+		}
+		// Verify that a conflicting insert did not preserve another hash.
+		row, err := txq.GetEvidenceLink(ctx, sqldb.GetEvidenceLinkParams{
+			EventID: l.EventID, EvidenceKind: l.EvidenceKind, GroupID: l.GroupID,
+		})
+		if err != nil {
+			return fmt.Errorf("verify evidence link for event %s: %w", l.EventID, err)
+		}
+		if row.EvidenceHash != l.EvidenceHash {
+			return fmt.Errorf("%w: event %s kind %s group %s holds %s, not %s",
+				ErrEvidenceLinkConflict, l.EventID, l.EvidenceKind, l.GroupID, row.EvidenceHash, l.EvidenceHash)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit evidence links: %w", err)
+	}
+	return nil
+}
+
+// HasEvidenceLink reports whether the link key already exists.
+func HasEvidenceLink(ctx context.Context, repoPath string, l EvidenceLink) (bool, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return false, fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	_, err = h.Queries.GetEvidenceLink(ctx, sqldb.GetEvidenceLinkParams{
+		EventID: l.EventID, EvidenceKind: l.EvidenceKind, GroupID: l.GroupID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read evidence link for event %s: %w", l.EventID, err)
+	}
+	return true, nil
+}
+
+// MissingEventIDs returns the given IDs that have no event row.
+func MissingEventIDs(ctx context.Context, repoPath string, ids []string) (map[string]bool, error) {
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return nil, fmt.Errorf("open lineage db %s: %w", repoPath, err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	missing := map[string]bool{}
+	for _, id := range ids {
+		exists, err := h.Queries.AgentEventExists(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("check event %s: %w", id, err)
+		}
+		if !exists {
+			missing[id] = true
+		}
+	}
+	return missing, nil
 }
 
 // relativizeToolPaths converts absolute file_path values in tool_uses JSON

@@ -314,6 +314,7 @@ func ensureSemanticaGitignore(repoRoot string) error {
 // that should be gitignored when created by Semantica.
 var ProviderGitignorePaths = map[string]string{
 	"claude-code": ".claude/settings.local.json",
+	"codex":       ".codex/hooks.json",
 	"cursor":      ".cursor/hooks.json",
 	"gemini-cli":  ".gemini/settings.json",
 	"copilot":     ".github/hooks/semantica.json",

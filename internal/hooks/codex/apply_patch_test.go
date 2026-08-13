@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// abs builds an absolute path for the test binary's target OS. That
-// keeps normalizePatchPath tests on the absolute-path branch on every
-// platform.
+// abs builds an absolute path for the test target OS.
 func abs(parts ...string) string {
 	joined := filepath.Join(parts...)
 	if filepath.IsAbs(joined) {
@@ -21,19 +19,14 @@ func abs(parts ...string) string {
 	return string(filepath.Separator) + joined
 }
 
-// Shared fixture paths. Computed once via abs() so every test sees
-// the same absolute repo root for the target OS.
+// Shared absolute fixture paths.
 var (
 	fixtureRepo          = abs("tmp", "codex-fixture", "repo")
 	fixtureTranscript    = abs("tmp", "codex-fixture", "sessions", "2026", "05", "13", "rollout-test.jsonl")
 	fixtureTranscriptAlt = abs("tmp", "codex-fixture", "sessions", "rollout-test.jsonl")
 )
 
-// repoAbs returns the slash-form absolute path that buildPatchFileEvent
-// is expected to set in RawEvent.FilePaths for a relative path captured
-// from an apply_patch envelope, given the fixture repo root as the
-// hook's cwd. Tests use it to assert routing-layer absolute paths
-// without re-deriving the join logic at each call site.
+// repoAbs returns the routed absolute path for a fixture file.
 func repoAbs(parts ...string) string {
 	return filepath.ToSlash(filepath.Join(append([]string{fixtureRepo}, parts...)...))
 }
@@ -218,8 +211,7 @@ func TestNormalizePatchPath_RelativizesAbsoluteUnderRepo(t *testing.T) {
 			name:     "absolute outside repo retained as-is",
 			raw:      abs("etc", "passwd"),
 			repoRoot: repoRoot,
-			// filepath.Clean canonicalizes path separators per OS;
-			// ToSlash then renders forward slashes on every OS.
+			// Normalize separators for portable assertions.
 			want: filepath.ToSlash(abs("etc", "passwd")),
 		},
 		{
@@ -235,9 +227,7 @@ func TestNormalizePatchPath_RelativizesAbsoluteUnderRepo(t *testing.T) {
 			want:     "pkg/main.go",
 		},
 		{
-			// Names that merely start with two dots are still valid
-			// repo-internal relative paths. Only a literal ".." segment
-			// escapes the repo.
+			// A leading ".." prefix is valid unless it is a path segment.
 			name:     "name starting with dotdot stays inside repo",
 			raw:      "..generated/file.go",
 			repoRoot: repoRoot,

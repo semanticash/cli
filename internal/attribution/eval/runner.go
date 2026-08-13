@@ -61,7 +61,7 @@ const aiPercentTolerance = 0.1 // allow 0.1% floating-point tolerance
 
 var evidenceOrder = []reporting.EvidenceClass{
 	reporting.EvidenceExact, reporting.EvidenceNormalized, reporting.EvidenceModified,
-	reporting.EvidenceProviderTouch, reporting.EvidenceProviderCoarse,
+	reporting.EvidenceToolDeltaTouch, reporting.EvidenceProviderTouch, reporting.EvidenceProviderCoarse,
 	reporting.EvidenceCarryForward, reporting.EvidenceDeletion, reporting.EvidenceNone,
 }
 

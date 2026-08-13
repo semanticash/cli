@@ -1,0 +1,2 @@
+# Keep JSON fixtures LF for byte comparisons.
+**/testdata/**/*.json text eol=lf

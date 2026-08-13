@@ -31,6 +31,7 @@ type BenchRecord struct {
 	Event        string `json:"event,omitempty"`
 	Tool         string `json:"tool,omitempty"`
 	TurnID       string `json:"turn_id,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
 	DurationMS   int64  `json:"duration_ms,omitempty"`
 	DBMS         int64  `json:"db_ms,omitempty"`
 	BlobMS       int64  `json:"blob_ms,omitempty"`
@@ -40,6 +41,25 @@ type BenchRecord struct {
 	RowsWritten  int    `json:"rows_written,omitempty"`
 	BlobsWritten int    `json:"blobs_written,omitempty"`
 	BytesWritten int64  `json:"bytes_written,omitempty"`
+
+	// Tool-window hook fields.
+	Phase         string `json:"phase,omitempty"`
+	ToolUseID     string `json:"tool_use_id,omitempty"`
+	Outcome       string `json:"outcome,omitempty"`
+	PartialReason string `json:"partial_reason,omitempty"`
+	FilesChanged  int    `json:"files_changed,omitempty"`
+	BytesRead     int64  `json:"bytes_read,omitempty"`
+	GroupMembers  int    `json:"group_members,omitempty"`
+
+	// Tool-window recovery fields.
+	PartialsReplayed  int   `json:"partials_replayed,omitempty"`
+	GroupsResumed     int   `json:"groups_resumed,omitempty"`
+	GroupsTerminal    int   `json:"groups_terminal,omitempty"`
+	GroupsReclaimed   int   `json:"groups_reclaimed,omitempty"`
+	MembersTombstoned int   `json:"members_tombstoned,omitempty"`
+	LinksSkipped      int   `json:"links_skipped,omitempty"`
+	SweepErrors       int   `json:"sweep_errors,omitempty"`
+	StoreBytes        int64 `json:"store_bytes,omitempty"`
 }
 
 // BenchScope aggregates per-repo stats while one hook or turn is being handled.

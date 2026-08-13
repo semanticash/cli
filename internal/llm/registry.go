@@ -170,9 +170,7 @@ func (r *WriterRegistry) Generate(ctx context.Context, prompt string) (*Generate
 	return nil, r.notInstalledError()
 }
 
-// chainErr appends a writer-named failure to the running error chain.
-// Mirrors the pre-registry fallback error format so log readers see
-// the same shape across the transition.
+// chainErr appends a named writer failure to the error chain.
 func chainErr(prev error, writerName string, err error) error {
 	if prev != nil {
 		return fmt.Errorf("%s: %w (after %v)", writerName, err, prev)
@@ -180,11 +178,7 @@ func chainErr(prev error, writerName string, err error) error {
 	return fmt.Errorf("%s: %w", writerName, err)
 }
 
-// notInstalledError builds the terminal error returned when no
-// registered writer has its CLI installed. The install hint is
-// derived from the registry's display names rather than hardcoded,
-// so adding a new writer (Codex, future LLMs) keeps the message
-// honest without a manual edit.
+// notInstalledError reports the registered CLIs that can satisfy the request.
 func (r *WriterRegistry) notInstalledError() error {
 	names := make([]string, 0, len(r.writers))
 	for _, w := range r.writers {
@@ -196,11 +190,7 @@ func (r *WriterRegistry) notInstalledError() error {
 	return fmt.Errorf("no AI CLI found. Install %s", strings.Join(names, ", "))
 }
 
-// displayNameFor maps a writer's stable Name() (used in attribution
-// records, e.g. "claude_code") to a human-readable install hint
-// (e.g. "Claude Code"). Returns the input unchanged when no mapping
-// exists, so new writers automatically participate even before this
-// table is updated.
+// displayNameFor returns a human-readable writer name.
 func displayNameFor(name string) string {
 	switch name {
 	case "claude_code":

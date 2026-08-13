@@ -71,7 +71,7 @@ Semantica installs three Git hooks via `semantica enable`. Each hook invokes the
 
 ### pre-commit
 
-Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file is how state is passed between the three hook phases.
+Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file passes state between the three hooks.
 
 The hook exits immediately - it never blocks the commit.
 
@@ -149,7 +149,7 @@ explicit state under a named local or hosted policy.
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
-   Computes per-file and aggregate AI percentage and stores it on the lineage record. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
+   Computes per-file and aggregate AI percentage and stores it on the lineage record. Optional v2 scoring aligns verified tool deltas with committed lines and preserves unaligned changes as file-level evidence. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
 6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
@@ -173,6 +173,7 @@ Single-file database in `.semantica/`. Contains:
 | `agent_sources` | Provider source metadata keyed by provider and source key |
 | `agent_sessions` | AI agent sessions (provider, model, timestamps, parent linkage) |
 | `agent_events` | Captured prompt, assistant, tool, and provenance events |
+| `agent_event_evidence_links` | Links captured events to tool-delta evidence |
 | `provenance_manifests` | Per-turn packaged transcript/bundle metadata and upload state |
 | `session_checkpoints` | Links sessions to the lineage records they influenced |
 | `checkpoint_stats` | Lineage aggregates and attribution/sync completion markers |
@@ -194,23 +195,63 @@ objects/
 Used for file snapshots (lineage manifests), event payloads, transcript
 slices, prompts, and packaged provenance blobs.
 
+### Tool snapshot store (`tool-snapshots.git`)
+
+`internal/toolsnap` can represent a worktree as an ephemeral Git tree without
+writing objects or refs to the user repository. It stores private objects and
+refs in `.semantica/tool-snapshots.git` and reads committed objects through a
+read-only alternate to the repository object database.
+
+Capture and delta generation are bounded by path, byte, line, and diff-work
+limits. Text changes produce deterministic, context-free hunks. Binary files,
+gitlinks, and truncated text files retain file-level evidence. Unknown status
+records, unsupported file types, incompatible object formats, and over-limit
+worktrees fail closed. Git environment
+variables that could redirect repository access are removed from snapshot
+subprocesses. Store commands ignore inherited Git configuration, and store-local
+remotes, partial-clone settings, and config includes are removed before object
+access. Snapshot capture therefore never contacts a Git remote.
+
+The store supports SHA-1 and SHA-256 repositories and gives each linked
+worktree a distinct private ref namespace. Committed objects are read through
+the repository's common object database. If repository maintenance removes an
+alternate object, capture fails without fabricating evidence.
+
+A repository-scoped registry serializes overlapping tool windows under an
+OS-backed lock. Closing tree identities survive retries, and timeout tombstones
+keep delayed captures from being treated as line evidence.
+
+Overlapping windows share a group with an immutable join horizon. If a member
+remains active past that horizon, Semantica seals the group, starts later
+captures in a fresh group, and recovers completed members as partial evidence
+without rereading the workspace.
+
+Bounded maintenance defers during capture, removes stale unreferenced refs, and
+prunes expired objects without operating on the user repository.
+
+Claude Code and Codex pre- and post-Bash hooks capture canonical deltas and
+link them to their tool events. Recovery runs during worker drains and with
+`semantica tidy --apply`. Optional v2 scoring verifies and aligns these deltas
+against committed lines; partial or ambiguous evidence remains unscored.
+
 ### Settings (`settings.json`)
 
 ```json
 {
   "enabled": true,
   "version": 1,
-  "providers": ["claude-code", "cursor", "gemini", "copilot"],
+  "providers": ["claude-code", "codex", "cursor", "copilot", "gemini-cli", "kiro-cli", "kiro-ide"],
   "connected": false,
   "connected_repo_id": "",
   "trailers": true,
+  "attribution_v2": false,
   "automations": {
     "playbook": { "enabled": false }
   }
 }
 ```
 
-The `providers` field is a string array of installed hook provider names (not paths). `connected` controls whether the current repo attempts hosted sync. `connected_repo_id` is written when a repo is connected and stores the repo-local connection binding used by hosted features. The `trailers` field controls whether `Semantica-Attribution` and `Semantica-Diagnostics` are appended; `Semantica-Checkpoint`, the lineage record ID, is always included. When omitted, `trailers` defaults to `true`.
+The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` enables experimental tool-delta scoring and defaults to `false`. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`.
 
 ### Global paths
 
@@ -272,6 +313,7 @@ internal/
     cursor/                 Cursor session ingestion
     gemini/                 Gemini CLI session ingestion
     copilot/                GitHub Copilot session ingestion
+  toolsnap/                 Isolated workspace snapshot and tree-diff engine
   broker/                   Cross-repo event routing
   version/                  Build version injection
 e2e/                        End-to-end tests

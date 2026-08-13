@@ -53,8 +53,7 @@ type StatusResult struct {
 	// LogPath is the launcher worker log path.
 	LogPath string
 
-	// Health carries OS daemon-manager spawn-health signals. Today the
-	// extra probe is darwin-only.
+	// Health carries OS-specific daemon spawn-health signals.
 	Health ServiceHealth
 
 	// BinaryStale reports that the registered binary no longer matches

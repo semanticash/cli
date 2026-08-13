@@ -99,6 +99,54 @@ func TestReadSettings_RoundTripsAutomations(t *testing.T) {
 	}
 }
 
+func TestAttributionV2Enabled(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	t.Run("default off", func(t *testing.T) {
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+		if AttributionV2Enabled(t.TempDir()) {
+			t.Error("expected off with no settings and no env")
+		}
+	})
+
+	t.Run("settings on", func(t *testing.T) {
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, AttributionV2: boolPtr(true)}); err != nil {
+			t.Fatal(err)
+		}
+		if !AttributionV2Enabled(dir) {
+			t.Error("expected on from settings field")
+		}
+	})
+
+	t.Run("settings off explicit", func(t *testing.T) {
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, AttributionV2: boolPtr(false)}); err != nil {
+			t.Fatal(err)
+		}
+		if AttributionV2Enabled(dir) {
+			t.Error("expected off from explicit settings false")
+		}
+	})
+
+	t.Run("env overrides settings", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, AttributionV2: boolPtr(true)}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "0")
+		if AttributionV2Enabled(dir) {
+			t.Error("expected env=0 to override settings on")
+		}
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1")
+		if !AttributionV2Enabled(dir) {
+			t.Error("expected env=1 on")
+		}
+	})
+}
+
 func TestIsConnected_Default(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteSettings(dir, Settings{

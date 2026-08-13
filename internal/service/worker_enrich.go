@@ -10,6 +10,7 @@ import (
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/util"
 )
 
 // enrichResult carries the outputs of checkpoint enrichment to completion
@@ -167,11 +168,12 @@ func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in W
 		return
 	}
 
+	// Use the repository's scoring version for persisted attribution.
 	cfr, err := attributeWithCarryForward(ctx, wctx.h, wctx.blobStore, diffBytes, ComputeAIPercentInput{
 		RepoRoot: in.RepoRoot,
 		RepoID:   wctx.cp.RepositoryID,
 		Window:   windows.attrWindow,
-	}, windows.prevCommitLinked, wctx.semDir)
+	}, windows.prevCommitLinked, wctx.semDir, util.AttributionV2Enabled(wctx.semDir))
 	if errors.Is(err, ErrNoEventsInWindow) {
 		// No agent evidence is a valid zero-AI result.
 		markAttributionComputed(ctx, wctx.h, in.CheckpointID)

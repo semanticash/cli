@@ -105,6 +105,14 @@ func NewEnableCmd(rootOpts *RootOptions) *cobra.Command {
 				return enc.Encode(res)
 			}
 
+			// Codex requires explicit trust for project hooks.
+			for _, name := range res.Providers {
+				if name == "codex" {
+					fmt.Fprintln(os.Stderr, "Codex hooks installed in .codex/hooks.json. Trust them for this repo or capture stays inactive: run `/hooks` in the Codex CLI, or use Settings > Hooks in the Codex desktop app.")
+					break
+				}
+			}
+
 			if isTerminalWriter(out) {
 				_, _ = lipgloss.Fprintln(out, renderEnableCard(res))
 				return nil

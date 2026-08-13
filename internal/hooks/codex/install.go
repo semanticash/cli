@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,92 +9,210 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// Codex hooks are user-global: a single ~/.codex/hooks.json covers
-// hook-capable Codex sessions on the machine. Per-session gating then
-// runs at capture time through ShouldCapture, which rejects sessions
-// whose cwd does not resolve to a registered repo. Other providers in
-// this repo install per-repo hook configs; Codex differs because the
-// hook configuration lives in the shared Codex state directory.
+// Codex hooks are repo-local and require user approval. Installation also
+// enables Codex's global hooks feature without modifying global hook entries.
 
 const (
-	// semanticaMarker appears inside every hook command we install. It
-	// lets install/uninstall recognize Semantica-owned entries when a
-	// user has unrelated hooks under the same Codex events.
+	// semanticaMarker identifies entries managed by Semantica.
 	semanticaMarker = "semantica capture codex"
 
-	// hooksFileName is the user-global hooks file Codex reads. We keep
-	// it as a constant rather than per-OS branching: Codex resolves
-	// $CODEX_HOME (defaulting to ~/.codex) the same way across all
-	// supported platforms.
+	// hooksFileName is shared by project and user config layers.
 	hooksFileName = "hooks.json"
 
-	// configFileName is the TOML file that holds [features] and the
-	// [hooks.state.*] trust namespace.
+	// configFileName contains the global hooks feature flag.
 	configFileName = "config.toml"
+
+	// codexRepoDirName is Codex's project config directory.
+	codexRepoDirName = ".codex"
+
+	// installLockName serializes Semantica updates to global Codex config.
+	installLockName = ".semantica-install.lock"
 )
 
-// codexHookEvent describes one hook entry the installer writes.
-//
-// The pascalEvent / snakeEvent pair reflects a quirk of the Codex format:
-// hooks.json uses PascalCase event names while the trust namespace
-// ([hooks.state."<file>:<event>:..."]) uses snake_case. Both forms must
-// agree with what Codex's runtime expects or the hook either fails to
-// fire or appears as untrusted.
+// codexHookEvent describes one installed hook.
 type codexHookEvent struct {
 	pascalEvent string // event key in hooks.json (e.g. "PostToolUse")
-	snakeEvent  string // event key in [hooks.state.*] (e.g. "post_tool_use")
 	captureName string // subcommand passed to `semantica capture codex ...`
 	matcher     string // optional regex; empty means "match every tool"
 }
 
-// hookEvents enumerates the Codex hooks Semantica installs. Order is
-// stable for deterministic file output.
+// hookEvents has stable order for deterministic output.
 var hookEvents = []codexHookEvent{
-	{"SessionStart", "session_start", "session-start", ""},
-	{"UserPromptSubmit", "user_prompt_submit", "user-prompt-submit", ""},
-	{"PostToolUse", "post_tool_use", "post-tool-use", "apply_patch|Bash|Write|Edit"},
-	{"Stop", "stop", "stop", ""},
+	{"SessionStart", "session-start", ""},
+	{"UserPromptSubmit", "user-prompt-submit", ""},
+	// Bash needs a pre-execution snapshot; direct edit tools do not.
+	{"PreToolUse", "pre-tool-use", "Bash"},
+	{"PostToolUse", "post-tool-use", "apply_patch|Bash|Write|Edit"},
+	{"Stop", "stop", ""},
 }
 
-// hookFileShape mirrors the on-disk layout Codex expects for hooks.json:
-// an outer object with a single "hooks" key whose value maps PascalCase
-// event names to arrays of matcher groups.
+// hookFileShape preserves fields Semantica does not own while merging.
 type hookFileShape struct {
-	Hooks map[string][]matcherGroup `json:"hooks"`
+	Hooks map[string][]matcherGroup
+	extra map[string]json.RawMessage
+}
+
+func (s *hookFileShape) UnmarshalJSON(b []byte) error {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["hooks"]; ok {
+		if err := json.Unmarshal(v, &s.Hooks); err != nil {
+			return err
+		}
+		delete(raw, "hooks")
+	}
+	s.extra = raw
+	return nil
+}
+
+func (s hookFileShape) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(s.extra)+1)
+	for k, v := range s.extra {
+		out[k] = v
+	}
+	hooks := s.Hooks
+	if hooks == nil {
+		hooks = map[string][]matcherGroup{}
+	}
+	hb, err := jsonNoEscape(hooks)
+	if err != nil {
+		return nil, err
+	}
+	out["hooks"] = hb
+	return jsonNoEscape(out)
 }
 
 type matcherGroup struct {
-	Matcher string         `json:"matcher,omitempty"`
-	Hooks   []commandEntry `json:"hooks"`
+	// matcherRaw preserves matcher tokens from existing files.
+	Matcher    string
+	Hooks      []commandEntry
+	matcherRaw json.RawMessage
+	extra      map[string]json.RawMessage
+}
+
+func (g *matcherGroup) UnmarshalJSON(b []byte) error {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["matcher"]; ok {
+		g.matcherRaw = v
+		// Preserve values that do not decode as strings.
+		_ = json.Unmarshal(v, &g.Matcher)
+		delete(raw, "matcher")
+	}
+	if v, ok := raw["hooks"]; ok {
+		if err := json.Unmarshal(v, &g.Hooks); err != nil {
+			return err
+		}
+		delete(raw, "hooks")
+	}
+	g.extra = raw
+	return nil
+}
+
+func (g matcherGroup) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(g.extra)+2)
+	for k, v := range g.extra {
+		out[k] = v
+	}
+	switch {
+	case g.matcherRaw != nil:
+		// Preserve the original matcher token.
+		out["matcher"] = g.matcherRaw
+	case g.Matcher != "":
+		mb, err := jsonNoEscape(g.Matcher)
+		if err != nil {
+			return nil, err
+		}
+		out["matcher"] = mb
+	}
+	hb, err := jsonNoEscape(g.Hooks)
+	if err != nil {
+		return nil, err
+	}
+	out["hooks"] = hb
+	return jsonNoEscape(out)
 }
 
 type commandEntry struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
+	Type    string
+	Command string
+	extra   map[string]json.RawMessage
 }
 
-// installedHook captures the on-disk position and command string of one
-// Semantica entry inside hooks.json. The trust namespace is keyed by
-// (groupIndex, hookIndex) and the hash is computed over the exact
-// command string Codex sees, so install and uninstall both need this
-// per-entry information rather than synthesized canonical values.
-type installedHook struct {
-	pascalEvent string
-	snakeEvent  string
-	matcher     string
-	groupIndex  int
-	hookIndex   int
-	command     string
+func (c *commandEntry) UnmarshalJSON(b []byte) error {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["type"]; ok {
+		if err := json.Unmarshal(v, &c.Type); err != nil {
+			return err
+		}
+		delete(raw, "type")
+	}
+	if v, ok := raw["command"]; ok {
+		if err := json.Unmarshal(v, &c.Command); err != nil {
+			return err
+		}
+		delete(raw, "command")
+	}
+	c.extra = raw
+	return nil
 }
 
-// codexHomeDir returns the directory Codex stores its user-global state
-// in. Defaults to ~/.codex and is overridable by $CODEX_HOME so test
-// fixtures can run in isolation.
+func (c commandEntry) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(c.extra)+2)
+	for k, v := range c.extra {
+		out[k] = v
+	}
+	tb, err := jsonNoEscape(c.Type)
+	if err != nil {
+		return nil, err
+	}
+	out["type"] = tb
+	cb, err := jsonNoEscape(c.Command)
+	if err != nil {
+		return nil, err
+	}
+	out["command"] = cb
+	return jsonNoEscape(out)
+}
+
+// jsonNoEscape marshals compact JSON without escaping HTML metacharacters.
+// Nested hook marshalers use it so shell commands remain readable.
+func jsonNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// marshalHooksIndent renders readable hooks.json output.
+func marshalHooksIndent(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// codexHomeDir returns $CODEX_HOME or ~/.codex.
 func codexHomeDir() (string, error) {
 	if env := os.Getenv("CODEX_HOME"); env != "" {
 		return env, nil
@@ -105,179 +224,213 @@ func codexHomeDir() (string, error) {
 	return filepath.Join(home, ".codex"), nil
 }
 
-// InstallHooks writes the Semantica hook configuration into Codex's
-// user-global config directory. The repoRoot argument is unused for the
-// install itself (Codex hooks are not per-repo) but kept to satisfy the
-// HookProvider contract; the cwd preflight gates per-repo behavior at
-// capture time instead.
-//
-// On success, the user has:
-//
-//   - ~/.codex/hooks.json with four entries (SessionStart,
-//     UserPromptSubmit, PostToolUse, Stop) pointing at the Semantica
-//     binary. Existing user hook entries under the same events are
-//     preserved; Semantica's entries are appended after them.
-//   - ~/.codex/config.toml updated with [features] hooks = true and one
-//     [hooks.state.*] trusted_hash per installed hook, so Codex does not
-//     prompt for hook review on the next session. Trust keys reflect
-//     the actual (groupIndex, hookIndex) where Semantica's entries
-//     written, which can be non-zero when the file already contained
-//     unrelated hooks for the same event.
-//
-// User configuration in config.toml (model pins, plugin blocks,
-// marketplace declarations, project trust levels) is preserved across
-// the round-trip. Comments and original key ordering are not retained
-// because the TOML round-trip rewrites the file through a map; callers
-// that need a comment-preserving editor should add one upstream and
-// share it across providers.
-//
-// Re-running is safe: identical commands at identical positions produce
-// identical content and identical trust hashes, so the file ends up
-// byte-equivalent.
+// codexRepoDir returns <repoRoot>/.codex.
+func codexRepoDir(repoRoot string) (string, error) {
+	if repoRoot == "" {
+		return "", errors.New("codex hooks require a repository path")
+	}
+	return filepath.Join(repoRoot, codexRepoDirName), nil
+}
+
+// InstallHooks merges repo-local hooks and enables Codex's global hook gate.
+// Existing hooks are preserved. If repository publication fails after the
+// gate changes, the installer attempts to restore the prior global config.
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	bin := binaryPath
 	if bin == "" {
 		bin = "semantica"
 	}
 
+	repoDir, err := codexRepoDir(repoRoot)
+	if err != nil {
+		return 0, err
+	}
+	repoHooksPath := filepath.Join(repoDir, hooksFileName)
+
+	commands := commandsForBinary(bin)
+
+	// Validate the project config before changing global state.
+	merged, err := mergeHooksFile(repoHooksPath, commands)
+	if err != nil {
+		return 0, err
+	}
+
+	// Serialize global config changes across Semantica installs.
 	home, err := codexHomeDir()
 	if err != nil {
 		return 0, err
 	}
-	hooksPath := filepath.Join(home, hooksFileName)
-	configPath := filepath.Join(home, configFileName)
-
-	commands := commandsForBinary(bin)
-
-	// Capture the prior install's command strings before merging so
-	// their hashes contribute to recognition. Without this, a binary
-	// path change (or any future change to the guarded-command shape)
-	// would leave stale trust entries at positions that have shifted
-	// between runs: their hashes would not be in the new install's
-	// recognizedHashes, so the cleanup phase would skip them.
-	prior, err := scanInstalledSemanticaEntries(hooksPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return 0, err
-	}
-
-	// Merge into existing hooks.json so unrelated user hooks survive.
-	// installed carries the actual (groupIndex, hookIndex) each
-	// Semantica entry occupies after the merge - non-zero when the
-	// user already had hooks under one of our events.
-	merged, installed, err := mergeHooksFile(hooksPath, commands)
-	if err != nil {
-		return 0, err
-	}
-
-	// Build the trust mutation. trustHashes drives the upsert;
-	// recognizedHashes lets the cleanup phase remove any stale trust
-	// entries under hooksFilePath whose stored hash matches a
-	// Semantica command from this or a prior install.
-	mutation := configMutation{
-		trustHashes:      make(map[string]string, len(installed)),
-		hooksFilePath:    hooksPath,
-		recognizedHashes: make(map[string]struct{}, len(installed)+len(prior)),
-	}
-	for _, h := range installed {
-		key := trustKey(hooksPath, h.snakeEvent, h.groupIndex, h.hookIndex)
-		hash := commandHookHash(h.snakeEvent, h.matcher, h.command)
-		mutation.trustHashes[key] = hash
-		mutation.recognizedHashes[hash] = struct{}{}
-	}
-	for _, h := range prior {
-		hash := commandHookHash(h.snakeEvent, h.matcher, h.command)
-		mutation.recognizedHashes[hash] = struct{}{}
-	}
-
-	if err := updateConfigTOML(configPath, mutation.applyToTOML); err != nil {
-		return 0, err
-	}
-
-	// Write hooks.json last: a partial install where hooks.json points
-	// at the binary but the trust entries are missing would surface a
-	// hook-review prompt the user did not consent to.
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return 0, fmt.Errorf("create %s: %w", home, err)
 	}
-	out, err := json.MarshalIndent(merged, "", "  ")
+	unlock, err := lockCodexConfig(ctx, home)
 	if err != nil {
-		return 0, fmt.Errorf("marshal hooks.json: %w", err)
-	}
-	if err := writeFileAtomic(hooksPath, append(out, '\n'), 0o644); err != nil {
 		return 0, err
+	}
+	defer unlock()
+
+	// Snapshot the global config for rollback.
+	globalConfigPath := filepath.Join(home, configFileName)
+	priorGlobal, priorGlobalErr := os.ReadFile(globalConfigPath)
+	if priorGlobalErr != nil && !errors.Is(priorGlobalErr, os.ErrNotExist) {
+		return 0, fmt.Errorf("read %s: %w", globalConfigPath, priorGlobalErr)
+	}
+	priorMode := os.FileMode(0o600)
+	if priorGlobalErr == nil {
+		fi, statErr := os.Stat(globalConfigPath)
+		if statErr != nil {
+			return 0, fmt.Errorf("stat %s: %w", globalConfigPath, statErr)
+		}
+		priorMode = fi.Mode().Perm()
+	}
+
+	changed, written, err := ensureGlobalHooksFeature(home)
+	if err != nil {
+		return 0, err
+	}
+
+	// Publish repo hooks last so global changes can be rolled back on failure.
+	if err := publishRepoHooks(repoDir, repoHooksPath, merged); err != nil {
+		var rbErr error
+		if changed {
+			rbErr = restoreGlobalConfig(globalConfigPath, priorGlobal, priorGlobalErr, written, priorMode)
+		}
+		return 0, errors.Join(err, rbErr)
 	}
 
 	return len(hookEvents), nil
 }
 
-// UninstallHooks removes Semantica's entries from the user-global
-// configuration. Other tools' hooks - including any non-Semantica
-// entries the user may have added by hand - are preserved.
-//
-// The function reads the current hooks.json to recover the exact command
-// strings and positions of Semantica's entries before pruning the file,
-// then removes only the trust entries whose hash matches what those
-// commands produced. Trust entries whose hash differs (e.g. modified by
-// the user or written by a different tool) are left untouched.
-//
-// Codex hooks are user-global, so a disable on any one repo removes the
-// hooks for all repos. Re-running enable on another registered repo
-// restores them. This is a deliberate trade for keeping the install
-// surface symmetric across CLI and desktop sessions; users with multiple
-// active repos who only want to disable Codex on one should rely on the
-// cwd preflight (a deregistered repo will not produce capture events)
-// rather than running `disable --providers codex`.
+// publishRepoHooks is a test seam for publication failures.
+var publishRepoHooks = func(repoDir, repoHooksPath string, merged hookFileShape) error {
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", repoDir, err)
+	}
+	out, err := marshalHooksIndent(merged)
+	if err != nil {
+		return fmt.Errorf("marshal hooks.json: %w", err)
+	}
+	return writeFileAtomic(repoHooksPath, append(out, '\n'), 0o644)
+}
+
+// codexLockPollInterval bounds lock cancellation latency.
+const codexLockPollInterval = 25 * time.Millisecond
+
+// lockCodexConfig acquires the global config lock while honoring ctx.
+func lockCodexConfig(ctx context.Context, home string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(home, installLockName), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open codex install lock: %w", err)
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		ok, err := platform.TryLockFile(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock codex config: %w", err)
+		}
+		if ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, ctx.Err()
+		case <-time.After(codexLockPollInterval):
+		}
+	}
+	// Catch cancellation that races with lock acquisition.
+	if err := ctx.Err(); err != nil {
+		_ = platform.UnlockFile(f)
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = platform.UnlockFile(f)
+		_ = f.Close()
+	}, nil
+}
+
+// ensureGlobalHooksFeature enables [features] hooks while the config is locked.
+// It returns the persisted bytes when the file changes.
+func ensureGlobalHooksFeature(home string) (changed bool, written []byte, err error) {
+	path := filepath.Join(home, configFileName)
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	doc, err := readConfigTOML(data)
+	if err != nil {
+		return false, nil, err
+	}
+	features, _ := doc["features"].(map[string]any)
+	if features == nil {
+		features = make(map[string]any)
+		doc["features"] = features
+	}
+	if v, ok := features["hooks"].(bool); ok && v {
+		return false, nil, nil
+	}
+	features["hooks"] = true
+	out, err := writeConfigTOML(doc)
+	if err != nil {
+		return false, nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if err := writeFileAtomic(path, out, 0o600); err != nil {
+		return false, nil, err
+	}
+	return true, out, nil
+}
+
+// restoreGlobalConfig rolls back only when the file still matches expected.
+// Writers that ignore the config lock may race this check.
+func restoreGlobalConfig(path string, prior []byte, priorErr error, expected []byte, priorMode os.FileMode) error {
+	current, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s for rollback: %w", path, err)
+	}
+	if !bytes.Equal(current, expected) {
+		return nil
+	}
+	if errors.Is(priorErr, os.ErrNotExist) {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("rollback remove %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := writeFileAtomic(path, prior, priorMode); err != nil {
+		return fmt.Errorf("rollback restore %s: %w", path, err)
+	}
+	return nil
+}
+
+// UninstallHooks removes Semantica entries from the project hook file.
+// Global hooks, the feature flag, trust state, and unrelated entries remain.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
-	home, err := codexHomeDir()
+	repoDir, err := codexRepoDir(repoRoot)
 	if err != nil {
 		return err
 	}
-	hooksPath := filepath.Join(home, hooksFileName)
-	configPath := filepath.Join(home, configFileName)
-
-	// Recover the actual installed state before pruning. If the file is
-	// missing there is nothing to do for either side.
-	installed, err := scanInstalledSemanticaEntries(hooksPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	repoHooksPath := filepath.Join(repoDir, hooksFileName)
+	if err := pruneHooksFile(repoHooksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-
-	// Prune hooks.json first. If this step fails the file is left
-	// intact (writeFileAtomic guarantees all-or-nothing) and trust
-	// entries are still valid, so the user is not left with hooks that
-	// fire but appear unapproved to Codex.
-	if err := pruneHooksFile(hooksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	// Compute trust entries from the actual command strings on disk so
-	// installs with non-default binary paths (e.g. `--binary
-	// /opt/special/semantica`) round-trip cleanly. recognizedHashes
-	// drives the removal pass, which sweeps every entry under
-	// hooksFilePath whose stored hash matches one of those commands -
-	// including entries at outdated positions that a prior shift
-	// stranded.
-	mutation := configMutation{
-		hooksFilePath:    hooksPath,
-		recognizedHashes: make(map[string]struct{}, len(installed)),
-	}
-	for _, h := range installed {
-		hash := commandHookHash(h.snakeEvent, h.matcher, h.command)
-		mutation.recognizedHashes[hash] = struct{}{}
-	}
-	return updateConfigTOML(configPath, mutation.removeFromTOML)
+	return nil
 }
 
-// AreHooksInstalled reports whether ~/.codex/hooks.json contains at
-// least one Semantica-owned entry. Detection runs on the file alone -
-// trust state is best-effort and a missing trust entry only means the
-// user has not yet acknowledged the hooks, not that they are absent.
+// AreHooksInstalled reports whether the project file contains Semantica hooks.
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {
-	home, err := codexHomeDir()
+	repoDir, err := codexRepoDir(repoRoot)
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(home, hooksFileName))
+	data, err := os.ReadFile(filepath.Join(repoDir, hooksFileName))
 	if err != nil {
 		return false
 	}
@@ -297,15 +450,13 @@ func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool 
 	return false
 }
 
-// HookBinary returns the binary path Codex would execute for any one of
-// our installed hooks. Health checks use this to verify `semantica` is
-// still reachable via exec.LookPath on the user's machine.
+// HookBinary returns the binary used by an installed Semantica hook.
 func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, error) {
-	home, err := codexHomeDir()
+	repoDir, err := codexRepoDir(repoRoot)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(home, hooksFileName))
+	data, err := os.ReadFile(filepath.Join(repoDir, hooksFileName))
 	if err != nil {
 		return "", err
 	}
@@ -325,8 +476,7 @@ func (p *Provider) HookBinary(ctx context.Context, repoRoot string) (string, err
 	return "", fmt.Errorf("no semantica hook found in %s", hooksFileName)
 }
 
-// commandsForBinary returns the shell command strings, in the same order
-// as hookEvents, that the installer writes for the given binary.
+// commandsForBinary returns commands in hookEvents order.
 func commandsForBinary(bin string) []string {
 	out := make([]string, len(hookEvents))
 	for i, ev := range hookEvents {
@@ -335,97 +485,34 @@ func commandsForBinary(bin string) []string {
 	return out
 }
 
-// trustKey reproduces the literal key Codex stores under [hooks.state.*].
-// Format: "<hooks-file-path>:<snake_event>:<group_index>:<hook_index>".
-func trustKey(hooksPath, snakeEvent string, groupIndex, hookIndex int) string {
-	return fmt.Sprintf("%s:%s:%d:%d", hooksPath, snakeEvent, groupIndex, hookIndex)
-}
-
-// mergeHooksFile reads an existing hooks.json (if present), removes
-// any previously-installed Semantica entries, and appends the freshly
-// computed ones. Non-Semantica entries belonging to other tools
-// survive the round-trip. The returned slice records the position
-// each Semantica entry occupies in the merged shape so callers can
-// compute trust fingerprints keyed against the actual (groupIndex,
-// hookIndex).
-func mergeHooksFile(hooksPath string, commands []string) (hookFileShape, []installedHook, error) {
+// mergeHooksFile replaces Semantica entries and preserves all others.
+func mergeHooksFile(hooksPath string, commands []string) (hookFileShape, error) {
 	shape := hookFileShape{Hooks: make(map[string][]matcherGroup)}
 	if data, err := os.ReadFile(hooksPath); err == nil {
 		if err := json.Unmarshal(data, &shape); err != nil {
-			return shape, nil, fmt.Errorf("parse %s: %w", hooksPath, err)
+			return shape, fmt.Errorf("parse %s: %w", hooksPath, err)
 		}
 		if shape.Hooks == nil {
 			shape.Hooks = make(map[string][]matcherGroup)
 		}
 		stripSemanticaEntries(&shape)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return shape, nil, fmt.Errorf("read %s: %w", hooksPath, err)
+		return shape, fmt.Errorf("read %s: %w", hooksPath, err)
 	}
 
-	installed := make([]installedHook, 0, len(hookEvents))
 	for i, ev := range hookEvents {
-		entry := matcherGroup{
+		shape.Hooks[ev.pascalEvent] = append(shape.Hooks[ev.pascalEvent], matcherGroup{
 			Matcher: ev.matcher,
 			Hooks: []commandEntry{{
 				Type:    "command",
 				Command: commands[i],
 			}},
-		}
-		shape.Hooks[ev.pascalEvent] = append(shape.Hooks[ev.pascalEvent], entry)
-		installed = append(installed, installedHook{
-			pascalEvent: ev.pascalEvent,
-			snakeEvent:  ev.snakeEvent,
-			matcher:     ev.matcher,
-			groupIndex:  len(shape.Hooks[ev.pascalEvent]) - 1,
-			hookIndex:   0,
-			command:     commands[i],
 		})
 	}
-	return shape, installed, nil
+	return shape, nil
 }
 
-// scanInstalledSemanticaEntries reads hooks.json and returns one record
-// per Semantica entry currently in the file. The records carry the
-// exact command string Codex hashed, so the caller can reproduce trust
-// fingerprints for arbitrary installed binaries.
-//
-// Only entries under canonical Semantica events are scanned. Entries
-// the user may have moved manually to other events are not handled here
-// - they will surface as untrusted at next install instead.
-func scanInstalledSemanticaEntries(hooksPath string) ([]installedHook, error) {
-	data, err := os.ReadFile(hooksPath)
-	if err != nil {
-		return nil, err
-	}
-	var shape hookFileShape
-	if err := json.Unmarshal(data, &shape); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", hooksPath, err)
-	}
-	var result []installedHook
-	for _, ev := range hookEvents {
-		groups := shape.Hooks[ev.pascalEvent]
-		for gIdx, g := range groups {
-			for hIdx, h := range g.Hooks {
-				if !strings.Contains(h.Command, semanticaMarker) {
-					continue
-				}
-				result = append(result, installedHook{
-					pascalEvent: ev.pascalEvent,
-					snakeEvent:  ev.snakeEvent,
-					matcher:     g.Matcher,
-					groupIndex:  gIdx,
-					hookIndex:   hIdx,
-					command:     h.Command,
-				})
-			}
-		}
-	}
-	return result, nil
-}
-
-// pruneHooksFile removes Semantica entries from hooks.json in place. If
-// the file ends up empty, the whole file is deleted so a future enable
-// starts from a clean state.
+// pruneHooksFile removes Semantica entries and deletes an empty file.
 func pruneHooksFile(hooksPath string) error {
 	data, err := os.ReadFile(hooksPath)
 	if err != nil {
@@ -443,16 +530,14 @@ func pruneHooksFile(hooksPath string) error {
 	if len(shape.Hooks) == 0 {
 		return os.Remove(hooksPath)
 	}
-	out, err := json.MarshalIndent(shape, "", "  ")
+	out, err := marshalHooksIndent(shape)
 	if err != nil {
 		return fmt.Errorf("marshal hooks.json: %w", err)
 	}
 	return writeFileAtomic(hooksPath, append(out, '\n'), 0o644)
 }
 
-// stripSemanticaEntries removes Semantica-owned commands from the shape
-// in place. A matcher group becomes empty after stripping is dropped; an
-// event that ends up with no remaining groups is removed from the map.
+// stripSemanticaEntries removes owned commands and empty containers.
 func stripSemanticaEntries(shape *hookFileShape) {
 	for event, groups := range shape.Hooks {
 		kept := groups[:0]
@@ -478,38 +563,7 @@ func stripSemanticaEntries(shape *hookFileShape) {
 	}
 }
 
-// updateConfigTOML loads ~/.codex/config.toml, applies the given mutation
-// callback, and writes it back only when something changed. Returns nil
-// on a missing file (callers create one) and never overwrites a file
-// that failed to parse.
-func updateConfigTOML(path string, apply func(map[string]any) bool) error {
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	doc, err := readConfigTOML(data)
-	if err != nil {
-		return err
-	}
-	if !apply(doc) {
-		return nil
-	}
-	out, err := writeConfigTOML(doc)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
-	return writeFileAtomic(path, out, 0o600)
-}
-
-// writeFileAtomic writes data to path through a sibling temp file plus
-// a platform-safe rename, so a crash mid-write never leaves a truncated
-// or partially-overwritten config visible to Codex. Any failure along
-// the way returns an error; the destination file is either fully
-// updated to the new content or left at its previous content. There is
-// no non-atomic fallback path.
+// writeFileAtomic replaces path through a sibling temporary file.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")

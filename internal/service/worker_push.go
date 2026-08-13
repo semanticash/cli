@@ -65,6 +65,14 @@ type remotePushPayload struct {
 	Annotations []annotationPayload `json:"annotations,omitempty"`
 }
 
+// attrVersionOrDefault treats results without a version as v1.
+func attrVersionOrDefault(v string) string {
+	if v == "" {
+		return "v1"
+	}
+	return v
+}
+
 // PushAction classifies the outcome of a push attempt.
 type PushAction string
 
@@ -134,7 +142,7 @@ func buildPushPayload(ctx context.Context, h *sqlstore.Handle, result *Attributi
 		Evidence:            result.Evidence,
 		FallbackCount:       result.FallbackCount,
 		CLIVersion:          version.Version,
-		AttrVersion:         "v1",
+		AttrVersion:         attrVersionOrDefault(result.AttrVersion),
 		PushedAt:            time.Now().UnixMilli(),
 	}
 }

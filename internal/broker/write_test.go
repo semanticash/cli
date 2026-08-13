@@ -2,9 +2,11 @@ package broker
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -854,5 +856,218 @@ func TestWriteEventsToRepo_SubdirLaunchIsNotCrossRepo(t *testing.T) {
 	// Subdirectory launch is same-repo - source_repo_path should be NULL.
 	if sess.SourceRepoPath.Valid {
 		t.Errorf("expected NULL source_repo_path for subdirectory launch, got %q", sess.SourceRepoPath.String)
+	}
+}
+
+func TestWriteEvidenceLinksToRepo(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	tempRepoWithDB(t, repoPath)
+	ctx := context.Background()
+
+	if _, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{{
+		EventID: "evt-1", SourceKey: "/data/s.jsonl", Provider: "claude_code",
+		Timestamp: 2000, Kind: "assistant", Role: "assistant",
+		ProviderSessionID: "sess-abc", SessionStartedAt: 1500,
+		SessionMetaJSON: `{"source_key":"/data/s.jsonl"}`,
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	link := EvidenceLink{
+		EventID: "evt-1", EvidenceKind: "tool_delta",
+		EvidenceHash: "hash-a", GroupID: "g-1", CreatedAt: 2500,
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{link}); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{link}); err != nil {
+		t.Fatalf("idempotent rewrite: %v", err)
+	}
+
+	conflicting := link
+	conflicting.EvidenceHash = "hash-b"
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, []EvidenceLink{conflicting}); !errors.Is(err, ErrEvidenceLinkConflict) {
+		t.Fatalf("conflicting hash: err = %v, want ErrEvidenceLinkConflict", err)
+	}
+
+	// A missing event rolls back the entire batch.
+	batch := []EvidenceLink{
+		{EventID: "evt-1", EvidenceKind: "tool_delta", EvidenceHash: "hash-a", GroupID: "g-2", CreatedAt: 2600},
+		{EventID: "evt-missing", EvidenceKind: "tool_delta", EvidenceHash: "hash-a", GroupID: "g-2", CreatedAt: 2600},
+	}
+	if err := WriteEvidenceLinksToRepo(ctx, repoPath, batch); err == nil {
+		t.Fatal("link to missing event accepted")
+	}
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	rows, err := h.Queries.ListEvidenceLinksByEvent(ctx, "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EvidenceHash != "hash-a" || rows[0].GroupID != "g-1" {
+		t.Fatalf("links = %+v, want only the original row", rows)
+	}
+
+	// Event deletion removes its evidence links.
+	if _, err := h.DB.ExecContext(ctx, "DELETE FROM agent_events WHERE event_id = 'evt-1'"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = h.Queries.ListEvidenceLinksByEvent(ctx, "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("links after event deletion = %+v, want none", rows)
+	}
+}
+
+// TestListEvidenceLinksInWindow covers window bounds and repository isolation.
+func TestListEvidenceLinksInWindow(t *testing.T) {
+	dir := t.TempDir()
+	repoA := tempRepoWithDB(t, filepath.Join(dir, "repoA"))
+	repoB := tempRepoWithDB(t, filepath.Join(dir, "repoB"))
+	ctx := context.Background()
+
+	rawEvent := func(id, provider, session string, ts int64) RawEvent {
+		return RawEvent{
+			EventID: id, SourceKey: "/data/" + session + ".jsonl", Provider: provider,
+			Timestamp: ts, Kind: "assistant", Role: "assistant",
+			ToolUseID: "tu-" + id, ToolName: "Bash", EventSource: "hook",
+			ProviderSessionID: session, SessionStartedAt: 1,
+			SessionMetaJSON: `{"source_key":"x"}`,
+		}
+	}
+	if _, err := WriteEventsToRepo(ctx, repoA, []RawEvent{
+		rawEvent("e1", "claude_code", "s-cl", 1000),
+		rawEvent("e2", "claude_code", "s-cl", 2000),
+		rawEvent("e3", "claude_code", "s-cl", 2000), // same ts, later insert_seq
+		rawEvent("e4", "codex", "s-cx", 3000),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteEventsToRepo(ctx, repoB, []RawEvent{
+		rawEvent("eb", "claude_code", "s-b", 2000),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	linkFor := func(repo, event, kind, group string) {
+		t.Helper()
+		if err := WriteEvidenceLinksToRepo(ctx, repo, []EvidenceLink{{
+			EventID: event, EvidenceKind: kind, EvidenceHash: "h-" + event,
+			GroupID: group, CreatedAt: 1,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, e := range []string{"e1", "e2", "e3", "e4"} {
+		linkFor(repoA, e, "tool_delta", "g-"+e)
+	}
+	linkFor(repoA, "e2", "other_kind", "g-other")
+	linkFor(repoB, "eb", "tool_delta", "g-eb")
+
+	h, err := sqlstore.Open(ctx, filepath.Join(repoA, ".semantica", "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seqOf := func(event string) int64 {
+		var seq int64
+		if err := h.DB.QueryRowContext(ctx,
+			"SELECT insert_seq FROM agent_events WHERE event_id = ?", event).Scan(&seq); err != nil {
+			t.Fatal(err)
+		}
+		return seq
+	}
+	eventIDs := func(rows []sqldb.ListEvidenceLinksInWindowRow) []string {
+		out := make([]string, len(rows))
+		for i, r := range rows {
+			out[i] = r.EventID
+		}
+		return out
+	}
+
+	// Timestamp bounds are exclusive after and inclusive until.
+	rows, err := h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
+		RepositoryID: repoRow.RepositoryID, UseCursor: 0, AfterTs: 1000, UpToTs: 2000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(rows); !reflect.DeepEqual(got, []string{"e2", "e3"}) {
+		t.Fatalf("fallback window = %v, want [e2 e3]", got)
+	}
+
+	// Cursor bounds disambiguate equal timestamps.
+	rows, err = h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
+		RepositoryID: repoRow.RepositoryID, UseCursor: 1,
+		AfterTs: 2000, AfterCursor: sql.NullInt64{Int64: seqOf("e2"), Valid: true},
+		UpToTs: 3000, UpToCursor: sql.NullInt64{Int64: seqOf("e4"), Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(rows); !reflect.DeepEqual(got, []string{"e3", "e4"}) {
+		t.Fatalf("cursor window = %v, want [e3 e4]", got)
+	}
+
+	// Full windows retain insertion order and providers.
+	rows, err = h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
+		RepositoryID: repoRow.RepositoryID, UseCursor: 0, AfterTs: 0, UpToTs: 9000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(rows); !reflect.DeepEqual(got, []string{"e1", "e2", "e3", "e4"}) {
+		t.Fatalf("full window = %v", got)
+	}
+	if rows[0].Provider != "claude_code" || rows[3].Provider != "codex" {
+		t.Fatalf("providers = %s, %s", rows[0].Provider, rows[3].Provider)
+	}
+
+	// Sessions and events must belong to the requested repository.
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: "repo-b-same-db", RootPath: filepath.Join(dir, "other"),
+		CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := h.DB.ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(`INSERT INTO agent_sources (source_id, repository_id, provider, source_key, last_seen_at, created_at)
+	      VALUES ('src-b', 'repo-b-same-db', 'codex', '/data/b.jsonl', 1, 1)`)
+	seed(`INSERT INTO agent_sessions (session_id, repository_id, provider, provider_session_id, source_id,
+	          started_at, last_seen_at, metadata_json)
+	      VALUES ('sess-b', 'repo-b-same-db', 'codex', 'pb', 'src-b', 1, 1, '{}')`)
+	// A valid event owned by repository B.
+	seed(`INSERT INTO agent_events (event_id, session_id, repository_id, ts, kind, event_source, tool_name, insert_seq)
+	      VALUES ('eb-same', 'sess-b', 'repo-b-same-db', 2000, 'assistant', 'hook', 'Bash', 9001)`)
+	// An event and session with conflicting repository ownership.
+	seed(`INSERT INTO agent_events (event_id, session_id, repository_id, ts, kind, event_source, tool_name, insert_seq)
+	      VALUES ('e-corrupt', 'sess-b', ?, 2000, 'assistant', 'hook', 'Bash', 9002)`, repoRow.RepositoryID)
+	linkFor(repoA, "eb-same", "tool_delta", "g-eb-same")
+	linkFor(repoA, "e-corrupt", "tool_delta", "g-corrupt")
+
+	rows, err = h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
+		RepositoryID: repoRow.RepositoryID, UseCursor: 0, AfterTs: 0, UpToTs: 9000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(rows); !reflect.DeepEqual(got, []string{"e1", "e2", "e3", "e4"}) {
+		t.Fatalf("window after corrupt rows = %v, want cross-repository sessions excluded", got)
 	}
 }

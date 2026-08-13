@@ -34,8 +34,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 9 {
-		t.Errorf("count: got %d, want 9", count)
+	if count != 10 {
+		t.Errorf("count: got %d, want 10", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
@@ -131,8 +131,8 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 			}
 		}
 	}
-	if total != 9 {
-		t.Errorf("total semantica hooks after double install: got %d, want 9", total)
+	if total != 10 {
+		t.Errorf("total semantica hooks after double install: got %d, want 10", total)
 	}
 }
 
@@ -334,6 +334,35 @@ func TestParseHookEvent_UserPromptSubmit(t *testing.T) {
 	}
 	if event.Model != "claude-opus-4-20250514" {
 		t.Errorf("model: got %q", event.Model)
+	}
+}
+
+func TestParseHookEvent_PreBash(t *testing.T) {
+	p := &Provider{}
+	input := `{"session_id":"sess-123","transcript_path":"/t.jsonl","cwd":"/repo","tool_name":"Bash","tool_use_id":"toolu_01","tool_input":{"command":"gofmt ./..."}}`
+
+	event, err := p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if event.Type != hooks.ToolStepStarted {
+		t.Errorf("type: got %v, want ToolStepStarted", event.Type)
+	}
+	if event.ToolUseID != "toolu_01" || event.ToolName != "Bash" || event.CWD != "/repo" {
+		t.Errorf("event = %+v", event)
+	}
+
+	// A pre hook without a tool-use ID cannot open a paired window.
+	noID := `{"session_id":"sess-123","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	event, err = p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(noID))
+	if err != nil || event != nil {
+		t.Errorf("missing tool_use_id: event=%v err=%v, want skip", event, err)
+	}
+	// Non-Bash payloads on the bash hook are skipped.
+	wrongTool := `{"session_id":"sess-123","tool_name":"Write","tool_use_id":"toolu_02"}`
+	event, err = p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(wrongTool))
+	if err != nil || event != nil {
+		t.Errorf("wrong tool: event=%v err=%v, want skip", event, err)
 	}
 }
 

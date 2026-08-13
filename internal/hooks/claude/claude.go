@@ -99,6 +99,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"PostToolUse", "Agent", hooks.GuardedCommand(bin, "capture claude-code post-agent")},
 		{"PostToolUse", "Write", hooks.GuardedCommand(bin, "capture claude-code post-write")},
 		{"PostToolUse", "Edit", hooks.GuardedCommand(bin, "capture claude-code post-edit")},
+		{"PreToolUse", "Bash", hooks.GuardedCommand(bin, "capture claude-code pre-bash")},
 		{"PostToolUse", "Bash", hooks.GuardedCommand(bin, "capture claude-code post-bash")},
 		{"SessionStart", "", hooks.GuardedCommand(bin, "capture claude-code session-start")},
 		{"SessionEnd", "", hooks.GuardedCommand(bin, "capture claude-code session-end")},
@@ -383,6 +384,12 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		} else {
 			return nil, nil
 		}
+	case "pre-bash":
+		// Skip windows that cannot be paired by tool-use ID.
+		if payload.ToolName != "Bash" || payload.ToolUseID == "" {
+			return nil, nil
+		}
+		event.Type = hooks.ToolStepStarted
 	case "session-start":
 		event.Type = hooks.SessionOpened
 	case "session-end":
