@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -37,9 +38,15 @@ func (w *manifestWorld) git(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = w.repoPath
-	out, err := cmd.CombinedOutput()
+	// Keep stderr out of the returned value: callers feed results (e.g. a
+	// hash-object id) into later git invocations, and warnings such as
+	// Windows' CRLF notice would corrupt them. Stderr still surfaces in
+	// failure messages.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
+		t.Fatalf("git %v: %v\n%s", args, err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -66,6 +73,10 @@ func newManifestWorld(t *testing.T) *manifestWorld {
 	w.git(t, "init", "-q", "-b", "main")
 	w.git(t, "config", "user.email", "t@example.com")
 	w.git(t, "config", "user.name", "t")
+	// Fixtures write LF content and compare byte-exact blob hashes across
+	// platforms; Windows runners default to autocrlf=true, which would
+	// both convert content and emit CRLF warnings on stderr.
+	w.git(t, "config", "core.autocrlf", "false")
 
 	writeManifestFile(t, repoPath, "a.txt", "alpha one\n")
 	writeManifestFile(t, repoPath, "b.txt", "beta body\n")
