@@ -60,9 +60,9 @@ type TranscriptEventSummary struct {
 
 type FileDelta struct {
 	Path       string  `json:"path"`
-	Added      int     `json:"added"`          // added non-blank lines (same basis as attribution)
-	Deleted    int     `json:"deleted"`         // deleted non-blank lines
-	TotalLines int     `json:"total_lines"`     // equals Added (added non-blank lines)
+	Added      int     `json:"added"`       // added non-blank lines (same basis as attribution)
+	Deleted    int     `json:"deleted"`     // deleted non-blank lines
+	TotalLines int     `json:"total_lines"` // equals Added (added non-blank lines)
 	AILines    int     `json:"ai_lines"`
 	HumanLines int     `json:"human_lines"`
 	AIPercent  float64 `json:"ai_percentage"`

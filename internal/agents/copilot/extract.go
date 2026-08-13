@@ -8,11 +8,11 @@ import (
 
 // Copilot JSONL event types.
 const (
-	eventTypeUserMessage      = "user.message"
-	eventTypeAssistantMsg     = "assistant.message"
-	eventTypeToolExecDone     = "tool.execution_complete"
-	eventTypeModelChange      = "session.model_change"
-	eventTypeSessionShutdown  = "session.shutdown"
+	eventTypeUserMessage     = "user.message"
+	eventTypeAssistantMsg    = "assistant.message"
+	eventTypeToolExecDone    = "tool.execution_complete"
+	eventTypeModelChange     = "session.model_change"
+	eventTypeSessionShutdown = "session.shutdown"
 )
 
 // copilotEvent is a single line in events.jsonl.

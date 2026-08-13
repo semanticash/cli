@@ -55,9 +55,9 @@ func TestWriteSettings_RoundTripsLauncherSection(t *testing.T) {
 
 	want := UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:            true,
+			Enabled:           true,
 			InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-			InstalledAt:        1714000000000,
+			InstalledAt:       1714000000000,
 		},
 	}
 	if err := WriteSettings(want); err != nil {
@@ -158,9 +158,9 @@ func TestSettings_ReadsLegacyPlistKey(t *testing.T) {
 		t.Fatalf("ReadSettings: %v", err)
 	}
 	want := LauncherSettings{
-		Enabled:            true,
+		Enabled:           true,
 		InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		InstalledAt:        1714000000000,
+		InstalledAt:       1714000000000,
 	}
 	if got.Launcher != want {
 		t.Errorf("legacy file read: got %+v, want %+v", got.Launcher, want)
@@ -190,9 +190,9 @@ func TestSettings_ReadsBothKeysSameValue(t *testing.T) {
 		t.Fatalf("ReadSettings: %v", err)
 	}
 	want := LauncherSettings{
-		Enabled:            true,
+		Enabled:           true,
 		InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-		InstalledAt:        1714000000000,
+		InstalledAt:       1714000000000,
 	}
 	if got.Launcher != want {
 		t.Errorf("dual-key file read: got %+v, want %+v", got.Launcher, want)
@@ -208,9 +208,9 @@ func TestSettings_DualWritesEmitBothKeys(t *testing.T) {
 	const path = "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist"
 	if err := WriteSettings(UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:            true,
+			Enabled:           true,
 			InstalledUnitPath: path,
-			InstalledAt:        1714000000000,
+			InstalledAt:       1714000000000,
 		},
 	}); err != nil {
 		t.Fatalf("WriteSettings: %v", err)
@@ -251,9 +251,9 @@ func TestSettings_RoundTripsLosslessly(t *testing.T) {
 
 	want := UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:            true,
+			Enabled:           true,
 			InstalledUnitPath: "/Users/test/Library/LaunchAgents/sh.semantica.worker.plist",
-			InstalledAt:        1714000000000,
+			InstalledAt:       1714000000000,
 		},
 	}
 	if err := WriteSettings(want); err != nil {

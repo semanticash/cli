@@ -105,9 +105,9 @@ func fetchRemoteProvenance(ctx context.Context, endpoint, repoID, commitHash, to
 	playbookEmpty := len(envelope.Payload.Playbook) == 0 ||
 		bytes.Equal(envelope.Payload.Playbook, []byte("null"))
 	if envelope.Error || playbookEmpty {
-			// Treat empty playbooks like 404: the safe user-facing
-			// claim is that no remote playbook was available, not
-			// that no remote capture exists.
+		// Treat empty playbooks like 404: the safe user-facing
+		// claim is that no remote playbook was available, not
+		// that no remote capture exists.
 		return "", FallbackNotInRemote
 	}
 

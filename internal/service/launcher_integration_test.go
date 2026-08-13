@@ -47,9 +47,9 @@ func setupLauncherIntegrationEnv(t *testing.T, repoRoots ...string) {
 	// Seed the launcher-enabled flag so dispatchViaLauncher runs.
 	s := launcher.UserSettings{
 		Launcher: launcher.LauncherSettings{
-			Enabled:            true,
+			Enabled:           true,
 			InstalledUnitPath: "/dummy/path.plist",
-			InstalledAt:        1,
+			InstalledAt:       1,
 		},
 	}
 	if err := launcher.WriteSettings(s); err != nil {

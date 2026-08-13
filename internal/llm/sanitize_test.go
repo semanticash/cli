@@ -13,8 +13,8 @@ func TestSanitizeUTF8_ValidPassesUnchanged(t *testing.T) {
 	cases := []string{
 		"",
 		"plain ascii",
-		"café",           // é as a single 2-byte sequence
-		"世界",         // 世界
+		"café", // é as a single 2-byte sequence
+		"世界",   // 世界
 		"line1\nline2\n",
 		"emoji \U0001F600 end", // multi-byte outside BMP
 	}
