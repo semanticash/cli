@@ -28,16 +28,32 @@ func TestBuildCandidatesFromRows_ClaudeLineLevel(t *testing.T) {
 
 	cands, stats := BuildCandidatesFromRows(rows, repoRoot, nil)
 
-	if stats.EventsConsidered != 1 { t.Errorf("EventsConsidered = %d, want 1", stats.EventsConsidered) }
-	if stats.EventsAssistant != 1 { t.Errorf("EventsAssistant = %d, want 1", stats.EventsAssistant) }
-	if stats.PayloadsLoaded != 1 { t.Errorf("PayloadsLoaded = %d, want 1", stats.PayloadsLoaded) }
-	if stats.AIToolEvents != 1 { t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents) }
+	if stats.EventsConsidered != 1 {
+		t.Errorf("EventsConsidered = %d, want 1", stats.EventsConsidered)
+	}
+	if stats.EventsAssistant != 1 {
+		t.Errorf("EventsAssistant = %d, want 1", stats.EventsAssistant)
+	}
+	if stats.PayloadsLoaded != 1 {
+		t.Errorf("PayloadsLoaded = %d, want 1", stats.PayloadsLoaded)
+	}
+	if stats.AIToolEvents != 1 {
+		t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents)
+	}
 
-	if len(cands.AILines) != 1 { t.Fatalf("AILines files = %d, want 1", len(cands.AILines)) }
+	if len(cands.AILines) != 1 {
+		t.Fatalf("AILines files = %d, want 1", len(cands.AILines))
+	}
 	lines := cands.AILines["main.go"]
-	if len(lines) != 2 { t.Errorf("main.go lines = %d, want 2", len(lines)) }
-	if _, ok := lines["package main"]; !ok { t.Error("missing 'package main'") }
-	if _, ok := lines["func main() {}"]; !ok { t.Error("missing 'func main() {}'") }
+	if len(lines) != 2 {
+		t.Errorf("main.go lines = %d, want 2", len(lines))
+	}
+	if _, ok := lines["package main"]; !ok {
+		t.Error("missing 'package main'")
+	}
+	if _, ok := lines["func main() {}"]; !ok {
+		t.Error("missing 'func main() {}'")
+	}
 
 	if cands.ProviderModel["claude_code"] != "opus 4.6" {
 		t.Errorf("ProviderModel = %v", cands.ProviderModel)
@@ -113,11 +129,15 @@ func TestBuildCandidatesFromRows_ProviderFileTouchOnly(t *testing.T) {
 
 	cands, stats := BuildCandidatesFromRows(rows, "/test/repo", nil)
 
-	if stats.AIToolEvents != 1 { t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents) }
+	if stats.AIToolEvents != 1 {
+		t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents)
+	}
 	if cands.ProviderTouchedFiles["handler.go"] != "cursor" {
 		t.Errorf("ProviderTouchedFiles = %v", cands.ProviderTouchedFiles)
 	}
-	if len(cands.AILines) != 0 { t.Error("expected no AILines for provider file touch") }
+	if len(cands.AILines) != 0 {
+		t.Error("expected no AILines for provider file touch")
+	}
 }
 
 func TestBuildCandidatesFromRows_EligibleFileGating(t *testing.T) {
@@ -143,9 +163,15 @@ func TestBuildCandidatesFromRows_EligibleFileGating(t *testing.T) {
 	eligible := map[string]bool{"main.go": true}
 	cands, _ := BuildCandidatesFromRows(rows, repoRoot, eligible)
 
-	if len(cands.AILines) != 1 { t.Fatalf("AILines files = %d, want 1", len(cands.AILines)) }
-	if _, ok := cands.AILines["main.go"]; !ok { t.Error("expected main.go in AILines") }
-	if _, ok := cands.AILines["other.go"]; ok { t.Error("other.go should be filtered by eligible gate") }
+	if len(cands.AILines) != 1 {
+		t.Fatalf("AILines files = %d, want 1", len(cands.AILines))
+	}
+	if _, ok := cands.AILines["main.go"]; !ok {
+		t.Error("expected main.go in AILines")
+	}
+	if _, ok := cands.AILines["other.go"]; ok {
+		t.Error("other.go should be filtered by eligible gate")
+	}
 }
 
 func TestBuildCandidatesFromRows_DeletionPath(t *testing.T) {
@@ -193,8 +219,12 @@ func TestBuildCandidatesFromRows_NilPayloadSkipped(t *testing.T) {
 
 	_, stats := BuildCandidatesFromRows(rows, "/test/repo", nil)
 
-	if stats.AIToolEvents != 1 { t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents) }
-	if stats.PayloadsLoaded != 0 { t.Errorf("PayloadsLoaded = %d, want 0", stats.PayloadsLoaded) }
+	if stats.AIToolEvents != 1 {
+		t.Errorf("AIToolEvents = %d, want 1", stats.AIToolEvents)
+	}
+	if stats.PayloadsLoaded != 0 {
+		t.Errorf("PayloadsLoaded = %d, want 0", stats.PayloadsLoaded)
+	}
 }
 
 func TestBuildCandidatesFromRows_NonAssistantSkipped(t *testing.T) {
@@ -204,7 +234,9 @@ func TestBuildCandidatesFromRows_NonAssistantSkipped(t *testing.T) {
 
 	_, stats := BuildCandidatesFromRows(rows, "/test/repo", nil)
 
-	if stats.EventsAssistant != 0 { t.Errorf("EventsAssistant = %d, want 0", stats.EventsAssistant) }
+	if stats.EventsAssistant != 0 {
+		t.Errorf("EventsAssistant = %d, want 0", stats.EventsAssistant)
+	}
 }
 
 // Multiple providers retain ownership of their respective lines.

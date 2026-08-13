@@ -196,7 +196,7 @@ func TestRedirectWorkerLog_AppendsToExisting(t *testing.T) {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	got := readLogFile(t,path)
+	got := readLogFile(t, path)
 	if !strings.Contains(got, "prior content") {
 		t.Errorf("append mode lost prior content; got:\n%s", got)
 	}

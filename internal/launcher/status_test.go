@@ -49,9 +49,9 @@ func TestStatus_ReflectsEnabledSettings(t *testing.T) {
 	recorded := "/some/recorded/plist/path.plist"
 	want := UserSettings{
 		Launcher: LauncherSettings{
-			Enabled:            true,
+			Enabled:           true,
 			InstalledUnitPath: recorded,
-			InstalledAt:        1714000000000,
+			InstalledAt:       1714000000000,
 		},
 	}
 	if err := WriteSettings(want); err != nil {
@@ -234,4 +234,3 @@ func TestStatus_MissingSettingsDoesNotPopulateError(t *testing.T) {
 		t.Errorf("missing settings must not set SettingsError, got %q", s.SettingsError)
 	}
 }
-

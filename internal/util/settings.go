@@ -18,13 +18,13 @@ type Automations struct {
 }
 
 type Settings struct {
-	Enabled   bool     `json:"enabled"`
-	Version   int      `json:"version"`
-	Providers []string `json:"providers,omitempty"`
-	Trailers    *bool        `json:"trailers,omitempty"`
-	Automations *Automations `json:"automations,omitempty"`
-	Connected        bool         `json:"connected"`
-	ConnectedRepoID  string       `json:"connected_repo_id,omitempty"`
+	Enabled         bool         `json:"enabled"`
+	Version         int          `json:"version"`
+	Providers       []string     `json:"providers,omitempty"`
+	Trailers        *bool        `json:"trailers,omitempty"`
+	Automations     *Automations `json:"automations,omitempty"`
+	Connected       bool         `json:"connected"`
+	ConnectedRepoID string       `json:"connected_repo_id,omitempty"`
 	// AttributionV2 enables tool-delta scoring. An absent value is disabled.
 	AttributionV2 *bool `json:"attribution_v2,omitempty"`
 }

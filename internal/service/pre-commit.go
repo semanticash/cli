@@ -62,7 +62,7 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 		Trigger:      sql.NullString{String: "commit", Valid: true},
 		Message:      sql.NullString{String: "Auto checkpoint", Valid: true},
 		ManifestHash: sql.NullString{}, // NULL - filled by worker
-		SizeBytes:    sql.NullInt64{},   // NULL - filled by worker
+		SizeBytes:    sql.NullInt64{},  // NULL - filled by worker
 		Status:       "pending",
 		CompletedAt:  sql.NullInt64{}, // NULL - filled by worker
 	}); err != nil {

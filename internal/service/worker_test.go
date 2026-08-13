@@ -191,12 +191,12 @@ func TestBuildPushPayload_JSONContract(t *testing.T) {
 	// Required fields always present.
 	required := map[string]any{
 		"remote_url":          "https://github.com/test/repo.git",
-		"commit_hash":        "abc123",
+		"commit_hash":         "abc123",
 		"attribution_version": "v1",
-		"ai_lines":           float64(15),
-		"human_lines":        float64(85),
-		"total_lines":        float64(100),
-		"session_count":      float64(3),
+		"ai_lines":            float64(15),
+		"human_lines":         float64(85),
+		"total_lines":         float64(100),
+		"session_count":       float64(3),
 	}
 	for k, want := range required {
 		got, ok := m[k]

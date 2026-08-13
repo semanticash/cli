@@ -98,7 +98,7 @@ type TranscriptsInput struct {
 
 // TranscriptsResult wraps the output from either resolution path.
 type TranscriptsResult struct {
-	ResolvedAs string                         `json:"resolved_as"` // "checkpoint" or "session"
+	ResolvedAs string                          `json:"resolved_as"` // "checkpoint" or "session"
 	Checkpoint *TranscriptsForCheckpointResult `json:"checkpoint,omitempty"`
 	Session    *SessionTranscript              `json:"session,omitempty"`
 }

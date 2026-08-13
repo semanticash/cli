@@ -25,18 +25,18 @@ type SessionListInput struct {
 }
 
 type SessionInfo struct {
-	SessionID         string `json:"session_id"`
-	ProviderSessionID string `json:"provider_session_id"`
-	Provider          string `json:"provider"`
-	ParentSessionID   string `json:"parent_session_id,omitempty"`
-	StartedAt         string `json:"started_at"`
-	LastEventAt       string `json:"last_event_at"`
-	LastEventAtMs     int64  `json:"-"` // unix millis, for relative time formatting
-	StepCount         int64  `json:"step_count"`
-	ToolCallCount     int64  `json:"tool_call_count"`
-	TokensIn          int64  `json:"tokens_in"`
-	TokensOut         int64  `json:"tokens_out"`
-	TokensCached      int64  `json:"tokens_cached,omitempty"`
+	SessionID         string         `json:"session_id"`
+	ProviderSessionID string         `json:"provider_session_id"`
+	Provider          string         `json:"provider"`
+	ParentSessionID   string         `json:"parent_session_id,omitempty"`
+	StartedAt         string         `json:"started_at"`
+	LastEventAt       string         `json:"last_event_at"`
+	LastEventAtMs     int64          `json:"-"` // unix millis, for relative time formatting
+	StepCount         int64          `json:"step_count"`
+	ToolCallCount     int64          `json:"tool_call_count"`
+	TokensIn          int64          `json:"tokens_in"`
+	TokensOut         int64          `json:"tokens_out"`
+	TokensCached      int64          `json:"tokens_cached,omitempty"`
 	Children          []*SessionInfo `json:"children,omitempty"`
 }
 

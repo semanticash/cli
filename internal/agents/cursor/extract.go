@@ -159,7 +159,7 @@ func parseOneToolCall(data json.RawMessage) *toolUse {
 	var obj struct {
 		Name     string          `json:"name"`
 		Type     string          `json:"type"`
-		Tool     json.RawMessage `json:"tool"`      // sometimes numeric tool id
+		Tool     json.RawMessage `json:"tool"` // sometimes numeric tool id
 		FilePath string          `json:"file_path"`
 		Path     string          `json:"path"`
 		Input    json.RawMessage `json:"input"`
@@ -254,7 +254,6 @@ func normalizeTimestamp(f float64) int64 {
 	}
 	return int64(f * 1000) // seconds -> ms
 }
-
 
 // parseCursorJSONLLine extracts role, kind, summary, tool uses, and content
 // types from a Cursor agent-transcripts JSONL line. The format mirrors Claude Code:
