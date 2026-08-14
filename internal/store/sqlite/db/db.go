@@ -249,9 +249,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listUserPromptsForCommitStmt, err = db.PrepareContext(ctx, listUserPromptsForCommit); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserPromptsForCommit: %w", err)
 	}
-	if q.markCheckpointAttributionComputedStmt, err = db.PrepareContext(ctx, markCheckpointAttributionComputed); err != nil {
-		return nil, fmt.Errorf("error preparing query MarkCheckpointAttributionComputed: %w", err)
-	}
 	if q.markCheckpointAttributionPushedStmt, err = db.PrepareContext(ctx, markCheckpointAttributionPushed); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkCheckpointAttributionPushed: %w", err)
 	}
@@ -269,6 +266,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.recordBackfillFailureStmt, err = db.PrepareContext(ctx, recordBackfillFailure); err != nil {
 		return nil, fmt.Errorf("error preparing query RecordBackfillFailure: %w", err)
+	}
+	if q.recordCheckpointAttributionStmt, err = db.PrepareContext(ctx, recordCheckpointAttribution); err != nil {
+		return nil, fmt.Errorf("error preparing query RecordCheckpointAttribution: %w", err)
 	}
 	if q.recoverStaleUploadingStmt, err = db.PrepareContext(ctx, recoverStaleUploading); err != nil {
 		return nil, fmt.Errorf("error preparing query RecoverStaleUploading: %w", err)
@@ -299,9 +299,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.stepEventExistsStmt, err = db.PrepareContext(ctx, stepEventExists); err != nil {
 		return nil, fmt.Errorf("error preparing query StepEventExists: %w", err)
-	}
-	if q.updateCheckpointAIPercentageStmt, err = db.PrepareContext(ctx, updateCheckpointAIPercentage); err != nil {
-		return nil, fmt.Errorf("error preparing query UpdateCheckpointAIPercentage: %w", err)
 	}
 	if q.updateRepositoryEnabledAtStmt, err = db.PrepareContext(ctx, updateRepositoryEnabledAt); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateRepositoryEnabledAt: %w", err)
@@ -701,11 +698,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listUserPromptsForCommitStmt: %w", cerr)
 		}
 	}
-	if q.markCheckpointAttributionComputedStmt != nil {
-		if cerr := q.markCheckpointAttributionComputedStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing markCheckpointAttributionComputedStmt: %w", cerr)
-		}
-	}
 	if q.markCheckpointAttributionPushedStmt != nil {
 		if cerr := q.markCheckpointAttributionPushedStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing markCheckpointAttributionPushedStmt: %w", cerr)
@@ -734,6 +726,11 @@ func (q *Queries) Close() error {
 	if q.recordBackfillFailureStmt != nil {
 		if cerr := q.recordBackfillFailureStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing recordBackfillFailureStmt: %w", cerr)
+		}
+	}
+	if q.recordCheckpointAttributionStmt != nil {
+		if cerr := q.recordCheckpointAttributionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing recordCheckpointAttributionStmt: %w", cerr)
 		}
 	}
 	if q.recoverStaleUploadingStmt != nil {
@@ -784,11 +781,6 @@ func (q *Queries) Close() error {
 	if q.stepEventExistsStmt != nil {
 		if cerr := q.stepEventExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing stepEventExistsStmt: %w", cerr)
-		}
-	}
-	if q.updateCheckpointAIPercentageStmt != nil {
-		if cerr := q.updateCheckpointAIPercentageStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing updateCheckpointAIPercentageStmt: %w", cerr)
 		}
 	}
 	if q.updateRepositoryEnabledAtStmt != nil {
@@ -935,13 +927,13 @@ type Queries struct {
 	listStepProvenanceForTurnStmt                *sql.Stmt
 	listTranscriptEventsStmt                     *sql.Stmt
 	listUserPromptsForCommitStmt                 *sql.Stmt
-	markCheckpointAttributionComputedStmt        *sql.Stmt
 	markCheckpointAttributionPushedStmt          *sql.Stmt
 	markManifestFailedStmt                       *sql.Stmt
 	markManifestUploadedStmt                     *sql.Stmt
 	markManifestUploadingStmt                    *sql.Stmt
 	promptEventExistsStmt                        *sql.Stmt
 	recordBackfillFailureStmt                    *sql.Stmt
+	recordCheckpointAttributionStmt              *sql.Stmt
 	recoverStaleUploadingStmt                    *sql.Stmt
 	releaseCheckpointForRetryStmt                *sql.Stmt
 	resetManifestForRetryStmt                    *sql.Stmt
@@ -952,7 +944,6 @@ type Queries struct {
 	retryFailedCheckpointStmt                    *sql.Stmt
 	saveCheckpointSummaryStmt                    *sql.Stmt
 	stepEventExistsStmt                          *sql.Stmt
-	updateCheckpointAIPercentageStmt             *sql.Stmt
 	updateRepositoryEnabledAtStmt                *sql.Stmt
 	upsertAgentSessionStmt                       *sql.Stmt
 	upsertAgentSourceStmt                        *sql.Stmt
@@ -1040,13 +1031,13 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listStepProvenanceForTurnStmt:                q.listStepProvenanceForTurnStmt,
 		listTranscriptEventsStmt:                     q.listTranscriptEventsStmt,
 		listUserPromptsForCommitStmt:                 q.listUserPromptsForCommitStmt,
-		markCheckpointAttributionComputedStmt:        q.markCheckpointAttributionComputedStmt,
 		markCheckpointAttributionPushedStmt:          q.markCheckpointAttributionPushedStmt,
 		markManifestFailedStmt:                       q.markManifestFailedStmt,
 		markManifestUploadedStmt:                     q.markManifestUploadedStmt,
 		markManifestUploadingStmt:                    q.markManifestUploadingStmt,
 		promptEventExistsStmt:                        q.promptEventExistsStmt,
 		recordBackfillFailureStmt:                    q.recordBackfillFailureStmt,
+		recordCheckpointAttributionStmt:              q.recordCheckpointAttributionStmt,
 		recoverStaleUploadingStmt:                    q.recoverStaleUploadingStmt,
 		releaseCheckpointForRetryStmt:                q.releaseCheckpointForRetryStmt,
 		resetManifestForRetryStmt:                    q.resetManifestForRetryStmt,
@@ -1057,7 +1048,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		retryFailedCheckpointStmt:                    q.retryFailedCheckpointStmt,
 		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
 		stepEventExistsStmt:                          q.stepEventExistsStmt,
-		updateCheckpointAIPercentageStmt:             q.updateCheckpointAIPercentageStmt,
 		updateRepositoryEnabledAtStmt:                q.updateRepositoryEnabledAtStmt,
 		upsertAgentSessionStmt:                       q.upsertAgentSessionStmt,
 		upsertAgentSourceStmt:                        q.upsertAgentSourceStmt,

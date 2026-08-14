@@ -252,7 +252,7 @@ func (q *Queries) GetCheckpointByID(ctx context.Context, checkpointID string) (C
 }
 
 const getCheckpointStats = `-- name: GetCheckpointStats :one
-select checkpoint_id, session_count, files_changed, ai_percentage, attribution_computed_at, attribution_pushed_at from checkpoint_stats where checkpoint_id = ?
+select checkpoint_id, session_count, files_changed, ai_percentage, attribution_computed_at, attribution_pushed_at, attribution_version from checkpoint_stats where checkpoint_id = ?
 `
 
 func (q *Queries) GetCheckpointStats(ctx context.Context, checkpointID string) (CheckpointStat, error) {
@@ -265,6 +265,7 @@ func (q *Queries) GetCheckpointStats(ctx context.Context, checkpointID string) (
 		&i.AiPercentage,
 		&i.AttributionComputedAt,
 		&i.AttributionPushedAt,
+		&i.AttributionVersion,
 	)
 	return i, err
 }
@@ -748,25 +749,6 @@ func (q *Queries) ListStalePendingCheckpoints(ctx context.Context, arg ListStale
 	return items, nil
 }
 
-const markCheckpointAttributionComputed = `-- name: MarkCheckpointAttributionComputed :exec
-insert into checkpoint_stats (checkpoint_id, attribution_computed_at)
-values (?, ?)
-on conflict(checkpoint_id) do update set
-    attribution_computed_at = excluded.attribution_computed_at
-`
-
-type MarkCheckpointAttributionComputedParams struct {
-	CheckpointID          string        `json:"checkpoint_id"`
-	AttributionComputedAt sql.NullInt64 `json:"attribution_computed_at"`
-}
-
-// Records successful attribution, including an empty result. Upsert preserves
-// the marker when the stats row does not exist yet.
-func (q *Queries) MarkCheckpointAttributionComputed(ctx context.Context, arg MarkCheckpointAttributionComputedParams) error {
-	_, err := q.exec(ctx, q.markCheckpointAttributionComputedStmt, markCheckpointAttributionComputed, arg.CheckpointID, arg.AttributionComputedAt)
-	return err
-}
-
 const markCheckpointAttributionPushed = `-- name: MarkCheckpointAttributionPushed :exec
 insert into checkpoint_stats (checkpoint_id, attribution_pushed_at)
 values (?, ?)
@@ -782,6 +764,34 @@ type MarkCheckpointAttributionPushedParams struct {
 // Records a successful hosted attribution push. Upsert creates missing stats rows.
 func (q *Queries) MarkCheckpointAttributionPushed(ctx context.Context, arg MarkCheckpointAttributionPushedParams) error {
 	_, err := q.exec(ctx, q.markCheckpointAttributionPushedStmt, markCheckpointAttributionPushed, arg.CheckpointID, arg.AttributionPushedAt)
+	return err
+}
+
+const recordCheckpointAttribution = `-- name: RecordCheckpointAttribution :exec
+insert into checkpoint_stats (checkpoint_id, ai_percentage, attribution_computed_at, attribution_version)
+values (?, ?, ?, ?)
+on conflict(checkpoint_id) do update set
+    ai_percentage = excluded.ai_percentage,
+    attribution_computed_at = excluded.attribution_computed_at,
+    attribution_version = excluded.attribution_version
+`
+
+type RecordCheckpointAttributionParams struct {
+	CheckpointID          string         `json:"checkpoint_id"`
+	AiPercentage          float64        `json:"ai_percentage"`
+	AttributionComputedAt sql.NullInt64  `json:"attribution_computed_at"`
+	AttributionVersion    sql.NullString `json:"attribution_version"`
+}
+
+// Stores the result and its scoring version in one statement. A percentage
+// of -1 marks a completed run with no attributable changes.
+func (q *Queries) RecordCheckpointAttribution(ctx context.Context, arg RecordCheckpointAttributionParams) error {
+	_, err := q.exec(ctx, q.recordCheckpointAttributionStmt, recordCheckpointAttribution,
+		arg.CheckpointID,
+		arg.AiPercentage,
+		arg.AttributionComputedAt,
+		arg.AttributionVersion,
+	)
 	return err
 }
 
@@ -881,20 +891,6 @@ type SaveCheckpointSummaryParams struct {
 
 func (q *Queries) SaveCheckpointSummary(ctx context.Context, arg SaveCheckpointSummaryParams) error {
 	_, err := q.exec(ctx, q.saveCheckpointSummaryStmt, saveCheckpointSummary, arg.SummaryJson, arg.SummaryModel, arg.CheckpointID)
-	return err
-}
-
-const updateCheckpointAIPercentage = `-- name: UpdateCheckpointAIPercentage :exec
-update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?
-`
-
-type UpdateCheckpointAIPercentageParams struct {
-	AiPercentage float64 `json:"ai_percentage"`
-	CheckpointID string  `json:"checkpoint_id"`
-}
-
-func (q *Queries) UpdateCheckpointAIPercentage(ctx context.Context, arg UpdateCheckpointAIPercentageParams) error {
-	_, err := q.exec(ctx, q.updateCheckpointAIPercentageStmt, updateCheckpointAIPercentage, arg.AiPercentage, arg.CheckpointID)
 	return err
 }
 

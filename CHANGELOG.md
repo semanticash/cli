@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.6.1] - Unreleased
 
+### Added
+
+- Checkpoint attribution records the scoring algorithm used for each result. `semantica status --json` reports the version for the latest checkpoint when known.
+
 ### Changed
 
 - `settings.json` now preserves unknown fields at every nesting level when rewritten by an older CLI.

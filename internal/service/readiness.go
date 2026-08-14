@@ -51,6 +51,8 @@ type AuditReadiness struct {
 	Provenance  ReadinessComponent `json:"provenance"`
 	Sync        ReadinessComponent `json:"sync"`
 	AuditReady  bool               `json:"audit_ready"`
+	// AttributionVersion identifies the algorithm used for the stored result.
+	AttributionVersion string `json:"attribution_version,omitempty"`
 }
 
 // EvaluateAuditReadiness derives a checkpoint verdict from stored evidence.
@@ -69,6 +71,9 @@ func EvaluateAuditReadiness(ctx context.Context, h *sqlstore.Handle, semDir stri
 
 	stats, statsErr := h.Queries.GetCheckpointStats(ctx, cp.CheckpointID)
 	hasStats := statsErr == nil
+	if hasStats && stats.AttributionVersion.Valid {
+		ar.AttributionVersion = stats.AttributionVersion.String
+	}
 
 	ar.Manifest = manifestReadiness(cp)
 	if linksErr != nil {
