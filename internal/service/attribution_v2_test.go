@@ -871,6 +871,151 @@ func TestOverlayDeltaProviders(t *testing.T) {
 	}
 }
 
+// insertBashDelta records a Bash event with tool-delta evidence.
+func insertBashDelta(t *testing.T, w *cfCommitWorld, ts int64, files []toolsnap.FileDelta) {
+	t.Helper()
+	ctx := context.Background()
+	eventID := uuid.NewString()
+	payload := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"generate"}}]}}`
+	payloadHash, _, err := w.bs.Put(ctx, []byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
+		EventID: eventID, SessionID: w.sessID, RepositoryID: w.repoID, Ts: ts,
+		Kind: "assistant", Role: sqlstore.NullStr("assistant"),
+		ToolUses:    sql.NullString{String: `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`, Valid: true},
+		PayloadHash: sqlstore.NullStr(payloadHash),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delta := &toolsnap.Delta{
+		Scope: "tool", Status: "complete",
+		Window: toolsnap.Window{StartedAt: ts - 1000, CompletedAt: ts, DurationMS: 1000},
+		Actors: []toolsnap.Actor{{Provider: "claude_code", SessionID: w.sessID, TurnID: "t1"}},
+		ToolUses: []toolsnap.ToolUse{{
+			ToolUseID: "toolu_1", ToolName: "Bash", EventID: eventID, Actor: 0,
+		}},
+		Files:  files,
+		Limits: toolsnap.Limits{FilesObserved: len(files)},
+	}
+	raw, err := delta.CanonicalBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltaHash, _, err := w.bs.Put(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.h.Queries.InsertEvidenceLinkIfAbsent(ctx, sqldb.InsertEvidenceLinkIfAbsentParams{
+		EventID: eventID, EvidenceKind: "tool_delta",
+		EvidenceHash: deltaHash, GroupID: uuid.NewString(), CreatedAt: ts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Historical touch-only deltas do not label human-only modified files.
+func TestAttributionV2_ModifiedFileHistoricalTouchDeltaDropped(t *testing.T) {
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1")
+	w := newCFCommitWorld(t)
+
+	commit1 := w.commitFile(t, "CHANGELOG.md", "## [0.6.1] - Unreleased\n", "ai entry")
+	insertBashDelta(t, w, 100_000, []toolsnap.FileDelta{{
+		Path: "CHANGELOG.md", Operation: "edit",
+		BeforeHash: "a", AfterHash: "b",
+		BeforeMode: "100644", AfterMode: "100644", Binary: true,
+	}})
+	w.linkCheckpoint(t, commit1, 200_000, []string{"CHANGELOG.md"})
+
+	// Same provider active in the current window on another file.
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		250_000, "other.go", "package other\n")
+
+	// The human replaces the line; nothing AI-produced survives.
+	commit2 := w.commitFile(t, "CHANGELOG.md", "## [0.6.1] - 2026-08-14\n", "human date")
+	w.linkCheckpoint(t, commit2, 300_000, []string{"CHANGELOG.md", "other.go"})
+
+	result := w.attribute(t, commit2)
+
+	if result.AttrVersion != "v2" {
+		t.Fatalf("AttrVersion = %q, want v2", result.AttrVersion)
+	}
+	if result.AIPercentage != 0 || result.HumanLines != 1 {
+		t.Errorf("AI%%=%v human=%d, want 0%% and 1 human line", result.AIPercentage, result.HumanLines)
+	}
+	if result.FilesAITouched != 0 {
+		t.Errorf("FilesAITouched = %d, want 0: historical delta touch must not surface", result.FilesAITouched)
+	}
+	f := fileByPath(t, result.Files, "CHANGELOG.md")
+	if f.Classification == "ai" {
+		t.Errorf("classification = %q, want not ai for a human-only edit", f.Classification)
+	}
+	for _, class := range append([]string{f.EvidenceClass}, f.EvidenceClasses...) {
+		if class == "tool_delta_touch" || class == "provider_touch" {
+			t.Errorf("leaked evidence class %q from historical delta", class)
+		}
+	}
+	if len(f.Providers) != 0 {
+		t.Errorf("providers = %v, want none", f.Providers)
+	}
+}
+
+// Refused historical claims do not become file-level touch evidence.
+func TestAttributionV2_ModifiedFileRefusedHistoricalClaimNotTouch(t *testing.T) {
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1")
+	w := newCFCommitWorld(t)
+
+	// One shared line makes the claim survive; the remaining volume
+	// overflows the scorer's alignment budget and forces refusal.
+	const n = 2500
+	claimLines := make([]string, n)
+	humanLines := make([]string, n)
+	claimLines[0] = "shared anchor line"
+	humanLines[0] = "shared anchor line"
+	for i := 1; i < n; i++ {
+		claimLines[i] = fmt.Sprintf("historical line %d", i)
+		humanLines[i] = fmt.Sprintf("human line %d", i)
+	}
+
+	commit1 := w.commitFile(t, "big.txt", "old content\n", "base")
+	insertBashDelta(t, w, 100_000, []toolsnap.FileDelta{{
+		Path: "big.txt", Operation: "edit",
+		BeforeHash: "a", AfterHash: "b",
+		BeforeMode: "100644", AfterMode: "100644",
+		Hunks: []toolsnap.Hunk{{
+			OldStart: 1, OldCount: 0, NewStart: 1, NewCount: n,
+			NewLines: claimLines,
+		}},
+	}})
+	w.linkCheckpoint(t, commit1, 200_000, []string{"big.txt"})
+
+	// Same provider active in the current window on another file.
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		250_000, "other.go", "package other\n")
+
+	commit2 := w.commitFile(t, "big.txt", strings.Join(humanLines, "\n")+"\n", "human rewrite")
+	w.linkCheckpoint(t, commit2, 300_000, []string{"big.txt", "other.go"})
+
+	result := w.attribute(t, commit2)
+
+	if result.Diagnostics.DeltaAlignmentsRefused == 0 {
+		t.Fatal("alignment not refused; the fixture no longer exercises the refusal path")
+	}
+	f := fileByPath(t, result.Files, "big.txt")
+	for _, class := range append([]string{f.EvidenceClass}, f.EvidenceClasses...) {
+		if class == "tool_delta_touch" || class == "provider_touch" {
+			t.Errorf("leaked evidence class %q from refused historical claim", class)
+		}
+	}
+	if f.Classification == "ai" {
+		t.Errorf("classification = %q, want not ai", f.Classification)
+	}
+	if result.FilesAITouched != 0 {
+		t.Errorf("FilesAITouched = %d, want 0", result.FilesAITouched)
+	}
+}
+
 // Repository settings can enable tool-delta scoring.
 func TestAttributionV2_SettingsFlag(t *testing.T) {
 	dir, commitHash := setupDeltaRepo(t)

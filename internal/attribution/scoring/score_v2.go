@@ -327,11 +327,15 @@ func ScoreFilesWithDeltas(
 				haveDelta = true
 			}
 		}
-		// Refused alignments retain file-level evidence under the first
-		// claim group's provider.
+		// Refusal credit requires a current-window claim.
 		refusedProvider := ""
-		if fs.DeltaAlignmentRefused && len(groups) > 0 {
-			refusedProvider = groups[0].Provider
+		if fs.DeltaAlignmentRefused {
+			for _, g := range groups {
+				if !g.Historical {
+					refusedProvider = g.Provider
+					break
+				}
+			}
 		}
 
 		provider, isProviderFile := providerTouchedFiles[fd.Path]

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `semantica enable --force` now backs up malformed settings before restoring defaults and preserves the settings version during reinitialization.
+- Modified files no longer inherit direct or tool-delta involvement from historical attribution windows unless a historical line survives in the current diff.
 
 ## [0.6.0] - 2026-08-13
 

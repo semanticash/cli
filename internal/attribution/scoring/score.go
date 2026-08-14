@@ -9,6 +9,8 @@ type DeltaClaimGroup struct {
 	InsertSeq int64
 	EventID   string
 	Lines     []string
+	// Historical marks a carry-forward claim for a modified file.
+	Historical bool
 }
 
 // LineStamp identifies one direct witness for a line.
