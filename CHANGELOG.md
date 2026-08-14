@@ -5,6 +5,17 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - Unreleased
+
+### Changed
+
+- `settings.json` now preserves unknown fields at every nesting level when rewritten by an older CLI.
+- Provider hook configuration files are replaced atomically while preserving existing permissions. Read-modify-write updates are serialized to prevent lost changes.
+
+### Fixed
+
+- `semantica enable --force` now backs up malformed settings before restoring defaults and preserves the settings version during reinitialization.
+
 ## [0.6.0] - 2026-08-13
 
 ### Added

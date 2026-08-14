@@ -9,15 +9,91 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
+// PlaybookAutomation configures playbook generation while preserving unknown fields.
 type PlaybookAutomation struct {
-	Enabled bool `json:"enabled"`
+	Enabled bool
+	extra   map[string]json.RawMessage
 }
 
+func (p *PlaybookAutomation) UnmarshalJSON(b []byte) error {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["enabled"]; ok {
+		if err := json.Unmarshal(v, &p.Enabled); err != nil {
+			return err
+		}
+		delete(raw, "enabled")
+	}
+	p.extra = raw
+	return nil
+}
+
+func (p PlaybookAutomation) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(p.extra)+1)
+	for k, v := range p.extra {
+		out[k] = v
+	}
+	eb, err := json.Marshal(p.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	out["enabled"] = eb
+	return json.Marshal(out)
+}
+
+// Automations configures repository automation while preserving unknown fields.
 type Automations struct {
-	Playbook PlaybookAutomation `json:"playbook"`
+	Playbook PlaybookAutomation
+	extra    map[string]json.RawMessage
 }
 
+func (a *Automations) UnmarshalJSON(b []byte) error {
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["playbook"]; ok {
+		if err := json.Unmarshal(v, &a.Playbook); err != nil {
+			return err
+		}
+		delete(raw, "playbook")
+	}
+	a.extra = raw
+	return nil
+}
+
+func (a Automations) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(a.extra)+1)
+	for k, v := range a.extra {
+		out[k] = v
+	}
+	pb, err := json.Marshal(a.Playbook)
+	if err != nil {
+		return nil, err
+	}
+	out["playbook"] = pb
+	return json.Marshal(out)
+}
+
+// Settings is the repository configuration stored in settings.json.
+// Unknown fields are preserved when the file is rewritten.
 type Settings struct {
+	Enabled         bool
+	Version         int
+	Providers       []string
+	Trailers        *bool
+	Automations     *Automations
+	Connected       bool
+	ConnectedRepoID string
+	// AttributionV2 enables tool-delta scoring. An absent value is disabled.
+	AttributionV2 *bool
+	extra         map[string]json.RawMessage
+}
+
+// settingsKnown mirrors Settings' known fields for JSON decoding.
+type settingsKnown struct {
 	Enabled         bool         `json:"enabled"`
 	Version         int          `json:"version"`
 	Providers       []string     `json:"providers,omitempty"`
@@ -25,8 +101,65 @@ type Settings struct {
 	Automations     *Automations `json:"automations,omitempty"`
 	Connected       bool         `json:"connected"`
 	ConnectedRepoID string       `json:"connected_repo_id,omitempty"`
-	// AttributionV2 enables tool-delta scoring. An absent value is disabled.
-	AttributionV2 *bool `json:"attribution_v2,omitempty"`
+	AttributionV2   *bool        `json:"attribution_v2,omitempty"`
+}
+
+var settingsKnownKeys = []string{
+	"enabled", "version", "providers", "trailers", "automations",
+	"connected", "connected_repo_id", "attribution_v2",
+}
+
+func (s *Settings) UnmarshalJSON(b []byte) error {
+	var known settingsKnown
+	if err := json.Unmarshal(b, &known); err != nil {
+		return err
+	}
+	raw := map[string]json.RawMessage{}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	for _, k := range settingsKnownKeys {
+		delete(raw, k)
+	}
+	*s = Settings{
+		Enabled:         known.Enabled,
+		Version:         known.Version,
+		Providers:       known.Providers,
+		Trailers:        known.Trailers,
+		Automations:     known.Automations,
+		Connected:       known.Connected,
+		ConnectedRepoID: known.ConnectedRepoID,
+		AttributionV2:   known.AttributionV2,
+		extra:           raw,
+	}
+	return nil
+}
+
+func (s Settings) MarshalJSON() ([]byte, error) {
+	kb, err := json.Marshal(settingsKnown{
+		Enabled:         s.Enabled,
+		Version:         s.Version,
+		Providers:       s.Providers,
+		Trailers:        s.Trailers,
+		Automations:     s.Automations,
+		Connected:       s.Connected,
+		ConnectedRepoID: s.ConnectedRepoID,
+		AttributionV2:   s.AttributionV2,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(s.extra) == 0 {
+		return kb, nil
+	}
+	out := map[string]json.RawMessage{}
+	if err := json.Unmarshal(kb, &out); err != nil {
+		return nil, err
+	}
+	for k, v := range s.extra {
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 func SettingsPath(semDir string) string {
@@ -53,9 +186,8 @@ func ReadSettings(semDir string) (Settings, error) {
 	return s, nil
 }
 
-// WriteSettings atomically writes the settings file via tmp+rename.
-// It also maintains a .semantica/enabled marker file used by Git hooks
-// for a reliable enabled check without parsing JSON in shell.
+// WriteSettings atomically replaces settings.json and updates the enabled
+// marker used by hooks that cannot parse JSON.
 func WriteSettings(semDir string, s Settings) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -63,12 +195,7 @@ func WriteSettings(semDir string, s Settings) error {
 	}
 	data = append(data, '\n')
 
-	path := SettingsPath(semDir)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	if err := platform.SafeRename(tmp, path); err != nil {
+	if err := platform.WriteFileAtomic(SettingsPath(semDir), data, 0o644); err != nil {
 		return err
 	}
 

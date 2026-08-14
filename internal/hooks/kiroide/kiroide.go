@@ -21,6 +21,7 @@ import (
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/hooks/builder"
+	"github.com/semanticash/cli/internal/platform"
 )
 
 var providerName = agentKiro.ProviderNameIDE
@@ -127,7 +128,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 			continue
 		}
 
-		if err := os.WriteFile(hookPath, rendered, 0o644); err != nil {
+		if err := platform.WriteFileAtomic(hookPath, rendered, 0o644); err != nil {
 			return 0, fmt.Errorf("write hook %s: %w", def.ID, err)
 		}
 		count++
@@ -136,12 +137,17 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	return count, nil
 }
 
+// UninstallHooks removes Semantica hook files. A missing directory is not an error.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	hooksDir := filepath.Join(repoRoot, ".kiro", "hooks")
 	entries, err := os.ReadDir(hooksDir)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", hooksDir, err)
 	}
+	var errs []error
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".kiro.hook") {
 			continue
@@ -149,13 +155,19 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		path := filepath.Join(hooksDir, e.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // removed concurrently
+			}
+			errs = append(errs, fmt.Errorf("read %s: %w", path, err))
 			continue
 		}
 		if strings.Contains(string(data), semanticaMarker) {
-			_ = os.Remove(path)
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("remove %s: %w", path, err))
+			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {

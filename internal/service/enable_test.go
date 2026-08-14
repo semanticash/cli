@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,7 +292,7 @@ func TestEnable_ForcePreservesSettings(t *testing.T) {
 	}
 }
 
-func TestEnable_ForceStatFailureAborts(t *testing.T) {
+func TestEnable_ForceReadFailureAborts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink-loop stat injection requires unix")
 	}
@@ -305,7 +308,7 @@ func TestEnable_ForceStatFailureAborts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A self-referential symlink makes os.Stat fail with ELOOP, not ENOENT.
+	// A self-referential symlink makes ReadFile fail with ELOOP.
 	sp := util.SettingsPath(semDir)
 	if err := os.Remove(sp); err != nil {
 		t.Fatal(err)
@@ -315,8 +318,8 @@ func TestEnable_ForceStatFailureAborts(t *testing.T) {
 	}
 
 	_, err = svc.Enable(ctx, EnableOptions{Force: true})
-	if err == nil || !strings.Contains(err.Error(), "stat settings.json") {
-		t.Fatalf("err = %v, want stat settings.json failure", err)
+	if err == nil || !strings.Contains(err.Error(), "read settings.json") {
+		t.Fatalf("err = %v, want read settings.json failure", err)
 	}
 	target, err := os.Readlink(sp)
 	if err != nil || target != "settings.json" {
@@ -324,7 +327,7 @@ func TestEnable_ForceStatFailureAborts(t *testing.T) {
 	}
 }
 
-func TestEnable_ForceUnreadableSettingsFallsBackToDefaults(t *testing.T) {
+func TestEnable_ForceMalformedSettingsFallsBackToDefaults(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()
 	semDir := filepath.Join(dir, ".semantica")
@@ -352,6 +355,217 @@ func TestEnable_ForceUnreadableSettingsFallsBackToDefaults(t *testing.T) {
 	}
 	if got.AttributionV2 != nil || got.Connected {
 		t.Errorf("defaults expected after corrupt-settings repair, got %+v", got)
+	}
+}
+
+func TestEnable_ForceCorruptSettingsBackedUpByteExact(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	corrupt := []byte("{\"enabled\": tru\x00e, trailing garbage")
+	sp := util.SettingsPath(semDir)
+	if err := os.WriteFile(sp, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Group-write detects accidental filtering by a typical 0022 umask.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(sp, 0o660); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := svc.Enable(ctx, EnableOptions{Force: true}); err != nil {
+		t.Fatalf("force re-enable: %v", err)
+	}
+
+	backups, err := filepath.Glob(sp + ".corrupt.*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups = %v (err %v), want exactly one", backups, err)
+	}
+	saved, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(corrupt) {
+		t.Errorf("backup bytes differ from original corrupt content")
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(backups[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o660 {
+			t.Errorf("backup mode = %o, want 660 preserved from original", fi.Mode().Perm())
+		}
+	}
+	if _, err := util.ReadSettings(semDir); err != nil {
+		t.Errorf("canonical settings unreadable after repair: %v", err)
+	}
+}
+
+func TestEnable_ForceBackupFailureAborts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory-permission injection requires unix")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	corrupt := []byte("{not json")
+	sp := util.SettingsPath(semDir)
+	if err := os.WriteFile(sp, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A read-only directory permits reading but blocks backup creation.
+	if err := os.Chmod(semDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(semDir, 0o755) })
+
+	_, err = svc.Enable(ctx, EnableOptions{Force: true})
+	if err == nil || !strings.Contains(err.Error(), "back up corrupt settings.json") {
+		t.Fatalf("err = %v, want backup failure", err)
+	}
+	data, readErr := os.ReadFile(sp)
+	if readErr != nil || string(data) != string(corrupt) {
+		t.Errorf("corrupt settings modified despite backup failure: %q err=%v", data, readErr)
+	}
+}
+
+func TestBackupCorruptFile_CollisionRetriesWithFreshName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force one collision before returning a fresh timestamp.
+	orig := backupTimestamp
+	t.Cleanup(func() { backupTimestamp = orig })
+	seq := []int64{111, 222}
+	calls := 0
+	backupTimestamp = func() int64 {
+		v := seq[calls]
+		calls++
+		return v
+	}
+	occupied := fmt.Sprintf("%s.corrupt.%d", path, 111)
+	if err := os.WriteFile(occupied, []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := backupCorruptFile(path, []byte("bad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("%s.corrupt.%d", path, 222); got != want {
+		t.Errorf("backup path = %q, want %q", got, want)
+	}
+	data, err := os.ReadFile(got)
+	if err != nil || string(data) != "bad" {
+		t.Errorf("backup = %q err=%v, want byte-exact copy", data, err)
+	}
+	if data, _ := os.ReadFile(occupied); string(data) != "occupied" {
+		t.Errorf("colliding file overwritten: %q", data)
+	}
+}
+
+func TestBackupCorruptFile_FailedWriteRemovesPartialBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := backupWrite
+	t.Cleanup(func() { backupWrite = orig })
+	wantErr := errors.New("injected write failure")
+	backupWrite = func(*os.File, []byte) (int, error) { return 0, wantErr }
+
+	_, err := backupCorruptFile(path, []byte("bad"))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want injected write failure", err)
+	}
+	leftovers, err := filepath.Glob(path + ".corrupt.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("partial backup left behind: %v", leftovers)
+	}
+}
+
+func TestEnable_ForcePreservesUnknownSettingsKeys(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	semDir := filepath.Join(dir, ".semantica")
+
+	svc, err := NewEnableService(EnableServiceOptions{RepoPath: dir, Registry: providers.NewHookRegistry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, EnableOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a field unknown to this version.
+	sp := util.SettingsPath(semDir)
+	data, err := os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["future_feature"] = map[string]any{"opt_in": true}
+	raw["version"] = 2
+	out, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sp, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Enable(ctx, EnableOptions{Force: true}); err != nil {
+		t.Fatalf("force re-enable: %v", err)
+	}
+
+	data, err = os.ReadFile(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	ff, ok := got["future_feature"].(map[string]any)
+	if !ok || ff["opt_in"] != true {
+		t.Errorf("future_feature lost across --force: %v", got["future_feature"])
+	}
+	if got["version"] != float64(2) {
+		t.Errorf("version = %v, want 2 preserved", got["version"])
 	}
 }
 

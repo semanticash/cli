@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	agentclaude "github.com/semanticash/cli/internal/agents/claude"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -62,25 +64,8 @@ const semanticaMarker = "semantica capture claude-code"
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	settingsPath := filepath.Join(repoRoot, ".claude", "settings.local.json")
-
-	// Read existing settings.
-	var raw map[string]json.RawMessage
-	data, err := os.ReadFile(settingsPath)
-	if err == nil {
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return 0, fmt.Errorf("parse existing %s: %w", settingsPath, err)
-		}
-	}
-	if raw == nil {
-		raw = make(map[string]json.RawMessage)
-	}
-
-	// Parse existing hooks.
-	existingHooks := make(map[string][]hookMatcher)
-	if h, ok := raw["hooks"]; ok {
-		if err := json.Unmarshal(h, &existingHooks); err != nil {
-			return 0, fmt.Errorf("parse hooks in %s: %w", settingsPath, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir .claude: %w", err)
 	}
 
 	bin := binaryPath
@@ -105,120 +90,144 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"SessionEnd", "", hooks.GuardedCommand(bin, "capture claude-code session-end")},
 	}
 
+	// Serialize the complete settings merge.
 	count := 0
-	for _, def := range hookDefs {
-		// Check if this specific hook already exists (match by command, not just marker).
-		matchers := existingHooks[def.hookPoint]
-		found := false
-		for _, m := range matchers {
-			if m.Matcher != def.matcher {
-				continue
+	err := platform.UpdateFileLocked(ctx, settingsPath, 0o644, func(current []byte) ([]byte, error) {
+		count = 0
+		raw := make(map[string]json.RawMessage)
+		if len(current) > 0 {
+			if err := json.Unmarshal(current, &raw); err != nil {
+				return nil, fmt.Errorf("parse existing %s: %w", settingsPath, err)
 			}
-			for _, h := range m.Hooks {
-				if strings.Contains(h.Command, semanticaMarker) {
-					found = true
+		}
+		existingHooks := make(map[string][]hookMatcher)
+		if h, ok := raw["hooks"]; ok {
+			if err := json.Unmarshal(h, &existingHooks); err != nil {
+				return nil, fmt.Errorf("parse hooks in %s: %w", settingsPath, err)
+			}
+		}
+
+		for _, def := range hookDefs {
+			// Match the command for this hook point and matcher.
+			matchers := existingHooks[def.hookPoint]
+			found := false
+			for _, m := range matchers {
+				if m.Matcher != def.matcher {
+					continue
+				}
+				for _, h := range m.Hooks {
+					if strings.Contains(h.Command, semanticaMarker) {
+						found = true
+						break
+					}
+				}
+				if found {
 					break
 				}
 			}
 			if found {
-				break
+				count++
+				continue
 			}
-		}
-		if found {
+
+			existingHooks[def.hookPoint] = append(matchers, hookMatcher{
+				Matcher: def.matcher,
+				Hooks:   []hookEntry{{Type: "command", Command: def.command}},
+			})
 			count++
-			continue
 		}
 
-		// Append our hook.
-		existingHooks[def.hookPoint] = append(matchers, hookMatcher{
-			Matcher: def.matcher,
-			Hooks:   []hookEntry{{Type: "command", Command: def.command}},
-		})
-		count++
-	}
-
-	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
-	raw["hooks"] = json.RawMessage(hooksJSON)
-
-	out, err := hooks.MarshalSettingsJSON(raw)
+		hooksJSON, err := hooks.MarshalCompactJSON(existingHooks)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
+		}
+		raw["hooks"] = json.RawMessage(hooksJSON)
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal settings: %w", err)
+		}
+		return out, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("marshal settings: %w", err)
+		return 0, err
 	}
-
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir .claude: %w", err)
-	}
-	if err := os.WriteFile(settingsPath, out, 0o644); err != nil {
-		return 0, fmt.Errorf("write settings: %w", err)
-	}
-
 	return count, nil
 }
 
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	// Remove from both settings.local.json (current) and settings.json (legacy)
 	// so upgrades from older versions clean up properly.
+	var errs []error
 	for _, name := range []string{"settings.local.json", "settings.json"} {
-		removeSemanticaHooksFromFile(filepath.Join(repoRoot, ".claude", name))
+		if err := removeSemanticaHooksFromFile(ctx, filepath.Join(repoRoot, ".claude", name)); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-// removeSemanticaHooksFromFile strips Semantica hook entries from a Claude
-// settings file, preserving all other content.
-func removeSemanticaHooksFromFile(settingsPath string) {
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return
-	}
+// removeSemanticaHooksFromFile removes Semantica hooks while preserving
+// unrelated settings. A missing file is not an error.
+func removeSemanticaHooksFromFile(ctx context.Context, settingsPath string) error {
+	err := platform.UpdateFileLocked(ctx, settingsPath, 0o644, func(current []byte) ([]byte, error) {
+		if current == nil {
+			return nil, nil // absent: nothing to remove
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(current, &raw); err != nil {
+			return nil, fmt.Errorf("parse: %w", err)
+		}
+		hooksRaw, ok := raw["hooks"]
+		if !ok {
+			return nil, nil
+		}
+		var hooksMap map[string][]hookMatcher
+		if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
+			return nil, fmt.Errorf("parse hooks: %w", err)
+		}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return
-	}
-
-	hooksRaw, ok := raw["hooks"]
-	if !ok {
-		return
-	}
-
-	var hooksMap map[string][]hookMatcher
-	if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
-		return
-	}
-
-	changed := false
-	for hookPoint, matchers := range hooksMap {
-		var kept []hookMatcher
-		for _, m := range matchers {
-			var keptHooks []hookEntry
-			for _, h := range m.Hooks {
-				if strings.Contains(h.Command, semanticaMarker) {
-					changed = true
-					continue
+		changed := false
+		for hookPoint, matchers := range hooksMap {
+			var kept []hookMatcher
+			for _, m := range matchers {
+				var keptHooks []hookEntry
+				for _, h := range m.Hooks {
+					if strings.Contains(h.Command, semanticaMarker) {
+						changed = true
+						continue
+					}
+					keptHooks = append(keptHooks, h)
 				}
-				keptHooks = append(keptHooks, h)
+				if len(keptHooks) > 0 {
+					m.Hooks = keptHooks
+					kept = append(kept, m)
+				}
 			}
-			if len(keptHooks) > 0 {
-				m.Hooks = keptHooks
-				kept = append(kept, m)
+			if len(kept) > 0 {
+				hooksMap[hookPoint] = kept
+			} else {
+				delete(hooksMap, hookPoint)
 			}
 		}
-		if len(kept) > 0 {
-			hooksMap[hookPoint] = kept
-		} else {
-			delete(hooksMap, hookPoint)
+		if !changed {
+			return nil, nil
 		}
-	}
 
-	if !changed {
-		return
+		hooksJSON, err := hooks.MarshalCompactJSON(hooksMap)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
+		}
+		raw["hooks"] = hooksJSON
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal settings: %w", err)
+		}
+		return out, nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // .claude/ itself absent
 	}
-
-	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
-	raw["hooks"] = hooksJSON
-	out, _ := hooks.MarshalSettingsJSON(raw)
-	_ = os.WriteFile(settingsPath, out, 0o644)
+	return err
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	agentgemini "github.com/semanticash/cli/internal/agents/gemini"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -50,30 +52,8 @@ type geminiHookEntry struct {
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	settingsPath := filepath.Join(repoRoot, ".gemini", "settings.json")
-
-	var raw map[string]json.RawMessage
-	data, err := os.ReadFile(settingsPath)
-	if err == nil {
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return 0, fmt.Errorf("parse existing %s: %w", settingsPath, err)
-		}
-	}
-	if raw == nil {
-		raw = make(map[string]json.RawMessage)
-	}
-
-	// Ensure hooksConfig.enabled = true.
-	hooksConfigJSON, err := json.Marshal(map[string]bool{"enabled": true})
-	if err != nil {
-		return 0, fmt.Errorf("marshal hooksConfig: %w", err)
-	}
-	raw["hooksConfig"] = hooksConfigJSON
-
-	existingHooks := make(map[string][]geminiHookMatcher)
-	if h, ok := raw["hooks"]; ok {
-		if err := json.Unmarshal(h, &existingHooks); err != nil {
-			return 0, fmt.Errorf("parse hooks in %s: %w", settingsPath, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir .gemini: %w", err)
 	}
 
 	bin := binaryPath
@@ -98,101 +78,137 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"AfterTool", "*", "semantica-after-tool", hooks.GuardedCommand(bin, "capture gemini-cli after-tool")},
 	}
 
-	// Skip entries whose name already exists. This treats a hand-edited
-	// hook as intentional: if the user (or a debugging workflow) put a
-	// custom command under our name, leave it alone. Resetting to the
-	// canonical form is done by `disable` followed by `enable` since
-	// `disable` removes our entries by marker.
+	// Serialize the complete settings merge.
 	count := 0
-	for _, def := range hookDefs {
-		matchers := existingHooks[def.hookPoint]
-		nameExists := false
-		for _, m := range matchers {
-			for _, h := range m.Hooks {
-				if h.Name == def.name {
-					nameExists = true
+	err := platform.UpdateFileLocked(ctx, settingsPath, 0o644, func(current []byte) ([]byte, error) {
+		count = 0
+		raw := make(map[string]json.RawMessage)
+		if len(current) > 0 {
+			if err := json.Unmarshal(current, &raw); err != nil {
+				return nil, fmt.Errorf("parse existing %s: %w", settingsPath, err)
+			}
+		}
+
+		// Ensure hooksConfig.enabled = true.
+		hooksConfigJSON, err := json.Marshal(map[string]bool{"enabled": true})
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooksConfig: %w", err)
+		}
+		raw["hooksConfig"] = hooksConfigJSON
+
+		existingHooks := make(map[string][]geminiHookMatcher)
+		if h, ok := raw["hooks"]; ok {
+			if err := json.Unmarshal(h, &existingHooks); err != nil {
+				return nil, fmt.Errorf("parse hooks in %s: %w", settingsPath, err)
+			}
+		}
+
+		// Preserve existing entries that use a Semantica-owned name.
+		for _, def := range hookDefs {
+			matchers := existingHooks[def.hookPoint]
+			nameExists := false
+			for _, m := range matchers {
+				for _, h := range m.Hooks {
+					if h.Name == def.name {
+						nameExists = true
+						break
+					}
+				}
+				if nameExists {
 					break
 				}
 			}
-			if nameExists {
-				break
+			if !nameExists {
+				existingHooks[def.hookPoint] = append(matchers, geminiHookMatcher{
+					Matcher: def.matcher,
+					Hooks:   []geminiHookEntry{{Name: def.name, Type: "command", Command: def.command}},
+				})
 			}
+			count++
 		}
-		if !nameExists {
-			existingHooks[def.hookPoint] = append(matchers, geminiHookMatcher{
-				Matcher: def.matcher,
-				Hooks:   []geminiHookEntry{{Name: def.name, Type: "command", Command: def.command}},
-			})
+
+		hooksJSON, err := hooks.MarshalCompactJSON(existingHooks)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
 		}
-		count++
-	}
+		raw["hooks"] = hooksJSON
 
-	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
-	raw["hooks"] = hooksJSON
-
-	out, err := hooks.MarshalSettingsJSON(raw)
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal settings: %w", err)
+		}
+		return out, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("marshal settings: %w", err)
+		return 0, err
 	}
-
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir .gemini: %w", err)
-	}
-	if err := os.WriteFile(settingsPath, out, 0o644); err != nil {
-		return 0, fmt.Errorf("write settings: %w", err)
-	}
-
 	return count, nil
 }
 
+// UninstallHooks removes Semantica hooks while preserving unrelated entries.
+// A missing file is not an error.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	settingsPath := filepath.Join(repoRoot, ".gemini", "settings.json")
 
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return nil
-	}
+	err := platform.UpdateFileLocked(ctx, settingsPath, 0o644, func(current []byte) ([]byte, error) {
+		if current == nil {
+			return nil, nil
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(current, &raw); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", settingsPath, err)
+		}
+		hooksRaw, ok := raw["hooks"]
+		if !ok {
+			return nil, nil
+		}
+		var hooksMap map[string][]geminiHookMatcher
+		if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
+			return nil, fmt.Errorf("parse hooks: %w", err)
+		}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
-	}
-
-	hooksRaw, ok := raw["hooks"]
-	if !ok {
-		return nil
-	}
-
-	var hooksMap map[string][]geminiHookMatcher
-	if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
-		return nil
-	}
-
-	for hookPoint, matchers := range hooksMap {
-		var kept []geminiHookMatcher
-		for _, m := range matchers {
-			var keptHooks []geminiHookEntry
-			for _, h := range m.Hooks {
-				if !strings.Contains(h.Command, semanticaMarker) {
+		changed := false
+		for hookPoint, matchers := range hooksMap {
+			var kept []geminiHookMatcher
+			for _, m := range matchers {
+				var keptHooks []geminiHookEntry
+				for _, h := range m.Hooks {
+					if strings.Contains(h.Command, semanticaMarker) {
+						changed = true
+						continue
+					}
 					keptHooks = append(keptHooks, h)
 				}
+				if len(keptHooks) > 0 {
+					m.Hooks = keptHooks
+					kept = append(kept, m)
+				}
 			}
-			if len(keptHooks) > 0 {
-				m.Hooks = keptHooks
-				kept = append(kept, m)
+			if len(kept) > 0 {
+				hooksMap[hookPoint] = kept
+			} else {
+				delete(hooksMap, hookPoint)
 			}
 		}
-		if len(kept) > 0 {
-			hooksMap[hookPoint] = kept
-		} else {
-			delete(hooksMap, hookPoint)
+		if !changed {
+			return nil, nil
 		}
-	}
 
-	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
-	raw["hooks"] = hooksJSON
-	out, _ := hooks.MarshalSettingsJSON(raw)
-	return os.WriteFile(settingsPath, out, 0o644)
+		hooksJSON, err := hooks.MarshalCompactJSON(hooksMap)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
+		}
+		raw["hooks"] = hooksJSON
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal settings: %w", err)
+		}
+		return out, nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // .gemini/ itself absent
+	}
+	return err
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {

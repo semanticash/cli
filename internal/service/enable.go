@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -190,6 +191,52 @@ func reEnableLocal(ctx context.Context, repo *git.Repo, repoRoot, semDir, dbPath
 	}, nil
 }
 
+// backupTimestamp is a test seam for backup-name collisions.
+var backupTimestamp = func() int64 { return time.Now().UnixNano() }
+
+// backupWrite is a test seam for post-create failures.
+var backupWrite = (*os.File).Write
+
+// backupCorruptFile creates a synced, byte-exact backup without replacing an
+// existing backup. It preserves the source mode and removes partial writes.
+func backupCorruptFile(path string, data []byte) (string, error) {
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		backupPath := fmt.Sprintf("%s.corrupt.%d", path, backupTimestamp())
+		f, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		fail := func(err error) (string, error) {
+			_ = f.Close()
+			_ = os.Remove(backupPath)
+			return "", err
+		}
+		// OpenFile applies the process umask; restore the source mode.
+		if err := f.Chmod(mode); err != nil {
+			return fail(err)
+		}
+		if _, err := backupWrite(f, data); err != nil {
+			return fail(err)
+		}
+		if err := f.Sync(); err != nil {
+			return fail(err)
+		}
+		if err := f.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			return "", err
+		}
+		return backupPath, nil
+	}
+	return "", fmt.Errorf("backup name collision persisted for %s", path)
+}
+
 // initLocalState sets up the .semantica directory, database, baseline
 // checkpoint, gitignore, and hooks while the repo is still absent from routing.
 func (s *EnableService) initLocalState(
@@ -201,27 +248,37 @@ func (s *EnableService) initLocalState(
 		return nil, fmt.Errorf("create .semantica dirs: %w", err)
 	}
 
-	// Reinitialization resets local state while preserving repository settings.
+	// Preserve valid settings. Back up malformed JSON; abort on read errors.
 	settings := util.Settings{
 		Automations: &util.Automations{
 			Playbook: util.PlaybookAutomation{Enabled: true},
 		},
 	}
-	if _, statErr := os.Stat(util.SettingsPath(semDir)); statErr == nil {
-		prev, readErr := util.ReadSettings(semDir)
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "semantica: warning: existing settings.json is unreadable (%v); reinitializing with defaults\n", readErr)
+	settingsPath := util.SettingsPath(semDir)
+	raw, readErr := os.ReadFile(settingsPath)
+	switch {
+	case readErr == nil:
+		var prev util.Settings
+		if err := json.Unmarshal(raw, &prev); err != nil {
+			backupPath, bErr := backupCorruptFile(settingsPath, raw)
+			if bErr != nil {
+				return nil, fmt.Errorf("back up corrupt settings.json: %w", bErr)
+			}
+			fmt.Fprintf(os.Stderr, "semantica: warning: settings.json is malformed (%v); original saved to %s; reinitializing with defaults\n", err, backupPath)
 		} else {
 			settings = prev
 			fmt.Fprintln(os.Stderr, "semantica: preserved existing settings across reinitialization")
 		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		// Do not overwrite settings when their existence cannot be determined.
-		return nil, fmt.Errorf("stat settings.json: %w", statErr)
+	case errors.Is(readErr, os.ErrNotExist):
+		// Use defaults for a new repository.
+	default:
+		return nil, fmt.Errorf("read settings.json: %w", readErr)
 	}
 	// Hooks are installed before activation, so keep the repo disabled here.
 	settings.Enabled = false
-	settings.Version = 1
+	if settings.Version == 0 {
+		settings.Version = 1
+	}
 	if err := util.WriteSettings(semDir, settings); err != nil {
 		return nil, fmt.Errorf("write settings.json: %w", err)
 	}

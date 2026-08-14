@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -307,6 +308,50 @@ func TestUninstallHooks_RemovesOnlySemanticaHooks(t *testing.T) {
 	}
 	if strings.Contains(string(afterData), semanticaMarker) {
 		t.Error("semantica hooks not removed")
+	}
+}
+
+func TestInstallHooks_UnreadableFilePropagatesError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-loop read injection requires unix")
+	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".kiro", "agents", "semantica.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A self-referential symlink fails reads with ELOOP, not ENOENT.
+	if err := os.Symlink("semantica.json", configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), dir, "semantica"); err == nil {
+		t.Fatal("expected error for unreadable agent config")
+	}
+	if target, err := os.Readlink(configPath); err != nil || target != "semantica.json" {
+		t.Fatalf("agent config was rewritten: target=%q err=%v", target, err)
+	}
+}
+
+func TestUninstallHooks_MalformedFilePropagatesError(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".kiro", "agents", "semantica.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(configPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	err := p.UninstallHooks(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("err = %v, want parse failure", err)
+	}
+	if data, readErr := os.ReadFile(configPath); readErr != nil || string(data) != string(corrupt) {
+		t.Errorf("malformed file modified by failed uninstall: %q err=%v", data, readErr)
 	}
 }
 

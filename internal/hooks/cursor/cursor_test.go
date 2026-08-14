@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -205,6 +206,50 @@ func TestUninstallHooks_PreservesOtherEntries(t *testing.T) {
 	defs := cfg.Hooks["stop"]
 	if len(defs) != 1 || defs[0].Command != "echo custom" {
 		t.Errorf("custom hook should be preserved, got %v", defs)
+	}
+}
+
+func TestInstallHooks_UnreadableFilePropagatesError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-loop read injection requires unix")
+	}
+	dir := t.TempDir()
+	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A self-referential symlink fails reads with ELOOP, not ENOENT.
+	if err := os.Symlink("hooks.json", hooksPath); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), dir, "semantica"); err == nil {
+		t.Fatal("expected error for unreadable hooks.json")
+	}
+	if target, err := os.Readlink(hooksPath); err != nil || target != "hooks.json" {
+		t.Fatalf("hooks.json was rewritten: target=%q err=%v", target, err)
+	}
+}
+
+func TestUninstallHooks_MalformedFilePropagatesError(t *testing.T) {
+	dir := t.TempDir()
+	hooksPath := filepath.Join(dir, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(hooksPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	err := p.UninstallHooks(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("err = %v, want parse failure", err)
+	}
+	if data, readErr := os.ReadFile(hooksPath); readErr != nil || string(data) != string(corrupt) {
+		t.Errorf("malformed file modified by failed uninstall: %q err=%v", data, readErr)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -340,6 +341,50 @@ func TestUninstallHooks_PreservesOtherEntries(t *testing.T) {
 	}
 	if matchers[0].Hooks[0].Command != "echo custom" {
 		t.Errorf("custom hook should be preserved, got %v", matchers[0].Hooks[0])
+	}
+}
+
+func TestInstallHooks_UnreadableFilePropagatesError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-loop read injection requires unix")
+	}
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A self-referential symlink fails reads with ELOOP, not ENOENT.
+	if err := os.Symlink("settings.json", settingsPath); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	if _, err := p.InstallHooks(context.Background(), dir, "semantica"); err == nil {
+		t.Fatal("expected error for unreadable settings.json")
+	}
+	if target, err := os.Readlink(settingsPath); err != nil || target != "settings.json" {
+		t.Fatalf("settings.json was rewritten: target=%q err=%v", target, err)
+	}
+}
+
+func TestUninstallHooks_MalformedFilePropagatesError(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(settingsPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	err := p.UninstallHooks(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("err = %v, want parse failure", err)
+	}
+	if data, readErr := os.ReadFile(settingsPath); readErr != nil || string(data) != string(corrupt) {
+		t.Errorf("malformed file modified by failed uninstall: %q err=%v", data, readErr)
 	}
 }
 
