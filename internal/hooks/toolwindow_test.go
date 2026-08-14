@@ -38,6 +38,9 @@ func gitIn(t *testing.T, dir string, args ...string) {
 
 func newToolWindowWorld(t *testing.T, home string, name string) *toolWindowWorld {
 	t.Helper()
+	// Real Git and SQLite work can exceed the 2s production capture
+	// budget on slow CI runners; every fixture-backed test gets more.
+	setToolWindowDeadline(t, 30*time.Second)
 	ctx := context.Background()
 
 	repoPath, err := filepath.EvalSymlinks(t.TempDir())
@@ -309,7 +312,6 @@ func findDeltas(t *testing.T, semDir string) []*toolsnap.Delta {
 
 // TestCompleteToolWindowProducesDelta covers the complete hook lifecycle.
 func TestCompleteToolWindowProducesDelta(t *testing.T) {
-	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
@@ -401,7 +403,6 @@ func TestCompleteToolWindowProducesDelta(t *testing.T) {
 
 // Codex Bash windows produce Codex-attributed deltas.
 func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
-	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
@@ -459,7 +460,6 @@ func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
 
 // TestCompleteToolWindowConcurrentGroup covers overlapping Bash tools.
 func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
-	setToolWindowDeadline(t, 30*time.Second)
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	w := newToolWindowWorld(t, home, "repo")
@@ -1031,6 +1031,7 @@ func TestEventWriteFailureLeavesNoResumableIdentity(t *testing.T) {
 // newToolWindowWorldAt creates an enabled repository on an existing broker.
 func newToolWindowWorldAt(t *testing.T, bh *broker.Handle, repoPath string) *toolWindowWorld {
 	t.Helper()
+	setToolWindowDeadline(t, 30*time.Second)
 	ctx := context.Background()
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
 		t.Fatal(err)
