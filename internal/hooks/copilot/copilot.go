@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	agentcopilot "github.com/semanticash/cli/internal/agents/copilot"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 )
 
 const providerName = "copilot"
@@ -59,18 +61,9 @@ type copilotHookDef struct {
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	hooksPath := filepath.Join(repoRoot, ".github", "hooks", "semantica.json")
-
-	var cfg copilotHooksFile
-	data, err := os.ReadFile(hooksPath)
-	if err == nil {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return 0, fmt.Errorf("parse existing %s: %w", hooksPath, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir .github/hooks: %w", err)
 	}
-	if cfg.Hooks == nil {
-		cfg.Hooks = make(map[string][]copilotHookDef)
-	}
-	cfg.Version = 1
 
 	bin := binaryPath
 	if bin == "" {
@@ -90,74 +83,106 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"subagentStop", hooks.GuardedCommand(bin, "capture copilot subagent-stop")},
 	}
 
+	// Serialize the complete hooks merge.
 	count := 0
-	for _, def := range hookDefs {
-		existing := cfg.Hooks[def.hookPoint]
-		found := false
-		for _, h := range existing {
-			if strings.Contains(h.Bash, semanticaMarker) {
-				found = true
-				break
+	err := platform.UpdateFileLocked(ctx, hooksPath, 0o644, func(current []byte) ([]byte, error) {
+		count = 0
+		var cfg copilotHooksFile
+		if len(current) > 0 {
+			if err := json.Unmarshal(current, &cfg); err != nil {
+				return nil, fmt.Errorf("parse existing %s: %w", hooksPath, err)
 			}
 		}
-		if !found {
-			cfg.Hooks[def.hookPoint] = append(existing, copilotHookDef{
-				Type: "command",
-				Bash: def.command,
-			})
+		if cfg.Hooks == nil {
+			cfg.Hooks = make(map[string][]copilotHookDef)
 		}
-		count++
-	}
+		cfg.Version = 1
 
-	out, err := hooks.MarshalSettingsJSON(cfg)
+		for _, def := range hookDefs {
+			existing := cfg.Hooks[def.hookPoint]
+			found := false
+			for _, h := range existing {
+				if strings.Contains(h.Bash, semanticaMarker) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cfg.Hooks[def.hookPoint] = append(existing, copilotHookDef{
+					Type: "command",
+					Bash: def.command,
+				})
+			}
+			count++
+		}
+
+		out, err := hooks.MarshalSettingsJSON(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks config: %w", err)
+		}
+		return out, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("marshal hooks config: %w", err)
+		return 0, err
 	}
-
-	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir .github/hooks: %w", err)
-	}
-	if err := os.WriteFile(hooksPath, out, 0o644); err != nil {
-		return 0, fmt.Errorf("write hooks config: %w", err)
-	}
-
 	return count, nil
 }
 
+// UninstallHooks removes Semantica hooks while preserving unrelated entries.
+// It removes the file when no hooks remain; a missing file is not an error.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	hooksPath := filepath.Join(repoRoot, ".github", "hooks", "semantica.json")
 
-	data, err := os.ReadFile(hooksPath)
-	if err != nil {
-		return nil
-	}
+	// Use the lower-level lock because this transaction may delete the file.
+	err := platform.WithFileLock(ctx, hooksPath, func() error {
+		data, err := os.ReadFile(hooksPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("read %s: %w", hooksPath, err)
+		}
 
-	var cfg copilotHooksFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil
-	}
+		var cfg copilotHooksFile
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("parse %s: %w", hooksPath, err)
+		}
 
-	for hookPoint, defs := range cfg.Hooks {
-		var kept []copilotHookDef
-		for _, h := range defs {
-			if !strings.Contains(h.Bash, semanticaMarker) {
+		changed := false
+		for hookPoint, defs := range cfg.Hooks {
+			var kept []copilotHookDef
+			for _, h := range defs {
+				if strings.Contains(h.Bash, semanticaMarker) {
+					changed = true
+					continue
+				}
 				kept = append(kept, h)
 			}
+			if len(kept) > 0 {
+				cfg.Hooks[hookPoint] = kept
+			} else {
+				delete(cfg.Hooks, hookPoint)
+			}
 		}
-		if len(kept) > 0 {
-			cfg.Hooks[hookPoint] = kept
-		} else {
-			delete(cfg.Hooks, hookPoint)
+
+		// Remove an empty hooks file.
+		if len(cfg.Hooks) == 0 {
+			if err := os.Remove(hooksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return nil
 		}
-	}
+		if !changed {
+			return nil
+		}
 
-	// If no hooks remain, remove the file entirely.
-	if len(cfg.Hooks) == 0 {
-		return os.Remove(hooksPath)
-	}
-
-	out, _ := hooks.MarshalSettingsJSON(cfg)
-	return os.WriteFile(hooksPath, out, 0o644)
+		out, err := hooks.MarshalSettingsJSON(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal hooks config: %w", err)
+		}
+		return platform.WriteFileAtomic(hooksPath, out, 0o644)
+	})
+	return err
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {

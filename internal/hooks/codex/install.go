@@ -249,55 +249,59 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 
 	commands := commandsForBinary(bin)
 
-	// Validate the project config before changing global state.
-	merged, err := mergeHooksFile(repoHooksPath, commands)
-	if err != nil {
-		return 0, err
-	}
-
-	// Serialize global config changes across Semantica installs.
-	home, err := codexHomeDir()
-	if err != nil {
-		return 0, err
-	}
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		return 0, fmt.Errorf("create %s: %w", home, err)
-	}
-	unlock, err := lockCodexConfig(ctx, home)
-	if err != nil {
-		return 0, err
-	}
-	defer unlock()
-
-	// Snapshot the global config for rollback.
-	globalConfigPath := filepath.Join(home, configFileName)
-	priorGlobal, priorGlobalErr := os.ReadFile(globalConfigPath)
-	if priorGlobalErr != nil && !errors.Is(priorGlobalErr, os.ErrNotExist) {
-		return 0, fmt.Errorf("read %s: %w", globalConfigPath, priorGlobalErr)
-	}
-	priorMode := os.FileMode(0o600)
-	if priorGlobalErr == nil {
-		fi, statErr := os.Stat(globalConfigPath)
-		if statErr != nil {
-			return 0, fmt.Errorf("stat %s: %w", globalConfigPath, statErr)
+	// Serialize the repository merge and publish. Acquire the global lock second.
+	err = platform.WithFileLock(ctx, repoHooksPath, func() error {
+		merged, err := mergeHooksFile(repoHooksPath, commands)
+		if err != nil {
+			return err
 		}
-		priorMode = fi.Mode().Perm()
-	}
 
-	changed, written, err := ensureGlobalHooksFeature(home)
+		home, err := codexHomeDir()
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", home, err)
+		}
+		unlock, err := lockCodexConfig(ctx, home)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+
+		// Keep the prior global config for compensating rollback.
+		globalConfigPath := filepath.Join(home, configFileName)
+		priorGlobal, priorGlobalErr := os.ReadFile(globalConfigPath)
+		if priorGlobalErr != nil && !errors.Is(priorGlobalErr, os.ErrNotExist) {
+			return fmt.Errorf("read %s: %w", globalConfigPath, priorGlobalErr)
+		}
+		priorMode := os.FileMode(0o600)
+		if priorGlobalErr == nil {
+			fi, statErr := os.Stat(globalConfigPath)
+			if statErr != nil {
+				return fmt.Errorf("stat %s: %w", globalConfigPath, statErr)
+			}
+			priorMode = fi.Mode().Perm()
+		}
+
+		changed, written, err := ensureGlobalHooksFeature(home)
+		if err != nil {
+			return err
+		}
+
+		// Publish repository hooks after the global gate is durable.
+		if err := publishRepoHooks(repoDir, repoHooksPath, merged); err != nil {
+			var rbErr error
+			if changed {
+				rbErr = restoreGlobalConfig(globalConfigPath, priorGlobal, priorGlobalErr, written, priorMode)
+			}
+			return errors.Join(err, rbErr)
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-
-	// Publish repo hooks last so global changes can be rolled back on failure.
-	if err := publishRepoHooks(repoDir, repoHooksPath, merged); err != nil {
-		var rbErr error
-		if changed {
-			rbErr = restoreGlobalConfig(globalConfigPath, priorGlobal, priorGlobalErr, written, priorMode)
-		}
-		return 0, errors.Join(err, rbErr)
-	}
-
 	return len(hookEvents), nil
 }
 
@@ -418,7 +422,11 @@ func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 		return err
 	}
 	repoHooksPath := filepath.Join(repoDir, hooksFileName)
-	if err := pruneHooksFile(repoHooksPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	// Use the same lock as installation.
+	err = platform.WithFileLock(ctx, repoHooksPath, func() error {
+		return pruneHooksFile(repoHooksPath)
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -563,32 +571,7 @@ func stripSemanticaEntries(shape *hookFileShape) {
 	}
 }
 
-// writeFileAtomic replaces path through a sibling temporary file.
+// writeFileAtomic delegates to the shared atomic writer.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp file for %s: %w", path, err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write temp file for %s: %w", path, err)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod temp file for %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close temp file for %s: %w", path, err)
-	}
-	if err := platform.SafeRename(tmpPath, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename temp file to %s: %w", path, err)
-	}
-	return nil
+	return platform.WriteFileAtomic(path, data, mode)
 }

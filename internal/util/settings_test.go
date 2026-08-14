@@ -1,6 +1,8 @@
 package util
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,6 +98,83 @@ func TestReadSettings_RoundTripsAutomations(t *testing.T) {
 	}
 	if !got.Automations.Playbook.Enabled {
 		t.Error("automations.playbook.enabled should be true")
+	}
+}
+
+func TestSettings_PreservesUnknownKeysAtAllLevels(t *testing.T) {
+	dir := t.TempDir()
+	// Include unknown fields at every structured level.
+	input := `{
+  "enabled": true,
+  "version": 3,
+  "future_top": {"nested": [1, 2]},
+  "automations": {
+    "playbook": {"enabled": true, "future_playbook": "keep-me"},
+    "future_automation": {"enabled": false}
+  }
+}`
+	if err := os.WriteFile(SettingsPath(dir), []byte(input), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := ReadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Version != 3 {
+		t.Errorf("version = %d, want 3", s.Version)
+	}
+
+	// Mutate a known field before the round trip.
+	s.Automations.Playbook.Enabled = false
+	if err := WriteSettings(dir, s); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.ReadFile(SettingsPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(out, &raw); err != nil {
+		t.Fatal(err)
+	}
+	// Compare unknown values after normalizing whitespace.
+	compact := func(raw json.RawMessage) string {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, raw); err != nil {
+			t.Fatalf("compact %s: %v", raw, err)
+		}
+		return buf.String()
+	}
+	if compact(raw["future_top"]) != `{"nested":[1,2]}` {
+		t.Errorf("top-level unknown key = %s, want preserved", raw["future_top"])
+	}
+	var auto map[string]json.RawMessage
+	if err := json.Unmarshal(raw["automations"], &auto); err != nil {
+		t.Fatal(err)
+	}
+	if compact(auto["future_automation"]) != `{"enabled":false}` {
+		t.Errorf("automations unknown key = %s, want preserved", auto["future_automation"])
+	}
+	var pb map[string]json.RawMessage
+	if err := json.Unmarshal(auto["playbook"], &pb); err != nil {
+		t.Fatal(err)
+	}
+	if compact(pb["future_playbook"]) != `"keep-me"` {
+		t.Errorf("playbook unknown key = %s, want preserved", pb["future_playbook"])
+	}
+	if string(pb["enabled"]) != "false" {
+		t.Errorf("playbook.enabled = %s, want mutated to false", pb["enabled"])
+	}
+
+	// Confirm the rewritten settings remain readable.
+	again, err := ReadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Version != 3 || again.Automations.Playbook.Enabled {
+		t.Errorf("re-read = %+v, want version 3 and playbook disabled", again)
 	}
 }
 

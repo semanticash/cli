@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	agentKiro "github.com/semanticash/cli/internal/agents/kiro"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -100,76 +102,70 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 
 	configPath := filepath.Join(agentsDir, "semantica.json")
 
-	var raw map[string]json.RawMessage
-	if data, err := os.ReadFile(configPath); err == nil {
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return 0, fmt.Errorf("parse existing agent config: %w", err)
-		}
-	}
-	if raw == nil {
-		raw = make(map[string]json.RawMessage)
-	}
-
-	// Refresh Semantica-owned top-level fields on every install so
-	// stale values from earlier writes are corrected. User-added
-	// fields like prompt or model pass through untouched because
-	// the surrounding raw map is preserved.
-	nameJSON, _ := json.Marshal(agentName)
-	raw["name"] = nameJSON
-	descriptionJSON, _ := json.Marshal(agentDescription)
-	raw["description"] = descriptionJSON
-	toolsJSON, _ := json.Marshal(agentToolsWildcard)
-	raw["tools"] = toolsJSON
-
-	var existingHooks map[string][]agentConfigHookEntry
-	if hooksRaw, ok := raw["hooks"]; ok {
-		_ = json.Unmarshal(hooksRaw, &existingHooks)
-	}
-	if existingHooks == nil {
-		existingHooks = make(map[string][]agentConfigHookEntry)
-	}
-
-	// Strip every existing Semantica-marked entry before appending
-	// the canonical set. This protects against stale entries from
-	// earlier installs that registered different events or used a
-	// different matcher (or no matcher at all): without this pass,
-	// an old unmatched postToolUse hook would survive alongside the
-	// new fs_write / execute_bash rows and fire for every tool,
-	// duplicating capture. User-added entries that do not contain
-	// the marker are preserved.
-	for event, entries := range existingHooks {
-		var kept []agentConfigHookEntry
-		for _, e := range entries {
-			if !strings.Contains(e.Command, semanticaMarker) {
-				kept = append(kept, e)
+	// Serialize the complete agent configuration merge.
+	count := 0
+	err := platform.UpdateFileLocked(ctx, configPath, 0o644, func(current []byte) ([]byte, error) {
+		count = 0
+		raw := make(map[string]json.RawMessage)
+		if len(current) > 0 {
+			if err := json.Unmarshal(current, &raw); err != nil {
+				return nil, fmt.Errorf("parse existing agent config: %w", err)
 			}
 		}
-		if len(kept) > 0 {
-			existingHooks[event] = kept
-		} else {
-			delete(existingHooks, event)
+
+		// Refresh owned fields while preserving unrecognized fields.
+		nameJSON, _ := json.Marshal(agentName)
+		raw["name"] = nameJSON
+		descriptionJSON, _ := json.Marshal(agentDescription)
+		raw["description"] = descriptionJSON
+		toolsJSON, _ := json.Marshal(agentToolsWildcard)
+		raw["tools"] = toolsJSON
+
+		existingHooks := make(map[string][]agentConfigHookEntry)
+		if hooksRaw, ok := raw["hooks"]; ok {
+			if err := json.Unmarshal(hooksRaw, &existingHooks); err != nil {
+				return nil, fmt.Errorf("parse hooks in agent config: %w", err)
+			}
 		}
-	}
 
-	count := 0
-	for _, def := range hookEntries(bin) {
-		existingHooks[def.event] = append(existingHooks[def.event], agentConfigHookEntry{
-			Command:   def.command,
-			TimeoutMs: def.timeout,
-			Matcher:   def.matcher,
-		})
-		count++
-	}
+		// Replace prior Semantica hooks while preserving user-defined entries.
+		for event, entries := range existingHooks {
+			var kept []agentConfigHookEntry
+			for _, e := range entries {
+				if !strings.Contains(e.Command, semanticaMarker) {
+					kept = append(kept, e)
+				}
+			}
+			if len(kept) > 0 {
+				existingHooks[event] = kept
+			} else {
+				delete(existingHooks, event)
+			}
+		}
 
-	hooksJSON, _ := hooks.MarshalCompactJSON(existingHooks)
-	raw["hooks"] = hooksJSON
+		for _, def := range hookEntries(bin) {
+			existingHooks[def.event] = append(existingHooks[def.event], agentConfigHookEntry{
+				Command:   def.command,
+				TimeoutMs: def.timeout,
+				Matcher:   def.matcher,
+			})
+			count++
+		}
 
-	data, err := hooks.MarshalSettingsJSON(raw)
+		hooksJSON, err := hooks.MarshalCompactJSON(existingHooks)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
+		}
+		raw["hooks"] = hooksJSON
+
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal agent config: %w", err)
+		}
+		return out, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("marshal agent config: %w", err)
-	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return 0, fmt.Errorf("write agent config: %w", err)
+		return 0, err
 	}
 
 	// Print a one-line activation hint. Hooks fire only for sessions
@@ -180,48 +176,64 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 	return count, nil
 }
 
+// UninstallHooks removes Semantica hooks while preserving unrelated entries.
+// A missing file is not an error.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	configPath := filepath.Join(repoRoot, ".kiro", "agents", "semantica.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
-	}
+	err := platform.UpdateFileLocked(ctx, configPath, 0o644, func(current []byte) ([]byte, error) {
+		if current == nil {
+			return nil, nil
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(current, &raw); err != nil {
+			return nil, fmt.Errorf("parse agent config: %w", err)
+		}
+		hooksRaw, ok := raw["hooks"]
+		if !ok {
+			return nil, nil
+		}
+		var hooksMap map[string][]agentConfigHookEntry
+		if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
+			return nil, fmt.Errorf("parse hooks in agent config: %w", err)
+		}
 
-	var hooksMap map[string][]agentConfigHookEntry
-	if hooksRaw, ok := raw["hooks"]; ok {
-		_ = json.Unmarshal(hooksRaw, &hooksMap)
-	}
-	if hooksMap == nil {
-		return nil
-	}
-
-	for event, entries := range hooksMap {
-		var kept []agentConfigHookEntry
-		for _, e := range entries {
-			if !strings.Contains(e.Command, semanticaMarker) {
+		changed := false
+		for event, entries := range hooksMap {
+			var kept []agentConfigHookEntry
+			for _, e := range entries {
+				if strings.Contains(e.Command, semanticaMarker) {
+					changed = true
+					continue
+				}
 				kept = append(kept, e)
 			}
+			if len(kept) > 0 {
+				hooksMap[event] = kept
+			} else {
+				delete(hooksMap, event)
+			}
 		}
-		if len(kept) > 0 {
-			hooksMap[event] = kept
-		} else {
-			delete(hooksMap, event)
+		if !changed {
+			return nil, nil
 		}
-	}
 
-	hooksJSON, _ := hooks.MarshalCompactJSON(hooksMap)
-	raw["hooks"] = hooksJSON
+		hooksJSON, err := hooks.MarshalCompactJSON(hooksMap)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks: %w", err)
+		}
+		raw["hooks"] = hooksJSON
 
-	out, err := hooks.MarshalSettingsJSON(raw)
-	if err != nil {
-		return fmt.Errorf("marshal agent config: %w", err)
+		out, err := hooks.MarshalSettingsJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal agent config: %w", err)
+		}
+		return out, nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // .kiro/agents/ itself absent
 	}
-	return os.WriteFile(configPath, out, 0o644)
+	return err
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {

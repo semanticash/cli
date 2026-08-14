@@ -278,6 +278,29 @@ func TestUninstallHooks_NoFile(t *testing.T) {
 	}
 }
 
+func TestUninstallHooks_MalformedSettingsPropagatesError(t *testing.T) {
+	dir := t.TempDir()
+	p := &Provider{}
+
+	settingsPath := filepath.Join(dir, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(settingsPath, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := p.UninstallHooks(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("err = %v, want parse failure", err)
+	}
+	data, readErr := os.ReadFile(settingsPath)
+	if readErr != nil || string(data) != string(corrupt) {
+		t.Errorf("malformed settings modified by failed uninstall: %q err=%v", data, readErr)
+	}
+}
+
 func TestAreHooksInstalled(t *testing.T) {
 	dir := t.TempDir()
 	p := &Provider{}

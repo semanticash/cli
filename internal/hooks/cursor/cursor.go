@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	agentcursor "github.com/semanticash/cli/internal/agents/cursor"
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
+	"github.com/semanticash/cli/internal/platform"
 
 	_ "modernc.org/sqlite"
 )
@@ -60,18 +62,9 @@ type cursorHookDef struct {
 
 func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath string) (int, error) {
 	hooksPath := filepath.Join(repoRoot, ".cursor", "hooks.json")
-
-	var cfg cursorHooksConfig
-	data, err := os.ReadFile(hooksPath)
-	if err == nil {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return 0, fmt.Errorf("parse existing %s: %w", hooksPath, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir .cursor: %w", err)
 	}
-	if cfg.Hooks == nil {
-		cfg.Hooks = make(map[string][]cursorHookDef)
-	}
-	cfg.Version = 1
 
 	bin := binaryPath
 	if bin == "" {
@@ -93,66 +86,92 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"preCompact", hooks.GuardedCommand(bin, "capture cursor pre-compact")},
 	}
 
+	// Serialize the complete hooks merge.
 	count := 0
-	for _, def := range hookDefs {
-		existing := cfg.Hooks[def.hookPoint]
-		found := false
-		for _, h := range existing {
-			if strings.Contains(h.Command, semanticaMarker) {
-				found = true
-				break
+	err := platform.UpdateFileLocked(ctx, hooksPath, 0o644, func(current []byte) ([]byte, error) {
+		count = 0
+		var cfg cursorHooksConfig
+		if len(current) > 0 {
+			if err := json.Unmarshal(current, &cfg); err != nil {
+				return nil, fmt.Errorf("parse existing %s: %w", hooksPath, err)
 			}
 		}
-		if !found {
-			cfg.Hooks[def.hookPoint] = append(existing, cursorHookDef{Command: def.command})
+		if cfg.Hooks == nil {
+			cfg.Hooks = make(map[string][]cursorHookDef)
 		}
-		count++
-	}
+		cfg.Version = 1
 
-	out, err := hooks.MarshalSettingsJSON(cfg)
+		for _, def := range hookDefs {
+			existing := cfg.Hooks[def.hookPoint]
+			found := false
+			for _, h := range existing {
+				if strings.Contains(h.Command, semanticaMarker) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				cfg.Hooks[def.hookPoint] = append(existing, cursorHookDef{Command: def.command})
+			}
+			count++
+		}
+
+		out, err := hooks.MarshalSettingsJSON(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks config: %w", err)
+		}
+		return out, nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("marshal hooks config: %w", err)
+		return 0, err
 	}
-
-	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir .cursor: %w", err)
-	}
-	if err := os.WriteFile(hooksPath, out, 0o644); err != nil {
-		return 0, fmt.Errorf("write hooks config: %w", err)
-	}
-
 	return count, nil
 }
 
+// UninstallHooks removes Semantica hooks while preserving unrelated entries.
+// A missing file is not an error.
 func (p *Provider) UninstallHooks(ctx context.Context, repoRoot string) error {
 	hooksPath := filepath.Join(repoRoot, ".cursor", "hooks.json")
 
-	data, err := os.ReadFile(hooksPath)
-	if err != nil {
-		return nil
-	}
+	err := platform.UpdateFileLocked(ctx, hooksPath, 0o644, func(current []byte) ([]byte, error) {
+		if current == nil {
+			return nil, nil
+		}
+		var cfg cursorHooksConfig
+		if err := json.Unmarshal(current, &cfg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", hooksPath, err)
+		}
 
-	var cfg cursorHooksConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil
-	}
-
-	for hookPoint, defs := range cfg.Hooks {
-		var kept []cursorHookDef
-		for _, h := range defs {
-			if !strings.Contains(h.Command, semanticaMarker) {
+		changed := false
+		for hookPoint, defs := range cfg.Hooks {
+			var kept []cursorHookDef
+			for _, h := range defs {
+				if strings.Contains(h.Command, semanticaMarker) {
+					changed = true
+					continue
+				}
 				kept = append(kept, h)
 			}
+			if len(kept) > 0 {
+				cfg.Hooks[hookPoint] = kept
+			} else {
+				delete(cfg.Hooks, hookPoint)
+			}
 		}
-		if len(kept) > 0 {
-			cfg.Hooks[hookPoint] = kept
-		} else {
-			delete(cfg.Hooks, hookPoint)
+		if !changed {
+			return nil, nil
 		}
-	}
 
-	out, _ := hooks.MarshalSettingsJSON(cfg)
-	return os.WriteFile(hooksPath, out, 0o644)
+		out, err := hooks.MarshalSettingsJSON(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal hooks config: %w", err)
+		}
+		return out, nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // .cursor/ itself absent
+	}
+	return err
 }
 
 func (p *Provider) AreHooksInstalled(ctx context.Context, repoRoot string) bool {
