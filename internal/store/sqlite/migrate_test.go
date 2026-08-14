@@ -247,6 +247,65 @@ func TestMigration000002_ConcurrentInsertsAllocateUniqueSequences(t *testing.T) 
 	}
 }
 
+func TestMigration000007_UpDownOnExistingDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lineage.db")
+	db := openRaw(t, dbPath)
+
+	// Seed a version 6 row before adding the column.
+	if err := migrateWithSource(db, schemaAt(t, 6), 6); err != nil {
+		t.Fatal(err)
+	}
+	seeds := []string{
+		`insert into repositories (repository_id, root_path, created_at, enabled_at) values ('repo-a', '/tmp/a', 1, 1)`,
+		`insert into checkpoints (checkpoint_id, repository_id, created_at, kind, status) values ('ck-1', 'repo-a', 1, 'auto', 'complete')`,
+		`insert into checkpoint_stats (checkpoint_id, session_count, files_changed, ai_percentage) values ('ck-1', 3, 7, 42)`,
+	}
+	for _, s := range seeds {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("seed %q: %v", s, err)
+		}
+	}
+
+	// Existing rows receive no inferred version.
+	if err := migrateWithSource(db, schemaAt(t, 7), 7); err != nil {
+		t.Fatal(err)
+	}
+	var version sql.NullString
+	if err := db.QueryRow("select attribution_version from checkpoint_stats where checkpoint_id = 'ck-1'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version.Valid {
+		t.Errorf("legacy row version = %q, want NULL", version.String)
+	}
+
+	// Downgrading removes only the new column.
+	if err := migrateWithSource(db, schemaAt(t, 7), 6); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("select attribution_version from checkpoint_stats").Scan(&version); err == nil {
+		t.Error("attribution_version still selectable after down migration")
+	}
+	var sessions, files int64
+	var pct float64
+	if err := db.QueryRow("select session_count, files_changed, ai_percentage from checkpoint_stats where checkpoint_id = 'ck-1'").Scan(&sessions, &files, &pct); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 3 || files != 7 || pct != 42 {
+		t.Errorf("row after down = (%d, %d, %v), want (3, 7, 42)", sessions, files, pct)
+	}
+
+	// Reapplying the migration leaves the version unknown.
+	if err := migrateWithSource(db, schemaAt(t, 7), 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("select attribution_version from checkpoint_stats where checkpoint_id = 'ck-1'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version.Valid {
+		t.Errorf("re-upgraded row version = %q, want NULL", version.String)
+	}
+}
+
 func TestMigration_DirtyAfterCommitClearsWithoutReplay(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "lineage.db")

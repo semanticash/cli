@@ -41,6 +41,9 @@ var dirtyProbes = map[int]func(ctx context.Context, db *sql.DB) (bool, error){
 	6: func(ctx context.Context, db *sql.DB) (bool, error) {
 		return schemaHasTable(ctx, db, "agent_event_evidence_links")
 	},
+	7: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasColumn(ctx, db, "checkpoint_stats", "attribution_version")
+	},
 }
 
 func schemaHasTable(ctx context.Context, db *sql.DB, table string) (bool, error) {

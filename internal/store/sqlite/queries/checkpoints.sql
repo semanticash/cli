@@ -98,13 +98,15 @@ on conflict(checkpoint_id) do update set
 -- name: GetCheckpointStats :one
 select * from checkpoint_stats where checkpoint_id = ?;
 
--- name: MarkCheckpointAttributionComputed :exec
--- Records successful attribution, including an empty result. Upsert preserves
--- the marker when the stats row does not exist yet.
-insert into checkpoint_stats (checkpoint_id, attribution_computed_at)
-values (?, ?)
+-- name: RecordCheckpointAttribution :exec
+-- Stores the result and its scoring version in one statement. A percentage
+-- of -1 marks a completed run with no attributable changes.
+insert into checkpoint_stats (checkpoint_id, ai_percentage, attribution_computed_at, attribution_version)
+values (?, ?, ?, ?)
 on conflict(checkpoint_id) do update set
-    attribution_computed_at = excluded.attribution_computed_at;
+    ai_percentage = excluded.ai_percentage,
+    attribution_computed_at = excluded.attribution_computed_at,
+    attribution_version = excluded.attribution_version;
 
 -- name: MarkCheckpointAttributionPushed :exec
 -- Records a successful hosted attribution push. Upsert creates missing stats rows.
@@ -153,9 +155,6 @@ where e.repository_id = ?
                or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
        or (cast(sqlc.arg(use_cursor) as integer) = 0
           and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)));
-
--- name: UpdateCheckpointAIPercentage :exec
-update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?;
 
 -- name: CountSessionsForCheckpoint :one
 select count(*) from session_checkpoints where checkpoint_id = ?;

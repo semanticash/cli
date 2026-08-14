@@ -176,7 +176,7 @@ semantica explain HEAD --generate
 - Commit-linked work runs in repository order. Transient failures retry with bounded backoff, while a terminal failure blocks later records until it is fixed and retried with `semantica worker retry <checkpoint-id>`.
 - Launcher backends drain every 30 minutes to recover scheduled retries and expired worker leases. `semantica doctor` reports scheduled retries and blocked queues.
 - After replacing the Semantica binary, `semantica launcher refresh` re-registers an enabled launcher against the current binary and drains queued work. The installer attempts this automatically when it is not running as root.
-- `semantica status --json` reports the latest checkpoint, queue blockage, and component-level audit readiness. The named policy indicates whether hosted sync is required.
+- `semantica status --json` reports the latest checkpoint, queue blockage, component-level audit readiness, and the attribution algorithm version when known. The named policy indicates whether hosted sync is required.
 
 ### Caveats
 

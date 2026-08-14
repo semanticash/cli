@@ -162,53 +162,59 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	}, nil
 }
 
-// computeEnrichmentAttribution diffs the commit, runs carry-forward attribution,
-// and writes the AI percentage to the checkpoint. Best-effort: failures are
-// logged, not propagated to the caller.
+// computeEnrichmentAttribution scores a commit and stores the result.
+// Failures are logged without failing checkpoint enrichment.
 func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in WorkerInput, windows workerWindows) {
+	// Use one version decision for scoring and persistence.
+	v2 := util.AttributionV2Enabled(wctx.semDir)
+	version := "v1"
+	if v2 {
+		version = "v2"
+	}
+
 	diffBytes, err := wctx.repo.DiffForCommit(ctx, in.CommitHash)
 	if err != nil {
 		return
 	}
 	if len(diffBytes) == 0 {
 		// An empty diff is a completed attribution result.
-		markAttributionComputed(ctx, wctx.h, in.CheckpointID)
+		_ = recordAttribution(ctx, wctx.h, in.CheckpointID, noAttributionSentinel, version)
 		return
 	}
 
-	// Use the repository's scoring version for persisted attribution.
 	cfr, err := attributeWithCarryForward(ctx, wctx.h, wctx.blobStore, diffBytes, ComputeAIPercentInput{
 		RepoRoot: in.RepoRoot,
 		RepoID:   wctx.cp.RepositoryID,
 		Window:   windows.attrWindow,
-	}, windows.prevCommitLinked, wctx.semDir, util.AttributionV2Enabled(wctx.semDir))
+	}, windows.prevCommitLinked, wctx.semDir, v2)
 	if errors.Is(err, ErrNoEventsInWindow) {
-		// No agent evidence is a valid zero-AI result.
-		markAttributionComputed(ctx, wctx.h, in.CheckpointID)
+		// No agent evidence is a completed empty result.
+		_ = recordAttribution(ctx, wctx.h, in.CheckpointID, noAttributionSentinel, version)
 		return
 	}
 	if err != nil {
 		return
 	}
 
-	if err := wctx.h.Queries.UpdateCheckpointAIPercentage(ctx, sqldb.UpdateCheckpointAIPercentageParams{
-		AiPercentage: cfr.result.Percent,
-		CheckpointID: in.CheckpointID,
-	}); err != nil {
-		wlog("worker: update AI percentage: %v\n", err)
+	if recordAttribution(ctx, wctx.h, in.CheckpointID, cfr.result.Percent, version) != nil {
 		return
 	}
-	markAttributionComputed(ctx, wctx.h, in.CheckpointID)
 	wlog("worker: AI attribution: %.0f%%\n", cfr.result.Percent)
 }
 
-// markAttributionComputed records stage completion. Write failures leave
-// attribution readiness unknown.
-func markAttributionComputed(ctx context.Context, h *sqlstore.Handle, checkpointID string) {
-	if err := h.Queries.MarkCheckpointAttributionComputed(ctx, sqldb.MarkCheckpointAttributionComputedParams{
-		AttributionComputedAt: sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
+// noAttributionSentinel marks a completed run with no attributable changes.
+const noAttributionSentinel = -1
+
+// recordAttribution stores a completed result in one statement.
+func recordAttribution(ctx context.Context, h *sqlstore.Handle, checkpointID string, percent float64, version string) error {
+	err := h.Queries.RecordCheckpointAttribution(ctx, sqldb.RecordCheckpointAttributionParams{
 		CheckpointID:          checkpointID,
-	}); err != nil {
-		wlog("worker: mark attribution computed for %s: %v\n", checkpointID, err)
+		AiPercentage:          percent,
+		AttributionComputedAt: sql.NullInt64{Int64: time.Now().UnixMilli(), Valid: true},
+		AttributionVersion:    sql.NullString{String: version, Valid: version != ""},
+	})
+	if err != nil {
+		wlog("worker: record attribution for %s: %v\n", checkpointID, err)
 	}
+	return err
 }

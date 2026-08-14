@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,17 +43,19 @@ func upsertStats(t *testing.T, h *sqlstore.Handle, cpID string, aiPct float64, c
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.DB.ExecContext(ctx, "update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?", aiPct, cpID); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UnixMilli()
 	if computed {
-		if err := h.Queries.MarkCheckpointAttributionComputed(ctx, sqldb.MarkCheckpointAttributionComputedParams{
-			AttributionComputedAt: sql.NullInt64{Int64: now, Valid: true},
+		if err := h.Queries.RecordCheckpointAttribution(ctx, sqldb.RecordCheckpointAttributionParams{
 			CheckpointID:          cpID,
+			AiPercentage:          aiPct,
+			AttributionComputedAt: sql.NullInt64{Int64: now, Valid: true},
+			AttributionVersion:    sql.NullString{String: "v1", Valid: true},
 		}); err != nil {
 			t.Fatal(err)
 		}
+	} else if _, err := h.DB.ExecContext(ctx, "update checkpoint_stats set ai_percentage = ? where checkpoint_id = ?", aiPct, cpID); err != nil {
+		// Legacy shape: a percentage without completion markers.
+		t.Fatal(err)
 	}
 	if pushed {
 		if err := h.Queries.MarkCheckpointAttributionPushed(ctx, sqldb.MarkCheckpointAttributionPushedParams{
@@ -87,6 +90,58 @@ func TestReadiness_CompleteWithFullEvidenceIsReady(t *testing.T) {
 	}
 	if !ar.AuditReady || ar.Policy != "local" {
 		t.Fatalf("verdict = %+v, want audit_ready under local policy", ar)
+	}
+}
+
+// A version mismatch does not make stored attribution stale.
+func TestReadiness_VersionMismatchStaysComplete(t *testing.T) {
+	dir, h, repoID := setupQueueRepo(t)
+	cp := readinessFixture(t, h, repoID, "ck-v1")
+	upsertStats(t, h, "ck-v1", 42, true, false) // stored as v1
+
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1") // configured as v2
+
+	ar := evalLocal(t, dir, h, cp)
+	if ar.Attribution.State != ReadinessReady {
+		t.Fatalf("attribution = %+v, want ready despite version mismatch", ar.Attribution)
+	}
+	if !ar.AuditReady {
+		t.Fatal("audit_ready = false, want complete with stored version visible")
+	}
+	if ar.AttributionVersion != "v1" {
+		t.Errorf("attribution_version = %q, want stored v1", ar.AttributionVersion)
+	}
+}
+
+// Legacy rows omit an unknown attribution version.
+func TestReadiness_LegacyRowsOmitVersion(t *testing.T) {
+	dir, h, repoID := setupQueueRepo(t)
+	cp := readinessFixture(t, h, repoID, "ck-legacy")
+	ctx := context.Background()
+	if err := h.Queries.UpsertCheckpointStats(ctx, sqldb.UpsertCheckpointStatsParams{
+		CheckpointID: "ck-legacy", SessionCount: 1, FilesChanged: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Old two-step shape: percentage and marker without a version.
+	if _, err := h.DB.ExecContext(ctx,
+		"update checkpoint_stats set ai_percentage = 10, attribution_computed_at = 1 where checkpoint_id = 'ck-legacy'"); err != nil {
+		t.Fatal(err)
+	}
+
+	ar := evalLocal(t, dir, h, cp)
+	if ar.Attribution.State != ReadinessReady {
+		t.Fatalf("attribution = %+v, want ready", ar.Attribution)
+	}
+	if ar.AttributionVersion != "" {
+		t.Errorf("attribution_version = %q, want empty for legacy NULL", ar.AttributionVersion)
+	}
+	data, err := json.Marshal(ar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "attribution_version") {
+		t.Errorf("JSON should omit attribution_version when unknown: %s", data)
 	}
 }
 
