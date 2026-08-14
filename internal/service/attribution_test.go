@@ -1272,6 +1272,209 @@ func TestCarryForward_MixedWindow(t *testing.T) {
 	}
 }
 
+// cfCommitWorld provides a real repository for carry-forward tests.
+type cfCommitWorld struct {
+	dir, repoRoot, repoID, sessID string
+	h                             *sqlstore.Handle
+	bs                            *blobs.Store
+	git                           func(args ...string) string
+}
+
+func newCFCommitWorld(t *testing.T) *cfCommitWorld {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	t.Setenv("SEMANTICA_HOME", filepath.Join(dir, ".semantica-global"))
+	t.Setenv("HOME", dir)
+
+	git := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init")
+	git("config", "user.email", "test@test.com")
+	git("config", "user.name", "Test")
+
+	semDir := filepath.Join(dir, ".semantica")
+	mustMkdirAll(t, filepath.Join(semDir, "objects"))
+	mustWriteFile(t, filepath.Join(semDir, "enabled"), nil)
+
+	h, err := sqlstore.Open(ctx, filepath.Join(semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := mustOpenRepo(t, dir)
+	repoRoot := repo.Root()
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoRoot, CreatedAt: 50_000, EnabledAt: 50_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srcID := insertSource(t, h, repoID, "/fake/source.jsonl")
+	sessID := insertSession(t, h, repoID, srcID, "session-1")
+	return &cfCommitWorld{dir: dir, repoRoot: repoRoot, repoID: repoID, sessID: sessID, h: h, bs: bs, git: git}
+}
+
+// commitFile writes content, commits it, and returns the commit hash.
+func (w *cfCommitWorld) commitFile(t *testing.T, path, content, msg string) string {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(w.dir, path), []byte(content))
+	w.git("add", path)
+	w.git("commit", "-m", msg)
+	return w.git("rev-parse", "HEAD")
+}
+
+// linkCheckpoint inserts a completed checkpoint with a manifest and links it.
+func (w *cfCommitWorld) linkCheckpoint(t *testing.T, commit string, at int64, files []string) {
+	t.Helper()
+	cpID := insertCheckpointWithManifest(t, w.h, w.bs, w.repoID, at, files)
+	if err := w.h.Queries.InsertCommitLink(context.Background(), sqldb.InsertCommitLinkParams{
+		CommitHash: commit, RepositoryID: w.repoID,
+		CheckpointID: cpID, LinkedAt: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// attribute closes the handle and runs AttributeCommit on the commit.
+func (w *cfCommitWorld) attribute(t *testing.T, commit string) *AttributionResult {
+	t.Helper()
+	if err := sqlstore.Close(w.h); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAttributionService().AttributeCommit(context.Background(),
+		AttributionInput{RepoPath: w.dir, CommitHash: commit})
+	if err != nil {
+		t.Fatalf("AttributeCommit: %v", err)
+	}
+	return result
+}
+
+// Historical evidence without a surviving line does not label a human edit.
+func TestCarryForward_ModifiedFileNoMatchDropsHistoricalTouch(t *testing.T) {
+	w := newCFCommitWorld(t)
+
+	// Commit 1: AI writes the line a later human edit will replace.
+	commit1 := w.commitFile(t, "CHANGELOG.md", "## [0.6.1] - Unreleased\n", "ai entry")
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		100_000, "CHANGELOG.md", "## [0.6.1] - Unreleased\n")
+	w.linkCheckpoint(t, commit1, 200_000, []string{"CHANGELOG.md"})
+
+	// Same provider active in the current window on another file.
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		250_000, "other.go", "package other\n")
+
+	// Commit 2: the human replaces the AI-written line.
+	commit2 := w.commitFile(t, "CHANGELOG.md", "## [0.6.1] - 2026-08-14\n", "human date")
+	w.linkCheckpoint(t, commit2, 300_000, []string{"CHANGELOG.md", "other.go"})
+
+	result := w.attribute(t, commit2)
+
+	if result.AIPercentage != 0 || result.HumanLines != 1 {
+		t.Errorf("AI%%=%v human=%d, want 0%% and 1 human line", result.AIPercentage, result.HumanLines)
+	}
+	if result.FilesAITouched != 0 {
+		t.Errorf("FilesAITouched = %d, want 0: historical touch must not surface without a surviving line", result.FilesAITouched)
+	}
+	f := fileByPath(t, result.Files, "CHANGELOG.md")
+	if f.Classification == "ai" {
+		t.Errorf("classification = %q, want not ai for a human-only edit", f.Classification)
+	}
+	if f.EvidenceClass == "provider_touch" || len(f.Providers) != 0 {
+		t.Errorf("evidence=%q providers=%v, want no leaked historical evidence", f.EvidenceClass, f.Providers)
+	}
+}
+
+// A surviving historical line remains attributable.
+func TestCarryForward_ModifiedFileMatchKeepsHistoricalAttribution(t *testing.T) {
+	w := newCFCommitWorld(t)
+
+	commit1 := w.commitFile(t, "edit.go", "package edit\nfunc Handle() {}\n", "ai code")
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		100_000, "edit.go", "package edit\nfunc Handle() {}\n")
+	w.linkCheckpoint(t, commit1, 200_000, []string{"edit.go"})
+
+	// Same provider active in the current window on another file.
+	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
+		250_000, "other.go", "package other\n")
+
+	// Commit 2 re-adds the historical AI line (reformatted, so it is an
+	// added diff line) and appends a human one.
+	commit2 := w.commitFile(t, "edit.go", "package edit\nfunc  Handle() {}\nvar manual = 1\n", "human addition")
+	w.linkCheckpoint(t, commit2, 300_000, []string{"edit.go", "other.go"})
+
+	result := w.attribute(t, commit2)
+
+	if result.AILines == 0 {
+		t.Error("AILines = 0, want surviving historical line attributed")
+	}
+	if result.FilesAITouched == 0 {
+		t.Error("FilesAITouched = 0, want the matched file counted")
+	}
+	f := fileByPath(t, result.Files, "edit.go")
+	if len(f.Providers) == 0 {
+		t.Errorf("providers = %v, want historical provider credited", f.Providers)
+	}
+}
+
+// Exact and normalized survival pass; unmatched files do not.
+func TestModifiedCarryForwardDiffMatches(t *testing.T) {
+	dr := parseDiff([]byte(strings.Join([]string{
+		"diff --git a/a.go b/a.go",
+		"--- a/a.go",
+		"+++ b/a.go",
+		"@@ -1,1 +1,2 @@",
+		" package a",
+		"+func Exact() {}",
+		"diff --git a/b.go b/b.go",
+		"--- a/b.go",
+		"+++ b/b.go",
+		"@@ -1,1 +1,2 @@",
+		" package b",
+		"+func  Spaced ( ) {}",
+		"diff --git a/c.go b/c.go",
+		"--- a/c.go",
+		"+++ b/c.go",
+		"@@ -1,1 +1,2 @@",
+		" package c",
+		"+entirely human line",
+	}, "\n")))
+
+	cands := attrevents.Candidates{AILines: map[string]map[string]struct{}{
+		"a.go": {"func Exact() {}": {}},
+		"b.go": {"func Spaced() {}": {}},
+		"c.go": {"func Gone() {}": {}},
+	}}
+	modified := map[string]bool{"a.go": true, "b.go": true, "c.go": true}
+
+	got := modifiedCarryForwardDiffMatches(dr, cands, modified)
+	if !got["a.go"] {
+		t.Error("a.go: exact survival not matched")
+	}
+	if !got["b.go"] {
+		t.Error("b.go: whitespace-normalized survival not matched")
+	}
+	if got["c.go"] {
+		t.Error("c.go: matched without any surviving line")
+	}
+	if res := modifiedCarryForwardDiffMatches(dr, cands, nil); res != nil {
+		t.Errorf("empty modified set = %v, want nil", res)
+	}
+}
+
 // TestCarryForward_HistoricalBoundUsesCP1CreatedAt verifies the window bounds
 // used for historical carry-forward.
 func TestCarryForward_HistoricalBoundUsesCP1CreatedAt(t *testing.T) {

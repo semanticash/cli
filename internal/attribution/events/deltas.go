@@ -35,6 +35,8 @@ type DeltaClaimGroup struct {
 	InsertSeq int64
 	EventID   string
 	Lines     []string // ordered added lines, hunk order
+	// Historical marks a carry-forward claim for a modified file.
+	Historical bool
 }
 
 // Stable rejection reasons for excluded delta groups.

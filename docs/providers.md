@@ -49,6 +49,8 @@ Before parsing a payload or opening storage, Semantica verifies that its `cwd` b
 
 Codex `apply_patch` operations are parsed per file. Add and update sections with new content synthesize the same assistant payload shape used by Claude `Write`, so changed lines can receive line-level attribution. Delete sections, empty-file adds, deletion-only updates, and rename source paths are recorded as provider-touch evidence without inflating headline AI percentages. Pre- and post-Bash hooks capture bounded workspace deltas; opt-in v2 scoring can attribute surviving changes made by scripts, formatters, and generators.
 
+When capture state is active, Semantica snapshots eligible Bash calls even if `attribution_v2` is disabled. The flag controls scoring, not capture. A delta shows that changes appeared while the tool ran; it does not prove exclusive authorship.
+
 ### Skills and Handoff
 
 `semantica skills install` writes Semantica skills for Codex to `~/.codex/skills`. Codex also reads `~/.agents/skills`, but Semantica intentionally uses the provider-scoped Codex path so install and uninstall affect only Codex-owned targets.
@@ -86,6 +88,8 @@ Claude Code combines direct hook events with transcript replay for session flow,
 ### Attribution
 
 Claude Code tool calls include file paths and content. Semantica uses direct `Write` and `Edit` payloads plus transcript replay for line attribution. Pre- and post-Bash hooks also capture bounded workspace deltas. Experimental tool-delta scoring can attribute surviving Bash-written lines and retain file-level evidence when line matching is unavailable.
+
+When capture state is active, Semantica snapshots eligible Bash calls even if `attribution_v2` is disabled. The flag controls scoring, not capture. A delta shows that changes appeared while the tool ran; it does not prove exclusive authorship.
 
 ---
 
