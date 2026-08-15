@@ -5,6 +5,12 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - Unreleased
+
+### Added
+
+- Claude Code turn manifests now record the final visible agent response as a redacted, content-addressed object. Other providers record an unsupported status.
+
 ## [0.6.1] - 2026-08-14
 
 ### Added

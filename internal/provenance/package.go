@@ -105,6 +105,9 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 	// 2d. Filter steps that only touch gitignored files.
 	filteredSteps := filterIgnoredSteps(ctx, repoPath, steps, bs)
 
+	// Capture a redacted final response without blocking turn packaging.
+	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID)
+
 	// 3. Build provenance bundle blob.
 	blobStart := time.Now()
 	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps)
@@ -135,6 +138,11 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 		StartedAt:            tc.StartedAt,
 		CompletedAt:          sql.NullInt64{Int64: tc.CompletedAt, Valid: tc.CompletedAt > 0},
 		Status:               status,
+		ResponseEventID:      sqlstore.NullStr(response.EventID),
+		ResponseHash:         sqlstore.NullStr(response.Hash),
+		ResponseSummary:      sqlstore.NullStr(response.Summary),
+		ResponseStatus:       sqlstore.NullStr(response.Status),
+		ResponseCompletedAt:  sql.NullInt64{Int64: response.CompletedAt, Valid: response.CompletedAt > 0},
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}); err != nil {

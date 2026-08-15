@@ -119,6 +119,11 @@ type ProvenanceManifest struct {
 	RemoteVerifiedAt       sql.NullInt64  `json:"remote_verified_at"`
 	CreatedAt              int64          `json:"created_at"`
 	UpdatedAt              int64          `json:"updated_at"`
+	ResponseEventID        sql.NullString `json:"response_event_id"`
+	ResponseHash           sql.NullString `json:"response_hash"`
+	ResponseSummary        sql.NullString `json:"response_summary"`
+	ResponseStatus         sql.NullString `json:"response_status"`
+	ResponseCompletedAt    sql.NullInt64  `json:"response_completed_at"`
 }
 
 type RemoteAttributionBackfill struct {

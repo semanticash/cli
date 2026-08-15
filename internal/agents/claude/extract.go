@@ -330,6 +330,40 @@ func parseTimestamp(raw json.RawMessage) int64 {
 	return time.Now().UnixMilli()
 }
 
+// FinalAssistantText joins the visible text blocks in an assistant message.
+// It excludes thinking and tool-use blocks and rejects malformed content.
+func FinalAssistantText(line string) (string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		return "", fmt.Errorf("parse assistant line: %w", err)
+	}
+	msgRaw, ok := raw["message"]
+	if !ok {
+		return "", fmt.Errorf("assistant line has no message")
+	}
+	var msg struct {
+		Role    string            `json:"role"`
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(msgRaw, &msg); err != nil {
+		return "", fmt.Errorf("parse assistant message: %w", err)
+	}
+	var parts []string
+	for _, blockRaw := range msg.Content {
+		var block struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(blockRaw, &block); err != nil {
+			return "", fmt.Errorf("parse content block: %w", err)
+		}
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n")), nil
+}
+
 func jsonString(raw json.RawMessage) string {
 	if raw == nil {
 		return ""
