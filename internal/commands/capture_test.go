@@ -19,14 +19,6 @@ func jsonQuote(s string) string {
 	return string(b)
 }
 
-// readHookPayload is the bounded stdin reader used by `semantica
-// capture`. These tests cover the behaviors capture relies on:
-//
-//  1. Piped readers return their bytes before the deadline.
-//  2. Complete JSON returns without waiting for the reader to close.
-//  3. Closed empty readers return an empty payload without timing out.
-//  4. Open readers time out instead of blocking indefinitely.
-
 func TestReadHookPayload_PipedReaderReturnsBytes(t *testing.T) {
 	const want = `{"session_id":"sess-1","tool_name":"Edit"}`
 	payload, timedOut, err := readHookPayload(strings.NewReader(want), 100*time.Millisecond)

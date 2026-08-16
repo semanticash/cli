@@ -129,16 +129,9 @@ func NewCaptureCmd() *cobra.Command {
 	return cmd
 }
 
-// readHookPayload returns after one complete JSON value without waiting for EOF.
-//
-// Returns one of three outcomes:
-//
-//   - (payload, false, nil): JSON arrived or an empty reader closed.
-//   - (nil,     true,  nil): the deadline elapsed first.
-//   - (nil,     false, err): the read failed.
-//
-// On timeout, the read goroutine may remain blocked until process exit.
-// Capture is short-lived, so the caller prefers that to blocking the hook.
+// readHookPayload decodes one JSON value without waiting for EOF. It reports a
+// deadline separately from read and decode errors.
+// A timed-out decoder may remain blocked until the hook process exits.
 func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timedOut bool, err error) {
 	type result struct {
 		data []byte
@@ -161,12 +154,7 @@ func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timed
 	}
 }
 
-// logCaptureError reports a capture-time failure on stderr (for
-// developers running interactively) and appends a structured entry
-// to the global hook-errors sidecar log so `semantica doctor` can
-// surface it later. The shell `|| true` wrapper around hook
-// invocations still swallows our exit code, which is the contract
-// keeping hooks non-blocking.
+// logCaptureError writes a capture failure to stderr and doctor diagnostics.
 func logCaptureError(provider, hook, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "semantica capture: %s\n", msg)

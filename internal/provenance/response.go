@@ -47,7 +47,7 @@ func isClaudeProvider(provider string) bool {
 	return provider == "claude_code" || provider == "claude-code"
 }
 
-// hookResponseProvider reports whether a provider supplies responses in hooks.
+// hookResponseProvider reports whether a provider uses hook-native responses.
 func hookResponseProvider(provider string) bool {
 	switch provider {
 	case "codex", "cursor":
