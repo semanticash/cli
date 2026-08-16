@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Turn manifests now store redacted final responses as content-addressed objects for Claude Code, Codex, and Cursor. Other providers are marked unsupported.
+- Cursor shell hooks now capture pre-command workspace snapshots for opt-in tool-delta attribution.
 
 ### Fixed
 

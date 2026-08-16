@@ -279,13 +279,21 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	case "before-submit-prompt":
 		event.Type = hooks.PromptSubmitted
 	case "pre-tool-use":
-		if normalizeCursorToolName(payload.ToolName) != "Agent" {
+		switch normalizeCursorToolName(payload.ToolName) {
+		case "Agent":
+			event.Type = hooks.SubagentPromptSubmitted
+			event.ToolName = "Agent"
+			event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
+			event.ToolInput = bytes.TrimSpace(data)
+		case "Bash":
+			// Open a tool window for the matching post-execution event.
+			event.Type = hooks.ToolStepStarted
+			event.ToolName = "Bash"
+			event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
+			event.ToolInput = bytes.TrimSpace(data)
+		default:
 			return nil, nil
 		}
-		event.Type = hooks.SubagentPromptSubmitted
-		event.ToolName = "Agent"
-		event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
-		event.ToolInput = bytes.TrimSpace(data)
 	case "post-tool-use":
 		if normalizeCursorToolName(payload.ToolName) != "Bash" {
 			return nil, nil
