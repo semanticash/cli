@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Turn manifests now store redacted final responses from Claude Code transcripts and Codex Stop hooks as content-addressed objects. Unsupported providers are reported explicitly.
+- Turn manifests now store redacted final responses as content-addressed objects. Capture supports Claude Code transcripts, Codex `Stop`, and Cursor `afterAgentResponse`; other providers are marked unsupported.
 
 ### Fixed
 

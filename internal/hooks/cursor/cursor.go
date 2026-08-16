@@ -81,6 +81,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"preToolUse", hooks.GuardedCommand(bin, "capture cursor pre-tool-use")},
 		{"postToolUse", hooks.GuardedCommand(bin, "capture cursor post-tool-use")},
 		{"afterFileEdit", hooks.GuardedCommand(bin, "capture cursor after-file-edit")},
+		{"afterAgentResponse", hooks.GuardedCommand(bin, "capture cursor after-agent-response")},
 		{"stop", hooks.GuardedCommand(bin, "capture cursor stop")},
 		{"subagentStop", hooks.GuardedCommand(bin, "capture cursor subagent-stop")},
 		{"preCompact", hooks.GuardedCommand(bin, "capture cursor pre-compact")},
@@ -227,6 +228,27 @@ type stdinPayload struct {
 	ToolCallCount      int64           `json:"tool_call_count,omitempty"`
 }
 
+// stringField returns a JSON string and reports whether it is present.
+// Null and non-string values are treated as absent.
+func stringField(data []byte, key string) (string, bool) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return "", false
+	}
+	v, ok := raw[key]
+	if !ok {
+		return "", false
+	}
+	if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return "", false
+	}
+	return s, true
+}
+
 func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*hooks.Event, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
@@ -281,6 +303,13 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		event.ToolName = toolName
 		event.ToolUseID = syntheticCursorToolUseID(payload.GenerationID, data)
 		event.ToolInput = bytes.TrimSpace(data)
+	case "after-agent-response":
+		// Cursor sends the final response before the stop hook. Preserve empty
+		// strings so they remain distinct from missing responses.
+		event.Type = hooks.AgentResponseCaptured
+		if text, ok := stringField(data, "text"); ok {
+			event.Response = &text
+		}
 	case "stop":
 		event.Type = hooks.AgentCompleted
 	case "subagent-stop":

@@ -50,7 +50,7 @@ func isClaudeProvider(provider string) bool {
 // hookResponseProvider reports whether a provider supplies responses in hooks.
 func hookResponseProvider(provider string) bool {
 	switch provider {
-	case "codex":
+	case "codex", "cursor":
 		return true
 	}
 	return false

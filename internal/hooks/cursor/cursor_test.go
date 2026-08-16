@@ -20,8 +20,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 9 {
-		t.Errorf("count: got %d, want 9", count)
+	if count != 10 {
+		t.Errorf("count: got %d, want 10", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".cursor", "hooks.json"))
@@ -45,6 +45,7 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		"preToolUse",
 		"postToolUse",
 		"afterFileEdit",
+		"afterAgentResponse",
 		"stop",
 		"subagentStop",
 		"preCompact",
@@ -347,6 +348,41 @@ func TestParseHookEvent_Stop(t *testing.T) {
 	}
 	if event.Type != hooks.AgentCompleted {
 		t.Errorf("type: got %v, want AgentCompleted", event.Type)
+	}
+}
+
+func TestParseHookEvent_AfterAgentResponse(t *testing.T) {
+	p := &Provider{}
+	parse := func(payload string) *hooks.Event {
+		t.Helper()
+		ev, err := p.ParseHookEvent(context.Background(), "after-agent-response", strings.NewReader(payload))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return ev
+	}
+
+	ev := parse(`{"conversation_id":"c","text":"the answer"}`)
+	if ev == nil || ev.Type != hooks.AgentResponseCaptured {
+		t.Fatalf("event = %+v, want AgentResponseCaptured", ev)
+	}
+	if ev.Response == nil || *ev.Response != "the answer" {
+		t.Errorf("Response = %v, want \"the answer\"", ev.Response)
+	}
+
+	// An empty string is present response data.
+	if ev := parse(`{"conversation_id":"c","text":""}`); ev == nil || ev.Response == nil || *ev.Response != "" {
+		t.Errorf(`empty text: Response = %v, want &""`, ev.Response)
+	}
+
+	// Absent and null fields do not create a response candidate.
+	for _, payload := range []string{
+		`{"conversation_id":"c"}`,
+		`{"conversation_id":"c","text":null}`,
+	} {
+		if ev := parse(payload); ev == nil || ev.Type != hooks.AgentResponseCaptured || ev.Response != nil {
+			t.Errorf("payload %s: event = %+v, want AgentResponseCaptured with nil Response", payload, ev)
+		}
 	}
 }
 

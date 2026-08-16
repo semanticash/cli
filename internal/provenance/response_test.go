@@ -345,15 +345,19 @@ func TestCaptureFinalResponse_CandidateWins(t *testing.T) {
 
 // A hook provider without a response does not use Claude transcript extraction.
 func TestCaptureFinalResponse_HookProviderNoCandidateMissing(t *testing.T) {
-	w := newResponseWorld(t, "codex")
-	// This transcript row must be ignored for Codex.
-	w.addAssistantEvent(t, "turn-x", 100, []map[string]any{textBlock("done")})
-	got := captureFinalResponse(context.Background(), w.h, w.bs, "codex", w.sessionID, "turn-x", ResponseCandidate{})
-	if got.Status != responseMissing {
-		t.Errorf("status = %q, want missing", got.Status)
-	}
-	if got.Hash != "" {
-		t.Errorf("codex without candidate produced a hash: %+v", got)
+	for _, provider := range []string{"codex", "cursor"} {
+		t.Run(provider, func(t *testing.T) {
+			w := newResponseWorld(t, provider)
+			// Hook-native providers do not fall back to transcript extraction.
+			w.addAssistantEvent(t, "turn-x", 100, []map[string]any{textBlock("done")})
+			got := captureFinalResponse(context.Background(), w.h, w.bs, provider, w.sessionID, "turn-x", ResponseCandidate{})
+			if got.Status != responseMissing {
+				t.Errorf("status = %q, want missing", got.Status)
+			}
+			if got.Hash != "" {
+				t.Errorf("%s without candidate produced a hash: %+v", provider, got)
+			}
+		})
 	}
 }
 
