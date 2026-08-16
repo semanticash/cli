@@ -278,14 +278,20 @@ func TestCaptureFinalResponse_MalformedPayloadIsMissing(t *testing.T) {
 }
 
 func TestCaptureFinalResponse_UnsupportedProvider(t *testing.T) {
-	w := newResponseWorld(t, "gemini_cli")
-	w.addAssistantEvent(t, "turn-1", 100, []map[string]any{textBlock("done")})
-	got := captureFinalResponse(context.Background(), w.h, w.bs, "gemini_cli", w.sessionID, "turn-1", ResponseCandidate{})
-	if got.Status != responseUnsupported {
-		t.Fatalf("status = %q, want unsupported", got.Status)
-	}
-	if got.Hash != "" || got.EventID != "" {
-		t.Errorf("unsupported provider produced evidence: %+v", got)
+	// Gemini CLI and Kiro CLI responses remain unsupported because their
+	// completion hooks can continue after firing.
+	for _, provider := range []string{"gemini_cli", "gemini-cli", "kiro_cli", "kiro-cli"} {
+		t.Run(provider, func(t *testing.T) {
+			w := newResponseWorld(t, provider)
+			w.addAssistantEvent(t, "turn-1", 100, []map[string]any{textBlock("done")})
+			got := captureFinalResponse(context.Background(), w.h, w.bs, provider, w.sessionID, "turn-1", ResponseCandidate{})
+			if got.Status != responseUnsupported {
+				t.Fatalf("status = %q, want unsupported", got.Status)
+			}
+			if got.Hash != "" || got.EventID != "" {
+				t.Errorf("unsupported provider produced evidence: %+v", got)
+			}
+		})
 	}
 }
 

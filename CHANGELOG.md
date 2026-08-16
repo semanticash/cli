@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Turn manifests now store redacted final responses as content-addressed objects. Capture supports Claude Code transcripts, Codex `Stop`, and Cursor `afterAgentResponse`; other providers are marked unsupported.
+- Turn manifests now store redacted final responses as content-addressed objects for Claude Code, Codex, and Cursor. Other providers are marked unsupported.
 
 ### Fixed
+
+- Kiro CLI capture now recognizes canonical and alias names for file-write and shell tools.
+- Empty Kiro CLI hook payloads no longer create events from process context.
 
 - Commit capture now persists a receipt before writing to SQLite. A later worker can recover the checkpoint and link in commit order while preserving the pre-commit timestamp.
 - Claude Code capture now accepts only hook payloads associated with its configured transcript directory, preventing third-party compatibility hooks from producing Claude events.

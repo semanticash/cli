@@ -492,6 +492,41 @@ func TestParseHookEvent_StopReusesPinned(t *testing.T) {
 	}
 }
 
+// Empty payloads do not create hook events.
+func TestParseHookEvent_EmptyStdinReturnsNoEvent(t *testing.T) {
+	p := &Provider{}
+	for _, name := range []string{"user-prompt-submit", "stop", "agent-spawn", "post-tool-use"} {
+		event, err := p.ParseHookEvent(context.Background(), name, strings.NewReader(""))
+		if err != nil {
+			t.Errorf("%s: err = %v, want nil", name, err)
+		}
+		if event != nil {
+			t.Errorf("%s: event = %+v, want nil (no fabrication)", name, event)
+		}
+	}
+}
+
+func TestNormalizeKiroToolName_AcceptsBothForms(t *testing.T) {
+	create := json.RawMessage(`{"command":"create"}`)
+	cases := []struct {
+		name  string
+		input json.RawMessage
+		want  string
+	}{
+		{"write", create, "Write"},
+		{"fs_write", create, "Write"},
+		{"shell", nil, "Bash"},
+		{"execute_bash", nil, "Bash"},
+		{"subagent", nil, "Agent"},
+		{"unknown", nil, ""},
+	}
+	for _, c := range cases {
+		if got := normalizeKiroToolName(c.name, c.input); got != c.want {
+			t.Errorf("normalizeKiroToolName(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // Raw postToolUse payloads are normalized at the hook boundary.
 func TestParseHookEvent_PostToolUse_Write_Create(t *testing.T) {
 	p := &Provider{}

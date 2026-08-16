@@ -277,11 +277,21 @@ func workspaceKey(absPath string) string {
 
 // ParseHookEvent parses the Kiro CLI hook payload.
 func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*hooks.Event, error) {
-	var payload hookPayload
+	var data []byte
 	if stdin != nil {
-		if err := json.NewDecoder(stdin).Decode(&payload); err != nil {
-			return nil, fmt.Errorf("parse kiro-cli payload: %w", err)
+		var err error
+		data, err = io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read kiro-cli stdin: %w", err)
 		}
+	}
+	// Empty payloads do not identify a hook event.
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var payload hookPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("parse kiro-cli payload: %w", err)
 	}
 
 	cwd := payload.Cwd
@@ -385,16 +395,12 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	return event, nil
 }
 
-// normalizeKiroToolName maps Kiro CLI hook tool names to canonical
-// Semantica tool names. The write tool covers three sub-commands
-// (create, strReplace, insert) keyed off tool_input.command;
-// strReplace and insert both map to Edit because they produce a
-// before-and-after string pair that the scorer treats uniformly.
-// The subagent tool is the AgentCrew dispatcher and maps to Agent.
-// An empty return drops the event.
+// normalizeKiroToolName maps Kiro CLI tool names and aliases to Semantica
+// names. Write subcommands map to Write or Edit, and an empty result drops the
+// event.
 func normalizeKiroToolName(toolName string, toolInput json.RawMessage) string {
 	switch toolName {
-	case "write":
+	case "write", "fs_write":
 		var inp fsWriteInput
 		if json.Unmarshal(toolInput, &inp) == nil {
 			switch inp.Command {
@@ -405,7 +411,7 @@ func normalizeKiroToolName(toolName string, toolInput json.RawMessage) string {
 			}
 		}
 		return ""
-	case "shell":
+	case "shell", "execute_bash":
 		return "Bash"
 	case "subagent":
 		return "Agent"
