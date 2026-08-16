@@ -92,7 +92,7 @@ func (s *PostCommitService) HandlePostCommit(ctx context.Context, repoPath strin
 
 	// Let the worker drain an existing backlog in order.
 	if backlogPending {
-		spawnWorker(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
 		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
 	}
 
@@ -103,7 +103,7 @@ func (s *PostCommitService) HandlePostCommit(ctx context.Context, repoPath strin
 	})
 	if err != nil {
 		util.AppendActivityLog(semDir, "post-commit warning: open db failed (receipt kept): %v", err)
-		spawnWorker(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
 		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
 	}
 	defer func() { _ = sqlstore.Close(h) }()
@@ -111,18 +111,18 @@ func (s *PostCommitService) HandlePostCommit(ctx context.Context, repoPath strin
 	repoID, err := sqlstore.EnsureRepository(ctx, h.Queries, repoRoot)
 	if err != nil {
 		util.AppendActivityLog(semDir, "post-commit warning: ensure repo failed (receipt kept): %v", err)
-		spawnWorker(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
 		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
 	}
 
 	if err := linkReceipt(ctx, h, repoID, receipt); err != nil {
 		util.AppendActivityLog(semDir, "post-commit warning: link commit failed (receipt kept): %v", err)
-		spawnWorker(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
 		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
 	}
 
 	// Complete the checkpoint asynchronously.
-	spawnWorker(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+	spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
 
 	// The durable link supersedes the receipt.
 	_ = removeCommitReceipt(semDir, sha)
@@ -152,6 +152,10 @@ func printAttributionSummary(semDir string) {
 
 	fmt.Fprint(os.Stderr, summary.render())
 }
+
+// spawnWorkerFn dispatches the post-commit worker, a seam so tests can avoid
+// launching a detached process.
+var spawnWorkerFn = spawnWorker
 
 // spawnWorker dispatches post-commit work through the launcher when
 // enabled and otherwise falls back to the legacy detached spawn.

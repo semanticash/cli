@@ -14,9 +14,15 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 )
 
-// setupCommitRepo creates an enabled repository with a migrated database.
+// setupCommitRepo creates an enabled repository with a migrated database. It
+// also stops post-commit from launching a detached worker, which would hold
+// worker.log open and block TempDir cleanup on Windows.
 func setupCommitRepo(t *testing.T) (dir, semDir, dbPath string) {
 	t.Helper()
+	origSpawn := spawnWorkerFn
+	spawnWorkerFn = func(ctx context.Context, semDir, checkpointID, commitHash, repoRoot string) {}
+	t.Cleanup(func() { spawnWorkerFn = origSpawn })
+
 	dir = initGitRepo(t)
 	semDir = filepath.Join(dir, ".semantica")
 	if err := os.MkdirAll(filepath.Join(semDir, "objects"), 0o755); err != nil {
