@@ -17,6 +17,7 @@ const (
 	SubagentPromptSubmitted // PreToolUse[Agent] prompt event
 	IncrementalCapture      // mid-turn trigger to scan transcript from saved offset
 	ToolStepStarted         // PreToolUse for tools with paired window capture (Bash)
+	AgentResponseCaptured   // final visible assistant response delivered by a hook
 )
 
 // HookPhase returns a short stable string for the event's lifecycle point.
@@ -61,4 +62,8 @@ type Event struct {
 	ToolName     string          // Write, Edit, Bash, Agent, etc.
 	ToolInput    json.RawMessage // raw tool_input from hook payload
 	ToolResponse json.RawMessage // raw tool_response from hook payload
+
+	// Response is hook-provided final assistant text. Nil means absent; an empty
+	// string means the provider returned an empty response.
+	Response *string
 }

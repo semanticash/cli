@@ -1176,6 +1176,43 @@ func TestParseHookEvent_NumericIdsParse(t *testing.T) {
 	}
 }
 
+// Stop responses preserve absent, null, empty, and non-empty values.
+func TestParseHookEvent_CodexStopCarriesResponse(t *testing.T) {
+	p := &Provider{}
+	parse := func(payload string) *hooks.Event {
+		t.Helper()
+		ev, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(payload))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return ev
+	}
+
+	// A non-empty response is present.
+	ev := parse(`{"session_id":"s","transcript_path":"/t","last_assistant_message":"the answer"}`)
+	if ev == nil || ev.Type != hooks.AgentCompleted {
+		t.Fatalf("event = %+v, want AgentCompleted", ev)
+	}
+	if ev.Response == nil || *ev.Response != "the answer" {
+		t.Errorf("Response = %v, want \"the answer\"", ev.Response)
+	}
+
+	// An empty string is present but empty.
+	if ev := parse(`{"session_id":"s","transcript_path":"/t","last_assistant_message":""}`); ev == nil || ev.Response == nil || *ev.Response != "" {
+		t.Errorf(`empty string: Response = %v, want &""`, ev.Response)
+	}
+
+	// Absent and null values do not produce a candidate.
+	for _, payload := range []string{
+		`{"session_id":"s","transcript_path":"/t"}`,
+		`{"session_id":"s","transcript_path":"/t","last_assistant_message":null}`,
+	} {
+		if ev := parse(payload); ev == nil || ev.Response != nil {
+			t.Errorf("payload %s: Response = %v, want nil", payload, ev.Response)
+		}
+	}
+}
+
 // Codex hook fields apply different conversion rules based on their role.
 func TestParseHookEvent_FieldTolerancePolicies(t *testing.T) {
 	// override adds one field to an otherwise valid pre-tool-use payload.

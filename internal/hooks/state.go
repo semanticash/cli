@@ -42,6 +42,13 @@ type CaptureState struct {
 
 	// OrphanedAt marks deferred state retained after a transcript switch.
 	OrphanedAt int64 `json:"orphaned_at,omitempty"`
+
+	// Response fields index a redacted object in the content-addressed store.
+	ResponseHash        string `json:"response_hash,omitempty"`
+	ResponseStatus      string `json:"response_status,omitempty"`
+	ResponseSummary     string `json:"response_summary,omitempty"`
+	ResponseEventID     string `json:"response_event_id,omitempty"`
+	ResponseCompletedAt int64  `json:"response_completed_at,omitempty"`
 }
 
 // PendingTurnBoundary records where an interrupted turn begins.

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Claude Code turn manifests now record the final visible agent response as a redacted, content-addressed object. Other providers record an unsupported status.
+- Turn manifests now store redacted final responses from Claude Code transcripts and Codex Stop hooks as content-addressed objects. Unsupported providers are reported explicitly.
 
 ### Fixed
 

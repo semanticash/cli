@@ -27,10 +27,14 @@ type TurnContext struct {
 	StartedAt     int64
 	CompletedAt   int64
 	CWD           string
+
+	// Empty status means no hook-provided response.
+	ResponseCandidate ResponseCandidate
 }
 
-// PackageTurn builds the per-turn provenance bundle and persists the manifest row.
-func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
+// PackageTurn builds a turn bundle and persists its manifest. Hook-provided
+// objects are copied from sourceBlobs into the repository store.
+func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlobs *blobs.Store) {
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
@@ -105,8 +109,9 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 	// 2d. Filter steps that only touch gitignored files.
 	filteredSteps := filterIgnoredSteps(ctx, repoPath, steps, bs)
 
-	// Capture a redacted final response without blocking turn packaging.
-	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID)
+	// Resolve the final response and ensure its object is available locally.
+	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID, tc.ResponseCandidate)
+	response = ensureResponseResolvable(ctx, bs, sourceBlobs, response)
 
 	// 3. Build provenance bundle blob.
 	blobStart := time.Now()
