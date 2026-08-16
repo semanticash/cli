@@ -306,6 +306,89 @@ func TestMigration000007_UpDownOnExistingDB(t *testing.T) {
 	}
 }
 
+func TestMigration000008_UpDownOnExistingDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lineage.db")
+	db := openRaw(t, dbPath)
+
+	// Migrate to 7 and seed a manifest row that predates the response columns.
+	if err := migrateWithSource(db, schemaAt(t, 7), 7); err != nil {
+		t.Fatal(err)
+	}
+	seeds := []string{
+		`insert into repositories (repository_id, root_path, created_at, enabled_at) values ('repo-a', '/tmp/a', 1, 1)`,
+		`insert into agent_sources (source_id, repository_id, provider, source_key, last_seen_at, created_at) values ('src-1', 'repo-a', 'claude_code', '/k', 1, 1)`,
+		`insert into agent_sessions (session_id, provider_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json) values ('sess-1', 'p1', 'repo-a', 'claude_code', 'src-1', 1, 1, '{}')`,
+		`insert into provenance_manifests (manifest_id, repository_id, session_id, turn_id, provider, kind, started_at, status, created_at, updated_at) values ('m-1', 'repo-a', 'sess-1', 't-1', 'claude_code', 'turn_bundle', 1, 'packaged', 1, 1)`,
+	}
+	for _, s := range seeds {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("seed %q: %v", s, err)
+		}
+	}
+
+	// Up: the column exists and legacy rows are NULL.
+	if err := migrateWithSource(db, schemaAt(t, 8), 8); err != nil {
+		t.Fatal(err)
+	}
+	var status sql.NullString
+	if err := db.QueryRow("select response_status from provenance_manifests where manifest_id = 'm-1'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Valid {
+		t.Errorf("legacy row response_status = %q, want NULL", status.String)
+	}
+
+	// Down: the columns are removed, the rest of the row survives.
+	if err := migrateWithSource(db, schemaAt(t, 8), 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("select response_status from provenance_manifests").Scan(&status); err == nil {
+		t.Error("response_status still selectable after down migration")
+	}
+	var pStatus string
+	if err := db.QueryRow("select status from provenance_manifests where manifest_id = 'm-1'").Scan(&pStatus); err != nil {
+		t.Fatal(err)
+	}
+	if pStatus != "packaged" {
+		t.Errorf("row status after down = %q, want packaged", pStatus)
+	}
+}
+
+func TestMigration000008_PartialMigrationNotClean(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "lineage.db")
+	db := openRaw(t, dbPath)
+	if err := migrateWithSource(db, schemaAt(t, 7), 7); err != nil {
+		t.Fatal(err)
+	}
+	// Add every migration column except the final one.
+	for _, col := range []string{"response_event_id", "response_hash", "response_summary", "response_status"} {
+		if _, err := db.Exec("alter table provenance_manifests add column " + col + " text"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	applied, err := dirtyProbes[8](ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("partial migration reported as applied; probe must require the final column")
+	}
+
+	// The final column marks the migration as applied.
+	if _, err := db.Exec("alter table provenance_manifests add column response_completed_at integer"); err != nil {
+		t.Fatal(err)
+	}
+	applied, err = dirtyProbes[8](ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Error("complete migration reported as not applied")
+	}
+}
+
 func TestMigration_DirtyAfterCommitClearsWithoutReplay(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "lineage.db")

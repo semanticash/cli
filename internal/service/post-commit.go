@@ -2,21 +2,17 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/launcher"
 	"github.com/semanticash/cli/internal/platform"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
-	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
 )
 
@@ -40,119 +36,110 @@ func (s *PostCommitService) HandlePostCommit(ctx context.Context, repoPath strin
 
 	semDir := filepath.Join(repoRoot, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
-	handoffPath := util.PreCommitCheckpointPath(semDir)
 
-	// If Semantica isn't enabled, quietly no-op (hooks should never break commit).
+	// Disabled repositories are a no-op.
 	if !util.IsEnabled(semDir) {
 		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
 	}
 
-	// Print attribution summary
+	// Print the attribution summary prepared by commit-msg.
 	printAttributionSummary(semDir)
 
-	// Read checkpoint id produced by pre-commit.
-	// If missing, do NOT fall back to "latest" (nondeterministic).
-	handoffBytes, err := os.ReadFile(handoffPath)
-	if err != nil {
-		// No deterministic checkpoint to link (maybe commit ran with --no-verify, or pre-commit failed).
-		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-	}
-	raw := strings.TrimSpace(string(handoffBytes))
-	if raw == "" {
-		_ = os.Remove(handoffPath)
+	// Without a handoff, there is no checkpoint that can be linked safely.
+	handoff, ok := readCommitHandoff(semDir)
+	if !ok {
 		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
 	}
 
-	parts := strings.SplitN(raw, "|", 2)
-	checkpointID := strings.TrimSpace(parts[0])
-
-	if checkpointID == "" {
-		_ = os.Remove(handoffPath)
-		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-	}
-
-	// Optional: prevent stale reuse (10 minute window)
-	if len(parts) == 2 {
-		if ts, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64); err == nil {
-			if time.Now().UnixMilli()-ts > 600_000 {
-				_ = os.Remove(handoffPath)
-				return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-			}
-		}
-	}
-
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{
-		BusyTimeout: 50 * time.Millisecond,
-		Synchronous: "NORMAL",
-	})
-	if err != nil {
-		util.AppendActivityLog(semDir, "post-commit warning: open db failed: %v", err)
-		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-	}
-	defer func() { _ = sqlstore.Close(h) }()
-
-	// Resolve repository row
-	repoRow, err := h.Queries.GetRepositoryByRootPath(ctx, repoRoot)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-		}
-		util.AppendActivityLog(semDir, "post-commit warning: get repo row failed: %v", err)
-		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
-	}
-
-	// Get HEAD commit SHA
 	sha, err := repo.HeadCommitHash(ctx)
 	if err != nil {
 		util.AppendActivityLog(semDir, "post-commit warning: head commit hash failed: %v", err)
 		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
 	}
 
-	// Optional safety: verify checkpoint exists (pre-commit should have inserted it).
-	if _, err := h.Queries.GetCheckpointByID(ctx, checkpointID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return &PostCommitResult{
-				RepoRoot:   repoRoot,
-				CommitHash: sha,
-				Linked:     false,
-			}, nil
-		}
-		return nil, err
+	// Verify that the handoff belongs to this commit. A mismatch is left intact
+	// rather than linked to unrelated history.
+	commitTree, err := repo.CommitTree(ctx, sha)
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: resolve commit tree failed: %v", err)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, Linked: false}, nil
+	}
+	if handoff.Tree != commitTree {
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, Linked: false}, nil
+	}
+	matches, err := commitMatchesHandoffParent(ctx, repo, sha, handoff.Head)
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: resolve commit parent failed: %v", err)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, Linked: false}, nil
+	}
+	if !matches {
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, Linked: false}, nil
 	}
 
-	now := time.Now().UnixMilli()
-
-	// Insert OR IGNORE, so idempotent.
-	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
-		CommitHash:   sha,
-		RepositoryID: repoRow.RepositoryID,
-		CheckpointID: checkpointID,
-		LinkedAt:     now,
-	}); err != nil {
-		util.AppendActivityLog(semDir, "post-commit warning: insert commit link failed: %v", err)
-		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: checkpointID, Linked: false}, nil
+	// Older receipts must be linked first to preserve checkpoint order.
+	backlogPending, err := commitReceiptsPending(semDir)
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: list receipts failed: %v", err)
+		backlogPending = true
 	}
 
-	// Spawn detached worker to complete the checkpoint (blobs, manifest, session reconciliation).
-	spawnWorker(ctx, semDir, checkpointID, sha, repoRoot)
+	// Persist the committed receipt before opening SQLite.
+	receipt, err := promoteToReceipt(semDir, sha, handoff)
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: write receipt failed: %v", err)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: handoff.CheckpointID, Linked: false}, nil
+	}
 
-	// Best-effort delete handoff file so we never reuse it on a later commit.
-	_ = os.Remove(handoffPath)
+	// Let the worker drain an existing backlog in order.
+	if backlogPending {
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
+	}
+
+	// Fast path: link the receipt inline. Failures leave it for the worker.
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{
+		BusyTimeout: 50 * time.Millisecond,
+		Synchronous: "NORMAL",
+	})
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: open db failed (receipt kept): %v", err)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	repoID, err := sqlstore.EnsureRepository(ctx, h.Queries, repoRoot)
+	if err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: ensure repo failed (receipt kept): %v", err)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
+	}
+
+	if err := linkReceipt(ctx, h, repoID, receipt); err != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: link commit failed (receipt kept): %v", err)
+		spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+		return &PostCommitResult{RepoRoot: repoRoot, CommitHash: sha, CheckpointID: receipt.CheckpointID, Linked: false}, nil
+	}
+
+	// Complete the checkpoint asynchronously.
+	spawnWorkerFn(ctx, semDir, receipt.CheckpointID, sha, repoRoot)
+
+	// The durable link supersedes the receipt.
+	_ = removeCommitReceipt(semDir, sha)
 
 	return &PostCommitResult{
 		RepoRoot:     repoRoot,
 		CommitHash:   sha,
-		CheckpointID: checkpointID,
+		CheckpointID: receipt.CheckpointID,
 		Linked:       true,
 	}, nil
 }
 
-// printAttributionSummary reads the summary file written by the commit-msg hook
-// and prints a one-line attribution summary to stderr. Deletes the file after reading.
+// printAttributionSummary prints and removes the commit-msg summary.
 func printAttributionSummary(semDir string) {
 	path := util.CommitAttributionSummaryPath(semDir)
 	data, err := os.ReadFile(path)
-	_ = os.Remove(path) // always clean up
+	_ = os.Remove(path)
 
 	if err != nil || len(data) == 0 {
 		return
@@ -165,6 +152,10 @@ func printAttributionSummary(semDir string) {
 
 	fmt.Fprint(os.Stderr, summary.render())
 }
+
+// spawnWorkerFn dispatches the post-commit worker, a seam so tests can avoid
+// launching a detached process.
+var spawnWorkerFn = spawnWorker
 
 // spawnWorker dispatches post-commit work through the launcher when
 // enabled and otherwise falls back to the legacy detached spawn.

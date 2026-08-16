@@ -224,6 +224,11 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 	}
 	defer lock.release()
 
+	// Link receipts before processing checkpoints so repository order is stable.
+	if err := drainCommitReceipts(ctx, in.RepoRoot); err != nil {
+		return err
+	}
+
 	// Reconcile only state protected by this repository lock.
 	reconcileActiveSessions(ctx, s.registry, in.RepoRoot)
 

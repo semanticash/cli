@@ -830,6 +830,69 @@ func TestBuildSemanticaHookWrapperScript_RunsUserHookFirst(t *testing.T) {
 	}
 }
 
+func TestCommitBindingHelpers(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", dir)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	runGit := func(args ...string) string {
+		base := []string{"-C", dir, "-c", "user.email=t@t.t", "-c", "user.name=t"}
+		c := exec.Command("git", append(base, args...)...)
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null")
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	repo, err := OpenRepo(dir)
+	if err != nil {
+		t.Fatalf("OpenRepo: %v", err)
+	}
+
+	// Unborn branch: HEAD does not resolve.
+	if h, err := repo.HeadOrEmpty(ctx); err != nil || h != "" {
+		t.Fatalf("unborn HEAD = %q err=%v, want empty", h, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "a.txt")
+	stagedBefore, err := repo.StagedTree(ctx)
+	if err != nil || stagedBefore == "" {
+		t.Fatalf("StagedTree = %q err=%v", stagedBefore, err)
+	}
+	runGit("commit", "-m", "root")
+	root := runGit("rev-parse", "HEAD")
+
+	// Root commit: HEAD resolves, its tree matches the staged tree, no parent.
+	if h, err := repo.HeadOrEmpty(ctx); err != nil || h != root {
+		t.Errorf("HEAD = %q err=%v, want %q", h, err, root)
+	}
+	if tree, err := repo.CommitTree(ctx, root); err != nil || tree != stagedBefore {
+		t.Errorf("CommitTree(root) = %q err=%v, want %q", tree, err, stagedBefore)
+	}
+	if p, err := repo.FirstParentOrEmpty(ctx, root); err != nil || p != "" {
+		t.Errorf("root parent = %q err=%v, want empty", p, err)
+	}
+
+	// A child commit chains by first parent.
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "b.txt")
+	runGit("commit", "-m", "child")
+	child := runGit("rev-parse", "HEAD")
+	if p, err := repo.FirstParentOrEmpty(ctx, child); err != nil || p != root {
+		t.Errorf("child parent = %q err=%v, want %q", p, err, root)
+	}
+}
+
 func TestCommitSubjects_Batch(t *testing.T) {
 	dir := t.TempDir()
 	cmd := exec.Command("git", "init", dir)

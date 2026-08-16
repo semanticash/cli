@@ -87,6 +87,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getEvidenceLinkStmt, err = db.PrepareContext(ctx, getEvidenceLink); err != nil {
 		return nil, fmt.Errorf("error preparing query GetEvidenceLink: %w", err)
 	}
+	if q.getFinalAssistantEventForTurnStmt, err = db.PrepareContext(ctx, getFinalAssistantEventForTurn); err != nil {
+		return nil, fmt.Errorf("error preparing query GetFinalAssistantEventForTurn: %w", err)
+	}
 	if q.getLatestCheckpointForRepoStmt, err = db.PrepareContext(ctx, getLatestCheckpointForRepo); err != nil {
 		return nil, fmt.Errorf("error preparing query GetLatestCheckpointForRepo: %w", err)
 	}
@@ -426,6 +429,11 @@ func (q *Queries) Close() error {
 	if q.getEvidenceLinkStmt != nil {
 		if cerr := q.getEvidenceLinkStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getEvidenceLinkStmt: %w", cerr)
+		}
+	}
+	if q.getFinalAssistantEventForTurnStmt != nil {
+		if cerr := q.getFinalAssistantEventForTurnStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getFinalAssistantEventForTurnStmt: %w", cerr)
 		}
 	}
 	if q.getLatestCheckpointForRepoStmt != nil {
@@ -873,6 +881,7 @@ type Queries struct {
 	getCommitLinkByCommitHashStmt                *sql.Stmt
 	getCommitLinksByCheckpointStmt               *sql.Stmt
 	getEvidenceLinkStmt                          *sql.Stmt
+	getFinalAssistantEventForTurnStmt            *sql.Stmt
 	getLatestCheckpointForRepoStmt               *sql.Stmt
 	getLatestCommitLinkStmt                      *sql.Stmt
 	getManifestCommitLinkStmt                    *sql.Stmt
@@ -977,6 +986,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getCommitLinkByCommitHashStmt:                q.getCommitLinkByCommitHashStmt,
 		getCommitLinksByCheckpointStmt:               q.getCommitLinksByCheckpointStmt,
 		getEvidenceLinkStmt:                          q.getEvidenceLinkStmt,
+		getFinalAssistantEventForTurnStmt:            q.getFinalAssistantEventForTurnStmt,
 		getLatestCheckpointForRepoStmt:               q.getLatestCheckpointForRepoStmt,
 		getLatestCommitLinkStmt:                      q.getLatestCommitLinkStmt,
 		getManifestCommitLinkStmt:                    q.getManifestCommitLinkStmt,

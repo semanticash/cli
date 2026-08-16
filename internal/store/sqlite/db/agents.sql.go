@@ -130,6 +130,42 @@ func (q *Queries) GetAgentSessionByProviderID(ctx context.Context, arg GetAgentS
 	return i, err
 }
 
+const getFinalAssistantEventForTurn = `-- name: GetFinalAssistantEventForTurn :one
+select event_id, ts, payload_hash, summary
+from agent_events
+where session_id = ? and turn_id = ?
+  and role = 'assistant'
+  and event_source = 'transcript'
+order by ts desc, insert_seq desc, event_id desc
+limit 1
+`
+
+type GetFinalAssistantEventForTurnParams struct {
+	SessionID string         `json:"session_id"`
+	TurnID    sql.NullString `json:"turn_id"`
+}
+
+type GetFinalAssistantEventForTurnRow struct {
+	EventID     string         `json:"event_id"`
+	Ts          int64          `json:"ts"`
+	PayloadHash sql.NullString `json:"payload_hash"`
+	Summary     sql.NullString `json:"summary"`
+}
+
+// Returns the latest transcript assistant event for response extraction.
+// Hook events use a synthesized payload and are excluded.
+func (q *Queries) GetFinalAssistantEventForTurn(ctx context.Context, arg GetFinalAssistantEventForTurnParams) (GetFinalAssistantEventForTurnRow, error) {
+	row := q.queryRow(ctx, q.getFinalAssistantEventForTurnStmt, getFinalAssistantEventForTurn, arg.SessionID, arg.TurnID)
+	var i GetFinalAssistantEventForTurnRow
+	err := row.Scan(
+		&i.EventID,
+		&i.Ts,
+		&i.PayloadHash,
+		&i.Summary,
+	)
+	return i, err
+}
+
 const getManifestCommitLink = `-- name: GetManifestCommitLink :one
 with covering_checkpoint as (
     select cp.checkpoint_id
@@ -912,7 +948,7 @@ func (q *Queries) ListFailedManifestReasons(ctx context.Context, arg ListFailedM
 }
 
 const listPackagedManifests = `-- name: ListPackagedManifests :many
-select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at from provenance_manifests
+select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at from provenance_manifests
 where repository_id = ? and status = 'packaged'
   and upload_attempts < 5
   and (? = 0 or created_at <= ?)
@@ -962,6 +998,11 @@ func (q *Queries) ListPackagedManifests(ctx context.Context, arg ListPackagedMan
 			&i.RemoteVerifiedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ResponseEventID,
+			&i.ResponseHash,
+			&i.ResponseSummary,
+			&i.ResponseStatus,
+			&i.ResponseCompletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -977,7 +1018,7 @@ func (q *Queries) ListPackagedManifests(ctx context.Context, arg ListPackagedMan
 }
 
 const listPendingManifests = `-- name: ListPendingManifests :many
-select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at from provenance_manifests
+select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at from provenance_manifests
 where repository_id = ? and status in ('pending', 'packaged')
 order by created_at
 limit ?
@@ -1015,6 +1056,11 @@ func (q *Queries) ListPendingManifests(ctx context.Context, arg ListPendingManif
 			&i.RemoteVerifiedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ResponseEventID,
+			&i.ResponseHash,
+			&i.ResponseSummary,
+			&i.ResponseStatus,
+			&i.ResponseCompletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2037,13 +2083,31 @@ insert into provenance_manifests (
     manifest_id, repository_id, session_id, turn_id, provider, kind,
     transcript_ref, provenance_bundle_hash,
     started_at, completed_at, status,
+    response_event_id, response_hash, response_summary,
+    response_status, response_completed_at,
     upload_attempts, created_at, updated_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 on conflict(repository_id, session_id, turn_id, kind) do update set
     transcript_ref=excluded.transcript_ref,
     provenance_bundle_hash=excluded.provenance_bundle_hash,
     completed_at=excluded.completed_at,
     status=excluded.status,
+    -- Preserve successful response evidence when a retry has none.
+    response_event_id=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_event_id else provenance_manifests.response_event_id end,
+    response_hash=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_hash else provenance_manifests.response_hash end,
+    response_summary=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_summary else provenance_manifests.response_summary end,
+    response_status=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_status else provenance_manifests.response_status end,
+    response_completed_at=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_completed_at else provenance_manifests.response_completed_at end,
     updated_at=excluded.updated_at
 `
 
@@ -2059,6 +2123,11 @@ type UpsertProvenanceManifestParams struct {
 	StartedAt            int64          `json:"started_at"`
 	CompletedAt          sql.NullInt64  `json:"completed_at"`
 	Status               string         `json:"status"`
+	ResponseEventID      sql.NullString `json:"response_event_id"`
+	ResponseHash         sql.NullString `json:"response_hash"`
+	ResponseSummary      sql.NullString `json:"response_summary"`
+	ResponseStatus       sql.NullString `json:"response_status"`
+	ResponseCompletedAt  sql.NullInt64  `json:"response_completed_at"`
 	CreatedAt            int64          `json:"created_at"`
 	UpdatedAt            int64          `json:"updated_at"`
 }
@@ -2076,6 +2145,11 @@ func (q *Queries) UpsertProvenanceManifest(ctx context.Context, arg UpsertProven
 		arg.StartedAt,
 		arg.CompletedAt,
 		arg.Status,
+		arg.ResponseEventID,
+		arg.ResponseHash,
+		arg.ResponseSummary,
+		arg.ResponseStatus,
+		arg.ResponseCompletedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)

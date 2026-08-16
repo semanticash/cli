@@ -82,3 +82,60 @@ func TestSerializeToolUses_KeepsThinking(t *testing.T) {
 		t.Fatalf("did not expect text content type, got %q", result.String)
 	}
 }
+
+func TestFinalAssistantText(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "text blocks concatenated",
+			line: `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}}`,
+			want: "first\nsecond",
+		},
+		{
+			name: "thinking and tool_use excluded",
+			line: `{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"visible"},{"type":"tool_use","name":"Edit"}]}}`,
+			want: "visible",
+		},
+		{
+			name: "no text blocks is a valid empty response",
+			line: `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`,
+			want: "",
+		},
+		{
+			name:    "invalid top-level json",
+			line:    `{"message": not json`,
+			wantErr: true,
+		},
+		{
+			name:    "missing message",
+			line:    `{"type":"assistant"}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid content block",
+			line:    `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"},"not-an-object"]}}`,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FinalAssistantText(tt.line)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got text %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("text = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

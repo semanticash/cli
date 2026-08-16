@@ -453,13 +453,31 @@ insert into provenance_manifests (
     manifest_id, repository_id, session_id, turn_id, provider, kind,
     transcript_ref, provenance_bundle_hash,
     started_at, completed_at, status,
+    response_event_id, response_hash, response_summary,
+    response_status, response_completed_at,
     upload_attempts, created_at, updated_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 on conflict(repository_id, session_id, turn_id, kind) do update set
     transcript_ref=excluded.transcript_ref,
     provenance_bundle_hash=excluded.provenance_bundle_hash,
     completed_at=excluded.completed_at,
     status=excluded.status,
+    -- Preserve successful response evidence when a retry has none.
+    response_event_id=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_event_id else provenance_manifests.response_event_id end,
+    response_hash=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_hash else provenance_manifests.response_hash end,
+    response_summary=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_summary else provenance_manifests.response_summary end,
+    response_status=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_status else provenance_manifests.response_status end,
+    response_completed_at=case when excluded.response_status in ('complete','empty')
+        or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
+        then excluded.response_completed_at else provenance_manifests.response_completed_at end,
     updated_at=excluded.updated_at;
 
 -- name: MarkManifestUploaded :exec
@@ -566,6 +584,17 @@ from agent_events
 where session_id = ? and turn_id = ?
   and tool_name is not null
 order by ts;
+
+-- name: GetFinalAssistantEventForTurn :one
+-- Returns the latest transcript assistant event for response extraction.
+-- Hook events use a synthesized payload and are excluded.
+select event_id, ts, payload_hash, summary
+from agent_events
+where session_id = ? and turn_id = ?
+  and role = 'assistant'
+  and event_source = 'transcript'
+order by ts desc, insert_seq desc, event_id desc
+limit 1;
 
 -- name: GetManifestCommitLink :one
 -- Resolves the commit link for the checkpoint that covers a manifest.

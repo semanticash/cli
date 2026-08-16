@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -26,14 +24,48 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 	}
 	repoRoot := repo.Root()
 
-	// If Semantica isn't enabled, no-op (don't block commit).
+	// Disabled repositories are a no-op.
 	semDir := filepath.Join(repoRoot, ".semantica")
 	if !util.IsEnabled(semDir) {
 		return nil
 	}
-	dbPath := filepath.Join(semDir, "lineage.db")
 
-	// Open DB with a short timeout - never block commit.
+	// Capture the tree and parent used to bind the handoff to the commit.
+	tree, err := repo.StagedTree(ctx)
+	if err != nil {
+		util.AppendActivityLog(semDir, "pre-commit warning: resolve staged tree failed: %v", err)
+		return nil
+	}
+	head, err := repo.HeadOrEmpty(ctx)
+	if err != nil {
+		util.AppendActivityLog(semDir, "pre-commit warning: resolve HEAD failed: %v", err)
+		return nil
+	}
+
+	checkpointID := uuid.NewString()
+	now := time.Now().UnixMilli()
+
+	// Persist the handoff before SQLite so database failures remain recoverable.
+	if err := writeCommitHandoff(semDir, commitHandoff{
+		CheckpointID: checkpointID,
+		CreatedAt:    now,
+		Tree:         tree,
+		Head:         head,
+	}); err != nil {
+		util.AppendActivityLog(semDir, "pre-commit warning: write handoff failed: %v", err)
+		return nil
+	}
+
+	// Pending receipts must be sequenced before this checkpoint.
+	if pending, err := commitReceiptsPending(semDir); err != nil || pending {
+		if err != nil {
+			util.AppendActivityLog(semDir, "pre-commit warning: list receipts failed: %v", err)
+		}
+		return nil
+	}
+
+	// Fast path: create the pending checkpoint before the commit completes.
+	dbPath := filepath.Join(semDir, "lineage.db")
 	h, err := sqlstore.Open(ctx, dbPath, sqlstore.OpenOptions{
 		BusyTimeout: 50 * time.Millisecond,
 		Synchronous: "NORMAL",
@@ -50,10 +82,6 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 		return nil
 	}
 
-	// Insert a pending checkpoint stub (no manifest, no blobs - worker fills those in).
-	checkpointID := uuid.NewString()
-	now := time.Now().UnixMilli()
-
 	if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 		CheckpointID: checkpointID,
 		RepositoryID: repoID,
@@ -67,20 +95,6 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 		CompletedAt:  sql.NullInt64{}, // NULL - filled by worker
 	}); err != nil {
 		util.AppendActivityLog(semDir, "pre-commit warning: insert checkpoint failed: %v", err)
-		return nil
-	}
-
-	// Write handoff file: checkpoint_id|created_at
-	handoffPath := util.PreCommitCheckpointPath(semDir)
-	payload := fmt.Sprintf("%s|%d\n", checkpointID, now)
-
-	tmp := handoffPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(payload), 0o644); err != nil {
-		return nil
-	}
-	_ = os.Remove(handoffPath)
-	if err := os.Rename(tmp, handoffPath); err != nil {
-		_ = os.Remove(tmp)
 		return nil
 	}
 
