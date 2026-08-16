@@ -23,8 +23,9 @@ func jsonQuote(s string) string {
 // capture`. These tests cover the behaviors capture relies on:
 //
 //  1. Piped readers return their bytes before the deadline.
-//  2. Closed empty readers return an empty payload without timing out.
-//  3. Open readers time out instead of blocking indefinitely.
+//  2. Complete JSON returns without waiting for the reader to close.
+//  3. Closed empty readers return an empty payload without timing out.
+//  4. Open readers time out instead of blocking indefinitely.
 
 func TestReadHookPayload_PipedReaderReturnsBytes(t *testing.T) {
 	const want = `{"session_id":"sess-1","tool_name":"Edit"}`
@@ -37,6 +38,32 @@ func TestReadHookPayload_PipedReaderReturnsBytes(t *testing.T) {
 	}
 	if string(payload) != want {
 		t.Errorf("payload = %q, want %q", payload, want)
+	}
+}
+
+func TestReadHookPayload_CompleteJSONDoesNotWaitForClose(t *testing.T) {
+	const want = `{"session_id":"sess-1","tool_name":"Bash"}`
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(pw, want)
+		writeDone <- err
+	}()
+
+	payload, timedOut, err := readHookPayload(pr, time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if timedOut {
+		t.Fatal("timedOut=true for complete JSON; want false")
+	}
+	if string(payload) != want {
+		t.Errorf("payload = %q, want %q", payload, want)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write payload: %v", err)
 	}
 }
 

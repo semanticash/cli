@@ -347,6 +347,37 @@ var stateAlteringTools = map[string]bool{
 	"Bash":  true,
 }
 
+// claudeConfigDir returns Claude Code's configured data directory.
+func claudeConfigDir() string {
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// ownsTranscript reports whether transcriptPath is under Claude Code's
+// configured projects directory.
+func ownsTranscript(transcriptPath string) bool {
+	if strings.TrimSpace(transcriptPath) == "" {
+		return false
+	}
+	cfg := claudeConfigDir()
+	if cfg == "" {
+		return false
+	}
+	base := filepath.Join(cfg, "projects")
+	rel, err := filepath.Rel(base, filepath.Clean(transcriptPath))
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
 func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*hooks.Event, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
@@ -356,6 +387,11 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	var payload stdinPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("parse stdin JSON: %w", err)
+	}
+
+	// Ignore payloads outside Claude Code's configured transcript directory.
+	if !ownsTranscript(payload.TranscriptPath) {
+		return nil, nil
 	}
 
 	// Prefer tool_response, fall back to tool_result.

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Commit capture now persists a receipt before writing to SQLite. A later worker can recover the checkpoint and link in commit order while preserving the pre-commit timestamp.
+- Claude Code capture now accepts only hook payloads associated with its configured transcript directory, preventing third-party compatibility hooks from producing Claude events.
 
 ## [0.6.1] - 2026-08-14
 

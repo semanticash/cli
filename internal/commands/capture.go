@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,10 +17,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// stdinReadDeadline bounds how long capture waits for EOF on stdin.
-// Hook runners normally pipe a JSON payload and close stdin promptly.
-// Some hosts inherit an open stdin instead, so an unbounded io.ReadAll
-// can block until the hook runner times out.
+// stdinReadDeadline bounds how long capture waits for a complete JSON payload.
 const stdinReadDeadline = 250 * time.Millisecond
 
 // processStart approximates process startup for hook timing.
@@ -80,7 +78,7 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 			if timedOut {
-				logCaptureError(providerName, hookName, "stdin did not close before %s; continuing with empty hook payload", stdinReadDeadline)
+				logCaptureError(providerName, hookName, "complete hook payload not received before %s; continuing with empty hook payload", stdinReadDeadline)
 			}
 
 			// Optional cwd preflight. Used by providers whose hook
@@ -131,12 +129,11 @@ func NewCaptureCmd() *cobra.Command {
 	return cmd
 }
 
-// readHookPayload is the bounded equivalent of io.ReadAll for hook
-// payloads.
+// readHookPayload returns after one complete JSON value without waiting for EOF.
 //
 // Returns one of three outcomes:
 //
-//   - (payload, false, nil): the reader closed before the deadline.
+//   - (payload, false, nil): JSON arrived or an empty reader closed.
 //   - (nil,     true,  nil): the deadline elapsed first.
 //   - (nil,     false, err): the read failed.
 //
@@ -149,7 +146,11 @@ func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timed
 	}
 	ch := make(chan result, 1)
 	go func() {
-		data, e := io.ReadAll(r)
+		var data json.RawMessage
+		e := json.NewDecoder(r).Decode(&data)
+		if e == io.EOF {
+			e = nil
+		}
 		ch <- result{data: data, err: e}
 	}()
 	select {
