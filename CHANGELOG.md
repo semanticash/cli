@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `semantica tidy` now reports tool-window cleanup and cleanup failures.
 - Commit capture now persists a receipt before writing to SQLite. A later worker can recover the checkpoint and link in commit order while preserving the pre-commit timestamp.
 - Claude Code capture now accepts only hook payloads associated with its configured transcript directory, preventing third-party compatibility hooks from producing Claude events.
+- Commit attribution now uses a stable Git diff algorithm so preserved lines are not reported as new human changes during refactors.
 
 ## [0.6.1] - 2026-08-14
 

@@ -623,7 +623,7 @@ func (r *Repo) DiffForCommit(ctx context.Context, hash string) ([]byte, error) {
 		return nil, err
 	}
 
-	diffCmd := r.gitCmd(ctx, "diff", "--no-color", parent, hash)
+	diffCmd := r.gitCmd(ctx, diffForCommitArgs(parent, hash)...)
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -633,6 +633,10 @@ func (r *Repo) DiffForCommit(ctx context.Context, hash string) ([]byte, error) {
 	}
 
 	return diffOut, nil
+}
+
+func diffForCommitArgs(parent, hash string) []string {
+	return []string{"diff", "--no-color", "--diff-algorithm=histogram", parent, hash}
 }
 
 // FileStat holds per-file line counts from a diff.
