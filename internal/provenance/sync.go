@@ -185,6 +185,23 @@ func buildSyncResult(
 		})
 	}
 
+	// Tool deltas are optional. Failed redaction omits the object and its bundle
+	// reference without failing the turn.
+	for _, localHash := range extractStepDeltaHashes(rawBundle) {
+		if _, done := hashMap[localHash]; done {
+			continue
+		}
+		hash, redacted, err := loadAndRedact(ctx, bs, localHash, "tool_delta", repoPath)
+		if err != nil {
+			slog.Warn("provenance: tool_delta redaction skipped",
+				"turn", m.TurnID, "hash", localHash, "err", err)
+			continue
+		}
+		hashMap[localHash] = hash
+		result.RedactedBlobs[hash] = redacted
+		objects = append(objects, syncObject{Kind: "tool_delta", Hash: hash, SizeBytes: len(redacted)})
+	}
+
 	// Complete responses reference an already-redacted object, uploaded without
 	// changing its content hash.
 	responseHash := extractResponseHashFromBytes(rawBundle)
@@ -354,6 +371,28 @@ func extractStepProvenanceHashes(bundleBytes []byte) []string {
 		}
 		seen[s.ProvenanceHash] = true
 		hashes = append(hashes, s.ProvenanceHash)
+	}
+	return hashes
+}
+
+// extractStepDeltaHashes returns unique non-empty hashes referenced by events.
+func extractStepDeltaHashes(bundleBytes []byte) []string {
+	var bundle struct {
+		Steps []struct {
+			DeltaHash string `json:"delta_hash"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(bundleBytes, &bundle) != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var hashes []string
+	for _, s := range bundle.Steps {
+		if s.DeltaHash == "" || seen[s.DeltaHash] {
+			continue
+		}
+		seen[s.DeltaHash] = true
+		hashes = append(hashes, s.DeltaHash)
 	}
 	return hashes
 }

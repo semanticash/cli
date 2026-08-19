@@ -403,6 +403,81 @@ func TestSyncPendingTurns_MissingResponseObjectFailsClosed(t *testing.T) {
 	}
 }
 
+// Failed delta redaction omits the object and its bundle reference.
+func TestBuildSyncResult_FailedDeltaRedactionStripsReference(t *testing.T) {
+	ctx := context.Background()
+	repoRoot, semDir, repoStore := newSyncRepo(t, ctx)
+
+	// This canonical delta contains a secret that spans hunk lines.
+	deltaBlob := canonicalDelta(t, "", []string{
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGcY5unA67hFdJBEEH6kMRMD",
+		"-----END RSA PRIVATE KEY-----",
+	})
+	deltaHash, _, err := repoStore.Put(ctx, deltaBlob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptHash, _, err := repoStore.Put(ctx, []byte("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleBytes, _ := json.Marshal(map[string]any{
+		"version": 1, "provider": "codex", "session_id": "sess", "turn_id": "turn-1", "started_at": 1,
+		"prompt": map[string]any{"event_id": "pe", "blob_hash": promptHash},
+		"steps": []map[string]any{
+			{"event_id": "e1", "ts": 2, "tool_name": "Bash", "delta_hash": deltaHash},
+		},
+	})
+	bundleHash, _, err := repoStore.Put(ctx, bundleBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := sqlstore.Open(ctx, filepath.Join(semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	result := buildSyncResult(ctx, h, repoStore, &util.Settings{Enabled: true, ConnectedRepoID: "cr"},
+		sqldb.ProvenanceManifest{
+			ManifestID:           "mid",
+			TurnID:               "turn-1",
+			Provider:             "codex",
+			ProvenanceBundleHash: sqlstore.NullStr(bundleHash),
+			StartedAt:            1,
+		}, repoRoot)
+
+	if result.Skipped {
+		t.Fatal("a failed delta must not fail the whole turn")
+	}
+	var env struct {
+		Objects []struct {
+			Kind string `json:"kind"`
+			Hash string `json:"hash"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(result.Envelope, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var bundleUploadHash string
+	for _, o := range env.Objects {
+		if o.Kind == "tool_delta" {
+			t.Errorf("failed delta should not be uploaded, found object %+v", o)
+		}
+		if o.Kind == "bundle" {
+			bundleUploadHash = o.Hash
+		}
+	}
+	if bundleUploadHash == "" {
+		t.Fatalf("no bundle object in envelope: %+v", env.Objects)
+	}
+	if strings.Contains(string(result.RedactedBlobs[bundleUploadHash]), "delta_hash") {
+		t.Errorf("uploaded bundle retains a dangling delta_hash: %s", result.RedactedBlobs[bundleUploadHash])
+	}
+}
+
 // Response metadata follows the status and completion-time contract.
 func TestPackageTurn_ResponseBlockByStatus(t *testing.T) {
 	ctx := context.Background()

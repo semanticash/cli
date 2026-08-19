@@ -12,6 +12,7 @@ import (
 
 	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/redact"
+	"github.com/semanticash/cli/internal/toolsnap"
 )
 
 // UploadTransformVersion tracks the current redaction/normalization rules.
@@ -32,6 +33,8 @@ func RedactForUpload(blob []byte, kind string, repoRoot string) ([]byte, error) 
 		return redactBundle(blob, repoRoot)
 	case "step_provenance":
 		return redactStepProvenance(blob, repoRoot)
+	case "tool_delta":
+		return redactToolDelta(blob, repoRoot)
 	default:
 		slog.Warn("provenance: redaction failed", "kind", kind, "reason", "unknown_kind")
 		return nil, fmt.Errorf("unknown blob kind for upload: %q", kind)
@@ -179,6 +182,81 @@ func redactStepProvenance(blob []byte, repoRoot string) ([]byte, error) {
 	return json.Marshal(obj)
 }
 
+// redactToolDelta scrubs command summaries and hunk lines in a canonical delta.
+// Input and output must pass canonical validation; any failure returns no bytes.
+func redactToolDelta(blob []byte, _ string) ([]byte, error) {
+	delta, err := toolsnap.ParseDelta(blob)
+	if err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "tool_delta", "reason", "parse", "err", err)
+		return nil, fmt.Errorf("redact tool_delta: parse: %w", err)
+	}
+
+	for i := range delta.ToolUses {
+		if delta.ToolUses[i].CommandSummary == "" {
+			continue
+		}
+		redacted, err := redact.String(delta.ToolUses[i].CommandSummary)
+		if err != nil {
+			slog.Warn("provenance: redaction failed", "kind", "tool_delta", "reason", "apply", "field", "command_summary", "err", err)
+			return nil, fmt.Errorf("redact tool_delta: command_summary: %w", err)
+		}
+		delta.ToolUses[i].CommandSummary = redacted
+	}
+
+	for i := range delta.Files {
+		for j := range delta.Files[i].Hunks {
+			h := &delta.Files[i].Hunks[j]
+			if h.OldLines, err = redactHunkLines(h.OldLines); err != nil {
+				return nil, fmt.Errorf("redact tool_delta: files[%d].hunks[%d].old_lines: %w", i, j, err)
+			}
+			if h.NewLines, err = redactHunkLines(h.NewLines); err != nil {
+				return nil, fmt.Errorf("redact tool_delta: files[%d].hunks[%d].new_lines: %w", i, j, err)
+			}
+		}
+	}
+
+	out, err := delta.CanonicalBytes()
+	if err != nil {
+		slog.Warn("provenance: redaction failed", "kind", "tool_delta", "reason", "canonicalize", "err", err)
+		return nil, fmt.Errorf("redact tool_delta: canonicalize: %w", err)
+	}
+	return out, nil
+}
+
+// redactHunkLines preserves line counts and rejects secrets that span lines.
+func redactHunkLines(lines []string) ([]string, error) {
+	if len(lines) == 0 {
+		return lines, nil
+	}
+	joined := strings.Join(lines, "\n")
+	scrubbed, err := redact.String(joined)
+	if err != nil {
+		return nil, err
+	}
+	if scrubbed == joined {
+		return lines, nil
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		r, err := redact.String(line)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = r
+	}
+	// A remaining match spans lines and cannot be removed without changing them.
+	rejoined := strings.Join(out, "\n")
+	residual, err := redact.String(rejoined)
+	if err != nil {
+		return nil, err
+	}
+	if residual != rejoined {
+		slog.Warn("provenance: redaction failed", "kind", "tool_delta", "reason", "multiline_secret")
+		return nil, fmt.Errorf("tool_delta: secret spans hunk line boundary")
+	}
+	return out, nil
+}
+
 // redactFilesArray walks the canonical files[] wrapper and runs
 // redactToolFields on every element. Canonical entries are objects,
 // but non-object entries are scanned too so malformed producer output
@@ -321,20 +399,10 @@ func redactToolFieldsString(raw json.RawMessage) (json.RawMessage, error) {
 	return out, nil
 }
 
-// RewriteBundleHashes replaces local CAS hashes embedded in a bundle blob
-// with their corresponding upload hashes. The bundle stores prompt.blob_hash
-// and steps[].provenance_hash as local CAS hashes at packaging time, but
-// uploaded objects use their redacted upload hashes. This rewrite happens
-// before bundle redaction so the uploaded bundle references the same hashes
-// as the uploaded objects.
-//
-// Uses generic map surgery (not a typed struct) so new step fields added
-// later are preserved automatically without updating this function.
+// RewriteBundleHashes replaces local CAS references with redacted upload hashes.
+// Unmapped delta hashes are removed because their objects were not uploaded.
+// Generic JSON handling preserves fields unknown to this binary.
 func RewriteBundleHashes(bundleBytes []byte, hashMap map[string]string) []byte {
-	if len(hashMap) == 0 {
-		return bundleBytes
-	}
-
 	var generic map[string]json.RawMessage
 	if err := json.Unmarshal(bundleBytes, &generic); err != nil {
 		return bundleBytes
@@ -361,28 +429,39 @@ func RewriteBundleHashes(bundleBytes []byte, hashMap map[string]string) []byte {
 		}
 	}
 
-	// Rewrite steps[].provenance_hash.
+	// Rewrite provenance hashes and remove unmapped delta hashes.
 	if stepsRaw, ok := generic["steps"]; ok {
 		var steps []map[string]json.RawMessage
 		if json.Unmarshal(stepsRaw, &steps) == nil {
+			stepsChanged := false
 			for i := range steps {
-				hashRaw, ok := steps[i]["provenance_hash"]
-				if !ok {
-					continue
+				if hashRaw, ok := steps[i]["provenance_hash"]; ok {
+					var localHash string
+					if json.Unmarshal(hashRaw, &localHash) == nil && localHash != "" {
+						if uploadHash, ok := hashMap[localHash]; ok {
+							encoded, _ := json.Marshal(uploadHash)
+							steps[i]["provenance_hash"] = encoded
+							stepsChanged = true
+						}
+					}
 				}
-				var localHash string
-				if json.Unmarshal(hashRaw, &localHash) != nil || localHash == "" {
-					continue
-				}
-				if uploadHash, ok := hashMap[localHash]; ok {
-					encoded, _ := json.Marshal(uploadHash)
-					steps[i]["provenance_hash"] = encoded
-					changed = true
+				if deltaRaw, ok := steps[i]["delta_hash"]; ok {
+					var localHash string
+					if json.Unmarshal(deltaRaw, &localHash) == nil && localHash != "" {
+						if uploadHash, ok := hashMap[localHash]; ok {
+							encoded, _ := json.Marshal(uploadHash)
+							steps[i]["delta_hash"] = encoded
+						} else {
+							delete(steps[i], "delta_hash")
+						}
+						stepsChanged = true
+					}
 				}
 			}
-			if changed {
+			if stepsChanged {
 				rewritten, _ := json.Marshal(steps)
 				generic["steps"] = rewritten
+				changed = true
 			}
 		}
 	}
