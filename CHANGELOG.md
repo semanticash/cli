@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Turn manifests now store redacted final responses for Claude Code, Codex, and Cursor editor sessions that emit `afterAgentResponse`. Cursor Agent CLI responses remain unavailable and are recorded as missing. Other providers remain unsupported.
+- Provenance uploads now use v2 turn bundles to include final-response status and metadata. Complete responses upload their redacted content-addressed object with the bundle.
 - Cursor shell hooks now capture pre-command workspace snapshots for opt-in tool-delta attribution.
 
 ### Changed

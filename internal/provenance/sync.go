@@ -185,6 +185,20 @@ func buildSyncResult(
 		})
 	}
 
+	// Complete responses reference an already-redacted object, uploaded without
+	// changing its content hash.
+	responseHash := extractResponseHashFromBytes(rawBundle)
+	if responseHash != "" {
+		raw, err := bs.Get(ctx, responseHash)
+		if err != nil {
+			markFailed(ctx, h, m.ManifestID, formatLoadOrRedactReason("turn_response", responseHash, err))
+			result.Skipped = true
+			return result
+		}
+		result.RedactedBlobs[responseHash] = raw
+		objects = append(objects, syncObject{Kind: "turn_response", Hash: responseHash, SizeBytes: len(raw)})
+	}
+
 	// Rewrite bundle's embedded hashes to upload hashes, then redact/hash.
 	rewrittenBundle := RewriteBundleHashes(rawBundle, hashMap)
 	bundleHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoPath)
@@ -306,6 +320,19 @@ func extractPromptHashFromBytes(bundleBytes []byte) string {
 		return ""
 	}
 	return bundle.Prompt.BlobHash
+}
+
+// extractResponseHashFromBytes returns the response object hash, if present.
+func extractResponseHashFromBytes(bundleBytes []byte) string {
+	var bundle struct {
+		Response *struct {
+			Hash string `json:"hash"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(bundleBytes, &bundle) != nil || bundle.Response == nil {
+		return ""
+	}
+	return bundle.Response.Hash
 }
 
 // extractStepProvenanceHashes extracts unique non-empty provenance hashes

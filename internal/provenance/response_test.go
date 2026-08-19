@@ -527,6 +527,105 @@ func TestPackageTurn_HookCandidateResolvableInRepoStore(t *testing.T) {
 	}
 }
 
+// Packages response metadata in a v2 bundle.
+func TestPackageTurn_BuildsV2BundleWithResponse(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(filepath.Join(semDir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: dir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID, Provider: "codex",
+		SourceKey: "/f.jsonl", LastSeenAt: 1, CreatedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "ps", RepositoryID: repoID,
+		SourceID: src.SourceID, Provider: "codex", StartedAt: 1, LastSeenAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sqlstore.Close(h)
+
+	repoStore, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cand := RedactAndStoreResponse(ctx, repoStore, "ev-1", "the final answer", 500)
+	if cand.Status != responseComplete || cand.Hash == "" {
+		t.Fatalf("candidate = %+v", cand)
+	}
+
+	PackageTurn(ctx, dir, TurnContext{
+		TurnID: "turn-1", SessionID: "ps", Provider: "codex", CWD: dir,
+		StartedAt: 1, CompletedAt: 2, ResponseCandidate: cand,
+	}, repoStore)
+
+	h2, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h2) }()
+	var bundleHash string
+	if err := h2.DB.QueryRowContext(ctx,
+		"select provenance_bundle_hash from provenance_manifests where turn_id = ?", "turn-1").
+		Scan(&bundleHash); err != nil || bundleHash == "" {
+		t.Fatalf("read bundle hash: %v (hash %q)", err, bundleHash)
+	}
+	raw, err := repoStore.Get(ctx, bundleHash)
+	if err != nil {
+		t.Fatalf("load bundle: %v", err)
+	}
+	var b struct {
+		Version  int `json:"version"`
+		Response *struct {
+			EventID     string `json:"event_id"`
+			Hash        string `json:"hash"`
+			Summary     string `json:"summary"`
+			Status      string `json:"status"`
+			CompletedAt int64  `json:"completed_at"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	if b.Version != 2 {
+		t.Errorf("bundle version = %d, want 2", b.Version)
+	}
+	if b.Response == nil {
+		t.Fatal("bundle has no response block")
+	}
+	if b.Response.Status != responseComplete || b.Response.Hash != cand.Hash ||
+		b.Response.EventID != "ev-1" || b.Response.Summary != cand.Summary || b.Response.CompletedAt != 500 {
+		t.Errorf("response block = %+v (want hash %q, summary %q)", *b.Response, cand.Hash, cand.Summary)
+	}
+
+	// The response object remains addressable by the bundle hash.
+	if got := extractResponseHashFromBytes(raw); got != cand.Hash {
+		t.Errorf("extractResponseHashFromBytes = %q, want %q", got, cand.Hash)
+	}
+	if _, err := repoStore.Get(ctx, cand.Hash); err != nil {
+		t.Errorf("response object not loadable from repo store for sync upload: %v", err)
+	}
+}
+
 func TestCaptureFinalResponse_RedactsBeforeStorage(t *testing.T) {
 	w := newResponseWorld(t, "claude_code")
 	ctx := context.Background()

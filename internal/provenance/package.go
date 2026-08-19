@@ -113,9 +113,19 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID, tc.ResponseCandidate)
 	response = ensureResponseResolvable(ctx, bs, sourceBlobs, response)
 
+	// Successful responses require a positive completion time for ordering. Use
+	// the turn completion time when the provider omitted one; otherwise record missing.
+	if (response.Status == responseComplete || response.Status == responseEmpty) && response.CompletedAt <= 0 {
+		if tc.CompletedAt > 0 {
+			response.CompletedAt = tc.CompletedAt
+		} else {
+			response = ResponseCandidate{Status: responseMissing, EventID: response.EventID}
+		}
+	}
+
 	// 3. Build provenance bundle blob.
 	blobStart := time.Now()
-	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps)
+	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps, response)
 	blobDuration := time.Since(blobStart)
 	blobsWritten := 0
 	if bundleHash != "" {
@@ -302,6 +312,7 @@ func buildProvenanceBundleFromFiltered(
 	sess sqldb.AgentSession,
 	prompt *promptInfo,
 	steps []filteredStep,
+	response ResponseCandidate,
 ) (string, int64, error) {
 	bundle := provenanceBundle{
 		Version:           1,
@@ -313,6 +324,19 @@ func buildProvenanceBundleFromFiltered(
 		StartedAt:         tc.StartedAt,
 		CompletedAt:       tc.CompletedAt,
 		Steps:             make([]bundleStep, 0, len(steps)),
+	}
+
+	// Response metadata upgrades the bundle format. The redacted body remains a
+	// separate content-addressed object.
+	if response.Status != "" {
+		bundle.Version = 2
+		bundle.Response = &bundleResponse{
+			EventID:     response.EventID,
+			Hash:        response.Hash,
+			Summary:     response.Summary,
+			Status:      response.Status,
+			CompletedAt: response.CompletedAt,
+		}
 	}
 
 	if sess.ParentSessionID.Valid {
@@ -365,17 +389,27 @@ func buildProvenanceBundleFromFiltered(
 
 // provenanceBundle is the JSON shape written for a packaged turn.
 type provenanceBundle struct {
-	Version           int           `json:"version"`
-	Provider          string        `json:"provider"`
-	SessionID         string        `json:"session_id"`
-	ProviderSessionID string        `json:"provider_session_id"`
-	ParentSessionID   *string       `json:"parent_session_id"`
-	TurnID            string        `json:"turn_id"`
-	CWD               string        `json:"cwd,omitempty"`
-	StartedAt         int64         `json:"started_at"`
-	CompletedAt       int64         `json:"completed_at,omitempty"`
-	Prompt            *bundlePrompt `json:"prompt,omitempty"`
-	Steps             []bundleStep  `json:"steps"`
+	Version           int             `json:"version"`
+	Provider          string          `json:"provider"`
+	SessionID         string          `json:"session_id"`
+	ProviderSessionID string          `json:"provider_session_id"`
+	ParentSessionID   *string         `json:"parent_session_id"`
+	TurnID            string          `json:"turn_id"`
+	CWD               string          `json:"cwd,omitempty"`
+	StartedAt         int64           `json:"started_at"`
+	CompletedAt       int64           `json:"completed_at,omitempty"`
+	Prompt            *bundlePrompt   `json:"prompt,omitempty"`
+	Steps             []bundleStep    `json:"steps"`
+	Response          *bundleResponse `json:"response,omitempty"`
+}
+
+// bundleResponse describes the final response referenced by a bundle.
+type bundleResponse struct {
+	EventID     string `json:"event_id,omitempty"`
+	Hash        string `json:"hash,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Status      string `json:"status"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
 }
 
 type bundlePrompt struct {
