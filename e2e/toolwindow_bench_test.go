@@ -35,11 +35,12 @@ import (
 //	make build
 //	go test -tags e2e -bench ToolWindow -benchtime 100x -count 3 -run xxx ./e2e
 type benchWorld struct {
-	b        testing.TB
-	repo     string
-	env      []string
-	editFile string
-	cycles   int
+	b          testing.TB
+	repo       string
+	transcript string
+	env        []string
+	editFile   string
+	cycles     int
 }
 
 func newBenchWorld(b testing.TB) *benchWorld {
@@ -63,6 +64,8 @@ func newBenchWorld(b testing.TB) *benchWorld {
 		"HOME="+home,
 		"SEMANTICA_HOME="+filepath.Join(home, ".semantica-global"),
 		"XDG_CONFIG_HOME="+filepath.Join(scratch, "xdg"),
+		// Isolate transcript ownership checks from the host configuration.
+		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"),
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL="+os.DevNull)
 
@@ -100,14 +103,19 @@ func newBenchWorld(b testing.TB) *benchWorld {
 		b.Fatalf("fixture not clean after setup: %d dirty files", n)
 	}
 
-	transcript := filepath.Join(scratch, "transcript.jsonl")
-	if err := os.WriteFile(transcript, nil, 0o644); err != nil {
+	// Store the fixture under Claude Code's configured projects directory.
+	transcriptDir := filepath.Join(home, ".claude", "projects", "bench")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	w.transcript = filepath.Join(transcriptDir, "transcript.jsonl")
+	if err := os.WriteFile(w.transcript, nil, 0o644); err != nil {
 		b.Fatal(err)
 	}
 	w.hookTimed("session-start", map[string]any{
-		"session_id": "bench-sess", "transcript_path": transcript, "cwd": repo})
+		"session_id": "bench-sess", "transcript_path": w.transcript, "cwd": repo})
 	w.hookTimed("user-prompt-submit", map[string]any{
-		"session_id": "bench-sess", "transcript_path": transcript, "cwd": repo,
+		"session_id": "bench-sess", "transcript_path": w.transcript, "cwd": repo,
 		"prompt": "bench"})
 	return w
 }
@@ -179,7 +187,7 @@ func (w *benchWorld) cycle(i int) (pre, post float64) {
 	tu := fmt.Sprintf("toolu_bench_%d_%d", os.Getpid(), i)
 	base := map[string]any{
 		"session_id":      "bench-sess",
-		"transcript_path": filepath.Join(filepath.Dir(w.repo), "transcript.jsonl"),
+		"transcript_path": w.transcript,
 		"cwd":             w.repo, "tool_name": "Bash", "tool_use_id": tu,
 		"tool_input": map[string]any{"command": "true"},
 	}
@@ -306,7 +314,7 @@ func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 // The 75ms allowance covers process launch, initialization before the timing
 // origin, the final JSONL append, and process teardown.
 //
-// Holding stdin open verifies that timing starts before dispatch.
+// Delaying JSON completion verifies that recorded timing includes the stdin read.
 func TestHookRecordMatchesExternalDuration(t *testing.T) {
 	w := newBenchWorld(t)
 	if err := os.MkdirAll(filepath.Join(w.repo, ".semantica", "doctor"), 0o755); err != nil {
@@ -328,7 +336,7 @@ func TestHookRecordMatchesExternalDuration(t *testing.T) {
 	slowTU := "toolu_slow_stdin"
 	payload, err := json.Marshal(map[string]any{
 		"session_id":      "bench-sess",
-		"transcript_path": filepath.Join(filepath.Dir(w.repo), "transcript.jsonl"),
+		"transcript_path": w.transcript,
 		"cwd":             w.repo, "tool_name": "Bash", "tool_use_id": slowTU,
 		"tool_input": map[string]any{"command": "true"},
 	})
@@ -345,10 +353,15 @@ func TestHookRecordMatchesExternalDuration(t *testing.T) {
 	if err := slow.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stdin.Write(payload); err != nil {
+	// Pause while the decoder waits for the final byte. The recorded duration
+	// must include this wait.
+	if _, err := stdin.Write(payload[:len(payload)-1]); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
+	if _, err := stdin.Write(payload[len(payload)-1:]); err != nil {
+		t.Fatal(err)
+	}
 	_ = stdin.Close()
 	if err := slow.Wait(); err != nil {
 		t.Fatalf("slow-stdin hook: %v", err)

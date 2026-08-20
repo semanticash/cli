@@ -14,10 +14,15 @@ func TestCaptureSmoke(t *testing.T) {
 	dir, env := initGitRepo(t)
 	enableRepo(t, env, dir)
 
-	// Write transcript in two stages: user-prompt-submit saves the offset at
-	// the current end of the file, then stop reads from that offset forward.
-	// So the assistant content must be written AFTER user-prompt-submit.
-	transcriptPath := filepath.Join(dir, "transcript.jsonl")
+	// Prompt submission records the transcript offset. Stop reads assistant
+	// content appended after that offset.
+	// Place the fixture under Claude Code's projects directory so it passes
+	// transcript ownership validation.
+	transcriptDir := filepath.Join(dir, ".claude", "projects", "e2e")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	transcriptPath := filepath.Join(transcriptDir, "transcript.jsonl")
 	targetFile := filepath.Join(dir, "test.go")
 
 	initial := `{"type":"system","message":{"content":[]},"timestamp":"2026-03-12T00:00:00Z"}` + "\n"
@@ -25,14 +30,14 @@ func TestCaptureSmoke(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	// user-prompt-submit saves the capture offset at the end of the current file.
+	// Record the capture offset at the end of the current file.
 	submitStdin := fmt.Sprintf(
 		`{"session_id":"sess-e2e","transcript_path":"%s","prompt":"test","model":"claude-sonnet-4-6"}`,
 		transcriptPath)
 	runSemRaw(t, env, dir, []byte(submitStdin),
 		"capture", "claude-code", "user-prompt-submit")
 
-	// Append assistant output after the offset is saved so stop can capture it.
+	// Append assistant output for the stop hook to capture.
 	f, err := os.OpenFile(transcriptPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatalf("open transcript for append: %v", err)
@@ -47,7 +52,7 @@ func TestCaptureSmoke(t *testing.T) {
 	}
 	f.Close()
 
-	// stop reads from the saved offset and routes new events to the repo.
+	// Capture and route events added after the saved offset.
 	stopStdin := fmt.Sprintf(
 		`{"session_id":"sess-e2e","transcript_path":"%s"}`,
 		transcriptPath)
