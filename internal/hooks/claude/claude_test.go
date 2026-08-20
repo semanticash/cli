@@ -335,9 +335,15 @@ func TestHookBinary(t *testing.T) {
 	}
 }
 
+// TestMain sets a stable Claude config directory for parser fixtures.
+func TestMain(m *testing.M) {
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/claude-cfg")
+	os.Exit(m.Run())
+}
+
 func TestParseHookEvent_UserPromptSubmit(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123","transcript_path":"/path/to/transcript.jsonl","prompt":"create a file","model":"claude-opus-4-20250514"}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl","prompt":"create a file","model":"claude-opus-4-20250514"}`
 
 	event, err := p.ParseHookEvent(context.Background(), "user-prompt-submit", strings.NewReader(input))
 	if err != nil {
@@ -352,7 +358,7 @@ func TestParseHookEvent_UserPromptSubmit(t *testing.T) {
 	if event.Prompt != "create a file" {
 		t.Errorf("prompt: got %q", event.Prompt)
 	}
-	if event.TranscriptRef != "/path/to/transcript.jsonl" {
+	if event.TranscriptRef != "/claude-cfg/projects/enc/transcript.jsonl" {
 		t.Errorf("transcript_ref: got %q", event.TranscriptRef)
 	}
 	if event.Model != "claude-opus-4-20250514" {
@@ -362,7 +368,7 @@ func TestParseHookEvent_UserPromptSubmit(t *testing.T) {
 
 func TestParseHookEvent_PreBash(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123","transcript_path":"/t.jsonl","cwd":"/repo","tool_name":"Bash","tool_use_id":"toolu_01","tool_input":{"command":"gofmt ./..."}}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl","cwd":"/repo","tool_name":"Bash","tool_use_id":"toolu_01","tool_input":{"command":"gofmt ./..."}}`
 
 	event, err := p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(input))
 	if err != nil {
@@ -376,13 +382,13 @@ func TestParseHookEvent_PreBash(t *testing.T) {
 	}
 
 	// A pre hook without a tool-use ID cannot open a paired window.
-	noID := `{"session_id":"sess-123","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	noID := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl","tool_name":"Bash","tool_input":{"command":"ls"}}`
 	event, err = p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(noID))
 	if err != nil || event != nil {
 		t.Errorf("missing tool_use_id: event=%v err=%v, want skip", event, err)
 	}
 	// Non-Bash payloads on the bash hook are skipped.
-	wrongTool := `{"session_id":"sess-123","tool_name":"Write","tool_use_id":"toolu_02"}`
+	wrongTool := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl","tool_name":"Write","tool_use_id":"toolu_02"}`
 	event, err = p.ParseHookEvent(context.Background(), "pre-bash", strings.NewReader(wrongTool))
 	if err != nil || event != nil {
 		t.Errorf("wrong tool: event=%v err=%v, want skip", event, err)
@@ -391,7 +397,7 @@ func TestParseHookEvent_PreBash(t *testing.T) {
 
 func TestParseHookEvent_Stop(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123","transcript_path":"/path/to/transcript.jsonl"}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl"}`
 
 	event, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(input))
 	if err != nil {
@@ -404,7 +410,7 @@ func TestParseHookEvent_Stop(t *testing.T) {
 
 func TestParseHookEvent_SessionStart(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123"}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl"}`
 
 	event, err := p.ParseHookEvent(context.Background(), "session-start", strings.NewReader(input))
 	if err != nil {
@@ -417,7 +423,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 
 func TestParseHookEvent_SessionEnd(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123"}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl"}`
 
 	event, err := p.ParseHookEvent(context.Background(), "session-end", strings.NewReader(input))
 	if err != nil {
@@ -432,7 +438,7 @@ func TestParseHookEvent_PostWrite(t *testing.T) {
 	p := &Provider{}
 	input := `{
 		"session_id":"sess-123",
-		"transcript_path":"/path/to/transcript.jsonl",
+		"transcript_path":"/claude-cfg/projects/enc/transcript.jsonl",
 		"cwd":"/workspace/project",
 		"tool_name":"Write",
 		"tool_input":{"file_path":"/workspace/project/main.go","content":"package main\n"},
@@ -468,7 +474,7 @@ func TestParseHookEvent_PostEdit(t *testing.T) {
 	p := &Provider{}
 	input := `{
 		"session_id":"sess-123",
-		"transcript_path":"/path/to/transcript.jsonl",
+		"transcript_path":"/claude-cfg/projects/enc/transcript.jsonl",
 		"tool_name":"Edit",
 		"tool_input":{"file_path":"/repo/main.go","old_string":"foo","new_string":"bar"},
 		"tool_use_id":"toolu_def"
@@ -490,7 +496,7 @@ func TestParseHookEvent_PostBash(t *testing.T) {
 	p := &Provider{}
 	input := `{
 		"session_id":"sess-123",
-		"transcript_path":"/path/to/transcript.jsonl",
+		"transcript_path":"/claude-cfg/projects/enc/transcript.jsonl",
 		"tool_name":"Bash",
 		"tool_input":{"command":"go test ./...","description":"Run tests"},
 		"tool_use_id":"toolu_ghi"
@@ -512,7 +518,7 @@ func TestParseHookEvent_PreAgent(t *testing.T) {
 	p := &Provider{}
 	input := `{
 		"session_id":"sess-123",
-		"transcript_path":"/path/to/transcript.jsonl",
+		"transcript_path":"/claude-cfg/projects/enc/transcript.jsonl",
 		"tool_name":"Agent",
 		"tool_input":{"prompt":"Review this code"},
 		"tool_use_id":"toolu_jkl"
@@ -535,7 +541,7 @@ func TestParseHookEvent_ToolResultFallback(t *testing.T) {
 	// tool_result instead of tool_response - should be accepted as an alias.
 	input := `{
 		"session_id":"sess-123",
-		"transcript_path":"/path/to/transcript.jsonl",
+		"transcript_path":"/claude-cfg/projects/enc/transcript.jsonl",
 		"tool_name":"Write",
 		"tool_input":{"file_path":"/repo/x.go","content":"x"},
 		"tool_result":{"type":"create"},
@@ -553,7 +559,7 @@ func TestParseHookEvent_ToolResultFallback(t *testing.T) {
 
 func TestParseHookEvent_Unknown(t *testing.T) {
 	p := &Provider{}
-	input := `{"session_id":"sess-123"}`
+	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl"}`
 
 	event, err := p.ParseHookEvent(context.Background(), "unknown-hook", strings.NewReader(input))
 	if err != nil {
@@ -561,6 +567,60 @@ func TestParseHookEvent_Unknown(t *testing.T) {
 	}
 	if event != nil {
 		t.Error("unknown hook should return nil event")
+	}
+}
+
+func TestOwnsTranscript(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/u/.claude")
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"recognized", "/home/u/.claude/projects/enc/sess.jsonl", true},
+		{"foreign copilot", "/home/u/.copilot/session-state/x/events.jsonl", false},
+		{"claude but not projects", "/home/u/.claude/other/sess.jsonl", false},
+		{"missing", "", false},
+		{"traversal escapes projects", "/home/u/.claude/projects/../../etc/passwd", false},
+	}
+	for _, c := range cases {
+		if got := ownsTranscript(c.path); got != c.want {
+			t.Errorf("%s: ownsTranscript(%q) = %v, want %v", c.name, c.path, got, c.want)
+		}
+	}
+}
+
+func TestOwnsTranscript_HonorsConfigDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/custom/cfg")
+	if !ownsTranscript("/custom/cfg/projects/p/sess.jsonl") {
+		t.Error("path under CLAUDE_CONFIG_DIR/projects should be recognized")
+	}
+	if ownsTranscript("/home/u/.claude/projects/p/sess.jsonl") {
+		t.Error("default ~/.claude path must not be recognized when CLAUDE_CONFIG_DIR overrides")
+	}
+}
+
+// Foreign transcript paths must not produce Claude events.
+func TestParseHookEvent_RejectsForeignTranscript(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/claude-cfg")
+	p := &Provider{}
+	foreign := []string{
+		`{"session_id":"s","transcript_path":"/home/u/.copilot/session-state/x/events.jsonl","prompt":"hi"}`,
+		`{"session_id":"s","prompt":"hi"}`, // missing transcript_path
+	}
+	for _, in := range foreign {
+		event, err := p.ParseHookEvent(context.Background(), "user-prompt-submit", strings.NewReader(in))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if event != nil {
+			t.Errorf("foreign/missing transcript produced an event: %+v", event)
+		}
+	}
+	ok := `{"session_id":"s","transcript_path":"/claude-cfg/projects/p/sess.jsonl","prompt":"hi"}`
+	event, err := p.ParseHookEvent(context.Background(), "user-prompt-submit", strings.NewReader(ok))
+	if err != nil || event == nil || event.Type != hooks.PromptSubmitted {
+		t.Fatalf("recognized transcript dropped: event=%+v err=%v", event, err)
 	}
 }
 

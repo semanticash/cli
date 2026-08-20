@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "description": "Versioned test cases for matching ordered tool-produced lines to final added lines. Each expected entry is exact, normalized, or none.",
+  "tiers": ["none", "exact", "normalized"],
+  "cases": [
+    {
+      "name": "exact-with-blank-line",
+      "description": "All non-blank lines match exactly; a blank line anchors nothing.",
+      "claims": ["package main", "", "func main() {}"],
+      "added": ["package main", "", "func main() {}"],
+      "expected": ["exact", "none", "exact"]
+    },
+    {
+      "name": "whitespace-normalized",
+      "description": "Internal whitespace differs, so it is a normalized (not exact) match.",
+      "claims": ["x := 1"],
+      "added": ["x  :=  1"],
+      "expected": ["normalized"]
+    },
+    {
+      "name": "leading-trailing-trimmed-exact",
+      "description": "Leading/trailing whitespace is trimmed before comparison, so this is exact.",
+      "claims": ["  foo"],
+      "added": ["foo  "],
+      "expected": ["exact"]
+    },
+    {
+      "name": "no-match",
+      "description": "Unrelated content matches nothing.",
+      "claims": ["a"],
+      "added": ["b"],
+      "expected": ["none"]
+    },
+    {
+      "name": "ordered-gap",
+      "description": "An unmatched added line between two exact anchors stays none.",
+      "claims": ["a", "b"],
+      "added": ["a", "x", "b"],
+      "expected": ["exact", "none", "exact"]
+    },
+    {
+      "name": "skipped-claim-preserves-order",
+      "description": "A claim with no corresponding added line is skipped; order is preserved.",
+      "claims": ["a", "b", "c"],
+      "added": ["a", "c"],
+      "expected": ["exact", "exact"]
+    },
+    {
+      "name": "duplicate-added-single-claim",
+      "description": "One claim matches the earliest occurrence; the duplicate stays none.",
+      "claims": ["a"],
+      "added": ["a", "a"],
+      "expected": ["exact", "none"]
+    },
+    {
+      "name": "duplicate-claim-single-added",
+      "description": "Extra claims beyond the added lines are simply unused.",
+      "claims": ["a", "a"],
+      "added": ["a"],
+      "expected": ["exact"]
+    },
+    {
+      "name": "blank-only",
+      "description": "Blank claims and blank added lines never match.",
+      "claims": [""],
+      "added": [""],
+      "expected": ["none"]
+    },
+    {
+      "name": "normalized-fills-gap-between-exact-anchors",
+      "description": "A normalized match fills the gap between two exact anchors.",
+      "claims": ["a", "b := 1", "c"],
+      "added": ["a", "b  :=  1", "c"],
+      "expected": ["exact", "normalized", "exact"]
+    },
+    {
+      "name": "order-preserved-no-cross",
+      "description": "Crossing matches are not allowed; the earliest order-preserving match wins.",
+      "claims": ["A", "B"],
+      "added": ["B", "A"],
+      "expected": ["exact", "none"]
+    },
+    {
+      "name": "normalized-not-across-exact-anchor",
+      "description": "A normalized match cannot cross an exact anchor.",
+      "claims": ["y", "x := 1"],
+      "added": ["x  :=  1", "y"],
+      "expected": ["none", "exact"]
+    },
+    {
+      "name": "no-claims",
+      "description": "With no claims, every added line is unmatched.",
+      "claims": [],
+      "added": ["a", "b"],
+      "expected": ["none", "none"]
+    },
+    {
+      "name": "no-added",
+      "description": "With no added lines there is nothing to match.",
+      "claims": ["a"],
+      "added": [],
+      "expected": []
+    }
+  ]
+}

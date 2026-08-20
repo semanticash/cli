@@ -134,6 +134,14 @@ func TestOpenRepo_CanonicalizesSymlinkedRoot(t *testing.T) {
 	}
 }
 
+func TestDiffForCommitArgs_UsesHistogram(t *testing.T) {
+	got := strings.Join(diffForCommitArgs("parent", "commit"), " ")
+	want := "diff --no-color --diff-algorithm=histogram parent commit"
+	if got != want {
+		t.Fatalf("diff args = %q, want %q", got, want)
+	}
+}
+
 // RestoreFile tests.
 
 func TestRestoreFile_RegularFile(t *testing.T) {

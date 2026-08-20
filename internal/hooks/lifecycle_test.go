@@ -1474,7 +1474,7 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 	}
 	event := &Event{SessionID: "ps-1"}
 
-	packageTurnFromState(ctx, provider, event, bh, preState)
+	packageTurnFromState(ctx, provider, event, bh, nil, preState)
 
 	manifestCount := func(turnID string) int {
 		h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
@@ -1496,7 +1496,7 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 	}
 
 	// Packaging requires a CWD from either the event or capture state.
-	packageTurnFromState(ctx, provider, &Event{SessionID: "ps-1"}, bh, &CaptureState{
+	packageTurnFromState(ctx, provider, &Event{SessionID: "ps-1"}, bh, nil, &CaptureState{
 		TurnID: "turn-no-cwd", PromptSubmittedAt: 1,
 	})
 	if got := manifestCount("turn-no-cwd"); got != 0 {

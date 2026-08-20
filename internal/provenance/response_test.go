@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,7 +100,7 @@ func (w *responseWorld) addAssistantRaw(t *testing.T, turnID string, ts int64, s
 func textBlock(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
 
 // upsertManifestResponse writes response metadata through the manifest upsert.
-func (w *responseWorld) upsertManifestResponse(t *testing.T, turnID string, r capturedResponse) {
+func (w *responseWorld) upsertManifestResponse(t *testing.T, turnID string, r ResponseCandidate) {
 	t.Helper()
 	if err := w.h.Queries.UpsertProvenanceManifest(context.Background(), sqldb.UpsertProvenanceManifestParams{
 		ManifestID: uuid.NewString(), RepositoryID: w.repoID, SessionID: w.sessionID,
@@ -116,9 +117,9 @@ func (w *responseWorld) upsertManifestResponse(t *testing.T, turnID string, r ca
 	}
 }
 
-func (w *responseWorld) readManifestResponse(t *testing.T, turnID string) capturedResponse {
+func (w *responseWorld) readManifestResponse(t *testing.T, turnID string) ResponseCandidate {
 	t.Helper()
-	var r capturedResponse
+	var r ResponseCandidate
 	var status, hash, summary, eventID sql.NullString
 	var completedAt sql.NullInt64
 	row := w.h.DB.QueryRowContext(context.Background(),
@@ -135,12 +136,12 @@ func (w *responseWorld) readManifestResponse(t *testing.T, turnID string) captur
 
 func TestUpsertManifest_FailedRetryPreservesCompleteResponse(t *testing.T) {
 	w := newResponseWorld(t, "claude_code")
-	want := capturedResponse{
+	want := ResponseCandidate{
 		Status: responseComplete, EventID: "evt-1", Hash: "hash-1",
 		Summary: "the response", CompletedAt: 100,
 	}
 	w.upsertManifestResponse(t, "turn-x", want)
-	w.upsertManifestResponse(t, "turn-x", capturedResponse{Status: responseMissing})
+	w.upsertManifestResponse(t, "turn-x", ResponseCandidate{Status: responseMissing})
 
 	got := w.readManifestResponse(t, "turn-x")
 	if got != want {
@@ -150,8 +151,8 @@ func TestUpsertManifest_FailedRetryPreservesCompleteResponse(t *testing.T) {
 
 func TestUpsertManifest_SuccessfulRetrySupersedes(t *testing.T) {
 	w := newResponseWorld(t, "claude_code")
-	w.upsertManifestResponse(t, "turn-y", capturedResponse{Status: responseMissing})
-	want := capturedResponse{
+	w.upsertManifestResponse(t, "turn-y", ResponseCandidate{Status: responseMissing})
+	want := ResponseCandidate{
 		Status: responseComplete, EventID: "evt-2", Hash: "hash-2", Summary: "recovered", CompletedAt: 200,
 	}
 	w.upsertManifestResponse(t, "turn-y", want)
@@ -171,7 +172,7 @@ func TestCaptureFinalResponse_Complete(t *testing.T) {
 		textBlock("Implemented the requested changes and ran the tests."),
 	})
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-1")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-1", ResponseCandidate{})
 	if got.Status != responseComplete {
 		t.Fatalf("status = %q, want complete", got.Status)
 	}
@@ -207,7 +208,7 @@ func TestCaptureFinalResponse_EmptyWhenNoVisibleText(t *testing.T) {
 		{"type": "tool_use", "id": "toolu_1", "name": "Bash"},
 	})
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-2")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-2", ResponseCandidate{})
 	if got.Status != responseEmpty {
 		t.Fatalf("status = %q, want empty", got.Status)
 	}
@@ -221,7 +222,7 @@ func TestCaptureFinalResponse_EmptyWhenNoVisibleText(t *testing.T) {
 
 func TestCaptureFinalResponse_MissingWhenNoAssistantEvent(t *testing.T) {
 	w := newResponseWorld(t, "claude_code")
-	got := captureFinalResponse(context.Background(), w.h, w.bs, "claude_code", w.sessionID, "turn-none")
+	got := captureFinalResponse(context.Background(), w.h, w.bs, "claude_code", w.sessionID, "turn-none", ResponseCandidate{})
 	if got.Status != responseMissing {
 		t.Fatalf("status = %q, want missing", got.Status)
 	}
@@ -238,7 +239,7 @@ func TestCaptureFinalResponse_IgnoresHookAssistantRow(t *testing.T) {
 	})
 	w.addAssistantRaw(t, "turn-h", 200, "hook", []byte(`{"synthesized":true}`))
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-h")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-h", ResponseCandidate{})
 	if got.Status != responseComplete {
 		t.Fatalf("status = %q, want complete", got.Status)
 	}
@@ -253,7 +254,7 @@ func TestCaptureFinalResponse_EqualTimestampUsesSequence(t *testing.T) {
 	w.addAssistantEvent(t, "turn-eq", 100, []map[string]any{textBlock("first")})
 	w.addAssistantEvent(t, "turn-eq", 100, []map[string]any{textBlock("second and final")})
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-eq")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-eq", ResponseCandidate{})
 	if got.Status != responseComplete || got.Summary != "second and final" {
 		t.Fatalf("got status=%q summary=%q, want the last-inserted row", got.Status, got.Summary)
 	}
@@ -264,7 +265,7 @@ func TestCaptureFinalResponse_MalformedPayloadIsMissing(t *testing.T) {
 	ctx := context.Background()
 	id := w.addAssistantRaw(t, "turn-bad", 100, "transcript", []byte(`{"message": not json`))
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-bad")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-bad", ResponseCandidate{})
 	if got.Status != responseMissing {
 		t.Fatalf("status = %q, want missing for malformed payload", got.Status)
 	}
@@ -277,14 +278,351 @@ func TestCaptureFinalResponse_MalformedPayloadIsMissing(t *testing.T) {
 }
 
 func TestCaptureFinalResponse_UnsupportedProvider(t *testing.T) {
-	w := newResponseWorld(t, "gemini_cli")
-	w.addAssistantEvent(t, "turn-1", 100, []map[string]any{textBlock("done")})
-	got := captureFinalResponse(context.Background(), w.h, w.bs, "gemini_cli", w.sessionID, "turn-1")
-	if got.Status != responseUnsupported {
-		t.Fatalf("status = %q, want unsupported", got.Status)
+	// Gemini CLI and Kiro CLI responses remain unsupported because their
+	// completion hooks can continue after firing.
+	for _, provider := range []string{"gemini_cli", "gemini-cli", "kiro_cli", "kiro-cli"} {
+		t.Run(provider, func(t *testing.T) {
+			w := newResponseWorld(t, provider)
+			w.addAssistantEvent(t, "turn-1", 100, []map[string]any{textBlock("done")})
+			got := captureFinalResponse(context.Background(), w.h, w.bs, provider, w.sessionID, "turn-1", ResponseCandidate{})
+			if got.Status != responseUnsupported {
+				t.Fatalf("status = %q, want unsupported", got.Status)
+			}
+			if got.Hash != "" || got.EventID != "" {
+				t.Errorf("unsupported provider produced evidence: %+v", got)
+			}
+		})
 	}
-	if got.Hash != "" || got.EventID != "" {
-		t.Errorf("unsupported provider produced evidence: %+v", got)
+}
+
+func TestRedactAndStoreResponse(t *testing.T) {
+	w := newResponseWorld(t, "codex")
+	ctx := context.Background()
+
+	cand := RedactAndStoreResponse(ctx, w.bs, "evt-1", "the final answer", 500)
+	if cand.Status != responseComplete || cand.Hash == "" {
+		t.Fatalf("candidate = %+v, want complete with hash", cand)
+	}
+	if cand.EventID != "evt-1" || cand.CompletedAt != 500 || cand.Summary == "" {
+		t.Errorf("candidate metadata = %+v", cand)
+	}
+	raw, err := w.bs.Get(ctx, cand.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj turnResponse
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("stored object is not a turn_response: %v", err)
+	}
+	if obj.Kind != "turn_response" || obj.Version != responseObjectVersion || obj.Text != "the final answer" {
+		t.Errorf("stored object = %+v", obj)
+	}
+
+	// Blank text yields empty with no blob.
+	empty := RedactAndStoreResponse(ctx, w.bs, "evt-2", "", 600)
+	if empty.Status != responseEmpty || empty.Hash != "" {
+		t.Errorf("blank = %+v, want empty with no hash", empty)
+	}
+
+	// Raw secrets never reach the store: the redactor runs before Put.
+	secret := "sk-1234567890abcdef1234567890abcdef"
+	red := RedactAndStoreResponse(ctx, w.bs, "evt-3", "api_key = "+secret, 700)
+	if red.Status != responseComplete {
+		t.Fatalf("status = %q, want complete", red.Status)
+	}
+	stored, err := w.bs.Get(ctx, red.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), secret) {
+		t.Error("raw secret reached the content-addressed store")
+	}
+}
+
+// Hook-provided responses take precedence over transcript extraction.
+func TestCaptureFinalResponse_CandidateWins(t *testing.T) {
+	w := newResponseWorld(t, "codex")
+	cand := ResponseCandidate{Status: responseComplete, Hash: "h1", Summary: "hi", EventID: "e1", CompletedAt: 700}
+	got := captureFinalResponse(context.Background(), w.h, w.bs, "codex", w.sessionID, "turn-x", cand)
+	if got != cand {
+		t.Errorf("got %+v, want candidate %+v", got, cand)
+	}
+}
+
+// A hook provider without a response does not use Claude transcript extraction.
+func TestCaptureFinalResponse_HookProviderNoCandidateMissing(t *testing.T) {
+	for _, provider := range []string{"codex", "cursor"} {
+		t.Run(provider, func(t *testing.T) {
+			w := newResponseWorld(t, provider)
+			// Hook-native providers do not fall back to transcript extraction.
+			w.addAssistantEvent(t, "turn-x", 100, []map[string]any{textBlock("done")})
+			got := captureFinalResponse(context.Background(), w.h, w.bs, provider, w.sessionID, "turn-x", ResponseCandidate{})
+			if got.Status != responseMissing {
+				t.Errorf("status = %q, want missing", got.Status)
+			}
+			if got.Hash != "" {
+				t.Errorf("%s without candidate produced a hash: %+v", provider, got)
+			}
+		})
+	}
+}
+
+// Unresolvable response objects are recorded as missing.
+func TestEnsureResponseResolvable(t *testing.T) {
+	ctx := context.Background()
+	newStore := func() *blobs.Store {
+		s, err := blobs.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	put := func(s *blobs.Store, text string) string {
+		return RedactAndStoreResponse(ctx, s, "", text, 1).Hash
+	}
+	complete := func(hash string) ResponseCandidate {
+		return ResponseCandidate{Status: responseComplete, Hash: hash, Summary: "s", CompletedAt: 1}
+	}
+
+	t.Run("already in repo store", func(t *testing.T) {
+		bs := newStore()
+		h := put(bs, "answer")
+		if got := ensureResponseResolvable(ctx, bs, nil, complete(h)); got.Status != responseComplete || got.Hash != h {
+			t.Errorf("got %+v, want kept", got)
+		}
+	})
+
+	t.Run("copied from source store", func(t *testing.T) {
+		bs, src := newStore(), newStore()
+		h := put(src, "answer")
+		got := ensureResponseResolvable(ctx, bs, src, complete(h))
+		if got.Status != responseComplete || got.Hash != h {
+			t.Fatalf("got %+v, want kept", got)
+		}
+		if _, err := bs.Get(ctx, h); err != nil {
+			t.Errorf("object not copied into repo store: %v", err)
+		}
+	})
+
+	t.Run("missing source object", func(t *testing.T) {
+		bs, src := newStore(), newStore()
+		got := ensureResponseResolvable(ctx, bs, src, complete("deadbeef"))
+		if got.Status != responseMissing || got.Hash != "" {
+			t.Errorf("got %+v, want missing with no hash", got)
+		}
+	})
+
+	t.Run("nil source store", func(t *testing.T) {
+		bs := newStore()
+		got := ensureResponseResolvable(ctx, bs, nil, complete("deadbeef"))
+		if got.Status != responseMissing || got.Hash != "" {
+			t.Errorf("got %+v, want missing with no hash", got)
+		}
+	})
+
+	t.Run("failed destination write", func(t *testing.T) {
+		src := newStore()
+		h := put(src, "answer")
+		// A repo store rooted at a regular file makes Put (and Get) fail.
+		badRoot := filepath.Join(t.TempDir(), "notadir")
+		if err := os.WriteFile(badRoot, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		bad, err := blobs.NewStore(badRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ensureResponseResolvable(ctx, bad, src, complete(h))
+		if got.Status != responseMissing || got.Hash != "" {
+			t.Errorf("got %+v, want missing with no hash", got)
+		}
+	})
+
+	t.Run("empty candidate untouched", func(t *testing.T) {
+		bs := newStore()
+		empty := ResponseCandidate{Status: responseEmpty}
+		if got := ensureResponseResolvable(ctx, bs, nil, empty); got != empty {
+			t.Errorf("got %+v, want %+v", got, empty)
+		}
+	})
+}
+
+// Packaging copies hook-provided response objects into the repository store.
+func TestPackageTurn_HookCandidateResolvableInRepoStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(filepath.Join(semDir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: dir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID, Provider: "codex",
+		SourceKey: "/f.jsonl", LastSeenAt: 1, CreatedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "ps", RepositoryID: repoID,
+		SourceID: src.SourceID, Provider: "codex", StartedAt: 1, LastSeenAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sqlstore.Close(h) // release the db before PackageTurn opens its own handle
+
+	// The candidate object lives only in the global (source) store.
+	global, err := blobs.NewStore(filepath.Join(t.TempDir(), "global"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cand := RedactAndStoreResponse(ctx, global, "", "the final answer", 500)
+	if cand.Status != responseComplete || cand.Hash == "" {
+		t.Fatalf("candidate = %+v", cand)
+	}
+	repoStore, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repoStore.Get(ctx, cand.Hash); err == nil {
+		t.Fatal("candidate unexpectedly already present in the repo store")
+	}
+
+	PackageTurn(ctx, dir, TurnContext{
+		TurnID: "turn-1", SessionID: "ps", Provider: "codex", CWD: dir,
+		StartedAt: 1, CompletedAt: 2, ResponseCandidate: cand,
+	}, global)
+
+	// The redacted object now resolves in the repository store.
+	if _, err := repoStore.Get(ctx, cand.Hash); err != nil {
+		t.Errorf("response object not copied into repo store: %v", err)
+	}
+	// The manifest references it.
+	h2, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h2) }()
+	var hash, status string
+	if err := h2.DB.QueryRowContext(ctx,
+		"select response_hash, response_status from provenance_manifests where turn_id = ?", "turn-1").
+		Scan(&hash, &status); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if hash != cand.Hash || status != responseComplete {
+		t.Errorf("manifest response = (%q, %q), want (%q, complete)", hash, status, cand.Hash)
+	}
+}
+
+// Packages response metadata in a v2 bundle.
+func TestPackageTurn_BuildsV2BundleWithResponse(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(filepath.Join(semDir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: dir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID, Provider: "codex",
+		SourceKey: "/f.jsonl", LastSeenAt: 1, CreatedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "ps", RepositoryID: repoID,
+		SourceID: src.SourceID, Provider: "codex", StartedAt: 1, LastSeenAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sqlstore.Close(h)
+
+	repoStore, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cand := RedactAndStoreResponse(ctx, repoStore, "ev-1", "the final answer", 500)
+	if cand.Status != responseComplete || cand.Hash == "" {
+		t.Fatalf("candidate = %+v", cand)
+	}
+
+	PackageTurn(ctx, dir, TurnContext{
+		TurnID: "turn-1", SessionID: "ps", Provider: "codex", CWD: dir,
+		StartedAt: 1, CompletedAt: 2, ResponseCandidate: cand,
+	}, repoStore)
+
+	h2, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h2) }()
+	var bundleHash string
+	if err := h2.DB.QueryRowContext(ctx,
+		"select provenance_bundle_hash from provenance_manifests where turn_id = ?", "turn-1").
+		Scan(&bundleHash); err != nil || bundleHash == "" {
+		t.Fatalf("read bundle hash: %v (hash %q)", err, bundleHash)
+	}
+	raw, err := repoStore.Get(ctx, bundleHash)
+	if err != nil {
+		t.Fatalf("load bundle: %v", err)
+	}
+	var b struct {
+		Version  int `json:"version"`
+		Response *struct {
+			EventID     string `json:"event_id"`
+			Hash        string `json:"hash"`
+			Summary     string `json:"summary"`
+			Status      string `json:"status"`
+			CompletedAt int64  `json:"completed_at"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	if b.Version != 2 {
+		t.Errorf("bundle version = %d, want 2", b.Version)
+	}
+	if b.Response == nil {
+		t.Fatal("bundle has no response block")
+	}
+	if b.Response.Status != responseComplete || b.Response.Hash != cand.Hash ||
+		b.Response.EventID != "ev-1" || b.Response.Summary != cand.Summary || b.Response.CompletedAt != 500 {
+		t.Errorf("response block = %+v (want hash %q, summary %q)", *b.Response, cand.Hash, cand.Summary)
+	}
+
+	// The response object remains addressable by the bundle hash.
+	if got := extractResponseHashFromBytes(raw); got != cand.Hash {
+		t.Errorf("extractResponseHashFromBytes = %q, want %q", got, cand.Hash)
+	}
+	if _, err := repoStore.Get(ctx, cand.Hash); err != nil {
+		t.Errorf("response object not loadable from repo store for sync upload: %v", err)
 	}
 }
 
@@ -297,7 +635,7 @@ func TestCaptureFinalResponse_RedactsBeforeStorage(t *testing.T) {
 		textBlock("Set api_key = " + secret + " in the config."),
 	})
 
-	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-r")
+	got := captureFinalResponse(ctx, w.h, w.bs, "claude_code", w.sessionID, "turn-r", ResponseCandidate{})
 	if got.Status != responseComplete {
 		t.Fatalf("status = %q, want complete", got.Status)
 	}

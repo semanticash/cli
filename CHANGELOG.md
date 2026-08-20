@@ -9,11 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Claude Code turn manifests now record the final visible agent response as a redacted, content-addressed object. Other providers record an unsupported status.
+- Turn manifests now store redacted final responses for Claude Code, Codex, and Cursor editor sessions that emit `afterAgentResponse`. Cursor Agent CLI responses remain unavailable and are recorded as missing. Other providers remain unsupported.
+- Provenance uploads now use v2 turn bundles to include final-response status and metadata. Complete responses upload their redacted content-addressed object with the bundle.
+- Cursor shell hooks now capture pre-command workspace snapshots for opt-in tool-delta attribution.
+- Provenance uploads now include redacted canonical tool deltas for shell steps. Deltas that cannot be safely redacted are omitted with their bundle references.
+- Added a versioned matcher corpus under `corpus/v1/` for validating attribution parity across implementations.
+
+### Changed
 
 ### Fixed
 
+- Kiro CLI capture now recognizes canonical and alias names for file-write and shell tools.
+- Empty Kiro CLI hook payloads no longer create events from process context.
+- `semantica tidy` now reports tool-window cleanup and cleanup failures.
 - Commit capture now persists a receipt before writing to SQLite. A later worker can recover the checkpoint and link in commit order while preserving the pre-commit timestamp.
+- Claude Code capture now accepts only hook payloads associated with its configured transcript directory, preventing third-party compatibility hooks from producing Claude events.
+- Commit attribution now uses a stable Git diff algorithm so preserved lines are not reported as new human changes during refactors.
 
 ## [0.6.1] - 2026-08-14
 

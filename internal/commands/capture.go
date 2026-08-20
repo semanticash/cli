@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,10 +17,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// stdinReadDeadline bounds how long capture waits for EOF on stdin.
-// Hook runners normally pipe a JSON payload and close stdin promptly.
-// Some hosts inherit an open stdin instead, so an unbounded io.ReadAll
-// can block until the hook runner times out.
+// stdinReadDeadline bounds how long capture waits for a complete JSON payload.
 const stdinReadDeadline = 250 * time.Millisecond
 
 // processStart approximates process startup for hook timing.
@@ -80,7 +78,7 @@ func NewCaptureCmd() *cobra.Command {
 				return nil
 			}
 			if timedOut {
-				logCaptureError(providerName, hookName, "stdin did not close before %s; continuing with empty hook payload", stdinReadDeadline)
+				logCaptureError(providerName, hookName, "complete hook payload not received before %s; continuing with empty hook payload", stdinReadDeadline)
 			}
 
 			// Optional cwd preflight. Used by providers whose hook
@@ -131,17 +129,9 @@ func NewCaptureCmd() *cobra.Command {
 	return cmd
 }
 
-// readHookPayload is the bounded equivalent of io.ReadAll for hook
-// payloads.
-//
-// Returns one of three outcomes:
-//
-//   - (payload, false, nil): the reader closed before the deadline.
-//   - (nil,     true,  nil): the deadline elapsed first.
-//   - (nil,     false, err): the read failed.
-//
-// On timeout, the read goroutine may remain blocked until process exit.
-// Capture is short-lived, so the caller prefers that to blocking the hook.
+// readHookPayload decodes one JSON value without waiting for EOF. It reports a
+// deadline separately from read and decode errors.
+// A timed-out decoder may remain blocked until the hook process exits.
 func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timedOut bool, err error) {
 	type result struct {
 		data []byte
@@ -149,7 +139,11 @@ func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timed
 	}
 	ch := make(chan result, 1)
 	go func() {
-		data, e := io.ReadAll(r)
+		var data json.RawMessage
+		e := json.NewDecoder(r).Decode(&data)
+		if e == io.EOF {
+			e = nil
+		}
 		ch <- result{data: data, err: e}
 	}()
 	select {
@@ -160,12 +154,7 @@ func readHookPayload(r io.Reader, deadline time.Duration) (payload []byte, timed
 	}
 }
 
-// logCaptureError reports a capture-time failure on stderr (for
-// developers running interactively) and appends a structured entry
-// to the global hook-errors sidecar log so `semantica doctor` can
-// surface it later. The shell `|| true` wrapper around hook
-// invocations still swallows our exit code, which is the contract
-// keeping hooks non-blocking.
+// logCaptureError writes a capture failure to stderr and doctor diagnostics.
 func logCaptureError(provider, hook, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "semantica capture: %s\n", msg)

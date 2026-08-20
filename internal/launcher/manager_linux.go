@@ -136,7 +136,7 @@ func (m *linuxManager) Uninstall(ctx context.Context) (*DisableResult, error) {
 	}
 
 	// Reload after removal so systemd forgets the units. A failure
-	// does not fail the disable — the files are gone — but it is
+	// does not fail the disable - the files are gone - but it is
 	// reported: systemd may keep stale in-memory entries until the
 	// next reload.
 	if err := daemonReload(ctx); err != nil {

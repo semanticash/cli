@@ -108,6 +108,10 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		event.Type = hooks.ToolStepCompleted
 	case "stop":
 		event.Type = hooks.AgentCompleted
+		// Preserve the distinction between an empty response and no response.
+		if msg, ok := stringField(data, "last_assistant_message"); ok {
+			event.Response = &msg
+		}
 	default:
 		return nil, nil
 	}
@@ -135,6 +139,27 @@ func badPayloadFieldHint(data []byte) string {
 		return ""
 	}
 	return " (composite field: " + strings.Join(bad, ", ") + ")"
+}
+
+// stringField returns a JSON string and whether it is present and valid.
+func stringField(data []byte, key string) (string, bool) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return "", false
+	}
+	v, ok := raw[key]
+	if !ok {
+		return "", false
+	}
+	// Treat null as absent.
+	if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // codexHookPayload contains the fields used by Codex hook events. Custom

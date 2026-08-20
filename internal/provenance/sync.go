@@ -185,6 +185,37 @@ func buildSyncResult(
 		})
 	}
 
+	// Tool deltas are optional. Failed redaction omits the object and its bundle
+	// reference without failing the turn.
+	for _, localHash := range extractStepDeltaHashes(rawBundle) {
+		if _, done := hashMap[localHash]; done {
+			continue
+		}
+		hash, redacted, err := loadAndRedact(ctx, bs, localHash, "tool_delta", repoPath)
+		if err != nil {
+			slog.Warn("provenance: tool_delta redaction skipped",
+				"turn", m.TurnID, "hash", localHash, "err", err)
+			continue
+		}
+		hashMap[localHash] = hash
+		result.RedactedBlobs[hash] = redacted
+		objects = append(objects, syncObject{Kind: "tool_delta", Hash: hash, SizeBytes: len(redacted)})
+	}
+
+	// Complete responses reference an already-redacted object, uploaded without
+	// changing its content hash.
+	responseHash := extractResponseHashFromBytes(rawBundle)
+	if responseHash != "" {
+		raw, err := bs.Get(ctx, responseHash)
+		if err != nil {
+			markFailed(ctx, h, m.ManifestID, formatLoadOrRedactReason("turn_response", responseHash, err))
+			result.Skipped = true
+			return result
+		}
+		result.RedactedBlobs[responseHash] = raw
+		objects = append(objects, syncObject{Kind: "turn_response", Hash: responseHash, SizeBytes: len(raw)})
+	}
+
 	// Rewrite bundle's embedded hashes to upload hashes, then redact/hash.
 	rewrittenBundle := RewriteBundleHashes(rawBundle, hashMap)
 	bundleHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoPath)
@@ -308,6 +339,19 @@ func extractPromptHashFromBytes(bundleBytes []byte) string {
 	return bundle.Prompt.BlobHash
 }
 
+// extractResponseHashFromBytes returns the response object hash, if present.
+func extractResponseHashFromBytes(bundleBytes []byte) string {
+	var bundle struct {
+		Response *struct {
+			Hash string `json:"hash"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(bundleBytes, &bundle) != nil || bundle.Response == nil {
+		return ""
+	}
+	return bundle.Response.Hash
+}
+
 // extractStepProvenanceHashes extracts unique non-empty provenance hashes
 // from the bundle's steps array.
 func extractStepProvenanceHashes(bundleBytes []byte) []string {
@@ -327,6 +371,28 @@ func extractStepProvenanceHashes(bundleBytes []byte) []string {
 		}
 		seen[s.ProvenanceHash] = true
 		hashes = append(hashes, s.ProvenanceHash)
+	}
+	return hashes
+}
+
+// extractStepDeltaHashes returns unique non-empty hashes referenced by events.
+func extractStepDeltaHashes(bundleBytes []byte) []string {
+	var bundle struct {
+		Steps []struct {
+			DeltaHash string `json:"delta_hash"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(bundleBytes, &bundle) != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var hashes []string
+	for _, s := range bundle.Steps {
+		if s.DeltaHash == "" || seen[s.DeltaHash] {
+			continue
+		}
+		seen[s.DeltaHash] = true
+		hashes = append(hashes, s.DeltaHash)
 	}
 	return hashes
 }

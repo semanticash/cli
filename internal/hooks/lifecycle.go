@@ -150,11 +150,31 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 
 		return nil
 
+	case AgentResponseCaptured:
+		// Store the response on the active turn for the later completion hook.
+		if event.Response == nil {
+			return nil
+		}
+		state, err := LoadCaptureState(event.SessionID)
+		if err != nil || state.Provider != provider.Name() {
+			return nil
+		}
+		applyResponseCandidate(ctx, blobStore, state, event)
+		return SaveCaptureState(state)
+
 	case AgentCompleted:
 		benchCtx, benchScope := doctor.WithBenchScope(ctx)
 
 		// Snapshot the current turn context before capture advances the offset.
 		preState, _ := LoadCaptureState(event.SessionID)
+
+		// Save completion-hook responses before capture so retries retain them.
+		if event.Response != nil && preState != nil && preState.Provider == provider.Name() {
+			applyResponseCandidate(benchCtx, blobStore, preState, event)
+			if err := SaveCaptureState(preState); err != nil {
+				slog.Warn("persist response candidate failed", "err", err)
+			}
+		}
 
 		captureStart := time.Now()
 		if err := CaptureAndRoute(benchCtx, provider, event, bh, blobStore); err != nil {
@@ -169,7 +189,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		packageDuration := time.Duration(0)
 		if preState != nil && preState.TurnID != "" {
 			packageStart := time.Now()
-			packageTurnFromState(benchCtx, provider, event, bh, preState)
+			packageTurnFromState(benchCtx, provider, event, bh, blobStore, preState)
 			packageDuration = time.Since(packageStart)
 			emitTurnBenchRecords(benchScope, preState.TurnID, captureDuration, packageDuration)
 		}
@@ -258,7 +278,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 					// Keep packaging before DeleteCaptureState so the final
 					// transcript reference and turn metadata are still available.
 					packageStart := time.Now()
-					packageTurnFromState(benchCtx, provider, event, bh, preState)
+					packageTurnFromState(benchCtx, provider, event, bh, blobStore, preState)
 					packageDuration = time.Since(packageStart)
 					emitTurnBenchRecords(benchScope, preState.TurnID, captureDuration, packageDuration)
 				}
@@ -864,7 +884,7 @@ func turnCWD(event *Event, preState *CaptureState) string {
 }
 
 // packageTurnFromState writes the packaged turn artifacts after capture succeeds.
-func packageTurnFromState(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, preState *CaptureState) {
+func packageTurnFromState(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store, preState *CaptureState) {
 	cwd := turnCWD(event, preState)
 	if cwd == "" {
 		return
@@ -897,7 +917,7 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 			tc.SessionID = derived
 		}
 	}
-	provenance.PackageTurn(ctx, repoPath, tc)
+	provenance.PackageTurn(ctx, repoPath, tc, blobStore)
 }
 
 func buildTurnContext(preState *CaptureState, event *Event, providerName string) provenance.TurnContext {
@@ -909,7 +929,27 @@ func buildTurnContext(preState *CaptureState, event *Event, providerName string)
 		StartedAt:     preState.PromptSubmittedAt,
 		CompletedAt:   time.Now().UnixMilli(),
 		CWD:           turnCWD(event, preState),
+		ResponseCandidate: provenance.ResponseCandidate{
+			Status:      preState.ResponseStatus,
+			EventID:     preState.ResponseEventID,
+			Hash:        preState.ResponseHash,
+			Summary:     preState.ResponseSummary,
+			CompletedAt: preState.ResponseCompletedAt,
+		},
 	}
+}
+
+// applyResponseCandidate stores a redacted response and indexes its metadata.
+func applyResponseCandidate(ctx context.Context, blobStore *blobs.Store, state *CaptureState, event *Event) {
+	if blobStore == nil || event.Response == nil {
+		return
+	}
+	cand := provenance.RedactAndStoreResponse(ctx, blobStore, "", *event.Response, event.Timestamp)
+	state.ResponseStatus = cand.Status
+	state.ResponseHash = cand.Hash
+	state.ResponseSummary = cand.Summary
+	state.ResponseCompletedAt = cand.CompletedAt
+	state.ResponseEventID = cand.EventID
 }
 
 // routeAndWriteEvents routes events to registered repos and writes them.

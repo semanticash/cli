@@ -27,10 +27,14 @@ type TurnContext struct {
 	StartedAt     int64
 	CompletedAt   int64
 	CWD           string
+
+	// Empty status means no hook-provided response.
+	ResponseCandidate ResponseCandidate
 }
 
-// PackageTurn builds the per-turn provenance bundle and persists the manifest row.
-func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
+// PackageTurn builds a turn bundle and persists its manifest. Hook-provided
+// objects are copied from sourceBlobs into the repository store.
+func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlobs *blobs.Store) {
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
@@ -79,10 +83,10 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 		return
 	}
 
-	// 1. Find the prompt event for the bundle.
+	// Find the prompt event for the bundle.
 	promptEvent := findPromptEvent(ctx, h, sess.SessionID, tc.TurnID)
 
-	// 2. Query direct step events for this turn.
+	// Load direct tool events for this turn.
 	steps, err := h.Queries.ListStepEventsForTurn(ctx, sqldb.ListStepEventsForTurnParams{
 		SessionID: sess.SessionID,
 		TurnID:    sqlstore.NullStr(tc.TurnID),
@@ -92,25 +96,38 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 		return
 	}
 
-	// 2b. Enrich transcript-only steps with synthesized provenance.
+	// Add provenance to transcript-only events.
 	// Use sess.Provider (the normalized DB name, e.g. "claude_code") rather
 	// than tc.Provider (the raw hook name, e.g. "claude-code") so enricher
 	// matching works regardless of how the provider name was formatted.
 	steps = enrichSteps(ctx, h.Queries, bs, sess.Provider, sess.SessionID, tc.TurnID, steps)
 
-	// 2c. For Copilot sessions, drop transcript duplicates when a matching
-	// hook-backed step can be identified during packaging.
+	// Drop Copilot transcript events that duplicate hook events.
 	steps = filterCopilotDuplicateSteps(ctx, bs, sess.Provider, steps)
 
-	// 2d. Filter steps that only touch gitignored files.
+	// Exclude events that only touch ignored files.
 	filteredSteps := filterIgnoredSteps(ctx, repoPath, steps, bs)
 
-	// Capture a redacted final response without blocking turn packaging.
-	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID)
+	// Resolve unambiguous tool-delta references.
+	deltaRefs := resolveStepDeltaHashes(ctx, h, filteredSteps)
 
-	// 3. Build provenance bundle blob.
+	// Resolve the final response and ensure its object is available locally.
+	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID, tc.ResponseCandidate)
+	response = ensureResponseResolvable(ctx, bs, sourceBlobs, response)
+
+	// Successful responses require a positive completion time for ordering. Use
+	// the turn completion time when the provider omitted one; otherwise record missing.
+	if (response.Status == responseComplete || response.Status == responseEmpty) && response.CompletedAt <= 0 {
+		if tc.CompletedAt > 0 {
+			response.CompletedAt = tc.CompletedAt
+		} else {
+			response = ResponseCandidate{Status: responseMissing, EventID: response.EventID}
+		}
+	}
+
+	// Build the provenance bundle.
 	blobStart := time.Now()
-	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps)
+	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps, deltaRefs, response)
 	blobDuration := time.Since(blobStart)
 	blobsWritten := 0
 	if bundleHash != "" {
@@ -119,7 +136,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext) {
 		slog.Warn("provenance: build bundle failed", "turn", tc.TurnID, "err", bundleErr)
 	}
 
-	// 4. Upsert manifest row. The bundle is required.
+	// Persist the manifest. A bundle is required.
 	status := "packaged"
 	if bundleHash == "" {
 		status = "failed"
@@ -297,6 +314,8 @@ func buildProvenanceBundleFromFiltered(
 	sess sqldb.AgentSession,
 	prompt *promptInfo,
 	steps []filteredStep,
+	deltaRefs map[string]string,
+	response ResponseCandidate,
 ) (string, int64, error) {
 	bundle := provenanceBundle{
 		Version:           1,
@@ -308,6 +327,19 @@ func buildProvenanceBundleFromFiltered(
 		StartedAt:         tc.StartedAt,
 		CompletedAt:       tc.CompletedAt,
 		Steps:             make([]bundleStep, 0, len(steps)),
+	}
+
+	// Response metadata upgrades the bundle format. The redacted body remains a
+	// separate content-addressed object.
+	if response.Status != "" {
+		bundle.Version = 2
+		bundle.Response = &bundleResponse{
+			EventID:     response.EventID,
+			Hash:        response.Hash,
+			Summary:     response.Summary,
+			Status:      response.Status,
+			CompletedAt: response.CompletedAt,
+		}
 	}
 
 	if sess.ParentSessionID.Valid {
@@ -339,6 +371,9 @@ func buildProvenanceBundleFromFiltered(
 		if s.PayloadHash.Valid {
 			step.PayloadHash = s.PayloadHash.String
 		}
+		if h, ok := deltaRefs[s.EventID]; ok {
+			step.DeltaHash = h
+		}
 		if s.Summary.Valid {
 			step.Summary = &s.Summary.String
 		}
@@ -358,19 +393,70 @@ func buildProvenanceBundleFromFiltered(
 	return hash, size, nil
 }
 
+// stepDeltaEvidenceKind identifies canonical tool-delta evidence links.
+const stepDeltaEvidenceKind = "tool_delta"
+
+// resolveStepDeltaHashes returns unambiguous tool-delta references by event ID.
+// Events linked to multiple groups are omitted.
+func resolveStepDeltaHashes(ctx context.Context, h *sqlstore.Handle, steps []filteredStep) map[string]string {
+	refs := make(map[string]string, len(steps))
+	for _, fs := range steps {
+		eventID := fs.Row.EventID
+		if eventID == "" {
+			continue
+		}
+		links, err := h.Queries.ListEvidenceLinksByEvent(ctx, eventID)
+		if err != nil {
+			slog.Debug("provenance: list evidence links failed", "event_id", eventID, "err", err)
+			continue
+		}
+		if hash, ok := selectStepDeltaHash(links); ok {
+			refs[eventID] = hash
+		}
+	}
+	return refs
+}
+
+// selectStepDeltaHash returns a hash only when one tool-delta group is linked.
+func selectStepDeltaHash(links []sqldb.AgentEventEvidenceLink) (string, bool) {
+	hash := ""
+	count := 0
+	for _, l := range links {
+		if l.EvidenceKind != stepDeltaEvidenceKind {
+			continue
+		}
+		count++
+		hash = l.EvidenceHash
+	}
+	if count != 1 || hash == "" {
+		return "", false
+	}
+	return hash, true
+}
+
 // provenanceBundle is the JSON shape written for a packaged turn.
 type provenanceBundle struct {
-	Version           int           `json:"version"`
-	Provider          string        `json:"provider"`
-	SessionID         string        `json:"session_id"`
-	ProviderSessionID string        `json:"provider_session_id"`
-	ParentSessionID   *string       `json:"parent_session_id"`
-	TurnID            string        `json:"turn_id"`
-	CWD               string        `json:"cwd,omitempty"`
-	StartedAt         int64         `json:"started_at"`
-	CompletedAt       int64         `json:"completed_at,omitempty"`
-	Prompt            *bundlePrompt `json:"prompt,omitempty"`
-	Steps             []bundleStep  `json:"steps"`
+	Version           int             `json:"version"`
+	Provider          string          `json:"provider"`
+	SessionID         string          `json:"session_id"`
+	ProviderSessionID string          `json:"provider_session_id"`
+	ParentSessionID   *string         `json:"parent_session_id"`
+	TurnID            string          `json:"turn_id"`
+	CWD               string          `json:"cwd,omitempty"`
+	StartedAt         int64           `json:"started_at"`
+	CompletedAt       int64           `json:"completed_at,omitempty"`
+	Prompt            *bundlePrompt   `json:"prompt,omitempty"`
+	Steps             []bundleStep    `json:"steps"`
+	Response          *bundleResponse `json:"response,omitempty"`
+}
+
+// bundleResponse describes the final response referenced by a bundle.
+type bundleResponse struct {
+	EventID     string `json:"event_id,omitempty"`
+	Hash        string `json:"hash,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Status      string `json:"status"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
 }
 
 type bundlePrompt struct {
@@ -379,14 +465,17 @@ type bundlePrompt struct {
 }
 
 type bundleStep struct {
-	EventID        string   `json:"event_id"`
-	Ts             int64    `json:"ts"`
-	ToolName       string   `json:"tool_name,omitempty"`
-	ToolUseID      string   `json:"tool_use_id,omitempty"`
-	ProvenanceHash string   `json:"provenance_hash,omitempty"`
-	PayloadHash    string   `json:"payload_hash,omitempty"`
-	Summary        *string  `json:"summary"`
-	FilePaths      []string `json:"file_paths,omitempty"`
+	EventID        string `json:"event_id"`
+	Ts             int64  `json:"ts"`
+	ToolName       string `json:"tool_name,omitempty"`
+	ToolUseID      string `json:"tool_use_id,omitempty"`
+	ProvenanceHash string `json:"provenance_hash,omitempty"`
+	PayloadHash    string `json:"payload_hash,omitempty"`
+	// DeltaHash is the local CAS hash for an unambiguous tool delta. Sync replaces
+	// it with the redacted upload hash.
+	DeltaHash string   `json:"delta_hash,omitempty"`
+	Summary   *string  `json:"summary"`
+	FilePaths []string `json:"file_paths,omitempty"`
 }
 
 // promptInfo holds the prompt event reference stored in the bundle.

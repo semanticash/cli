@@ -1,0 +1,9 @@
+{"id":"evt-1","parentId":null,"timestamp":1,"type":"session.start","data":{"sessionId":"SESSION"}}
+{"id":"evt-2","parentId":"evt-1","timestamp":2,"type":"user.message","data":{"content":"<prompt>","transformedContent":"<expanded-prompt>","attachments":[],"delivery":"idle","interactionId":"INTERACTION","parentAgentTaskId":"TASK"}}
+{"id":"evt-3","parentId":"evt-2","timestamp":3,"type":"assistant.turn_start","data":{"turnId":"0","interactionId":"INTERACTION"}}
+{"id":"evt-4","parentId":"evt-3","timestamp":4,"type":"assistant.message","data":{"messageId":"MSG1","model":"gpt-5-mini","content":"<intent line>","toolRequests":[{"toolCallId":"CALL","name":"bash","arguments":{"command":"uname -s","description":"Get OS kernel name"},"type":"function","intentionSummary":"Get OS kernel name"}],"interactionId":"INTERACTION","turnId":"0","outputTokens":0}}
+{"id":"evt-5","parentId":"evt-4","timestamp":5,"type":"tool.execution_start","data":{"toolCallId":"CALL","toolName":"bash","arguments":{"command":"uname -s","description":"Get OS kernel name"},"turnId":"0","model":"gpt-5-mini","shellToolInfo":{"possiblePaths":[],"hasWriteFileRedirection":false}}}
+{"id":"evt-6","parentId":"evt-5","timestamp":6,"type":"tool.execution_complete","data":{"toolCallId":"CALL","model":"gpt-5-mini","interactionId":"INTERACTION","turnId":"0","success":true,"result":{"content":"<stdout>","detailedContent":"<stdout>"},"toolTelemetry":{"properties":{"executionMode":"sync"},"metrics":{"commandTimeout":0}}}}
+{"id":"evt-7","parentId":"evt-6","timestamp":7,"type":"assistant.message","data":{"messageId":"MSG2","model":"gpt-5-mini","content":"<final answer>","toolRequests":[],"interactionId":"INTERACTION","turnId":"0","outputTokens":0}}
+{"id":"evt-8","parentId":"evt-7","timestamp":8,"type":"assistant.turn_end","data":{"turnId":"0"}}
+{"id":"evt-9","parentId":"evt-8","timestamp":9,"type":"session.shutdown","data":{"sessionId":"SESSION"}}

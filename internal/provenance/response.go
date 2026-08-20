@@ -33,8 +33,8 @@ type turnResponse struct {
 	Text    string `json:"text"`
 }
 
-// capturedResponse contains response metadata stored on a turn manifest.
-type capturedResponse struct {
+// ResponseCandidate identifies a redacted final response.
+type ResponseCandidate struct {
 	Status      string
 	EventID     string
 	Hash        string
@@ -42,27 +42,72 @@ type capturedResponse struct {
 	CompletedAt int64
 }
 
-// responseSupported reports whether response extraction is available.
-func responseSupported(provider string) bool {
+// isClaudeProvider reports whether transcript response extraction is supported.
+func isClaudeProvider(provider string) bool {
 	return provider == "claude_code" || provider == "claude-code"
 }
 
-// captureFinalResponse stores the turn's final visible response after redaction.
-func captureFinalResponse(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, provider, sessionID, turnID string) capturedResponse {
-	if !responseSupported(provider) {
-		return capturedResponse{Status: responseUnsupported}
+// hookResponseProvider reports whether a provider uses hook-native responses.
+func hookResponseProvider(provider string) bool {
+	switch provider {
+	case "codex", "cursor":
+		return true
 	}
+	return false
+}
 
+// RedactAndStoreResponse stores a redacted response and returns its metadata.
+// Raw text is never written to the content-addressed store.
+func RedactAndStoreResponse(ctx context.Context, bs *blobs.Store, eventID, text string, completedAt int64) ResponseCandidate {
+	cand := ResponseCandidate{EventID: eventID, CompletedAt: completedAt}
+	redacted, err := redact.String(text)
+	if err != nil {
+		slog.Warn("provenance: redact response failed", "err", err)
+		return withStatus(cand, responseMissing)
+	}
+	if redacted == "" {
+		return withStatus(cand, responseEmpty)
+	}
+	obj := turnResponse{Version: responseObjectVersion, Kind: "turn_response", Text: redacted}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return withStatus(cand, responseMissing)
+	}
+	hash, _, err := bs.Put(ctx, data)
+	if err != nil {
+		slog.Debug("provenance: store response object failed", "err", err)
+		return withStatus(cand, responseMissing)
+	}
+	cand.Hash = hash
+	cand.Summary = summarizeResponse(redacted)
+	cand.Status = responseComplete
+	return cand
+}
+
+// captureFinalResponse prefers hook evidence, then uses supported fallbacks.
+func captureFinalResponse(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, provider, sessionID, turnID string, candidate ResponseCandidate) ResponseCandidate {
+	if candidate.Status != "" {
+		return candidate
+	}
+	if isClaudeProvider(provider) {
+		return captureClaudeTranscriptResponse(ctx, h, bs, sessionID, turnID)
+	}
+	if hookResponseProvider(provider) {
+		return ResponseCandidate{Status: responseMissing}
+	}
+	return ResponseCandidate{Status: responseUnsupported}
+}
+
+// captureClaudeTranscriptResponse stores Claude's final transcript response.
+func captureClaudeTranscriptResponse(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, sessionID, turnID string) ResponseCandidate {
 	row, err := h.Queries.GetFinalAssistantEventForTurn(ctx, sqldb.GetFinalAssistantEventForTurnParams{
 		SessionID: sessionID,
 		TurnID:    sqlstore.NullStr(turnID),
 	})
 	if err != nil {
-		return capturedResponse{Status: responseMissing}
+		return ResponseCandidate{Status: responseMissing}
 	}
-
-	res := capturedResponse{EventID: row.EventID, CompletedAt: row.Ts}
-
+	res := ResponseCandidate{EventID: row.EventID, CompletedAt: row.Ts}
 	if !row.PayloadHash.Valid || row.PayloadHash.String == "" {
 		return withStatus(res, responseMissing)
 	}
@@ -71,39 +116,35 @@ func captureFinalResponse(ctx context.Context, h *sqlstore.Handle, bs *blobs.Sto
 		slog.Debug("provenance: load response payload failed", "err", err)
 		return withStatus(res, responseMissing)
 	}
-
 	text, err := claudeagent.FinalAssistantText(string(raw))
 	if err != nil {
 		slog.Debug("provenance: extract response text failed", "err", err)
 		return withStatus(res, responseMissing)
 	}
-	redacted, err := redact.String(text)
-	if err != nil {
-		slog.Warn("provenance: redact response failed", "err", err)
-		return withStatus(res, responseMissing)
-	}
-	if redacted == "" {
-		return withStatus(res, responseEmpty)
-	}
-
-	obj := turnResponse{Version: responseObjectVersion, Kind: "turn_response", Text: redacted}
-	data, err := json.Marshal(obj)
-	if err != nil {
-		return withStatus(res, responseMissing)
-	}
-	hash, _, err := bs.Put(ctx, data)
-	if err != nil {
-		slog.Debug("provenance: store response object failed", "err", err)
-		return withStatus(res, responseMissing)
-	}
-
-	res.Hash = hash
-	res.Summary = summarizeResponse(redacted)
-	res.Status = responseComplete
-	return res
+	return RedactAndStoreResponse(ctx, bs, row.EventID, text, row.Ts)
 }
 
-func withStatus(r capturedResponse, status string) capturedResponse {
+// ensureResponseResolvable keeps a hash only when its object exists in the
+// repository store or can be copied there with the same hash.
+func ensureResponseResolvable(ctx context.Context, bs, sourceBlobs *blobs.Store, r ResponseCandidate) ResponseCandidate {
+	if r.Hash == "" {
+		return r
+	}
+	if _, err := bs.Get(ctx, r.Hash); err == nil {
+		return r // already in the repository store
+	}
+	if sourceBlobs != nil {
+		if raw, err := sourceBlobs.Get(ctx, r.Hash); err == nil {
+			if h, _, perr := bs.Put(ctx, raw); perr == nil && h == r.Hash {
+				return r // copied and verified
+			}
+		}
+	}
+	slog.Debug("provenance: response object unresolvable in repo store, recording missing", "hash", r.Hash)
+	return ResponseCandidate{Status: responseMissing, EventID: r.EventID, CompletedAt: r.CompletedAt}
+}
+
+func withStatus(r ResponseCandidate, status string) ResponseCandidate {
 	r.Status = status
 	return r
 }
