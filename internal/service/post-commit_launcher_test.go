@@ -71,7 +71,7 @@ func enableLauncherInSettings(t *testing.T) {
 }
 
 // enableLauncherLegacySettings seeds enabled settings with no recorded
-// binary identity — the shape written by pre-identity versions. Dispatch
+// binary identity - the shape written by pre-identity versions. Dispatch
 // treats this as stale and self-heals via refresh.
 func enableLauncherLegacySettings(t *testing.T) {
 	t.Helper()

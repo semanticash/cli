@@ -474,7 +474,7 @@ func TestRework_CodexWriteShapedEvent(t *testing.T) {
 func TestRework_Codex_NoSmearAcrossSiblingFiles(t *testing.T) {
 	// One patch touches two files and produces two per-file events sharing
 	// one canonical blob. fileB's old_text must only attach to fileB's
-	// event — the fileA event must not absorb it.
+	// event - the fileA event must not absorb it.
 	fileA, fileB := "internal/a.go", "internal/b.go"
 	blob := canonicalBlob(
 		map[string]any{"path": fileA, "operation": "edit", "old_text": "unrelated content here", "new_text": "x"},

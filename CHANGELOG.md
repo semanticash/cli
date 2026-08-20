@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Provenance uploads now use v2 turn bundles to include final-response status and metadata. Complete responses upload their redacted content-addressed object with the bundle.
 - Cursor shell hooks now capture pre-command workspace snapshots for opt-in tool-delta attribution.
 - Provenance uploads now include redacted canonical tool deltas for shell steps. Deltas that cannot be safely redacted are omitted with their bundle references.
+- Added a versioned matcher corpus under `corpus/v1/` for validating attribution parity across implementations.
 
 ### Changed
 
