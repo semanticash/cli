@@ -29,6 +29,8 @@ semantica blame HEAD --json   # per-file breakdown with exact/formatted/modified
 
 The JSON output includes per-file `ai_percentage`, line-level AI counts, `ai_provider_only_lines`, per-file `providers` involvement lists, per-commit provider breakdown, and attribution diagnostics. Each file also carries `evidence_class`, the strongest display evidence, plus `evidence_classes`, the full strongest-first list. Tool-delta scoring additionally reports `ai_delta_exact_lines`, `ai_delta_formatted_lines`, and `tool_delta_touch` evidence.
 
+See the [Evidence Contract](evidence-contract.md) for evidence classes, strength levels, and their limits.
+
 ### Prerequisites
 
 - Semantica enabled in the repo

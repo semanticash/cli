@@ -1,6 +1,6 @@
 # Limitations
 
-Known constraints and intentional scope boundaries. Feature-specific caveats are documented in their respective pages - this is the cross-cutting summary.
+Known constraints and intentional scope boundaries. Feature-specific caveats are documented with each feature. See the [Evidence Contract](evidence-contract.md) for attribution-specific limits.
 
 ---
 

@@ -65,9 +65,8 @@ type AggregateResult struct {
 	Providers         []ProviderAttribution
 }
 
-// EvidenceClass describes how a file's AI attribution was determined.
-// Internal taxonomy for the evaluation harness and detailed diagnostics.
-// User-facing output uses factual notes rather than exposing raw classes.
+// EvidenceClass describes the evidence used for a file's attribution. JSON
+// output exposes these values; human-readable output uses factual notes.
 type EvidenceClass string
 
 const (
@@ -143,7 +142,7 @@ type CommitResult struct {
 	Files                 []FileAttributionOutput
 	ProviderDetails       []ProviderAttribution
 	Evidence              string // evidence-strength level: "High", "Medium", "Low"
-	FallbackCount         int    // number of AI-attributed files with provider-touch or weaker evidence
+	FallbackCount         int    // AI-attributed files carrying any fallback evidence
 }
 
 // FileAttributionOutput holds per-file attribution scores in the commit result.
