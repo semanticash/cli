@@ -60,6 +60,12 @@ type BenchRecord struct {
 	LinksSkipped      int   `json:"links_skipped,omitempty"`
 	SweepErrors       int   `json:"sweep_errors,omitempty"`
 	StoreBytes        int64 `json:"store_bytes,omitempty"`
+	// Maintenance outcome for distinguishing completed, deferred, and skipped
+	// passes.
+	PruneRan            bool `json:"prune_ran,omitempty"`
+	MaintenanceDeferred bool `json:"maintenance_deferred,omitempty"`
+	MaintenanceSkipped  bool `json:"maintenance_skipped,omitempty"`
+	RefsDeleted         int  `json:"refs_deleted,omitempty"`
 }
 
 // BenchScope aggregates per-repo stats while one hook or turn is being handled.

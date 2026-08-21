@@ -58,17 +58,21 @@ func SweepToolWindows(ctx context.Context) {
 			wlog("worker: toolwindow sweep %s: replayed=%d resumed=%d terminal=%d reclaimed=%d tombstoned=%d links_skipped=%d errors=%d\n",
 				r.Path, report.PartialsReplayed, report.GroupsResumed, report.GroupsTerminal, report.GroupsReclaimed, report.MembersTombstoned, report.LinksSkipped, report.Errors)
 		}
-		// Record recovery progress and snapshot-store size.
+		// Record recovery progress, snapshot-store size, and maintenance outcome.
 		doctor.EmitBenchRecord(r.Path, doctor.BenchRecord{
-			Kind:              "toolwindow_sweep",
-			PartialsReplayed:  report.PartialsReplayed,
-			GroupsResumed:     report.GroupsResumed,
-			GroupsTerminal:    report.GroupsTerminal,
-			GroupsReclaimed:   report.GroupsReclaimed,
-			MembersTombstoned: report.MembersTombstoned,
-			LinksSkipped:      report.LinksSkipped,
-			SweepErrors:       report.Errors,
-			StoreBytes:        report.Maintenance.StoreBytes,
+			Kind:                "toolwindow_sweep",
+			PartialsReplayed:    report.PartialsReplayed,
+			GroupsResumed:       report.GroupsResumed,
+			GroupsTerminal:      report.GroupsTerminal,
+			GroupsReclaimed:     report.GroupsReclaimed,
+			MembersTombstoned:   report.MembersTombstoned,
+			LinksSkipped:        report.LinksSkipped,
+			SweepErrors:         report.Errors,
+			StoreBytes:          report.Maintenance.StoreBytes,
+			PruneRan:            report.Maintenance.PruneRan,
+			MaintenanceDeferred: report.Maintenance.Deferred,
+			MaintenanceSkipped:  report.MaintenanceSkipped,
+			RefsDeleted:         report.Maintenance.RefsDeleted,
 		})
 	}
 }

@@ -100,6 +100,45 @@ func TestSweepEmitsBenchRecord(t *testing.T) {
 	}
 }
 
+// A sweep with no active windows records a completed maintenance pass.
+func TestSweepBenchRecordReportsPruneCompletion(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+	enableSemantica(t, ctx, dir)
+	benchDir := filepath.Join(dir, ".semantica", "doctor")
+	if err := os.MkdirAll(benchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(benchDir, "bench.enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	SweepToolWindows(ctx)
+
+	f, err := os.Open(doctor.BenchLogPath(dir))
+	if err != nil {
+		t.Fatalf("bench log: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	found := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var r doctor.BenchRecord
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatalf("bench record malformed: %v", err)
+		}
+		if r.Kind == "toolwindow_sweep" {
+			found = true
+			if !r.PruneRan || r.MaintenanceDeferred || r.MaintenanceSkipped {
+				t.Fatalf("sweep record = %+v, want completed prune (prune_ran, not deferred/skipped)", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no toolwindow_sweep record emitted")
+	}
+}
+
 // Error telemetry retains reclamation completed before a store failure.
 func TestSweepErrorRecordIncludesReclamation(t *testing.T) {
 	dir := initGitRepo(t)
