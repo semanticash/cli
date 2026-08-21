@@ -102,6 +102,10 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 	for _, f := range in.FilesCreated {
 		createdSet[f] = true
 	}
+	deletedSet := make(map[string]bool, len(in.FilesDeleted))
+	for _, f := range in.FilesDeleted {
+		deletedSet[f] = true
+	}
 
 	filesWithAI := make(map[string]bool)
 	providerLines := make(map[string]int)
@@ -162,7 +166,7 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 
 		if createdSet[fs.Path] {
 			r.FilesCreated = append(r.FilesCreated, FileChangeOutput{Path: fs.Path, AI: isAI, Providers: provs})
-		} else if fa.TotalLines > 0 {
+		} else if !deletedSet[fs.Path] && (fa.TotalLines > 0 || fa.DeletedNonBlank > 0) {
 			r.FilesEdited = append(r.FilesEdited, FileChangeOutput{Path: fs.Path, AI: isAI, Providers: provs})
 		}
 
@@ -207,8 +211,8 @@ func BuildCommitResult(in CommitResultInput) CommitResult {
 		filesSeen[f] = true
 	}
 
-	r.FilesTotal = len(r.FilesCreated) + len(r.FilesEdited)
-	r.FilesAITouched = countAIFileChanges(r.FilesCreated) + countAIFileChanges(r.FilesEdited)
+	r.FilesTotal = len(r.FilesCreated) + len(r.FilesEdited) + len(r.FilesDeleted)
+	r.FilesAITouched = countAIFileChanges(r.FilesCreated) + countAIFileChanges(r.FilesEdited) + countAIFileChanges(r.FilesDeleted)
 	if r.TotalLines > 0 {
 		r.AIPercentage = float64(r.AILines) / float64(r.TotalLines) * 100
 	}

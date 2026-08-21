@@ -1995,6 +1995,10 @@ func commitWithNoDelta(ctx context.Context, hash string, repo *git.Repo) (*Attri
 	for _, f := range dr.filesCreated {
 		createdSet[f] = true
 	}
+	deletedSet := make(map[string]bool, len(dr.filesDeleted))
+	for _, f := range dr.filesDeleted {
+		deletedSet[f] = true
+	}
 
 	for _, fd := range dr.files {
 		fa := FileAttribution{Path: fd.path, DeletedNonBlank: fd.deletedNonBlank}
@@ -2014,7 +2018,7 @@ func commitWithNoDelta(ctx context.Context, hash string, repo *git.Repo) (*Attri
 
 		if createdSet[fd.path] {
 			result.FilesCreated = append(result.FilesCreated, FileChange{Path: fd.path})
-		} else if fa.TotalLines > 0 {
+		} else if !deletedSet[fd.path] && (fa.TotalLines > 0 || fa.DeletedNonBlank > 0) {
 			result.FilesEdited = append(result.FilesEdited, FileChange{Path: fd.path})
 		}
 	}
@@ -2022,7 +2026,7 @@ func commitWithNoDelta(ctx context.Context, hash string, repo *git.Repo) (*Attri
 		result.FilesDeleted = append(result.FilesDeleted, FileChange{Path: f})
 	}
 
-	result.FilesTotal = len(dr.files)
+	result.FilesTotal = len(result.FilesCreated) + len(result.FilesEdited) + len(result.FilesDeleted)
 	result.Diagnostics = AttributionDiagnostics{
 		Notes: []string{"No linked checkpoint found. This commit was made without a tracked agent session."},
 	}
