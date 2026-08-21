@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// ensureCoordinationLock creates the lock normally established by capture or
+// maintenance.
+func ensureCoordinationLock(t *testing.T, reg *Registry) {
+	t.Helper()
+	if err := os.WriteFile(reg.lockPath(), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // backdateRef ages a loose ref file so it falls before the stale cutoff.
 func backdateRef(t *testing.T, s *Store, ref string, age time.Duration) {
 	t.Helper()
@@ -41,6 +50,7 @@ func TestInspectStoragePinsCutoffsFromNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	now := time.Now()
 	insp, err := s.InspectStorage(context.Background(), reg, 0, now)
 	if err != nil {
@@ -65,6 +75,7 @@ func TestInspectStorageRefClassificationMatchesMaintain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 
 	// refA: referenced by a retained (complete) window -> protected.
 	refA := SnapshotRef("main", "g-a", "tu-a")
@@ -143,6 +154,7 @@ func TestInspectStorageReportsEligibleObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 
 	// Capture new content without a ref: the tree and blob are dangling.
 	writeFile(t, root, "dangling.txt", "dangling content\n")
@@ -185,6 +197,7 @@ func TestInspectStorageDefersWhenWindowActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	if _, err := reg.Begin(context.Background(), entry("tu-active", 100)); err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +221,7 @@ func TestCoordinationLockHoldsReceiptLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan struct{})
@@ -240,6 +254,7 @@ func TestCoordinationLockIsExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan struct{})
@@ -273,6 +288,7 @@ func TestInspectStorageDefersOnTransientMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	tombstones := filepath.Join(root, ".semantica", "tool-windows", "tombstones")
 	prev := storageInspectMidSeam
 	storageInspectMidSeam = func() {
@@ -298,6 +314,7 @@ func TestInspectStorageReadErrorWithTransientChangeDefers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	tombstones := filepath.Join(root, ".semantica", "tool-windows", "tombstones")
 	prev := registrySnapshot
 	registrySnapshot = func(string) (RegistrySnapshot, error) {
@@ -324,6 +341,7 @@ func TestInspectStorageReadErrorWithoutTransientChangeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	sentinel := errors.New("simulated corrupt registry state")
 	prev := registrySnapshot
 	registrySnapshot = func(string) (RegistrySnapshot, error) {
@@ -348,6 +366,7 @@ func TestInspectStorageCancellationIsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	insp, err := s.InspectStorage(ctx, reg, 0, time.Now())
@@ -476,6 +495,7 @@ func TestInspectStorageDefersUnderConcurrentLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ensureCoordinationLock(t, reg)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})

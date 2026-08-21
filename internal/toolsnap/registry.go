@@ -115,6 +115,26 @@ type Registry struct {
 	afterRecoveryWrites  func()
 }
 
+// OpenRegistryForInspection opens an existing registry without creating or
+// repairing state. It rejects missing, non-directory, and symlinked paths.
+func OpenRegistryForInspection(semDir string) (*Registry, error) {
+	dir := filepath.Join(semDir, "tool-windows")
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCaptureStorageAbsent
+		}
+		return nil, fmt.Errorf("toolsnap: probe registry: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("toolsnap: registry directory is a symlink")
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("toolsnap: registry path is not a directory")
+	}
+	return &Registry{dir: dir}, nil
+}
+
 // OpenRegistry prepares the registry directories under semDir.
 func OpenRegistry(semDir string) (*Registry, error) {
 	dir := filepath.Join(semDir, "tool-windows")
@@ -471,6 +491,65 @@ func (r *Registry) WithCoordinationLock(ctx context.Context, fn func() error) er
 	}()
 	if err := ctx.Err(); err != nil {
 		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired during receipt lock acquisition"}
+	}
+	return fn()
+}
+
+// lockWithPoll acquires an exclusive lock or returns when ctx expires.
+func lockWithPoll(ctx context.Context, f *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		}
+		ok, err := platform.TryLockFile(f)
+		if err != nil {
+			return fmt.Errorf("toolsnap: registry lock: %w", err)
+		}
+		if ok {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		case <-time.After(lockPollInterval):
+		}
+	}
+}
+
+// WithCoordinationLockReadOnly runs fn while holding existing registry and
+// receipt locks. It never creates state and returns ErrCaptureStorageAbsent
+// when either lock file is missing.
+func (r *Registry) WithCoordinationLockReadOnly(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before lock acquisition"}
+	}
+	lock, err := os.OpenFile(r.lockPath(), os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrCaptureStorageAbsent
+		}
+		return fmt.Errorf("toolsnap: open registry lock: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := lockWithPoll(ctx, lock); err != nil {
+		return err
+	}
+	defer func() { _ = platform.UnlockFile(lock) }()
+
+	receipt, err := os.OpenFile(r.receiptLockPath(), os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrCaptureStorageAbsent
+		}
+		return fmt.Errorf("toolsnap: open receipt lock: %w", err)
+	}
+	defer func() { _ = receipt.Close() }()
+	if err := lockWithPoll(ctx, receipt); err != nil {
+		return err
+	}
+	defer func() { _ = platform.UnlockFile(receipt) }()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before inspection"}
 	}
 	return fn()
 }

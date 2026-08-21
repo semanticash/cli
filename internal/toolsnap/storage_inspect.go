@@ -17,42 +17,42 @@ import (
 type StorageInspection struct {
 	// Now is the reference time. RefCutoff and ObjectExpire derive from it so all
 	// age-based classifications use the same clock value.
-	Now          time.Time
-	RefCutoff    time.Time // Now - DefaultStaleWindowAge (loose-ref age rule)
-	ObjectExpire time.Time // Now - grace (unreachable-object prune rule)
+	Now          time.Time `json:"now"`
+	RefCutoff    time.Time `json:"ref_cutoff"`    // Now - DefaultStaleWindowAge (loose-ref age rule)
+	ObjectExpire time.Time `json:"object_expire"` // Now - grace (unreachable-object prune rule)
 
 	// Deferred reports that eligibility was not measured. DeferReason identifies
 	// the cause. Eligibility fields remain zero so the inspection can be retried.
-	Deferred    bool
-	DeferReason string
+	Deferred    bool   `json:"deferred"`
+	DeferReason string `json:"defer_reason,omitempty"`
 
 	// Registry state. Durable evidence-link history is outside this report.
-	NextSeq              int64 // monotonic capture counter
-	Windows              int
-	ActiveWindows        int
-	Groups               int // total groups, open plus sealed
-	SealedGroups         int
-	PendingFinalizations int
-	PendingPartials      int
-	Tombstones           int
-	MalformedTombstones  int
-	ClosureMarkers       int
+	NextSeq              int64 `json:"next_seq"` // monotonic capture counter
+	Windows              int   `json:"windows"`
+	ActiveWindows        int   `json:"active_windows"`
+	Groups               int   `json:"groups"` // total groups, open plus sealed
+	SealedGroups         int   `json:"sealed_groups"`
+	PendingFinalizations int   `json:"pending_finalizations"`
+	PendingPartials      int   `json:"pending_partials"`
+	Tombstones           int   `json:"tombstones"`
+	MalformedTombstones  int   `json:"malformed_tombstones"`
+	ClosureMarkers       int   `json:"closure_markers"`
 
 	// Ref classification, disjoint and summing to RefsTotal.
-	RefsTotal           int
-	RefsReferenced      int // named by an open window's SnapshotRef
-	RefsTargetProtected int // target tree protected by a window or group final
-	RefsFresh           int // unprotected, loose, readable, newer than RefCutoff
-	RefsUnreadable      int // unprotected but unreadable or packed (no loose file)
-	RefsStaleEligible   int // unprotected, loose, readable, at or before RefCutoff
+	RefsTotal           int `json:"refs_total"`
+	RefsReferenced      int `json:"refs_referenced"`       // named by an open window's SnapshotRef
+	RefsTargetProtected int `json:"refs_target_protected"` // target tree protected by a window or group final
+	RefsFresh           int `json:"refs_fresh"`            // unprotected, loose, readable, newer than RefCutoff
+	RefsUnreadable      int `json:"refs_unreadable"`       // unprotected but unreadable or packed (no loose file)
+	RefsStaleEligible   int `json:"refs_stale_eligible"`   // unprotected, loose, readable, at or before RefCutoff
 
-	EligibleObjects     int   // unreachable loose objects older than ObjectExpire
-	EligibleObjectBytes int64 // on-disk bytes of those objects
+	EligibleObjects     int   `json:"eligible_objects"`      // unreachable loose objects older than ObjectExpire
+	EligibleObjectBytes int64 `json:"eligible_object_bytes"` // on-disk bytes of those objects
 
-	TotalObjects int   // loose plus in-pack
-	TotalBytes   int64 // loose plus pack bytes
-	GarbageCount int
-	GarbageBytes int64
+	TotalObjects int   `json:"total_objects"` // loose plus in-pack
+	TotalBytes   int64 `json:"total_bytes"`   // loose plus pack bytes
+	GarbageCount int   `json:"garbage_count"`
+	GarbageBytes int64 `json:"garbage_bytes"`
 }
 
 // RefsKept returns the refs a Maintain pass would keep (total minus eligible),
@@ -83,7 +83,7 @@ func (s *Store) InspectStorage(ctx context.Context, reg *Registry, grace time.Du
 	lockCtx, lockCancel := context.WithTimeout(passCtx, maintenanceLockWait)
 	defer lockCancel()
 
-	lockErr := reg.WithCoordinationLock(lockCtx, func() error {
+	lockErr := reg.WithCoordinationLockReadOnly(lockCtx, func() error {
 		// Partial and tombstone records are lock-free. Bracket their published
 		// names and defer if the entry set changes during the measurement.
 		transientBefore, err := transientFingerprint(semDir)
