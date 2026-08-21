@@ -380,6 +380,7 @@ output still goes to `.semantica/worker.log`.
 
 - [Changelog](CHANGELOG.md) - notable changes by release
 - [Features](docs/features.md) - detailed guide to each capability
+- [Evidence contract](docs/evidence-contract.md) - attribution evidence meanings and limits
 - [Hosted features](docs/hosted-reporting.md) - optional auth, repo connection, and remote sync behavior
 - [Architecture](docs/architecture.md) - how Semantica works internally
 - [Providers](docs/providers.md) - AI provider integration details
