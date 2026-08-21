@@ -16,8 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added a versioned matcher corpus under `corpus/v1/` for validating attribution parity across implementations.
 - Documented attribution evidence classes, strength levels, and their limits.
 
-### Changed
-
 ### Fixed
 
 - Kiro CLI capture now recognizes canonical and alias names for file-write and shell tools.

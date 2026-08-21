@@ -66,18 +66,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 			return false, nil
 		}
 
-		referenced := map[string]bool{}
-		protectedTrees := map[string]bool{}
-		for _, w := range state.Windows {
-			referenced[w.SnapshotRef] = true
-			protectedTrees[w.TreeHash] = true
-		}
-		// Final state records tree hashes but not post-ref names.
-		for _, f := range state.Finals {
-			if f.PostTreeHash != "" {
-				protectedTrees[f.PostTreeHash] = true
-			}
-		}
+		referenced, protectedTrees := refProtectionSets(state.Windows, state.Finals)
 		refs, err := s.ListRefs(passCtx)
 		if err != nil {
 			return false, err
@@ -88,13 +77,7 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 			if err := passCtx.Err(); err != nil {
 				return false, err
 			}
-			if referenced[ref] || protectedTrees[target] {
-				report.RefsKept++
-				continue
-			}
-			// Keep fresh or unreadable refs; they may still be recoverable.
-			fi, err := os.Stat(filepath.Join(s.Dir, filepath.FromSlash(ref)))
-			if err != nil || fi.ModTime().After(staleCutoff) {
+			if !refStaleEligible(s.Dir, ref, target, referenced, protectedTrees, staleCutoff) {
 				report.RefsKept++
 				continue
 			}
@@ -156,6 +139,43 @@ func (s *Store) Maintain(ctx context.Context, reg *Registry, grace time.Duration
 		return MaintenanceReport{}, err
 	}
 	return report, nil
+}
+
+// refProtectionSets returns refs and trees protected from maintenance.
+func refProtectionSets(windows []PendingToolSnapshot, finals map[string]GroupFinal) (referenced, protectedTrees map[string]bool) {
+	referenced = map[string]bool{}
+	protectedTrees = map[string]bool{}
+	for _, w := range windows {
+		referenced[w.SnapshotRef] = true
+		protectedTrees[w.TreeHash] = true
+	}
+	// Final state records tree hashes but not post-ref names.
+	for _, f := range finals {
+		if f.PostTreeHash != "" {
+			protectedTrees[f.PostTreeHash] = true
+		}
+	}
+	return referenced, protectedTrees
+}
+
+// refStaleEligible reports whether an unprotected loose ref is old enough to
+// remove. Missing, unreadable, packed, and fresh refs remain ineligible.
+func refStaleEligible(dir, ref, target string, referenced, protectedTrees map[string]bool, cutoff time.Time) bool {
+	if referenced[ref] || protectedTrees[target] {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(ref)))
+	if err != nil || fi.ModTime().After(cutoff) {
+		return false
+	}
+	return true
+}
+
+// refIsUnreadable reports whether a ref has no readable loose file (packed or
+// missing). Maintenance keeps such refs; the diagnostic counts them separately.
+func refIsUnreadable(dir, ref string) bool {
+	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(ref)))
+	return err != nil
 }
 
 // maintenanceBeforePrune is a test seam for mid-pass expiry.

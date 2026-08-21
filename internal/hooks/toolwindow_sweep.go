@@ -215,7 +215,7 @@ func sweepPendingFinalizations(ctx context.Context, reg *toolsnap.Registry, stor
 			slog.Warn("tool window sweep: resume finalization", "group", p.GroupID, "closed", closed, "err", err)
 			continue
 		}
-		releaseGroupRefs(ctx, store, cleanupRefs)
+		releaseGroupRefs(ctx, reg, store, cleanupRefs)
 		if terminal {
 			report.GroupsTerminal++
 		} else {

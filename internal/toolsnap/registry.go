@@ -429,6 +429,52 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	return true, fnErr
 }
 
+// WithCoordinationLock runs fn while holding the registry and receipt locks.
+// It performs no registry reads or writes. Callers may inspect snapshot state
+// or release closed-group refs, but must not mutate registry state. Lock
+// contention returns a ReasonLockTimeout PartialError.
+func (r *Registry) WithCoordinationLock(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before lock acquisition"}
+	}
+	f, err := os.OpenFile(r.lockPath(), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return fmt.Errorf("toolsnap: open registry lock: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	for {
+		ok, err := platform.TryLockFile(f)
+		if err != nil {
+			return fmt.Errorf("toolsnap: registry lock: %w", err)
+		}
+		if ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		case <-time.After(lockPollInterval):
+		}
+	}
+	defer func() { _ = platform.UnlockFile(f) }()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired during lock acquisition"}
+	}
+	// Match withLock's order to avoid deadlocks and receipt publication races.
+	receiptLock, err := r.acquireReceiptLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = platform.UnlockFile(receiptLock)
+		_ = receiptLock.Close()
+	}()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired during receipt lock acquisition"}
+	}
+	return fn()
+}
+
 // loadState normalizes, reconciles, and validates registry state.
 // A non-nil publishMarker persists closure markers for completed receipts.
 func (r *Registry) loadState(publishMarker func(key ToolKey, groupID string, at int64) error) (state registryState, applied []string, migrated bool, _ error) {

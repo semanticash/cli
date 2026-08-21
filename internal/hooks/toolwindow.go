@@ -280,7 +280,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 				bench.outcome = "closed_complete"
 			}
 			// Release refs only after registry closure is durable.
-			releaseGroupRefs(wctx, store, cleanupRefs)
+			releaseGroupRefs(wctx, reg, store, cleanupRefs)
 		} else {
 			bench.outcome = "non_final"
 		}
@@ -454,12 +454,30 @@ func collectGroupRefs(dst map[string]string, store *toolsnap.Store, members []to
 	}
 }
 
-// releaseGroupRefs removes unchanged refs; maintenance handles leftovers.
-func releaseGroupRefs(ctx context.Context, store *toolsnap.Store, refs map[string]string) {
-	for ref, tree := range refs {
-		if err := store.DeleteRef(ctx, ref, tree); err != nil {
-			slog.Warn("tool window: release ref", "ref", ref, "err", err)
+// toolWindowRefReleaseWait bounds how long post-closure ref release waits for
+// the coordination lock before leaving the refs to maintenance.
+const toolWindowRefReleaseWait = 250 * time.Millisecond
+
+// releaseGroupRefs removes unchanged refs under the registry coordination lock
+// so a concurrent inspection or maintenance pass sees a consistent ref set.
+// It is best-effort and bounded: leftovers are handled by maintenance.
+func releaseGroupRefs(ctx context.Context, reg *toolsnap.Registry, store *toolsnap.Store, refs map[string]string) {
+	if len(refs) == 0 {
+		return
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, toolWindowRefReleaseWait)
+	defer cancel()
+	if err := reg.WithCoordinationLock(lockCtx, func() error {
+		for ref, tree := range refs {
+			// Bound deletion with the same context so a slow Git command
+			// cannot hold the coordination lock past the release budget.
+			if err := store.DeleteRef(lockCtx, ref, tree); err != nil {
+				slog.Warn("tool window: release ref", "ref", ref, "err", err)
+			}
 		}
+		return nil
+	}); err != nil {
+		slog.Warn("tool window: release refs deferred to maintenance", "err", err)
 	}
 }
 
