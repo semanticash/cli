@@ -1580,6 +1580,9 @@ func TestParseAndDispatch_CodexBashWindowProducesCompleteDelta(t *testing.T) {
 // newCodexRepoWorld creates and registers an enabled test repository.
 func newCodexRepoWorld(t *testing.T, home string) (repoPath, semDir string, bh *broker.Handle) {
 	t.Helper()
+	// Real Git and SQLite work can exceed the production capture deadline on
+	// slower CI runners.
+	t.Cleanup(hooks.SetToolWindowDeadlineForTest(30 * time.Second))
 	ctx := context.Background()
 
 	base, err := filepath.EvalSymlinks(t.TempDir())
