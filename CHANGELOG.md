@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Provenance uploads now include redacted canonical tool deltas for shell steps. Deltas that cannot be safely redacted are omitted with their bundle references.
 - Added a versioned matcher corpus under `corpus/v1/` for validating attribution parity across implementations.
 - Documented attribution evidence classes, strength levels, and their limits.
+- Doctor hook benchmarks now include optional per-stage capture timings.
 
 ### Fixed
 

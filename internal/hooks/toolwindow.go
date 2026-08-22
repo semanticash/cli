@@ -69,12 +69,12 @@ type toolWindowBench struct {
 	groupMembers  int
 }
 
-// emitToolWindowBench records one tool-window hook result.
-func emitToolWindowBench(target *toolWindowTarget, event *Event, phase string, start time.Time, bench *toolWindowBench) {
+// emitToolWindowBench records a tool-window result and optional stage timings.
+func emitToolWindowBench(target *toolWindowTarget, event *Event, phase string, start time.Time, bench *toolWindowBench, stages *toolsnap.StageTimes, scope *doctor.BenchScope) {
 	if target == nil || bench.outcome == "" {
 		return
 	}
-	doctor.EmitBenchRecord(target.repoPath, doctor.BenchRecord{
+	rec := doctor.BenchRecord{
 		Kind: "toolwindow", Phase: phase, Tool: event.ToolName,
 		SessionID: event.SessionID, TurnID: event.TurnID, ToolUseID: event.ToolUseID,
 		DurationMS:    doctor.Milliseconds(time.Since(start)),
@@ -83,7 +83,29 @@ func emitToolWindowBench(target *toolWindowTarget, event *Event, phase string, s
 		FilesChanged:  bench.filesChanged,
 		BytesRead:     bench.bytesRead,
 		GroupMembers:  bench.groupMembers,
-	})
+	}
+	if stages != nil {
+		rec.StageLeafMS = stages.LeafMillis()
+		rec.StageAggMS = stages.AggregateMillis()
+		if un := rec.DurationMS - stages.LeafTotal().Milliseconds(); un > 0 {
+			rec.UnaccountedMS = un
+		}
+		// These timings are nested within persist_events.
+		if scope != nil {
+			st := scope.Snapshot()[target.repoPath]
+			detail := map[string]int64{}
+			if ms := doctor.Milliseconds(st.DBDuration); ms > 0 {
+				detail["event_db_write"] = ms
+			}
+			if ms := doctor.Milliseconds(st.BlobDuration); ms > 0 {
+				detail["event_blob_propagate"] = ms
+			}
+			if len(detail) > 0 {
+				rec.PersistDetailMS = detail
+			}
+		}
+	}
+	doctor.EmitBenchRecord(target.repoPath, rec)
 }
 
 // handleToolStepStarted captures a pre-tool snapshot without failing the provider command.
@@ -122,26 +144,36 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	// Include hooks that do not write database rows in timing output.
 	doctor.AddBenchStats(wctx, target.repoPath, doctor.BenchStats{})
 	bench := &toolWindowBench{}
-	defer emitToolWindowBench(target, event, "pre", start, bench)
+	var stages *toolsnap.StageTimes
+	if doctor.BenchEnabled(target.repoPath) {
+		wctx, stages = toolsnap.WithStageTimes(wctx)
+	}
+	scope := doctor.BenchScopeFrom(wctx)
+	defer func() { emitToolWindowBench(target, event, "pre", start, bench, stages, scope) }()
 
+	stopSetup := toolsnap.MeasureStage(wctx, "snapshot_store_setup")
 	rc, err := toolsnap.ResolveRepoContext(wctx, target.repoPath)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: resolve repository", "err", err)
 		return nil
 	}
 	store, err := toolsnap.OpenStore(wctx, rc, target.semDir)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open snapshot store", "err", err)
 		return nil
 	}
 	reg, err := toolsnap.OpenRegistry(target.semDir)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open registry", "err", err)
 		return nil
 	}
+	stopSetup()
 
 	// Registry keys use the same underscore-normalized provider names as events.
 	key := toolsnap.ToolKey{
@@ -205,7 +237,12 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		return false
 	}
 	bench := &toolWindowBench{}
-	defer emitToolWindowBench(target, event, "post", start, bench)
+	var stages *toolsnap.StageTimes
+	if doctor.BenchEnabled(target.repoPath) {
+		wctx, stages = toolsnap.WithStageTimes(wctx)
+	}
+	scope := doctor.BenchScopeFrom(wctx)
+	defer func() { emitToolWindowBench(target, event, "post", start, bench, stages, scope) }()
 	key := toolsnap.ToolKey{
 		RepositoryID: target.repositoryID,
 		Provider:     strings.ReplaceAll(providerName, "-", "_"),
@@ -214,24 +251,29 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		ToolUseID:    event.ToolUseID,
 	}
 
+	stopSetup := toolsnap.MeasureStage(wctx, "snapshot_store_setup")
 	rc, err := toolsnap.ResolveRepoContext(wctx, target.repoPath)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: resolve repository", "err", err)
 		return false
 	}
 	store, err := toolsnap.OpenStore(wctx, rc, target.semDir)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open snapshot store", "err", err)
 		return false
 	}
 	reg, err := toolsnap.OpenRegistry(target.semDir)
 	if err != nil {
+		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open registry", "err", err)
 		return false
 	}
+	stopSetup()
 
 	// A tombstone prevents a late post hook from reading newer changes.
 	if tombstoned, err := reg.HasTombstone(key); err != nil || tombstoned {
@@ -263,7 +305,9 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		CommandSummary: commandSummary(event.ToolInput),
 	}
 	writeEvents := func(toolsnap.PendingToolSnapshot) error {
+		stop := toolsnap.MeasureStage(wctx, "persist_events")
 		_, err := broker.WriteEventsToRepo(wctx, target.repoPath, events, globalBlobs)
+		stop()
 		return err
 	}
 	cleanupRefs := map[string]string{}
@@ -280,7 +324,9 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 				bench.outcome = "closed_complete"
 			}
 			// Release refs only after registry closure is durable.
+			stopRel := toolsnap.MeasureStage(wctx, "ref_release")
 			releaseGroupRefs(wctx, reg, store, cleanupRefs)
+			stopRel()
 		} else {
 			bench.outcome = "non_final"
 		}
@@ -339,7 +385,10 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 	switch {
 	case prior != nil && prior.DeltaHash != "":
 		// Resume with the durable delta instead of reading the workspace.
-		if err := persistEvidenceLinks(ctx, target, members, prior.DeltaHash, info.At); err != nil {
+		stopLinks := toolsnap.MeasureStage(ctx, "persist_evidence_links")
+		err := persistEvidenceLinks(ctx, target, members, prior.DeltaHash, info.At)
+		stopLinks()
+		if err != nil {
 			return toolsnap.FinalizeResult{Final: *prior}, err
 		}
 		collectGroupRefs(cleanupRefs, store, members, groupID, prior.PostTreeHash)
@@ -395,11 +444,17 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 	}
 
 	// Events must exist before any group identity that references them.
-	if _, err := broker.WriteEventsToRepo(ctx, target.repoPath, events, globalBlobs); err != nil {
-		return toolsnap.FinalizeResult{}, err
+	stopEvents := toolsnap.MeasureStage(ctx, "persist_events")
+	_, evErr := broker.WriteEventsToRepo(ctx, target.repoPath, events, globalBlobs)
+	stopEvents()
+	if evErr != nil {
+		return toolsnap.FinalizeResult{}, evErr
 	}
 	if postTree != "" && (prior == nil || prior.PostTreeHash == "") {
-		if err := store.EnsureRef(ctx, toolsnap.GroupPostRef(store.WorktreeID(), groupID), postTree); err != nil {
+		stopRef := toolsnap.MeasureStage(ctx, "ref_publish")
+		refErr := store.EnsureRef(ctx, toolsnap.GroupPostRef(store.WorktreeID(), groupID), postTree)
+		stopRef()
+		if refErr != nil {
 			// An unreachable post tree cannot support a retry.
 			partialReason = toolsnap.ReasonAlternateGone
 			postTree = ""
@@ -412,13 +467,18 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 	if err != nil {
 		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
 	}
+	stopBlob := toolsnap.MeasureStage(ctx, "persist_delta_blob")
 	deltaHash, _, err := repoBlobs.Put(ctx, canonical)
+	stopBlob()
 	if err != nil {
 		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
 	}
 	// Evidence links must be durable before the group can close.
-	if err := persistEvidenceLinks(ctx, target, members, deltaHash, info.At); err != nil {
-		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, deltaHash, partialReason, capturedAt)}, err
+	stopLinks := toolsnap.MeasureStage(ctx, "persist_evidence_links")
+	linkErr := persistEvidenceLinks(ctx, target, members, deltaHash, info.At)
+	stopLinks()
+	if linkErr != nil {
+		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, deltaHash, partialReason, capturedAt)}, linkErr
 	}
 	collectGroupRefs(cleanupRefs, store, members, groupID, postTree)
 	return toolsnap.FinalizeResult{Done: true}, nil

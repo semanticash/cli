@@ -363,8 +363,10 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	if err := ctx.Err(); err != nil {
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired before lock acquisition"}
 	}
+	stopLock := measureStage(ctx, "registry_lock_wait", stageLeaf)
 	f, err := os.OpenFile(r.lockPath(), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
+		stopLock()
 		return false, fmt.Errorf("toolsnap: open registry lock: %w", err)
 	}
 	defer func() { _ = f.Close() }()
@@ -372,6 +374,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	for {
 		ok, err := platform.TryLockFile(f)
 		if err != nil {
+			stopLock()
 			return false, fmt.Errorf("toolsnap: registry lock: %w", err)
 		}
 		if ok {
@@ -379,6 +382,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		}
 		select {
 		case <-ctx.Done():
+			stopLock()
 			return false, &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within the capture deadline"}
 		case <-time.After(lockPollInterval):
 		}
@@ -386,11 +390,13 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	defer func() { _ = platform.UnlockFile(f) }()
 	// Recheck after acquisition because the wait may have consumed the deadline.
 	if err := ctx.Err(); err != nil {
+		stopLock()
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired during lock acquisition"}
 	}
 	// Hold the receipt lock through publication and receipt deletion.
 	receiptLock, err := r.acquireReceiptLock(ctx)
 	if err != nil {
+		stopLock()
 		return false, err
 	}
 	defer func() {
@@ -399,14 +405,19 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	}()
 	// Registry operations stop if receipt-lock waiting exhausts the deadline.
 	if err := ctx.Err(); err != nil {
+		stopLock()
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired during receipt lock acquisition"}
 	}
 
+	stopLock()
+	stopRead := measureStage(ctx, "registry_read", stageLeaf)
 	state, applied, migrated, err := r.loadState(r.writeClosureMarker)
+	stopRead()
 	if err != nil {
 		return false, err
 	}
 
+	// The callback records its own stages.
 	persist, fnErr := fn(&state)
 	// Publish migrations and recovered receipts even on reads.
 	persist = persist || len(applied) > 0 || migrated
@@ -418,34 +429,44 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		return false, errors.Join(fnErr, err)
 	}
 
-	out, err := json.Marshal(state)
-	if err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: encode registry state: %w", err))
+	// Record the stage even when publication fails.
+	if werr := func() error {
+		stopWrite := measureStage(ctx, "registry_write", stageLeaf)
+		defer stopWrite()
+		out, err := json.Marshal(state)
+		if err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: encode registry state: %w", err))
+		}
+		tmp, err := os.CreateTemp(r.dir, "registry-*.tmp")
+		if err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: registry temp: %w", err))
+		}
+		tmpName := tmp.Name()
+		defer func() { _ = os.Remove(tmpName) }()
+		if _, err := tmp.Write(out); err != nil {
+			_ = tmp.Close()
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: write registry state: %w", err))
+		}
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: sync registry state: %w", err))
+		}
+		if err := tmp.Close(); err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: close registry state: %w", err))
+		}
+		// os.Rename cannot replace an existing file on Windows.
+		if err := platform.ReplaceFile(tmpName, r.statePath()); err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: publish registry state: %w", err))
+		}
+		return nil
+	}(); werr != nil {
+		return false, werr
 	}
-	tmp, err := os.CreateTemp(r.dir, "registry-*.tmp")
-	if err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: registry temp: %w", err))
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: write registry state: %w", err))
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: sync registry state: %w", err))
-	}
-	if err := tmp.Close(); err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: close registry state: %w", err))
-	}
-	// os.Rename cannot replace an existing file on Windows.
-	if err := platform.ReplaceFile(tmpName, r.statePath()); err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: publish registry state: %w", err))
-	}
+	stopClosure := measureStage(ctx, "closure_publish", stageLeaf)
 	for _, name := range applied {
 		_ = os.Remove(filepath.Join(r.receiptsDir(), name))
 	}
+	stopClosure()
 	return true, fnErr
 }
 

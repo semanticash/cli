@@ -66,6 +66,15 @@ type BenchRecord struct {
 	MaintenanceDeferred bool `json:"maintenance_deferred,omitempty"`
 	MaintenanceSkipped  bool `json:"maintenance_skipped,omitempty"`
 	RefsDeleted         int  `json:"refs_deleted,omitempty"`
+
+	// StageLeafMS contains disjoint timings. StageAggMS contains wrappers and is
+	// not summable. UnaccountedMS is handler time not covered by leaf stages.
+	StageLeafMS map[string]int64 `json:"stage_leaf_ms,omitempty"`
+	StageAggMS  map[string]int64 `json:"stage_agg_ms,omitempty"`
+	// PersistDetailMS contains WriteEventsToRepo internals. These timings are
+	// included in persist_events and are not summable.
+	PersistDetailMS map[string]int64 `json:"persist_detail_ms,omitempty"`
+	UnaccountedMS   int64            `json:"unaccounted_ms,omitempty"`
 }
 
 // BenchScope aggregates per-repo stats while one hook or turn is being handled.
@@ -78,6 +87,12 @@ type BenchScope struct {
 func WithBenchScope(ctx context.Context) (context.Context, *BenchScope) {
 	scope := &BenchScope{}
 	return context.WithValue(ctx, benchScopeKey{}, scope), scope
+}
+
+// BenchScopeFrom returns the bench scope attached to ctx, if any.
+func BenchScopeFrom(ctx context.Context) *BenchScope {
+	s, _ := ctx.Value(benchScopeKey{}).(*BenchScope)
+	return s
 }
 
 // AddBenchStats merges repo-local stats into the current scope, if present.
