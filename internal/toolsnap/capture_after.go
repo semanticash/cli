@@ -37,6 +37,8 @@ func translateTimeout(ctx context.Context, err error) error {
 // CaptureAfter compares the post-tool workspace with a prior snapshot.
 // Capture limits and unavailable evidence return typed partial errors.
 func (s *Store) CaptureAfter(ctx context.Context, before Snapshot) (CaptureResult, error) {
+	stop := measureStage(ctx, "capture_after", stageAggregate)
+	defer stop()
 	res, err := s.captureAfter(ctx, before)
 	if err != nil {
 		return CaptureResult{}, translateTimeout(ctx, err)
@@ -59,7 +61,9 @@ func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResul
 	if post.TreeHash == before.TreeHash {
 		return CaptureResult{Post: post}, nil
 	}
+	stopDelta := measureStage(ctx, "delta", stageLeaf)
 	files, bytesRead, truncated, err := s.DeltaBetweenTrees(ctx, before.TreeHash, post.TreeHash)
+	stopDelta()
 	if err != nil {
 		return CaptureResult{}, err
 	}

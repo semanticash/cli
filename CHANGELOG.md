@@ -15,8 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Provenance uploads now include redacted canonical tool deltas for shell steps. Deltas that cannot be safely redacted are omitted with their bundle references.
 - Added a versioned matcher corpus under `corpus/v1/` for validating attribution parity across implementations.
 - Documented attribution evidence classes, strength levels, and their limits.
-
-### Changed
+- Doctor hook benchmarks now include optional per-stage timings and a `semantica doctor hook-bench` summary of hook latency, stages, outcomes, and partial failures.
 
 ### Fixed
 
@@ -26,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Commit capture now persists a receipt before writing to SQLite. A later worker can recover the checkpoint and link in commit order while preserving the pre-commit timestamp.
 - Claude Code capture now accepts only hook payloads associated with its configured transcript directory, preventing third-party compatibility hooks from producing Claude events.
 - Commit attribution now uses a stable Git diff algorithm so preserved lines are not reported as new human changes during refactors.
+- `semantica blame` now includes deletion-only edits and deleted files in changed-file totals and AI-touched accounting.
 
 ## [0.6.1] - 2026-08-14
 

@@ -115,6 +115,26 @@ type Registry struct {
 	afterRecoveryWrites  func()
 }
 
+// OpenRegistryForInspection opens an existing registry without creating or
+// repairing state. It rejects missing, non-directory, and symlinked paths.
+func OpenRegistryForInspection(semDir string) (*Registry, error) {
+	dir := filepath.Join(semDir, "tool-windows")
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCaptureStorageAbsent
+		}
+		return nil, fmt.Errorf("toolsnap: probe registry: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("toolsnap: registry directory is a symlink")
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("toolsnap: registry path is not a directory")
+	}
+	return &Registry{dir: dir}, nil
+}
+
 // OpenRegistry prepares the registry directories under semDir.
 func OpenRegistry(semDir string) (*Registry, error) {
 	dir := filepath.Join(semDir, "tool-windows")
@@ -343,8 +363,10 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	if err := ctx.Err(); err != nil {
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired before lock acquisition"}
 	}
+	stopLock := measureStage(ctx, "registry_lock_wait", stageLeaf)
 	f, err := os.OpenFile(r.lockPath(), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
+		stopLock()
 		return false, fmt.Errorf("toolsnap: open registry lock: %w", err)
 	}
 	defer func() { _ = f.Close() }()
@@ -352,6 +374,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	for {
 		ok, err := platform.TryLockFile(f)
 		if err != nil {
+			stopLock()
 			return false, fmt.Errorf("toolsnap: registry lock: %w", err)
 		}
 		if ok {
@@ -359,6 +382,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		}
 		select {
 		case <-ctx.Done():
+			stopLock()
 			return false, &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within the capture deadline"}
 		case <-time.After(lockPollInterval):
 		}
@@ -366,11 +390,13 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	defer func() { _ = platform.UnlockFile(f) }()
 	// Recheck after acquisition because the wait may have consumed the deadline.
 	if err := ctx.Err(); err != nil {
+		stopLock()
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired during lock acquisition"}
 	}
 	// Hold the receipt lock through publication and receipt deletion.
 	receiptLock, err := r.acquireReceiptLock(ctx)
 	if err != nil {
+		stopLock()
 		return false, err
 	}
 	defer func() {
@@ -379,14 +405,19 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 	}()
 	// Registry operations stop if receipt-lock waiting exhausts the deadline.
 	if err := ctx.Err(); err != nil {
+		stopLock()
 		return false, &PartialError{Reason: ReasonLockTimeout, Detail: "capture deadline expired during receipt lock acquisition"}
 	}
 
+	stopLock()
+	stopRead := measureStage(ctx, "registry_read", stageLeaf)
 	state, applied, migrated, err := r.loadState(r.writeClosureMarker)
+	stopRead()
 	if err != nil {
 		return false, err
 	}
 
+	// The callback records its own stages.
 	persist, fnErr := fn(&state)
 	// Publish migrations and recovered receipts even on reads.
 	persist = persist || len(applied) > 0 || migrated
@@ -398,35 +429,150 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		return false, errors.Join(fnErr, err)
 	}
 
-	out, err := json.Marshal(state)
-	if err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: encode registry state: %w", err))
+	// Record the stage even when publication fails.
+	if werr := func() error {
+		stopWrite := measureStage(ctx, "registry_write", stageLeaf)
+		defer stopWrite()
+		out, err := json.Marshal(state)
+		if err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: encode registry state: %w", err))
+		}
+		tmp, err := os.CreateTemp(r.dir, "registry-*.tmp")
+		if err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: registry temp: %w", err))
+		}
+		tmpName := tmp.Name()
+		defer func() { _ = os.Remove(tmpName) }()
+		if _, err := tmp.Write(out); err != nil {
+			_ = tmp.Close()
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: write registry state: %w", err))
+		}
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: sync registry state: %w", err))
+		}
+		if err := tmp.Close(); err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: close registry state: %w", err))
+		}
+		// os.Rename cannot replace an existing file on Windows.
+		if err := platform.ReplaceFile(tmpName, r.statePath()); err != nil {
+			return errors.Join(fnErr, fmt.Errorf("toolsnap: publish registry state: %w", err))
+		}
+		return nil
+	}(); werr != nil {
+		return false, werr
 	}
-	tmp, err := os.CreateTemp(r.dir, "registry-*.tmp")
-	if err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: registry temp: %w", err))
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: write registry state: %w", err))
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: sync registry state: %w", err))
-	}
-	if err := tmp.Close(); err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: close registry state: %w", err))
-	}
-	// os.Rename cannot replace an existing file on Windows.
-	if err := platform.ReplaceFile(tmpName, r.statePath()); err != nil {
-		return false, errors.Join(fnErr, fmt.Errorf("toolsnap: publish registry state: %w", err))
-	}
+	stopClosure := measureStage(ctx, "closure_publish", stageLeaf)
 	for _, name := range applied {
 		_ = os.Remove(filepath.Join(r.receiptsDir(), name))
 	}
+	stopClosure()
 	return true, fnErr
+}
+
+// WithCoordinationLock runs fn while holding the registry and receipt locks.
+// It performs no registry reads or writes. Callers may inspect snapshot state
+// or release closed-group refs, but must not mutate registry state. Lock
+// contention returns a ReasonLockTimeout PartialError.
+func (r *Registry) WithCoordinationLock(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before lock acquisition"}
+	}
+	f, err := os.OpenFile(r.lockPath(), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return fmt.Errorf("toolsnap: open registry lock: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	for {
+		ok, err := platform.TryLockFile(f)
+		if err != nil {
+			return fmt.Errorf("toolsnap: registry lock: %w", err)
+		}
+		if ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		case <-time.After(lockPollInterval):
+		}
+	}
+	defer func() { _ = platform.UnlockFile(f) }()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired during lock acquisition"}
+	}
+	// Match withLock's order to avoid deadlocks and receipt publication races.
+	receiptLock, err := r.acquireReceiptLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = platform.UnlockFile(receiptLock)
+		_ = receiptLock.Close()
+	}()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired during receipt lock acquisition"}
+	}
+	return fn()
+}
+
+// lockWithPoll acquires an exclusive lock or returns when ctx expires.
+func lockWithPoll(ctx context.Context, f *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		}
+		ok, err := platform.TryLockFile(f)
+		if err != nil {
+			return fmt.Errorf("toolsnap: registry lock: %w", err)
+		}
+		if ok {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return &PartialError{Reason: ReasonLockTimeout, Detail: "registry lock not acquired within deadline"}
+		case <-time.After(lockPollInterval):
+		}
+	}
+}
+
+// WithCoordinationLockReadOnly runs fn while holding existing registry and
+// receipt locks. It never creates state and returns ErrCaptureStorageAbsent
+// when either lock file is missing.
+func (r *Registry) WithCoordinationLockReadOnly(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before lock acquisition"}
+	}
+	lock, err := os.OpenFile(r.lockPath(), os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrCaptureStorageAbsent
+		}
+		return fmt.Errorf("toolsnap: open registry lock: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := lockWithPoll(ctx, lock); err != nil {
+		return err
+	}
+	defer func() { _ = platform.UnlockFile(lock) }()
+
+	receipt, err := os.OpenFile(r.receiptLockPath(), os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrCaptureStorageAbsent
+		}
+		return fmt.Errorf("toolsnap: open receipt lock: %w", err)
+	}
+	defer func() { _ = receipt.Close() }()
+	if err := lockWithPoll(ctx, receipt); err != nil {
+		return err
+	}
+	defer func() { _ = platform.UnlockFile(receipt) }()
+	if err := ctx.Err(); err != nil {
+		return &PartialError{Reason: ReasonLockTimeout, Detail: "deadline expired before inspection"}
+	}
+	return fn()
 }
 
 // loadState normalizes, reconciles, and validates registry state.

@@ -22,16 +22,22 @@ type Snapshot struct {
 // CaptureBefore builds a workspace tree from HEAD and current changes.
 // Unchanged subtrees retain their existing object IDs.
 func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
+	stop := measureStage(ctx, "capture_before", stageAggregate)
+	defer stop()
 	return s.capture(ctx, true)
 }
 
 // capture builds a snapshot, optionally using the HEAD resolved at open.
 func (s *Store) capture(ctx context.Context, useCachedHead bool) (Snapshot, error) {
+	stopHead := measureStage(ctx, "resolve_head", stageLeaf)
 	headCommit, headTree, err := s.resolveHead(ctx, useCachedHead)
+	stopHead()
 	if err != nil {
 		return Snapshot{}, err
 	}
+	stopDirty := measureStage(ctx, "dirty_paths", stageLeaf)
 	paths, statusOID, err := dirtyPaths(ctx, s.repo, s.maxPaths())
+	stopDirty()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -108,27 +114,38 @@ func (s *Store) buildTree(ctx context.Context, headTree string, paths []string) 
 	defer func() { _ = os.Remove(idxPath) }()
 
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
+	stopReadTree := measureStage(ctx, "tree_write", stageLeaf)
 	if _, err := s.gitStdin(ctx, env, nil, "read-tree", headTree); err != nil {
+		stopReadTree()
 		return "", fmt.Errorf("toolsnap: read-tree: %w", err)
 	}
+	stopReadTree()
 
+	stopHash := measureStage(ctx, "hash", stageLeaf)
 	entries, written, err := s.hashWorktreePaths(ctx, paths)
 	if err != nil {
+		stopHash()
 		return "", err
 	}
 	// Account for the exact blobs written by Git.
 	if len(written) > 0 {
 		bytesRead, err := s.blobSizeSum(ctx, written)
 		if err != nil {
+			stopHash()
 			return "", err
 		}
 		if bytesRead > s.maxBytes() {
+			stopHash()
 			return "", &PartialError{
 				Reason: ReasonByteLimit,
 				Detail: fmt.Sprintf("hashed content exceeds the %d byte limit", s.maxBytes()),
 			}
 		}
 	}
+	stopHash()
+
+	stopTree := measureStage(ctx, "tree_write", stageLeaf)
+	defer stopTree()
 	if len(entries) > 0 {
 		var in bytes.Buffer
 		for _, e := range entries {

@@ -18,6 +18,9 @@ type RegistrySnapshot struct {
 	Partials            []PendingPartialRecord
 	Tombstones          []Tombstone
 	MalformedTombstones []string
+	// NextSeq is the registry's monotonic capture counter. It advances whenever
+	// a capture window begins.
+	NextSeq int64
 }
 
 // InspectRegistry validates registry state and overlays receipts in memory.
@@ -41,6 +44,7 @@ func InspectRegistry(semDir string) (RegistrySnapshot, error) {
 	snap.Windows = state.Windows
 	snap.Groups = state.Groups
 	snap.Finals = state.Finals
+	snap.NextSeq = state.NextSeq
 
 	entries, err := os.ReadDir(filepath.Join(dir, "partials"))
 	if err != nil && !os.IsNotExist(err) {

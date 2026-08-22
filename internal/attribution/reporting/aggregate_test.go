@@ -251,11 +251,11 @@ func TestBuildCommitResult_FullAssembly(t *testing.T) {
 	}
 
 	// Counts.
-	if r.FilesTotal != 2 { // 1 created + 1 edited
-		t.Errorf("FilesTotal = %d, want 2", r.FilesTotal)
+	if r.FilesTotal != 3 { // 1 created + 1 edited + 1 deleted
+		t.Errorf("FilesTotal = %d, want 3", r.FilesTotal)
 	}
-	if r.FilesAITouched != 2 { // both files have AI lines > 0
-		t.Errorf("FilesAITouched = %d, want 2", r.FilesAITouched)
+	if r.FilesAITouched != 3 {
+		t.Errorf("FilesAITouched = %d, want 3", r.FilesAITouched)
 	}
 
 	// Provider details sorted by AI lines desc.
@@ -301,6 +301,41 @@ func TestBuildCommitResult_AIFlagFromTouchedFiles(t *testing.T) {
 	}
 	if r.FilesAITouched != 1 {
 		t.Errorf("FilesAITouched = %d, want 1", r.FilesAITouched)
+	}
+}
+
+func TestBuildCommitResult_DeletionOnlyEditsRemainVisible(t *testing.T) {
+	in := CommitResultInput{
+		FileScores: []FileScoreInput{
+			{Path: "human.md", DeletedNonBlank: 1},
+			{Path: "agent.go", DeletedNonBlank: 3},
+		},
+		TouchedFiles:  map[string]bool{"agent.go": true},
+		FileProviders: map[string][]string{"agent.go": {"codex"}},
+	}
+
+	r := BuildCommitResult(in)
+
+	if len(r.FilesEdited) != 2 {
+		t.Fatalf("FilesEdited = %d, want 2", len(r.FilesEdited))
+	}
+	if r.FilesEdited[0].Path != "human.md" || r.FilesEdited[0].AI {
+		t.Errorf("FilesEdited[0] = %+v, want human deletion-only edit", r.FilesEdited[0])
+	}
+	if r.FilesEdited[1].Path != "agent.go" || !r.FilesEdited[1].AI {
+		t.Errorf("FilesEdited[1] = %+v, want AI deletion-only edit", r.FilesEdited[1])
+	}
+	if got := r.FilesEdited[1].Providers; len(got) != 1 || got[0] != "codex" {
+		t.Errorf("agent providers = %v, want [codex]", got)
+	}
+	if r.FilesTotal != 2 {
+		t.Errorf("FilesTotal = %d, want 2", r.FilesTotal)
+	}
+	if r.FilesAITouched != 1 {
+		t.Errorf("FilesAITouched = %d, want 1", r.FilesAITouched)
+	}
+	if r.TotalLines != 0 || r.AILines != 0 || r.HumanLines != 0 {
+		t.Errorf("line totals changed by deletions: total=%d ai=%d human=%d", r.TotalLines, r.AILines, r.HumanLines)
 	}
 }
 
@@ -358,7 +393,7 @@ func TestBuildCommitResult_PureDeletionProducesFilesRow(t *testing.T) {
 func TestBuildCommitResult_DeletionAlreadyInFileScoresNotDuplicated(t *testing.T) {
 	in := CommitResultInput{
 		FileScores: []FileScoreInput{
-			{Path: "deleted-scored.go"}, // zero-line entry from ScoreFiles
+			{Path: "deleted-scored.go", DeletedNonBlank: 4}, // zero-added-line entry from ScoreFiles
 		},
 		FilesDeleted:     []string{"deleted-scored.go"},
 		TouchedFiles:     map[string]bool{"deleted-scored.go": true},
@@ -372,13 +407,12 @@ func TestBuildCommitResult_DeletionAlreadyInFileScoresNotDuplicated(t *testing.T
 	if r.Files[0].PrimaryEvidence != EvidenceDeletion {
 		t.Errorf("Files[0].PrimaryEvidence = %q, want %q", r.Files[0].PrimaryEvidence, EvidenceDeletion)
 	}
+	if len(r.FilesEdited) != 0 {
+		t.Errorf("FilesEdited = %+v, want whole-file deletion only in FilesDeleted", r.FilesEdited)
+	}
 }
 
-// FilesTotal and FilesAITouched should not be inflated by the defensive
-// deletion pass - those counters are about created/edited scored files
-// and AI-line-producing files, respectively. A pure deletion adds to
-// neither.
-func TestBuildCommitResult_DeletionDoesNotInflateCounters(t *testing.T) {
+func TestBuildCommitResult_DeletionIncludedInFileCounters(t *testing.T) {
 	in := CommitResultInput{
 		FileScores: []FileScoreInput{
 			{Path: "kept.go", TotalLines: 5, ExactLines: 5, ProviderLines: map[string]int{"claude_code": 5}},
@@ -389,11 +423,11 @@ func TestBuildCommitResult_DeletionDoesNotInflateCounters(t *testing.T) {
 	}
 	r := BuildCommitResult(in)
 
-	if r.FilesTotal != 1 {
-		t.Errorf("FilesTotal = %d, want 1 (created only, deletion excluded)", r.FilesTotal)
+	if r.FilesTotal != 2 {
+		t.Errorf("FilesTotal = %d, want 2", r.FilesTotal)
 	}
-	if r.FilesAITouched != 1 {
-		t.Errorf("FilesAITouched = %d, want 1 (only scored AI files count)", r.FilesAITouched)
+	if r.FilesAITouched != 2 {
+		t.Errorf("FilesAITouched = %d, want 2", r.FilesAITouched)
 	}
 }
 

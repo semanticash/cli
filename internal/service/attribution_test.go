@@ -17,6 +17,7 @@ import (
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 	attrscoring "github.com/semanticash/cli/internal/attribution/scoring"
+	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -2534,5 +2535,76 @@ func TestFromCommitResult_PreservesPerFileProviders(t *testing.T) {
 	}
 	if got := result.FilesCreated[0].Providers; !reflect.DeepEqual(got, []string{"claude_code", "codex"}) {
 		t.Errorf("result.FilesCreated[0].Providers = %v, want [claude_code codex]", got)
+	}
+}
+
+func TestCommitWithNoDelta_DeletionOnlyEditRemainsVisible(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	gitCmd("init")
+	path := filepath.Join(dir, "CHANGELOG.md")
+	if err := os.WriteFile(path, []byte("# Changelog\n\n### Changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obsoletePath := filepath.Join(dir, "obsolete.txt")
+	if err := os.WriteFile(obsoletePath, []byte("obsolete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "CHANGELOG.md", "obsolete.txt")
+	gitCmd("commit", "-m", "initial")
+
+	if err := os.WriteFile(path, []byte("# Changelog\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(obsoletePath); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("add", "CHANGELOG.md", "obsolete.txt")
+	gitCmd("commit", "-m", "remove empty section and obsolete file")
+	commitHash := gitCmd("rev-parse", "HEAD")
+
+	repo, err := git.OpenRepo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := commitWithNoDelta(context.Background(), commitHash, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.FilesEdited) != 1 || result.FilesEdited[0].Path != "CHANGELOG.md" {
+		t.Fatalf("FilesEdited = %+v, want deletion-only CHANGELOG.md edit", result.FilesEdited)
+	}
+	if result.FilesEdited[0].AI {
+		t.Error("deletion-only edit without AI evidence marked AI")
+	}
+	if len(result.FilesDeleted) != 1 || result.FilesDeleted[0].Path != "obsolete.txt" {
+		t.Fatalf("FilesDeleted = %+v, want obsolete.txt", result.FilesDeleted)
+	}
+	if result.FilesTotal != 2 {
+		t.Errorf("FilesTotal = %d, want 2", result.FilesTotal)
+	}
+	if result.TotalLines != 0 || result.HumanLines != 0 || result.AILines != 0 {
+		t.Errorf("line totals changed by deletions: total=%d human=%d ai=%d", result.TotalLines, result.HumanLines, result.AILines)
+	}
+	if len(result.Files) != 2 || result.Files[0].DeletedNonBlank != 1 {
+		t.Errorf("Files = %+v, want edited and deleted file rows", result.Files)
 	}
 }

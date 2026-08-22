@@ -16,6 +16,10 @@ ai_percentage = (exact + formatted + modified) / total_added_lines * 100
 separate file-level signal and is not included in `ai_lines` or
 `ai_percentage`.
 
+Deleted non-blank lines are recorded per file but excluded from
+`total_added_lines`. Deletion-only edits and deleted files remain in changed-file
+totals.
+
 ## Evidence classes
 
 Each file has one primary evidence class. The three line-level classes contribute

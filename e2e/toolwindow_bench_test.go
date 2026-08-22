@@ -291,6 +291,26 @@ func TestPercentileNearestRank(t *testing.T) {
 	}
 }
 
+// TestCombinedPercentileIsPaired shows the combined p95 comes from per-call
+// sums, not from adding the separate pre and post p95s.
+func TestCombinedPercentileIsPaired(t *testing.T) {
+	// Anti-correlated samples: the slow pre pairs with the fast post and vice
+	// versa, so every call sums to 11.
+	pre := []float64{10, 1}
+	post := []float64{1, 10}
+	combined := pairwiseSum(pre, post)
+	sort.Float64s(combined)
+	if got := percentile(combined, 0.95); got != 11 {
+		t.Errorf("combined p95 = %v, want 11", got)
+	}
+	// The wrong method (separate percentiles) would give 10 + 10 = 20.
+	sort.Float64s(pre)
+	sort.Float64s(post)
+	if wrong := percentile(pre, 0.95) + percentile(post, 0.95); wrong == 11 {
+		t.Errorf("separate-percentile sum unexpectedly equals the paired result")
+	}
+}
+
 func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 	b.Helper()
 	var pres, posts []float64
@@ -305,8 +325,23 @@ func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 	}
 	b.StopTimer()
 	w.assertFixtures()
+	// Combine samples before report sorts them so the percentile represents the
+	// combined per-call hook duration, not percentile(pre)+percentile(post).
+	combined := pairwiseSum(pres, posts)
 	report(b, "pre", pres)
 	report(b, "post", posts)
+	report(b, "combined", combined)
+}
+
+// pairwiseSum returns the per-call combined durations a[i]+b[i]. Pairing is
+// required: the combined percentile must come from summed-per-call samples, not
+// from adding the separate pre and post percentiles.
+func pairwiseSum(a, b []float64) []float64 {
+	out := make([]float64, len(a))
+	for i := range a {
+		out[i] = a[i] + b[i]
+	}
+	return out
 }
 
 // TestHookRecordMatchesExternalDuration compares recorded and external timing.

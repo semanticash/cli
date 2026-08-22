@@ -356,6 +356,35 @@ semantica doctor --json
 
 Doctor checks the resolved CLI binary, PATH conflicts, launcher state, provider hooks, Git hooks, active and deferred capture state, worker lock and queue health, recent provider events, hosted sync manifests, recent hook errors, provider configuration risks, repo connection, and authentication. Exit codes are `0` for ok, `1` for warnings, and `2` for failures.
 
+#### Hook benchmark diagnostics
+
+Detailed hook timing is disabled by default. Enable it temporarily with a
+repository marker:
+
+```bash
+mkdir -p .semantica/doctor
+touch .semantica/doctor/bench.enabled
+```
+
+Alternatively, set `SEMANTICA_DOCTOR_BENCH=true` in the agent's environment.
+Records are appended to `.semantica/doctor/bench.jsonl`. They include hook
+outcomes and, for tool-window capture, per-stage timings. Recording adds minor
+diagnostic overhead.
+
+Summarize recorded tool-window hooks with:
+
+```bash
+semantica doctor hook-bench
+semantica doctor hook-bench --since 24h
+semantica doctor hook-bench --last 100 --json
+```
+
+The report includes pre-hook, post-hook, and paired latency percentiles,
+per-stage timings, outcomes, partial reasons, and unmatched hook counts.
+
+Remove `.semantica/doctor/bench.enabled` or unset
+`SEMANTICA_DOCTOR_BENCH` to disable recording.
+
 ### Caveats
 
 - Capture state is stored in `$SEMANTICA_HOME/capture/`. The boundary format is provider-specific and may use companion state managed by the provider. If the CLI is upgraded or the capture directory is cleared mid-session, some events may be missed.

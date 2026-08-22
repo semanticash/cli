@@ -135,7 +135,7 @@ type CommitResult struct {
 	TotalLines            int
 	AIPercentage          float64 // (exact + formatted + modified) / total * 100
 	FilesAITouched        int
-	FilesTotal            int // created + edited (excludes deleted)
+	FilesTotal            int // created + edited + deleted
 	FilesCreated          []FileChangeOutput
 	FilesEdited           []FileChangeOutput
 	FilesDeleted          []FileChangeOutput

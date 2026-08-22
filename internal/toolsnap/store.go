@@ -44,6 +44,68 @@ func (s *Store) maxBytes() int64 {
 // snapshot store and repository.
 var ErrStoreIncompatible = errors.New("toolsnap: snapshot store incompatible with repository")
 
+// ErrCaptureStorageAbsent reports that capture storage has not been
+// initialized, so there is nothing to inspect.
+var ErrCaptureStorageAbsent = errors.New("toolsnap: capture storage not initialized")
+
+// OpenStoreForInspection opens an existing snapshot store without modifying
+// it. It rejects missing, non-directory, and symlinked stores, then validates
+// the config, object format, and alternate object database.
+func OpenStoreForInspection(ctx context.Context, rc RepoContext, semDir string) (*Store, error) {
+	dir := filepath.Join(semDir, storeDirName)
+	s := &Store{Dir: dir, repo: rc}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCaptureStorageAbsent
+		}
+		return nil, fmt.Errorf("toolsnap: probe store: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("toolsnap: store directory is a symlink")
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("toolsnap: store path is not a directory")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCaptureStorageAbsent
+		}
+		return nil, fmt.Errorf("toolsnap: probe store: %w", err)
+	}
+	if err := s.verifyInspectable(ctx); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// verifyInspectable validates the store config, object format, and alternate
+// without repairing them.
+func (s *Store) verifyInspectable(ctx context.Context) error {
+	if err := s.verifyCompatible(ctx); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(s.Dir, "config"))
+	if err != nil {
+		return fmt.Errorf("toolsnap: read store config: %w", err)
+	}
+	// Accept only the configuration shape created for snapshot stores.
+	format, ok := parseStoreObjectFormat(string(raw))
+	if !ok || format != s.repo.ObjectFormat {
+		return fmt.Errorf("%w: unexpected store config", ErrStoreIncompatible)
+	}
+	alt, err := os.ReadFile(filepath.Join(s.Dir, "objects", "info", "alternates"))
+	if err != nil {
+		return fmt.Errorf("toolsnap: read store alternates: %w", err)
+	}
+	want := filepath.Join(s.repo.CommonDir, "objects") + "\n"
+	if string(alt) != want {
+		return fmt.Errorf("%w: store alternate %q, want %q",
+			ErrStoreIncompatible, strings.TrimSpace(string(alt)), strings.TrimSpace(want))
+	}
+	return nil
+}
+
 // OpenStore opens or initializes the isolated snapshot store for the
 // repository, wiring the repository's common object directory as a
 // read-only alternate. semDir is the repository's .semantica directory.
