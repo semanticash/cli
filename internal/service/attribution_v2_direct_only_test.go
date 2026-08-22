@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -21,17 +21,39 @@ func insertDirectWriteEvent(t *testing.T, h *sqlstore.Handle, bs *blobs.Store, r
 	t.Helper()
 	ctx := context.Background()
 	eventID := uuid.NewString()
-	escaped := strings.ReplaceAll(content, "\n", `\n`)
-	payload := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/%s","content":"%s"}}]}}`, repoRoot, relPath, escaped)
-	payloadHash, _, err := bs.Put(ctx, []byte(payload))
+	payload, err := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{"content": []any{map[string]any{
+			"type": "tool_use",
+			"name": "Write",
+			"input": map[string]any{
+				"file_path": filepath.Join(repoRoot, relPath),
+				"content":   content,
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	payloadHash, _, err := bs.Put(ctx, payload)
 	if err != nil {
 		t.Fatalf("store payload: %v", err)
 	}
-	toolUses := fmt.Sprintf(`{"content_types":["tool_use"],"tools":[{"name":"Write","file_path":"%s","file_op":"write"}]}`, relPath)
+	toolUsesJSON, err := json.Marshal(map[string]any{
+		"content_types": []string{"tool_use"},
+		"tools": []any{map[string]any{
+			"name":      "Write",
+			"file_path": relPath,
+			"file_op":   "write",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal tool uses: %v", err)
+	}
 	if err := h.Queries.InsertAgentEvent(ctx, sqldb.InsertAgentEventParams{
 		EventID: eventID, SessionID: sessID, RepositoryID: repoID, Ts: ts,
 		Kind: "assistant", Role: sqlstore.NullStr("assistant"),
-		ToolUses:    sql.NullString{String: toolUses, Valid: true},
+		ToolUses:    sql.NullString{String: string(toolUsesJSON), Valid: true},
 		PayloadHash: sqlstore.NullStr(payloadHash), Summary: sqlstore.NullStr("Wrote " + relPath),
 	}); err != nil {
 		t.Fatalf("insert agent event: %v", err)
