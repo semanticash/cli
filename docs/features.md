@@ -371,6 +371,17 @@ Records are appended to `.semantica/doctor/bench.jsonl`. They include hook
 outcomes and, for tool-window capture, per-stage timings. Recording adds minor
 diagnostic overhead.
 
+Summarize recorded tool-window hooks with:
+
+```bash
+semantica doctor hook-bench
+semantica doctor hook-bench --since 24h
+semantica doctor hook-bench --last 100 --json
+```
+
+The report includes pre-hook, post-hook, and paired latency percentiles,
+per-stage timings, outcomes, partial reasons, and unmatched hook counts.
+
 Remove `.semantica/doctor/bench.enabled` or unset
 `SEMANTICA_DOCTOR_BENCH` to disable recording.
 

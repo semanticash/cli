@@ -68,6 +68,7 @@ func NewDoctorCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.AddCommand(newDoctorStorageSoakCmd(rootOpts))
+	cmd.AddCommand(newDoctorHookBenchCmd(rootOpts))
 	return cmd
 }
 
