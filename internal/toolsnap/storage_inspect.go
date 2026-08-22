@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,9 +50,9 @@ type StorageInspection struct {
 	EligibleObjects     int   `json:"eligible_objects"`      // unreachable loose objects older than ObjectExpire
 	EligibleObjectBytes int64 `json:"eligible_object_bytes"` // on-disk bytes of those objects
 
-	TotalObjects int   `json:"total_objects"` // loose plus in-pack
+	TotalObjects int64 `json:"total_objects"` // loose plus in-pack
 	TotalBytes   int64 `json:"total_bytes"`   // loose plus pack bytes
-	GarbageCount int   `json:"garbage_count"`
+	GarbageCount int64 `json:"garbage_count"`
 	GarbageBytes int64 `json:"garbage_bytes"`
 }
 
@@ -335,9 +336,9 @@ func parseObjectSizes(out string, ids []string) (int64, error) {
 
 // objectCounts holds the aggregate store object measurement.
 type objectCounts struct {
-	TotalObjects int
+	TotalObjects int64
 	TotalBytes   int64
-	GarbageCount int
+	GarbageCount int64
 	GarbageBytes int64
 }
 
@@ -392,10 +393,40 @@ func parseCountObjects(out string) (objectCounts, error) {
 			return objectCounts{}, fmt.Errorf("toolsnap: missing count-objects field %q", k)
 		}
 	}
+	totalObjects, err := checkedCountObjectsAdd("objects", vals["count"], vals["in-pack"])
+	if err != nil {
+		return objectCounts{}, err
+	}
+	totalKiB, err := checkedCountObjectsAdd("bytes", vals["size"], vals["size-pack"])
+	if err != nil {
+		return objectCounts{}, err
+	}
+	totalBytes, err := countObjectsKiBToBytes("bytes", totalKiB)
+	if err != nil {
+		return objectCounts{}, err
+	}
+	garbageBytes, err := countObjectsKiBToBytes("garbage bytes", vals["size-garbage"])
+	if err != nil {
+		return objectCounts{}, err
+	}
 	return objectCounts{
-		TotalObjects: int(vals["count"] + vals["in-pack"]),
-		TotalBytes:   (vals["size"] + vals["size-pack"]) * 1024,
-		GarbageCount: int(vals["garbage"]),
-		GarbageBytes: vals["size-garbage"] * 1024,
+		TotalObjects: totalObjects,
+		TotalBytes:   totalBytes,
+		GarbageCount: vals["garbage"],
+		GarbageBytes: garbageBytes,
 	}, nil
+}
+
+func checkedCountObjectsAdd(name string, a, b int64) (int64, error) {
+	if a > math.MaxInt64-b {
+		return 0, fmt.Errorf("toolsnap: count-objects %s overflow", name)
+	}
+	return a + b, nil
+}
+
+func countObjectsKiBToBytes(name string, kib int64) (int64, error) {
+	if kib > math.MaxInt64/1024 {
+		return 0, fmt.Errorf("toolsnap: count-objects %s overflow", name)
+	}
+	return kib * 1024, nil
 }

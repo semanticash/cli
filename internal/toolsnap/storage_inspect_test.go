@@ -3,8 +3,10 @@ package toolsnap
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -483,6 +485,31 @@ func TestParseCountObjects(t *testing.T) {
 	// duplicate field
 	if _, err := parseCountObjects(render(base) + "count: 9\n"); err == nil {
 		t.Error("duplicate field: expected error")
+	}
+	overflows := map[string]func(map[string]string){
+		"object count addition": func(m map[string]string) {
+			m["count"] = strconv.FormatInt(math.MaxInt64, 10)
+			m["in-pack"] = "1"
+		},
+		"byte count addition": func(m map[string]string) {
+			m["size"] = strconv.FormatInt(math.MaxInt64, 10)
+			m["size-pack"] = "1"
+		},
+		"byte conversion": func(m map[string]string) {
+			m["size"] = strconv.FormatInt(math.MaxInt64/1024+1, 10)
+			m["size-pack"] = "0"
+		},
+		"garbage byte conversion": func(m map[string]string) {
+			m["size-garbage"] = strconv.FormatInt(math.MaxInt64/1024+1, 10)
+		},
+	}
+	for name, mutate := range overflows {
+		if _, err := parseCountObjects(build(func(m map[string]string) string {
+			mutate(m)
+			return render(m)
+		})); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
 	}
 }
 
