@@ -149,7 +149,7 @@ explicit state under a named local or hosted policy.
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)
 
-   Computes per-file and aggregate AI percentage and stores it on the lineage record. Optional v2 scoring aligns verified tool deltas with committed lines and preserves unaligned changes as file-level evidence. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
+   Computes per-file and aggregate AI percentage and stores it on the lineage record. The default v2 scorer aligns verified tool deltas with committed lines and preserves unaligned changes as file-level evidence. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
 6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
 
@@ -231,8 +231,8 @@ prunes expired objects without operating on the user repository.
 
 Claude Code and Codex pre- and post-Bash hooks capture canonical deltas and
 link them to their tool events. Recovery runs during worker drains and with
-`semantica tidy --apply`. Optional v2 scoring verifies and aligns these deltas
-against committed lines; partial or ambiguous evidence remains unscored.
+`semantica tidy --apply`. By default, v2 scoring verifies and aligns these
+deltas against committed lines; partial or ambiguous evidence remains unscored.
 
 ### Settings (`settings.json`)
 
@@ -244,14 +244,14 @@ against committed lines; partial or ambiguous evidence remains unscored.
   "connected": false,
   "connected_repo_id": "",
   "trailers": true,
-  "attribution_v2": false,
+  "attribution_v2": true,
   "automations": {
     "playbook": { "enabled": false }
   }
 }
 ```
 
-The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` enables experimental tool-delta scoring and defaults to `false`. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`.
+The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` controls tool-delta scoring and defaults to `true`; set it to `false` to opt out. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`.
 
 ### Global paths
 

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Attribution v2 (tool-delta evidence) is now on by default. Disable it per repository with `attribution_v2: false` in settings, or per run with `SEMANTICA_ATTRIBUTION_V2=0`.
+
 ### Fixed
 
 - `semantica blame` no longer applies historical evidence to modified files without checkpoint-backed continuity, preventing unrelated agent activity from attributing human edits. Manifest-anchored carry-forward for created files is unchanged.

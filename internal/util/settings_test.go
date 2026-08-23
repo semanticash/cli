@@ -181,10 +181,17 @@ func TestSettings_PreservesUnknownKeysAtAllLevels(t *testing.T) {
 func TestAttributionV2Enabled(t *testing.T) {
 	boolPtr := func(v bool) *bool { return &v }
 
-	t.Run("default off", func(t *testing.T) {
+	t.Run("default on", func(t *testing.T) {
 		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+		if !AttributionV2Enabled(t.TempDir()) {
+			t.Error("expected on with no settings and no env")
+		}
+	})
+
+	t.Run("env off overrides default", func(t *testing.T) {
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "0")
 		if AttributionV2Enabled(t.TempDir()) {
-			t.Error("expected off with no settings and no env")
+			t.Error("expected off with env=0 and no settings")
 		}
 	})
 
@@ -207,6 +214,17 @@ func TestAttributionV2Enabled(t *testing.T) {
 		}
 		if AttributionV2Enabled(dir) {
 			t.Error("expected off from explicit settings false")
+		}
+	})
+
+	t.Run("malformed settings fail closed to v1", func(t *testing.T) {
+		t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+		dir := t.TempDir()
+		if err := os.WriteFile(SettingsPath(dir), []byte("{not valid json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if AttributionV2Enabled(dir) {
+			t.Error("expected v1 when settings cannot be read")
 		}
 	})
 

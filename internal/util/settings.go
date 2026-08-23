@@ -87,7 +87,7 @@ type Settings struct {
 	Automations     *Automations
 	Connected       bool
 	ConnectedRepoID string
-	// AttributionV2 enables tool-delta scoring. An absent value is disabled.
+	// AttributionV2 controls tool-delta scoring. Nil uses the default (on).
 	AttributionV2 *bool
 	extra         map[string]json.RawMessage
 }
@@ -246,7 +246,9 @@ func TrailersEnabled(semDir string) bool {
 	return *s.Trailers
 }
 
-// AttributionV2Enabled reads the environment override, then repository settings.
+// AttributionV2Enabled reports whether attribution v2 is active. The environment
+// overrides repository settings. Missing settings default to v2; unreadable
+// settings fail closed to v1.
 func AttributionV2Enabled(semDir string) bool {
 	switch os.Getenv("SEMANTICA_ATTRIBUTION_V2") {
 	case "1", "true":
@@ -255,8 +257,11 @@ func AttributionV2Enabled(semDir string) bool {
 		return false
 	}
 	s, err := ReadSettings(semDir)
-	if err != nil || s.AttributionV2 == nil {
+	if err != nil {
 		return false
+	}
+	if s.AttributionV2 == nil {
+		return true
 	}
 	return *s.AttributionV2
 }

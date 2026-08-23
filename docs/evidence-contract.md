@@ -92,11 +92,11 @@ file-level evidence only.
 
 ## v1 vs v2, and result stamping
 
-- **v1 (default)** uses assistant `Edit`/`Write` output and supports Bash
-  deletion inference.
-- **v2 (opt-in)** additionally scores verified Bash workspace deltas, producing
-  `tool_delta_touch` and the delta-line subsets. Enable with `attribution_v2` in
-  `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=1`.
+- **v1** uses assistant `Edit`/`Write` output and supports Bash deletion
+  inference. Select v1 with `attribution_v2: false` in
+  `.semantica/settings.json`, or `SEMANTICA_ATTRIBUTION_V2=0` per run.
+- **v2 (default)** additionally scores verified Bash workspace deltas, producing
+  `tool_delta_touch` and the delta-line subsets.
 - Capture and scoring are separate. Semantica may capture eligible Bash deltas
   while v2 scoring is disabled. Enabling v2 does not update existing results.
 - Commit-message trailers use v1. `semantica blame`, background enrichment, and
