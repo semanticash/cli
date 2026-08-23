@@ -1364,6 +1364,61 @@ func (w *cfCommitWorld) attribute(t *testing.T, commit string) *AttributionResul
 	return result
 }
 
+func TestAttributeCommit_DeletionOnlyEditKeepsProviderTouch(t *testing.T) {
+	w := newCFCommitWorld(t)
+	commit1 := w.commitFile(t, "cleanup.go", "package cleanup\n\nfunc obsolete() {}\n", "add obsolete code")
+	w.linkCheckpoint(t, commit1, 100_000, []string{"cleanup.go"})
+
+	payload, err := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{"content": []any{map[string]any{
+			"type": "tool_use",
+			"name": "Edit",
+			"input": map[string]any{
+				"file_path":  filepath.Join(w.repoRoot, "cleanup.go"),
+				"old_string": "\nfunc obsolete() {}\n",
+				"new_string": "",
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadHash, _, err := w.bs.Put(context.Background(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolUses := `{"content_types":["tool_use"],"tools":[{"name":"Edit","file_path":"cleanup.go","file_op":"edit"}]}`
+	if err := w.h.Queries.InsertAgentEvent(context.Background(), sqldb.InsertAgentEventParams{
+		EventID: uuid.NewString(), SessionID: w.sessID, RepositoryID: w.repoID,
+		Ts: 150_000, Kind: "assistant", Role: sqlstore.NullStr("assistant"),
+		ToolUses: sql.NullString{String: toolUses, Valid: true}, PayloadHash: sqlstore.NullStr(payloadHash),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	commit2 := w.commitFile(t, "cleanup.go", "package cleanup\n", "remove obsolete code")
+	w.linkCheckpoint(t, commit2, 200_000, []string{"cleanup.go"})
+	result := w.attribute(t, commit2)
+
+	f := fileByPath(t, result.Files, "cleanup.go")
+	if f.AILines != 0 || f.TotalLines != 0 || f.HumanLines != 0 {
+		t.Errorf("line totals = ai:%d human:%d total:%d, want all zero", f.AILines, f.HumanLines, f.TotalLines)
+	}
+	if f.DeletedNonBlank != 1 {
+		t.Errorf("DeletedNonBlank = %d, want 1", f.DeletedNonBlank)
+	}
+	if f.Classification != "ai" || f.EvidenceClass != "provider_touch" {
+		t.Errorf("classification=%q evidence=%q, want ai/provider_touch", f.Classification, f.EvidenceClass)
+	}
+	if len(f.Providers) != 1 || f.Providers[0] != "claude_code" {
+		t.Errorf("providers = %v, want [claude_code]", f.Providers)
+	}
+	if result.FilesAITouched != 1 || len(result.FilesEdited) != 1 || !result.FilesEdited[0].AI {
+		t.Errorf("FilesAITouched=%d FilesEdited=%+v, want one AI-touched edit", result.FilesAITouched, result.FilesEdited)
+	}
+}
+
 // Historical evidence without a surviving line does not label a human edit.
 func TestCarryForward_ModifiedFileNoMatchDropsHistoricalTouch(t *testing.T) {
 	w := newCFCommitWorld(t)

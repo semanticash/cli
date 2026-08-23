@@ -9,11 +9,25 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// ExtractClaudeActions parses a Claude-format assistant payload and extracts:
-// - fileLines: map of repo-relative file paths to sets of trimmed lines (from Edit/Write tools)
-// - bashCommands: shell commands from Bash tool calls
+// claudeActions keeps file touches separate from emitted line content.
+type claudeActions struct {
+	fileLines    map[string]map[string]struct{}
+	fileTouches  map[string]struct{}
+	bashCommands []string
+}
+
+// ExtractClaudeActions extracts line evidence and shell commands from a
+// Claude-format assistant payload.
 func ExtractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map[string]struct{}, bashCommands []string) {
-	fileLines = make(map[string]map[string]struct{})
+	actions := extractClaudeActions(raw, repoRoot)
+	return actions.fileLines, actions.bashCommands
+}
+
+func extractClaudeActions(raw []byte, repoRoot string) claudeActions {
+	actions := claudeActions{
+		fileLines:   make(map[string]map[string]struct{}),
+		fileTouches: make(map[string]struct{}),
+	}
 
 	var payload struct {
 		Type    string `json:"type"`
@@ -22,10 +36,10 @@ func ExtractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return
+		return actions
 	}
 	if payload.Type != "assistant" {
-		return
+		return actions
 	}
 
 	for _, blockRaw := range payload.Message.Content {
@@ -47,22 +61,36 @@ func ExtractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map
 				FilePath  string `json:"file_path"`
 				NewString string `json:"new_string"`
 			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.NewString == "" {
+			if err := json.Unmarshal(block.Input, &inp); err != nil {
 				continue
 			}
 			relPath := NormalizePath(inp.FilePath, repoRoot)
-			AddLines(fileLines, relPath, inp.NewString)
+			if relPath == "" {
+				continue
+			}
+			actions.fileTouches[relPath] = struct{}{}
+			AddLines(actions.fileLines, relPath, inp.NewString)
+			if len(actions.fileLines[relPath]) == 0 {
+				delete(actions.fileLines, relPath)
+			}
 
 		case "Write":
 			var inp struct {
 				FilePath string `json:"file_path"`
 				Content  string `json:"content"`
 			}
-			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Content == "" {
+			if err := json.Unmarshal(block.Input, &inp); err != nil {
 				continue
 			}
 			relPath := NormalizePath(inp.FilePath, repoRoot)
-			AddLines(fileLines, relPath, inp.Content)
+			if relPath == "" {
+				continue
+			}
+			actions.fileTouches[relPath] = struct{}{}
+			AddLines(actions.fileLines, relPath, inp.Content)
+			if len(actions.fileLines[relPath]) == 0 {
+				delete(actions.fileLines, relPath)
+			}
 
 		case "Bash":
 			var inp struct {
@@ -71,11 +99,11 @@ func ExtractClaudeActions(raw []byte, repoRoot string) (fileLines map[string]map
 			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Command == "" {
 				continue
 			}
-			bashCommands = append(bashCommands, inp.Command)
+			actions.bashCommands = append(actions.bashCommands, inp.Command)
 		}
 	}
 
-	return
+	return actions
 }
 
 // ExtractDeletedPaths extracts file paths from a shell command containing "rm".

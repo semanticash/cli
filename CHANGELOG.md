@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `semantica blame` no longer applies historical evidence to modified files without checkpoint-backed continuity, preventing unrelated agent activity from attributing human edits. Manifest-anchored carry-forward for created files is unchanged.
+- Deletion-only Claude Code edits and file truncations now retain file-level provider evidence without receiving AI line credit.
 
 ## [0.6.2] - 2026-08-23
 
