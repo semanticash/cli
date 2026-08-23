@@ -33,7 +33,7 @@ to the headline percentage. The five fallback classes do not.
 | `tool_delta_touch` | Verified tool-window delta with no surviving line match | fallback | a file change was captured while an agent tool ran | which lines changed or which process produced them |
 | `provider_touch` | Explicit file-edit tool event from a provider, no line-level payload | fallback | the provider reported a file-edit event for this file | which lines, or that the edit survived to the commit |
 | `provider_coarse` | Session-level linkage only (no direct file-edit event) | fallback | an AI session was active in this file's window | that the provider edited this specific file |
-| `carry_forward` | Attributed from a prior lineage-record window (per file) | fallback | this file had AI attribution in an earlier window | current-window line authorship |
+| `carry_forward` | Prior-window evidence for an eligible created file | fallback | the file existed in the previous lineage manifest and had earlier AI evidence | current-window authorship or continuity for modified files |
 | `deletion` | Inferred from `bash rm` or a provider deletion event | fallback | a captured agent action removed content | line authorship of anything added |
 | `none` | No captured AI evidence | - | no AI evidence was captured | that the file is human-authored |
 

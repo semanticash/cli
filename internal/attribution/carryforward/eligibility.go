@@ -24,17 +24,3 @@ func IdentifyCreatedCandidates(filesCreated []string, manifestFiles []ManifestEn
 	}
 	return result
 }
-
-// IdentifyModifiedCandidates returns modified paths eligible for historical
-// lookback. Modified files need no manifest gate; the scorer later requires
-// historical lines to match the current diff before crediting them.
-func IdentifyModifiedCandidates(filesEdited []string) map[string]bool {
-	if len(filesEdited) == 0 {
-		return nil
-	}
-	result := make(map[string]bool, len(filesEdited))
-	for _, path := range filesEdited {
-		result[path] = true
-	}
-	return result
-}

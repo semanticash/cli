@@ -144,7 +144,7 @@ explicit state under a named local or hosted policy.
 
 4. **Session linking** - Finds sessions with events in the time window between the previous and current lineage records. Associates them with the record in the database.
 
-5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked lineage window, then applies bounded carry-forward for eligible created or modified files that still scored 0 AI in the current window. Historical evidence must still match the current diff before it is credited. For each changed line, it uses three match levels:
+5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked lineage window, then applies bounded carry-forward to eligible created files that still scored 0 AI. Eligibility requires the file to be present in the previous lineage manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity. For each changed line, it uses three match levels:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: fuzzy match (line appears derived from AI output)

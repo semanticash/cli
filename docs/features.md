@@ -39,12 +39,12 @@ See the [Evidence Contract](evidence-contract.md) for evidence classes, strength
 
 ### Caveats
 
-- Attribution is anchored to the delta window between commit lineage records. Deferred created or modified files can still pick up AI attribution from earlier history when matching AI output lands in a later commit.
+- Historical carry-forward applies to files added by the commit that were already present in the previous lineage manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity.
 - Lines manually edited after direct AI generation may count as "modified" rather than "exact." Tool-delta lines must survive exactly or after whitespace normalization.
 - Tool-delta scoring is experimental and disabled by default. Enable it with `attribution_v2` in `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=1`.
 - Tool-delta evidence shows that a changed line appeared while an agent-issued tool was running. It does not prove exclusive authorship: concurrent saves, formatters, and file watchers can produce the same evidence.
 - Semantica snapshots eligible Bash calls when capture state is active, even if `attribution_v2` is disabled. The flag controls scoring, not capture. Calls without capture state are ignored. On-demand or recomputed attribution can use earlier captures; enabling the flag alone does not update stored results.
-- Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
+- Carry-forward is per-file. Current-window attribution remains authoritative when an eligible created file already has AI evidence.
 - Provider-level attribution (file touched by AI) is available for all providers. When a provider reports only file-touch metadata, those lines are reported as `ai_provider_only_lines` and excluded from the headline AI percentage.
 - When weaker evidence contributes to a file that also has line-level matches, Semantica keeps the strongest class as `evidence_class` and preserves the weaker signals in `evidence_classes`.
 

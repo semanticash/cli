@@ -1399,8 +1399,8 @@ func TestCarryForward_ModifiedFileNoMatchDropsHistoricalTouch(t *testing.T) {
 	}
 }
 
-// A surviving historical line remains attributable.
-func TestCarryForward_ModifiedFileMatchKeepsHistoricalAttribution(t *testing.T) {
+// A matching historical line cannot carry forward for a modified file.
+func TestCarryForward_ModifiedFileMatch_FailsClosed(t *testing.T) {
 	w := newCFCommitWorld(t)
 
 	commit1 := w.commitFile(t, "edit.go", "package edit\nfunc Handle() {}\n", "ai code")
@@ -1408,9 +1408,9 @@ func TestCarryForward_ModifiedFileMatchKeepsHistoricalAttribution(t *testing.T) 
 		100_000, "edit.go", "package edit\nfunc Handle() {}\n")
 	w.linkCheckpoint(t, commit1, 200_000, []string{"edit.go"})
 
-	// Same provider active in the current window on another file.
+	// Same provider touches edit.go in the current window (non-scoring content).
 	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
-		250_000, "other.go", "package other\n")
+		250_000, "edit.go", "// work in progress on edit.go\n")
 
 	// Commit 2 re-adds the historical AI line (reformatted, so it is an
 	// added diff line) and appends a human one.
@@ -1419,60 +1419,8 @@ func TestCarryForward_ModifiedFileMatchKeepsHistoricalAttribution(t *testing.T) 
 
 	result := w.attribute(t, commit2)
 
-	if result.AILines == 0 {
-		t.Error("AILines = 0, want surviving historical line attributed")
-	}
-	if result.FilesAITouched == 0 {
-		t.Error("FilesAITouched = 0, want the matched file counted")
-	}
-	f := fileByPath(t, result.Files, "edit.go")
-	if len(f.Providers) == 0 {
-		t.Errorf("providers = %v, want historical provider credited", f.Providers)
-	}
-}
-
-// Exact and normalized survival pass; unmatched files do not.
-func TestModifiedCarryForwardDiffMatches(t *testing.T) {
-	dr := parseDiff([]byte(strings.Join([]string{
-		"diff --git a/a.go b/a.go",
-		"--- a/a.go",
-		"+++ b/a.go",
-		"@@ -1,1 +1,2 @@",
-		" package a",
-		"+func Exact() {}",
-		"diff --git a/b.go b/b.go",
-		"--- a/b.go",
-		"+++ b/b.go",
-		"@@ -1,1 +1,2 @@",
-		" package b",
-		"+func  Spaced ( ) {}",
-		"diff --git a/c.go b/c.go",
-		"--- a/c.go",
-		"+++ b/c.go",
-		"@@ -1,1 +1,2 @@",
-		" package c",
-		"+entirely human line",
-	}, "\n")))
-
-	cands := attrevents.Candidates{AILines: map[string]map[string]struct{}{
-		"a.go": {"func Exact() {}": {}},
-		"b.go": {"func Spaced() {}": {}},
-		"c.go": {"func Gone() {}": {}},
-	}}
-	modified := map[string]bool{"a.go": true, "b.go": true, "c.go": true}
-
-	got := modifiedCarryForwardDiffMatches(dr, cands, modified)
-	if !got["a.go"] {
-		t.Error("a.go: exact survival not matched")
-	}
-	if !got["b.go"] {
-		t.Error("b.go: whitespace-normalized survival not matched")
-	}
-	if got["c.go"] {
-		t.Error("c.go: matched without any surviving line")
-	}
-	if res := modifiedCarryForwardDiffMatches(dr, cands, nil); res != nil {
-		t.Errorf("empty modified set = %v, want nil", res)
+	if result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (modified-file carry-forward must fail closed)", result.AILines)
 	}
 }
 
@@ -2223,9 +2171,8 @@ func TestAttributeCommit_CarryForward(t *testing.T) {
 	}
 }
 
-// TestAttributeCommit_CarryForward_ModifiedFile covers the public blame path:
-// an AI edit happens before an intermediate commit checkpoint, then lands in a
-// later commit as a modified file.
+// TestAttributeCommit_CarryForward_ModifiedFile verifies that historical
+// evidence for a modified file fails closed.
 func TestAttributeCommit_CarryForward_ModifiedFile(t *testing.T) {
 	dir := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
@@ -2392,11 +2339,10 @@ func TestAttributeCommit_CarryForward_ModifiedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same-provider activity in the current window enables modified-file lookback.
-	insertEvt(250_000, "unrelated.go", "package unrelated\n")
+	// Same-file activity does not anchor the historical line.
+	insertEvt(250_000, "utils.go", "// work in progress on utils.go\n")
 
-	// cp2 links to the deferred commit. The current window has no utils.go
-	// events, so attribution depends on modified-file carry-forward.
+	// cp2 links to the deferred commit.
 	cp2ID := insertCP(300_000, []string{"utils.go", "unrelated.go"})
 	if err := h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash: commit2Hash, RepositoryID: repoID, CheckpointID: cp2ID, LinkedAt: 300_000,
@@ -2413,22 +2359,18 @@ func TestAttributeCommit_CarryForward_ModifiedFile(t *testing.T) {
 		t.Fatalf("AttributeCommit: %v", err)
 	}
 
-	// utils.go should be attributed via historical evidence matched to
-	// the current diff.
-	if result.AILines == 0 {
-		t.Fatal("AILines = 0, want > 0 (modified-file carry-forward should credit the deferred edit)")
+	// The deferred historical edit must not receive line attribution.
+	if result.AILines != 0 {
+		t.Fatalf("AILines = %d, want 0 (modified-file carry-forward must fail closed)", result.AILines)
 	}
-	foundEditAI := false
 	for _, f := range result.Files {
 		if f.Path != "utils.go" {
 			continue
 		}
 		if f.AIExactLines+f.AIFormattedLines+f.AIModifiedLines > 0 {
-			foundEditAI = true
+			t.Errorf("utils.go has %d AI lines; modified-file carry-forward must fail closed",
+				f.AIExactLines+f.AIFormattedLines+f.AIModifiedLines)
 		}
-	}
-	if !foundEditAI {
-		t.Error("utils.go should have AI attribution via modified-file carry-forward; got 0 AI lines")
 	}
 
 	// FilesEdited drives the `[ai:provider]` tag in blame output.
