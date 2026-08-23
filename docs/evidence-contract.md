@@ -33,7 +33,7 @@ to the headline percentage. The five fallback classes do not.
 | `tool_delta_touch` | Verified tool-window delta with no surviving line match | fallback | a file change was captured while an agent tool ran | which lines changed or which process produced them |
 | `provider_touch` | Explicit file-edit tool event from a provider, no line-level payload | fallback | the provider reported a file-edit event for this file | which lines, or that the edit survived to the commit |
 | `provider_coarse` | Session-level linkage only (no direct file-edit event) | fallback | an AI session was active in this file's window | that the provider edited this specific file |
-| `carry_forward` | Prior-window evidence for an eligible created file | fallback | the file existed in the previous lineage manifest and had earlier AI evidence | current-window authorship or continuity for modified files |
+| `carry_forward` | Prior-window evidence for a file added by the commit, present in the previous lineage manifest, and carrying no current-window AI lines | fallback | earlier captured AI evidence exists for the added file | current-window authorship, or content continuity for modified files |
 | `deletion` | Inferred from `bash rm` or a provider deletion event | fallback | a captured agent action removed content | line authorship of anything added |
 | `none` | No captured AI evidence | - | no AI evidence was captured | that the file is human-authored |
 
@@ -59,6 +59,22 @@ Each file reports:
 
 `evidence_classes` preserves weaker corroborating signals even when line-level
 evidence determines `evidence_class`.
+
+## Historical carry-forward
+
+Carry-forward is a bounded fallback for files added by the current commit. It
+is considered only when the path appears in the previous lineage manifest and
+the current attribution window produces zero AI-attributed lines for that
+file. Missing or unreadable prior evidence fails closed.
+
+Modified files never inherit historical evidence. Current activity by the
+same provider, including activity on the same path, does not establish content
+continuity and cannot unlock an older claim. Carry-forward also does not add
+historical lines to a file that already has current-window line attribution.
+
+Manifest path presence establishes eligibility for historical lookback, not
+proof that unchanged content moved between checkpoints. For this reason,
+carry-forward remains fallback evidence rather than line-level evidence.
 
 ## Commit evidence level
 
@@ -97,8 +113,13 @@ file-level evidence only.
   `.semantica/settings.json`, or `SEMANTICA_ATTRIBUTION_V2=0` per run.
 - **v2 (default)** additionally scores verified Bash workspace deltas, producing
   `tool_delta_touch` and the delta-line subsets.
+- When multiple providers directly witness the same line, v2 assigns that line
+  to one deterministic provider instead of crediting every witness. This does
+  not change the headline line count.
 - Capture and scoring are separate. Semantica may capture eligible Bash deltas
   while v2 scoring is disabled. Enabling v2 does not update existing results.
+- Missing repository settings use v2. Unreadable or malformed settings fail
+  closed to v1 so an explicit repository opt-out is not bypassed silently.
 - Commit-message trailers use v1. `semantica blame`, background enrichment, and
   hosted attribution use the repository's selected version. Each result records
   its `attribution_version`.
@@ -120,6 +141,7 @@ The evidence does not:
 - Establish exclusive authorship. A line match does not rule out a human
   producing the same content.
 - Treat provider-touch as equivalent to a line-level match.
-- Merge historical and current AI lines within one file. Carry-forward is a
-  per-file window heuristic, and a file with current-window activity stays
-  current-window authoritative.
+- Apply historical evidence to modified files, even when the same provider is
+  active on that path in the current window.
+- Merge historical lines into a file that already has current-window
+  line-level attribution.

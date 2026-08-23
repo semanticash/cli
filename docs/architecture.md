@@ -71,13 +71,20 @@ Semantica installs three Git hooks via `semantica enable`. Each hook invokes the
 
 ### pre-commit
 
-Creates a pending internal lineage record, implemented as a checkpoint row in the SQLite database. Writes a handoff file (`.semantica/.pre-commit-checkpoint`) containing the record ID and a timestamp. This file passes state between the three hooks.
+Records the staged tree and current `HEAD`, then writes a handoff file
+(`.semantica/.pre-commit-checkpoint`) containing the lineage record ID,
+timestamp, tree, and parent boundary. It also attempts to create the pending
+checkpoint row in SQLite. The handoff is written first so a later hook can
+recover from a temporary database failure.
 
-The hook exits immediately - it never blocks the commit.
+Internal failures are logged and do not reject the commit.
 
 ### commit-msg
 
-Reads the handoff file. Appends the lineage trailer, and appends attribution and diagnostics trailers when the `trailers` setting is enabled:
+Reads the lineage record ID from the handoff. It computes best-effort
+attribution with a bounded active-session flush, always appends the lineage
+trailer when the handoff is available, and appends attribution and diagnostics
+trailers when the `trailers` setting is enabled:
 
 ```
 Semantica-Checkpoint: chk_abc123
@@ -87,11 +94,21 @@ Semantica-Diagnostics: 3 files, lines: 15 exact, 2 modified, 1 formatted
 
 If no AI matches the commit, the attribution trailer becomes `0% AI detected (0/N lines)` and the diagnostics trailer explains whether no AI events existed in the lineage window or whether events existed but did not match the committed files.
 
-Trailers are only appended if the handoff file exists and is fresh (written within the last few seconds, to guard against stale state from aborted commits).
+Duplicate trailers are not appended. A missing handoff, such as after
+`git commit --no-verify`, leaves attribution best-effort and does not create a
+commit linkage.
 
 ### post-commit
 
-Reads the handoff file again. Links the commit hash to the pending lineage record in the database. Deletes the handoff file.
+Reads the handoff and verifies that its staged tree and recorded parent match
+the new commit. It then atomically promotes the handoff to a durable receipt
+under `.semantica/commit-receipts/` before opening SQLite. The receipt preserves
+the lineage record ID, commit SHA, and original pre-commit timestamp.
+
+The fast path creates or finds the pending checkpoint, links the commit, and
+removes the receipt. If SQLite is unavailable, the receipt remains for the
+worker to drain later. Receipts are processed in creation order so a newer
+commit cannot overtake an older pending link.
 
 By default, Semantica then spawns a detached background worker process:
 
@@ -138,26 +155,46 @@ explicit state under a named local or hosted policy.
 
 1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
 
-2. **File manifest** - Hashes every tracked file plus untracked, non-ignored files in the working tree using SHA-256. Compresses file contents with zstd and stores them in the content-addressed blob store. Records the manifest (path -> blob hash mapping) as a compressed JSON blob. Uses the previous lineage record's manifest for incremental building.
+2. **File manifest** - Hashes tracked files plus untracked, non-ignored files
+   from the worktree at enrichment time. File contents and the JSON manifest
+   are stored in the repository CAS. For commit-linked checkpoints,
+   incremental reuse requires both matching filesystem metadata and Git
+   verification that a path is unchanged.
 
-3. **Lineage completion** - Marks the pending record as complete with the manifest hash and size.
+   A commit-linked manifest is currently a delayed workspace snapshot, not an
+   immutable reconstruction of the linked commit tree. This distinction is
+   why manifest path presence is treated as carry-forward eligibility rather
+   than proof of content continuity.
 
-4. **Session linking** - Finds sessions with events in the time window between the previous and current lineage records. Associates them with the record in the database.
+3. **Session linking and statistics** - Resolves the session and attribution
+   windows, links sessions that contributed events, and records checkpoint
+   aggregates such as session and changed-file counts.
 
-5. **AI attribution** - Diffs the commit against the parent. It first scores the current commit-linked lineage window, then applies bounded carry-forward to eligible created files that still scored 0 AI. Eligibility requires the file to be present in the previous lineage manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity. For each changed line, it uses three match levels:
+4. **AI attribution** - Diffs the commit against its first parent and scores
+   the current commit-linked event window. Historical lookback is limited to
+   files added by the commit that appear in the previous lineage manifest and
+   have zero current-window AI lines. Modified files never inherit historical
+   evidence. The line-level match classes are:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
-   - **Modified**: fuzzy match (line appears derived from AI output)
+   - **Modified**: line belongs to a diff hunk overlapping captured AI output,
+     without an exact or normalized line match
 
    Computes per-file and aggregate AI percentage and stores it on the lineage record. The default v2 scorer aligns verified tool deltas with committed lines and preserves unaligned changes as file-level evidence. Provider-touch-only lines are carried as `ai_provider_only_lines` and excluded from the headline AI percentage. Per-file results include a primary display evidence class plus the full list of contributing evidence classes so exact line matches, provider-touch fallback, carry-forward, and deletion signals remain distinguishable.
 
-6. **Sync** (optional) - If the repo is connected, attempts a best-effort hosted sync for commit attribution and packaged turn provenance. Failures are logged but do not cause the worker to fail.
+5. **Lineage completion** - Marks the pending checkpoint complete only after
+   required enrichment has written its manifest and local state.
+
+6. **Sync** (optional) - After completion, drains packaged turn provenance,
+   pushes commit attribution, and advances historical backfill when the
+   repository is connected. Hosted failures are recorded for retry and do not
+   reopen the completed local checkpoint.
 
 7. **Auto-playbook** (optional) - If enabled, runs `semantica _auto-playbook`
    in the background to generate a structured summary (title, intent, outcome,
    learnings, friction, keywords) and stores it on the lineage record.
 
-Steps 6 and 7 are best-effort - failures never cause the worker to fail.
+Steps 6 and 7 are post-completion side effects.
 
 ## Storage
 
@@ -177,6 +214,7 @@ Single-file database in `.semantica/`. Contains:
 | `provenance_manifests` | Per-turn packaged transcript/bundle metadata and upload state |
 | `session_checkpoints` | Links sessions to the lineage records they influenced |
 | `checkpoint_stats` | Lineage aggregates and attribution/sync completion markers |
+| `remote_attribution_backfills` | Progress and retry state for historical hosted attribution sync |
 
 The schema is defined in `internal/store/sqlite/schema/` and queries in `internal/store/sqlite/queries/`. Both are processed by [sqlc](https://sqlc.dev) to generate type-safe Go code.
 
@@ -192,8 +230,16 @@ objects/
     ...
 ```
 
-Used for file snapshots (lineage manifests), event payloads, transcript
-slices, prompts, and packaged provenance blobs.
+The repository CAS stores lineage file blobs and manifests, routed event
+payloads, transcript slices, prompts, final responses, tool deltas, and
+packaged provenance bundles. A global CAS under `SEMANTICA_HOME` temporarily
+holds provider-hook payloads before broker routing; referenced blobs are
+propagated into each destination repository CAS.
+
+Attribution reads event payloads and tool-delta blobs from the CAS. Provenance
+packaging and sync read prompts, responses, step payloads, deltas, and bundles
+from the same store. The CAS therefore remains part of the evidence pipeline
+independently of lineage restore functionality.
 
 ### Tool snapshot store (`tool-snapshots.git`)
 
@@ -229,10 +275,11 @@ without rereading the workspace.
 Bounded maintenance defers during capture, removes stale unreferenced refs, and
 prunes expired objects without operating on the user repository.
 
-Claude Code and Codex pre- and post-Bash hooks capture canonical deltas and
-link them to their tool events. Recovery runs during worker drains and with
+Claude Code, Codex, and Cursor shell hooks capture canonical deltas and link
+them to their tool events. Recovery runs during worker drains and with
 `semantica tidy --apply`. By default, v2 scoring verifies and aligns these
-deltas against committed lines; partial or ambiguous evidence remains unscored.
+deltas against committed lines; partial or ambiguous evidence remains
+file-level only.
 
 ### Settings (`settings.json`)
 
@@ -251,7 +298,7 @@ deltas against committed lines; partial or ambiguous evidence remains unscored.
 }
 ```
 
-The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` controls tool-delta scoring and defaults to `true`; set it to `false` to opt out. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`.
+The `providers` field lists installed hook providers. `connected` controls hosted sync, and `connected_repo_id` stores the repository binding. `trailers` controls the optional attribution and diagnostics trailers; `Semantica-Checkpoint` is always included. `attribution_v2` controls tool-delta scoring and defaults to `true`; set it to `false` to opt out. `SEMANTICA_ATTRIBUTION_V2` can override it with `1`, `true`, `0`, or `false`. Missing settings use the default; malformed or unreadable settings fail closed to v1 scoring.
 
 ### Global paths
 
@@ -281,40 +328,58 @@ This allows Semantica to capture AI activity even when the provider's hook syste
 
 ## Package structure
 
+The following tree shows the primary package boundaries. It is representative,
+not a list of every source file.
+
 ```
 cmd/semantica/              CLI entrypoint (main.go)
+corpus/v1/                  Versioned attribution evaluation corpus
 internal/
-  commands/                 Cobra command definitions
-  launcher/                 Optional cross-platform launcher plumbing
-  service/                  Core business logic
-    worker.go               Background worker pipeline
-    pre-commit.go           Pre-commit hook handler
-    post-commit.go          Post-commit hook handler
-    hook_commit_msg.go      Commit-msg hook handler
-    rewind.go               Internal checkpoint restore support
-    explain.go              Commit explanation and attribution
-    sessions.go             Session listing and details
-    show.go                 Lineage record detail display
-    playbook.go             LLM playbook generation
-    push.go                 Remote endpoint push
-  store/sqlite/             Storage layer
-    schema/                 SQL schema definitions
-    queries/                SQL query definitions
-    db/                     sqlc-generated Go code
-    store.go                Store implementation
-  git/                      Git operations
-    hooks.go                Hook script templates and installation
-    diff.go                 Diff parsing
-    log.go                  Log parsing
-  hooks/                    AI provider integrations
-    lifecycle.go            Event dispatch state machine
-    state.go                Capture state management
-    claude/                 Claude Code session ingestion
-    cursor/                 Cursor session ingestion
-    gemini/                 Gemini CLI session ingestion
-    copilot/                GitHub Copilot session ingestion
-  toolsnap/                 Isolated workspace snapshot and tree-diff engine
-  broker/                   Cross-repo event routing
-  version/                  Build version injection
+  agents/                   Provider transcript models and extractors
+    api/                    Shared provider extraction contracts
+    claude/                 Claude Code transcript parsing
+    copilot/                GitHub Copilot transcript parsing
+    cursor/                 Cursor transcript and store parsing
+    gemini/                 Gemini CLI transcript parsing
+    kiro/                   Shared Kiro CLI and IDE extraction
+  attribution/              Attribution domain logic
+    annotations/            Evidence annotation detection and extraction
+    carryforward/           Historical-lookback eligibility
+    eval/                   Corpus evaluation runner
+    events/                 Canonical candidates and tool-delta claims
+    reporting/              Evidence classes, diagnostics, and aggregation
+    scoring/                V1 and v2 line scorers and delta alignment
+  auth/                     Credentials, device flow, and workspace identity
+  broker/                   Cross-repository event ownership and routing
+  commands/                 Cobra commands and terminal rendering
+  doctor/                   Hook benchmark record format and collection
+  explain/                  Local and hosted commit explanation assembly
+  git/                      Repository, commit, and Git-hook operations
+  health/                   Read-only doctor checks and rendering
+  hooks/                    Provider hook installation and capture lifecycle
+    builder/                Canonical event construction helpers
+    claude/                 Claude Code hooks
+    codex/                  Codex CLI hooks
+    copilot/                GitHub Copilot CLI hooks
+    cursor/                 Cursor IDE and Agent CLI hooks
+    gemini/                 Gemini CLI hooks
+    kirocli/                Kiro CLI hooks and replay
+    kiroide/                Kiro IDE hooks
+  launcher/                 Optional launchd, systemd, and Task Scheduler worker
+  llm/                      Provider-neutral generation and writer adapters
+  mcp/                      MCP server and tool definitions
+  platform/                 Cross-platform locks, processes, paths, and files
+  provenance/               Turn packaging, responses, redaction, and upload
+  providers/                Installed-provider discovery and composition
+  redact/                   Gitleaks-backed local redaction
+  service/                  Git hooks, workers, attribution, lineage, and sync
+    handoff/                Cross-agent handoff bundle assembly
+  skills/                   Built-in skill installation and integrity checks
+  store/
+    blobs/                  SHA-256 and zstd content-addressed storage
+    sqlite/                 SQLite access, migrations, queries, and sqlc output
+  toolsnap/                 Isolated Git snapshots and bounded tool deltas
+  util/                     Settings, paths, logging, and shared helpers
+  version/                  Build version and commit injection
 e2e/                        End-to-end tests
 ```
