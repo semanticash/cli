@@ -514,9 +514,9 @@ func collectGroupRefs(dst map[string]string, store *toolsnap.Store, members []to
 	}
 }
 
-// toolWindowRefReleaseWait bounds how long post-closure ref release waits for
-// the coordination lock before leaving the refs to maintenance.
-const toolWindowRefReleaseWait = 250 * time.Millisecond
+// toolWindowRefReleaseWait bounds post-closure locking and ref deletion before
+// maintenance takes over.
+var toolWindowRefReleaseWait = 250 * time.Millisecond
 
 // releaseGroupRefs removes unchanged refs under the registry coordination lock
 // so a concurrent inspection or maintenance pass sees a consistent ref set.
