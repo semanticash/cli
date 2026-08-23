@@ -1,8 +1,5 @@
-# Diagnostic companion to the frozen #43 latency gate. This is NOT a gate: it
-# enables doctor bench recording (SEMANTICA_BENCH_DIAG) to locate the post-hook
-# stage that stalls on the x86 clean/500 case, then uploads the full per-call
-# stage series. Recording adds measurement overhead, so these durations are not
-# comparable to the gate and no ceilings are enforced here.
+# Profiles slow post-hook calls on x86 and uploads per-call stage data.
+# Stage recording adds overhead, so this workflow does not enforce latency limits.
 name: Attribution v2 x86 latency diagnostic
 
 on:
@@ -51,10 +48,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # v0.6.2 (checked out above) predates SEMANTICA_BENCH_DIAG. Product code
-          # under internal/ stays frozen at v0.6.2; only the observing test harness
-          # is taken from the branch commit that added it. $GITHUB_SHA is a
-          # descendant of the tag, so fetch it before reading the file.
+          # Keep the measured product code at v0.6.2 and overlay only the
+          # diagnostic harness from the triggering commit.
           git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
           git show "${GITHUB_SHA}:e2e/toolwindow_bench_test.go" > e2e/toolwindow_bench_test.go
           grep -q SEMANTICA_BENCH_DIAG e2e/toolwindow_bench_test.go
@@ -77,17 +72,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 3 variants x 3 counts = 9 recorded runs (the 1-iteration probe is
-          # suppressed). Require nine MATCHED lines (the slowest cycle correlated
-          # to its post record) and zero UNMATCHED (inconclusive) lines.
+          # Require one matched diagnostic for each of the nine recorded runs.
           matched=$(grep -c 'STAGE-DIAG-MATCHED' bench-500-diag.txt || true)
           unmatched=$(grep -c 'STAGE-DIAG-UNMATCHED' bench-500-diag.txt || true)
           echo "matched=${matched} (want 9) unmatched=${unmatched} (want 0)"
           test "${matched}" -eq 9
           test "${unmatched}" -eq 0
-          # Validate each preserved series: exactly 100 pre + 100 post tool-window
-          # records with unique tool-use IDs. Guards against short or corrupt runs
-          # that a bare file/line count would miss.
+          # Reject incomplete series and mismatched pre/post tool-use IDs.
           python3 - <<'PY'
           import glob, json, sys
           files = sorted(glob.glob("*.bench.jsonl"))

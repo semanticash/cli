@@ -21,9 +21,8 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 )
 
-// benchStageDiag reports whether the stall-diagnostic mode is on. It enables
-// doctor bench recording and dumps the slowest post-hook call's stage breakdown.
-// Kept separate from the frozen gate because recording adds measurement overhead.
+// benchStageDiag reports whether stage diagnostics are enabled. Diagnostics
+// record hook stages and export the slowest cycle, adding measurement overhead.
 func benchStageDiag() bool { return os.Getenv("SEMANTICA_BENCH_DIAG") != "" }
 
 // These benchmarks run real CLI pre- and post-Bash hooks in an isolated
@@ -76,8 +75,7 @@ func newBenchWorld(b testing.TB) *benchWorld {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL="+os.DevNull)
 	if benchStageDiag() {
-		// Enable doctor bench recording in the hook subprocesses so each pre/post
-		// call writes its stage timings to the repo's bench.jsonl.
+		// Record stage timings for each hook subprocess.
 		w.env = append(w.env, "SEMANTICA_DOCTOR_BENCH=1")
 	}
 
@@ -340,15 +338,10 @@ func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 	}
 	b.StopTimer()
 	w.assertFixtures()
-	// Combine samples before report sorts them so the percentile represents the
-	// combined per-call hook duration, not percentile(pre)+percentile(post).
+	// Combine samples before report sorts them to preserve pre/post pairing.
 	combined := pairwiseSum(pres, posts)
-	// Select the externally slowest cycle (the one driving the combined-max the
-	// gate checks) BEFORE reporting: report/percentile sort their slice in place,
-	// which would destroy the pre/post pairing and mis-identify the cycle.
-	// Selecting by the largest internal timer instead would miss a stall that
-	// lands before the hook's timer starts (e.g. process scheduling on a busy
-	// runner).
+	// Select the slowest cycle before report sorts the samples in place. External
+	// timing also captures delays outside the hook's internal timer.
 	maxIdx, maxComb, maxPost := -1, math.Inf(-1), 0.0
 	for i := range posts {
 		if c := pres[i] + posts[i]; c > maxComb {
@@ -364,13 +357,8 @@ func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 	}
 }
 
-// dumpStageDiag finds the bench.jsonl post record for the externally slowest
-// cycle (by tool_use_id), prints its stage breakdown alongside the external
-// durations, and preserves the full series for artifact upload. Exposing the
-// external-vs-internal gap distinguishes an internal stage stall from time spent
-// outside the hook's recorded region. No-op unless SEMANTICA_BENCH_DIAG is set,
-// and it skips the framework's one-iteration probe run so the artifact set
-// matches the benchmark matrix.
+// dumpStageDiag reports stages for the externally slowest cycle and preserves
+// the full series. It skips the benchmark framework's one-iteration probe.
 func (w *benchWorld) dumpStageDiag(b *testing.B, toolUseID string, extCombinedMS, extPostMS float64) {
 	if !benchStageDiag() || b.N <= 1 {
 		return
@@ -414,15 +402,12 @@ func (w *benchWorld) dumpStageDiag(b *testing.B, toolUseID string, extCombinedMS
 		}
 		b.Log(sb.String())
 	} else {
-		// A missing record means the diagnostic cannot classify this cycle; it
-		// does NOT prove the stall was outside the timer. The external-vs-internal
-		// comparison is only valid when the exact post record exists, so this is
-		// reported as inconclusive and the CI completeness check fails on it.
+		// Without the matching post record, the diagnostic is inconclusive.
 		b.Logf("STAGE-DIAG-UNMATCHED %s cycle=%s external_combined=%.1fms external_post=%.1fms reason=no_post_record_inconclusive",
 			b.Name(), toolUseID, extCombinedMS, extPostMS)
 	}
 
-	// Preserve the full per-call series for artifact upload, uniquely named.
+	// Use a unique name so repeated benchmark runs remain separate.
 	dir := os.Getenv("SEMANTICA_BENCH_DIAG_DIR")
 	if dir == "" {
 		dir = "."
@@ -433,9 +418,7 @@ func (w *benchWorld) dumpStageDiag(b *testing.B, toolUseID string, extCombinedMS
 	}
 }
 
-// pairwiseSum returns the per-call combined durations a[i]+b[i]. Pairing is
-// required: the combined percentile must come from summed-per-call samples, not
-// from adding the separate pre and post percentiles.
+// pairwiseSum returns each call's combined pre and post duration.
 func pairwiseSum(a, b []float64) []float64 {
 	out := make([]float64, len(a))
 	for i := range a {
