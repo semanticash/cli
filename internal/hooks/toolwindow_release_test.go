@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/semanticash/cli/internal/toolsnap"
 )
@@ -11,6 +12,7 @@ import (
 func TestReleaseGroupRefsDefersUnderLock(t *testing.T) {
 	home := t.TempDir()
 	w := newToolWindowWorld(t, home, "repo")
+	setToolWindowRefReleaseWait(t, 100*time.Millisecond)
 	ctx := context.Background()
 
 	rc, err := toolsnap.ResolveRepoContext(ctx, w.repoPath)
