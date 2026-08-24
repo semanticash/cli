@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2026-08-25
 
 ### Changed
 
@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `semantica blame` no longer applies historical evidence to modified files without checkpoint-backed continuity, preventing unrelated agent activity from attributing human edits. Manifest-anchored carry-forward for created files is unchanged.
 - Deletion-only Claude Code edits and file truncations now retain file-level provider evidence without receiving AI line credit.
+- Background Bash commands (`run_in_background`) now record a partial tool delta without file attribution because their completion cannot be observed.
 - Invalid commit receipts now block commit sequencing and are reported by `semantica doctor`.
 - Commit parent resolution now supports SHA-256 root commits and rejects shallow boundaries with unavailable history.
 

@@ -26,6 +26,8 @@ const (
 	// ReasonStaleActiveWindow marks evidence from a sealed group.
 	// Its unbounded span contributes no attribution.
 	ReasonStaleActiveWindow = "stale_active_window"
+	// ReasonBackgroundCommand marks a detached command whose completion was not observed.
+	ReasonBackgroundCommand = "background_command"
 )
 
 // PartialError reports a capture that must degrade to partial

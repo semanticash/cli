@@ -250,6 +250,45 @@ func TestBuildCandidatesFromRows_DeletionPath(t *testing.T) {
 	}
 }
 
+// Detached command text must not infer file attribution.
+func TestBuildCandidatesFromRows_BackgroundDeletionNotInferred(t *testing.T) {
+	repoRoot := "/test/repo"
+	payload, _ := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type": "tool_use",
+					"name": "Bash",
+					"input": map[string]any{
+						"command":           "sleep 20 && rm " + repoRoot + "/old.go",
+						"run_in_background": true,
+					},
+				},
+			},
+		},
+	})
+
+	rows := []EventRow{
+		{
+			Provider:    "claude_code",
+			Role:        "assistant",
+			ToolUses:    `{"content_types":["tool_use"],"tools":[{"name":"Bash"}]}`,
+			PayloadHash: "hash1",
+			Payload:     payload,
+		},
+	}
+
+	cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
+
+	if _, ok := cands.ProviderTouchedFiles["old.go"]; ok {
+		t.Errorf("background rm produced provider-touch evidence: %v", cands.ProviderTouchedFiles)
+	}
+	if _, ok := cands.InferredDeletions["old.go"]; ok {
+		t.Errorf("background rm produced an inferred deletion: %v", cands.InferredDeletions)
+	}
+}
+
 func TestBuildCandidatesFromRows_NilPayloadSkipped(t *testing.T) {
 	rows := []EventRow{
 		{

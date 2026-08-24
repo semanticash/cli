@@ -70,6 +70,20 @@ func TestDirectEmit_Contract(t *testing.T) {
 			},
 		},
 		{
+			Name:        "bash_background",
+			Description: "PostToolUse[Bash] launched with run_in_background",
+			Event: &hooks.Event{
+				Type:          hooks.ToolStepCompleted,
+				SessionID:     "sess-claude-1",
+				TurnID:        "turn-1",
+				ToolUseID:     "toolu_bash_bg_1",
+				ToolName:      "Bash",
+				ToolInput:     json.RawMessage(`{"command":"sleep 20 && rm old.go","description":"cleanup","run_in_background":true}`),
+				TranscriptRef: "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+				Timestamp:     1714000035000,
+			},
+		},
+		{
 			Name:        "subagent_prompt",
 			Description: "PreToolUse[Agent] with a prompt",
 			Event: &hooks.Event{

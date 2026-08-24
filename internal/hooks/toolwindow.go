@@ -129,6 +129,10 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	if event.ToolUseID == "" || event.TurnID == "" {
 		return nil
 	}
+	if isBackgroundBash(event) {
+		// Detached writes occur after PostToolUse. The post hook records a partial.
+		return nil
+	}
 
 	cwd := event.CWD
 	if cwd == "" {
@@ -298,6 +302,12 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		bench.outcome = "error"
 		slog.Warn("tool window: open repo blob store", "err", err)
 		return false
+	}
+
+	if isBackgroundBash(event) {
+		// Record the detached command as a partial without file evidence.
+		bench.outcome = "background_command"
+		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, toolsnap.ReasonBackgroundCommand, events, globalBlobs)
 	}
 
 	info := toolsnap.CompletionInfo{
@@ -702,6 +712,20 @@ func closingEventID(events []broker.RawEvent, toolUseID string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isBackgroundBash reports whether Bash was launched with run_in_background.
+func isBackgroundBash(event *Event) bool {
+	if event == nil || event.ToolName != "Bash" {
+		return false
+	}
+	var in struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	if json.Unmarshal(event.ToolInput, &in) != nil {
+		return false
+	}
+	return in.RunInBackground
 }
 
 // commandSummary extracts the Bash command from the tool input.
