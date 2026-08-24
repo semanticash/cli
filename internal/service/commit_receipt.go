@@ -39,6 +39,22 @@ func commitReceiptsDir(semDir string) string {
 	return filepath.Join(semDir, "commit-receipts")
 }
 
+func readCommitReceiptEntries(semDir string) (string, []os.DirEntry, error) {
+	dir := commitReceiptsDir(semDir)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return dir, nil, nil
+		}
+		return dir, nil, err
+	}
+	if !info.IsDir() {
+		return dir, nil, fmt.Errorf("not a directory")
+	}
+	entries, err := os.ReadDir(dir)
+	return dir, entries, err
+}
+
 // writeCommitHandoff stores checkpoint_id|created_at|tree|head. The checkpoint
 // ID remains first for compatibility with the commit-msg hook.
 func writeCommitHandoff(semDir string, h commitHandoff) error {
@@ -118,12 +134,8 @@ func validateReceiptFile(dir, name string) (commitReceipt, error) {
 // listCommitReceipts returns receipts in commit order. Invalid receipts block
 // processing and remain on disk for repair.
 func listCommitReceipts(semDir string) ([]commitReceipt, error) {
-	dir := commitReceiptsDir(semDir)
-	entries, err := os.ReadDir(dir)
+	dir, entries, err := readCommitReceiptEntries(semDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	var out []commitReceipt
@@ -158,12 +170,8 @@ type ReceiptProblem struct {
 
 // InspectCommitReceipts returns invalid receipts and directory read failures.
 func InspectCommitReceipts(semDir string) []ReceiptProblem {
-	dir := commitReceiptsDir(semDir)
-	entries, err := os.ReadDir(dir)
+	dir, entries, err := readCommitReceiptEntries(semDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return []ReceiptProblem{{File: "commit-receipts/", Reason: fmt.Sprintf("directory unreadable: %v", err)}}
 	}
 	var problems []ReceiptProblem

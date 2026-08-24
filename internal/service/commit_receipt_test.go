@@ -593,6 +593,9 @@ func TestInspectCommitReceipts_DirUnreadable(t *testing.T) {
 	if err := os.WriteFile(commitReceiptsDir(semDir), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := listCommitReceipts(semDir); err == nil {
+		t.Error("listCommitReceipts = nil error; want a non-directory error")
+	}
 	if probs := InspectCommitReceipts(semDir); len(probs) != 1 || !strings.Contains(probs[0].Reason, "unreadable") {
 		t.Errorf("InspectCommitReceipts = %+v, want one directory-unreadable problem", probs)
 	}
