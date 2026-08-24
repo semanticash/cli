@@ -94,9 +94,14 @@ func extractClaudeActions(raw []byte, repoRoot string) claudeActions {
 
 		case "Bash":
 			var inp struct {
-				Command string `json:"command"`
+				Command         string `json:"command"`
+				RunInBackground bool   `json:"run_in_background"`
 			}
 			if err := json.Unmarshal(block.Input, &inp); err != nil || inp.Command == "" {
+				continue
+			}
+			if inp.RunInBackground {
+				// Detached commands are not observed to completion and cannot infer deletions.
 				continue
 			}
 			actions.bashCommands = append(actions.bashCommands, inp.Command)

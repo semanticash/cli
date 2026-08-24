@@ -43,8 +43,9 @@ type editInput struct {
 
 // bashInput is the tool_input shape for Bash from Claude hook payloads.
 type bashInput struct {
-	Command     string `json:"command"`
-	Description string `json:"description"`
+	Command         string `json:"command"`
+	Description     string `json:"description"`
+	RunInBackground bool   `json:"run_in_background"`
 }
 
 // buildPromptEvent creates a user prompt event from UserPromptSubmit.
@@ -177,10 +178,16 @@ func buildBashEvent(ctx context.Context, event *hooks.Event, bs api.BlobPutter) 
 	// The payload blob carries the redacted command alongside the
 	// unredacted description so the attribution scorer sees the
 	// exact bytes Claude would have written.
-	inputJSON, _ := json.Marshal(map[string]string{
+	inputMap := map[string]any{
 		"command":     redactedCmd,
 		"description": inp.Description,
-	})
+	}
+	if inp.RunInBackground {
+		// Keep the flag so scoring can suppress deletion inference.
+		// Omit false to preserve existing payload hashes.
+		inputMap["run_in_background"] = true
+	}
+	inputJSON, _ := json.Marshal(inputMap)
 	payloadHash := builder.SynthesizeAssistantBlob(ctx, bs, "Bash", inputJSON)
 	provenanceHash := storeRedactedBashProvenance(ctx, bs, event, redactedCmd)
 	toolUsesJSON := serializeStepToolUses("Bash", "", "exec")
@@ -258,13 +265,19 @@ func storeRedactedBashProvenance(ctx context.Context, bs api.BlobPutter, event *
 	redactedStdout := builder.Redact(resp.Stdout)
 	redactedStderr := builder.Redact(resp.Stderr)
 
+	toolInput := map[string]any{
+		"command":     redactedCmd,
+		"description": redactedDescription,
+	}
+	if inp.RunInBackground {
+		// Keep local and uploaded evidence consistent.
+		// Omit false to preserve existing provenance hashes.
+		toolInput["run_in_background"] = true
+	}
 	blob := map[string]any{
 		"tool_name":   event.ToolName,
 		"tool_use_id": event.ToolUseID,
-		"tool_input": map[string]string{
-			"command":     redactedCmd,
-			"description": redactedDescription,
-		},
+		"tool_input":  toolInput,
 		"tool_response": map[string]any{
 			"stdout":      redactedStdout,
 			"stderr":      redactedStderr,

@@ -1,0 +1,39 @@
+{
+  "name": "bash_background",
+  "description": "PostToolUse[Bash] launched with run_in_background",
+  "expected_events": [
+    {
+      "EventID": "ed34e9674a46cb5a0ed94c41d909a97c7d0fdcb69336bbec89f87fc4023bfd49",
+      "SourceKey": "/workspace/.claude/projects/test/sess-claude-1.jsonl",
+      "Provider": "claude_code",
+      "Timestamp": 1714000035000,
+      "Kind": "assistant",
+      "Role": "assistant",
+      "ToolUsesJSON": "{\"content_types\":[\"tool_use\"],\"tools\":[{\"name\":\"Bash\",\"file_op\":\"exec\"}]}",
+      "Summary": "cleanup",
+      "PayloadHash": "984ef4e7790f2a9624882ab7f87139fb0aacf4edf99a3043f54a8fa21edff573",
+      "TokensIn": 0,
+      "TokensOut": 0,
+      "TokensCacheRead": 0,
+      "TokensCacheCreate": 0,
+      "ProviderEventID": "",
+      "SourcePosition": 0,
+      "FilePaths": null,
+      "TurnID": "turn-1",
+      "ToolUseID": "toolu_bash_bg_1",
+      "ToolName": "Bash",
+      "EventSource": "hook",
+      "ProvenanceHash": "1bff63f20f73126fd0e979495462cf98a0ddceb212fa12c6d20dfb68a23da8a2",
+      "ProviderSessionID": "sess-claude-1",
+      "ParentSessionID": "",
+      "SessionStartedAt": 1714000035000,
+      "SessionMetaJSON": "{\"source_key\":\"/workspace/.claude/projects/test/sess-claude-1.jsonl\"}",
+      "SourceProjectPath": "",
+      "Model": ""
+    }
+  ],
+  "expected_blobs": {
+    "1bff63f20f73126fd0e979495462cf98a0ddceb212fa12c6d20dfb68a23da8a2": "{\"tool_input\":{\"command\":\"sleep 20 \\u0026\\u0026 rm old.go\",\"description\":\"cleanup\",\"run_in_background\":true},\"tool_name\":\"Bash\",\"tool_response\":{\"interrupted\":false,\"stderr\":\"\",\"stdout\":\"\"},\"tool_use_id\":\"toolu_bash_bg_1\"}",
+    "984ef4e7790f2a9624882ab7f87139fb0aacf4edf99a3043f54a8fa21edff573": "{\"message\":{\"content\":[{\"input\":{\"command\":\"sleep 20 \\u0026\\u0026 rm old.go\",\"description\":\"cleanup\",\"run_in_background\":true},\"name\":\"Bash\",\"type\":\"tool_use\"}]},\"type\":\"assistant\"}"
+  }
+}
