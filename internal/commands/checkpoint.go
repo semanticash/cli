@@ -62,7 +62,7 @@ func NewCheckpointCmd(rootOpts *RootOptions) *cobra.Command {
 
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Message for this checkpoint (manual checkpoints)")
 	cmd.Flags().BoolVar(&auto, "auto", false, "Create an automatic checkpoint")
-	cmd.Flags().StringVar(&trigger, "trigger", "", "Trigger label for auto checkpoints (e.g. agent_step, pre_commit, rewind_safety)")
+	cmd.Flags().StringVar(&trigger, "trigger", "", "Trigger label for auto checkpoints (e.g. agent_step, pre_commit)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd

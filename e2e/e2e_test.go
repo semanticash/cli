@@ -205,14 +205,6 @@ type explainOutput struct {
 	AIPercentage float64 `json:"ai_percentage"`
 }
 
-type rewindOutput struct {
-	RepoRoot           string `json:"repo_root"`
-	CheckpointID       string `json:"checkpoint_id"`
-	SafetyCheckpointID string `json:"safety_checkpoint_id"`
-	FilesRestored      int    `json:"files_restored"`
-	FilesDeleted       int    `json:"files_deleted"`
-}
-
 type sessionsOutput struct {
 	Sessions []sessionInfo `json:"sessions"`
 	Total    int           `json:"total"`
