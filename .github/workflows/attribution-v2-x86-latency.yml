@@ -1,4 +1,4 @@
-# Measures attribution v2 tool-window hook latency on GitHub's x86_64
+# Manually measures attribution v2 tool-window hook latency on GitHub's x86_64
 # ubuntu-24.04 runner using the v0.6.2 benchmark binary.
 #
 # Acceptance criteria:
@@ -11,11 +11,6 @@
 name: Attribution v2 x86 latency
 
 on:
-  push:
-    branches:
-      - release/0.7.0-attribution-v2
-    paths:
-      - .github/workflows/attribution-v2-x86-latency.yml
   workflow_dispatch:
 
 permissions:
