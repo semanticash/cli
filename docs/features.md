@@ -18,7 +18,7 @@ When you run `semantica blame` or `semantica explain`, Semantica diffs the commi
 | Formatted | `ai_formatted` | Match after stripping all whitespace - catches linter/formatter changes (e.g., `func foo(){` vs `func foo() {`) |
 | Modified | `ai_modified` | Line is in a diff hunk that overlaps with AI output but doesn't match exactly - the developer likely edited AI-generated code |
 
-Direct attribution uses assistant `Edit` and `Write` output. In the default v1 algorithm, `Bash` events only support deletion inference. Opt-in v2 attribution also uses verified workspace deltas captured around Claude Code and Codex Bash tools, including changes made by invoked scripts, formatters, and generators.
+Direct attribution uses assistant `Edit` and `Write` output. In v1, `Bash` events support deletion inference only. The default v2 scorer also uses verified workspace deltas captured around Claude Code and Codex Bash tools, including changes made by invoked scripts, formatters, and generators.
 
 ### What you see
 
@@ -39,12 +39,12 @@ See the [Evidence Contract](evidence-contract.md) for evidence classes, strength
 
 ### Caveats
 
-- Attribution is anchored to the delta window between commit lineage records. Deferred created or modified files can still pick up AI attribution from earlier history when matching AI output lands in a later commit.
+- Historical carry-forward applies to files added by the commit that were already present in the previous commit-linked checkpoint's manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity.
 - Lines manually edited after direct AI generation may count as "modified" rather than "exact." Tool-delta lines must survive exactly or after whitespace normalization.
-- Tool-delta scoring is experimental and disabled by default. Enable it with `attribution_v2` in `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=1`.
+- Tool-delta scoring is on by default. Opt out with `attribution_v2: false` in `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=0`.
 - Tool-delta evidence shows that a changed line appeared while an agent-issued tool was running. It does not prove exclusive authorship: concurrent saves, formatters, and file watchers can produce the same evidence.
 - Semantica snapshots eligible Bash calls when capture state is active, even if `attribution_v2` is disabled. The flag controls scoring, not capture. Calls without capture state are ignored. On-demand or recomputed attribution can use earlier captures; enabling the flag alone does not update stored results.
-- Carry-forward is per-file, not per-line across windows. If a file already has current-window AI attribution, that file stays current-window authoritative.
+- Carry-forward is per-file. Current-window attribution remains authoritative when an eligible created file already has AI evidence.
 - Provider-level attribution (file touched by AI) is available for all providers. When a provider reports only file-touch metadata, those lines are reported as `ai_provider_only_lines` and excluded from the headline AI percentage.
 - When weaker evidence contributes to a file that also has line-level matches, Semantica keeps the strongest class as `evidence_class` and preserves the weaker signals in `evidence_classes`.
 
@@ -180,7 +180,7 @@ semantica explain HEAD --generate
 - Commit-linked work runs in repository order. Transient failures retry with bounded backoff, while a terminal failure blocks later records until it is fixed and retried with `semantica worker retry <checkpoint-id>`.
 - Launcher backends drain every 30 minutes to recover scheduled retries and expired worker leases. `semantica doctor` reports scheduled retries and blocked queues.
 - After replacing the Semantica binary, `semantica launcher refresh` re-registers an enabled launcher against the current binary and drains queued work. The installer attempts this automatically when it is not running as root.
-- `semantica status --json` reports the latest checkpoint, queue blockage, component-level audit readiness, and the attribution algorithm version when known. The named policy indicates whether hosted sync is required.
+- `semantica status --json` reports the latest checkpoint, queue blockage, component-level audit readiness, attribution version, and manifest version, scope, and integrity classification. The named policy indicates whether hosted sync is required.
 
 ### Caveats
 

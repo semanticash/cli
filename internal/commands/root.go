@@ -34,7 +34,6 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewDisableCmd(opts))
 	cmd.AddCommand(NewCheckpointCmd(opts))
 	cmd.AddCommand(NewListCmd(opts))
-	cmd.AddCommand(NewRewindCmd(opts))
 	cmd.AddCommand(NewHookCmd(opts))
 	cmd.AddCommand(NewShowCmd(opts))
 	cmd.AddCommand(NewWorkerCmd(opts))

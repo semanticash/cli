@@ -961,13 +961,13 @@ func TestAttributionV2_ModifiedFileHistoricalTouchDeltaDropped(t *testing.T) {
 	}
 }
 
-// Refused historical claims do not become file-level touch evidence.
-func TestAttributionV2_ModifiedFileRefusedHistoricalClaimNotTouch(t *testing.T) {
+// TestAttributionV2_ModifiedFileHistoricalClaimDropped verifies that a dropped
+// historical claim does not become file-level touch evidence.
+func TestAttributionV2_ModifiedFileHistoricalClaimDropped(t *testing.T) {
 	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1")
 	w := newCFCommitWorld(t)
 
-	// One shared line makes the claim survive; the remaining volume
-	// overflows the scorer's alignment budget and forces refusal.
+	// The historical claim is dropped before scoring the modified file.
 	const n = 2500
 	claimLines := make([]string, n)
 	humanLines := make([]string, n)
@@ -990,7 +990,7 @@ func TestAttributionV2_ModifiedFileRefusedHistoricalClaimNotTouch(t *testing.T) 
 	}})
 	w.linkCheckpoint(t, commit1, 200_000, []string{"big.txt"})
 
-	// Same provider active in the current window on another file.
+	// Current provider activity is limited to another file.
 	_ = insertEventWithPayload(t, w.h, w.bs, w.sessID, w.repoID, w.repoRoot,
 		250_000, "other.go", "package other\n")
 
@@ -999,9 +999,6 @@ func TestAttributionV2_ModifiedFileRefusedHistoricalClaimNotTouch(t *testing.T) 
 
 	result := w.attribute(t, commit2)
 
-	if result.Diagnostics.DeltaAlignmentsRefused == 0 {
-		t.Fatal("alignment not refused; the fixture no longer exercises the refusal path")
-	}
 	f := fileByPath(t, result.Files, "big.txt")
 	for _, class := range append([]string{f.EvidenceClass}, f.EvidenceClasses...) {
 		if class == "tool_delta_touch" || class == "provider_touch" {

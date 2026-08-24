@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -122,8 +121,8 @@ func (s *ShowService) ShowCheckpoint(ctx context.Context, in ShowCheckpointInput
 		return nil, fmt.Errorf("read manifest %s: %w", cp.ManifestHash.String, err)
 	}
 
-	var manifest blobs.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+	manifest, err := blobs.ParseManifest(manifestBytes)
+	if err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 

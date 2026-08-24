@@ -87,8 +87,9 @@ func enrichStats(t *testing.T, h *sqlstore.Handle) sqldb.CheckpointStat {
 	return stats
 }
 
-// An empty diff records a completed result with no attribution.
+// Empty diffs still record the selected attribution version.
 func TestComputeEnrichmentAttribution_EmptyDiffRecordsVersion(t *testing.T) {
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "0")
 	wctx, dir := setupEnrichRepo(t)
 	hash := gitCommit(t, dir, "commit", "--allow-empty", "-m", "empty")
 
@@ -108,8 +109,9 @@ func TestComputeEnrichmentAttribution_EmptyDiffRecordsVersion(t *testing.T) {
 	}
 }
 
-// A commit without agent evidence records a completed empty result.
+// Commits without agent evidence still record the selected attribution version.
 func TestComputeEnrichmentAttribution_NoEventsRecordsVersion(t *testing.T) {
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "0")
 	wctx, dir := setupEnrichRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("human change\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -146,6 +148,22 @@ func TestComputeEnrichmentAttribution_V2ConfiguredRecordsV2(t *testing.T) {
 	stats := enrichStats(t, wctx.h)
 	if !stats.AttributionVersion.Valid || stats.AttributionVersion.String != "v2" {
 		t.Errorf("attribution_version = %+v, want v2", stats.AttributionVersion)
+	}
+}
+
+// The default scorer is v2.
+func TestComputeEnrichmentAttribution_DefaultRecordsV2(t *testing.T) {
+	wctx, dir := setupEnrichRepo(t)
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "")
+	hash := gitCommit(t, dir, "commit", "--allow-empty", "-m", "empty")
+
+	computeEnrichmentAttribution(context.Background(), wctx, WorkerInput{
+		CheckpointID: "ck-enrich", CommitHash: hash, RepoRoot: dir,
+	}, workerWindows{})
+
+	stats := enrichStats(t, wctx.h)
+	if !stats.AttributionVersion.Valid || stats.AttributionVersion.String != "v2" {
+		t.Errorf("attribution_version = %+v, want v2 by default", stats.AttributionVersion)
 	}
 }
 

@@ -1,0 +1,166 @@
+# Manually measures attribution v2 tool-window hook latency on GitHub's x86_64
+# ubuntu-24.04 runner using the v0.6.2 benchmark binary.
+#
+# Acceptance criteria:
+#   pre-hook p95 <= 300 ms
+#   combined per-call p95 <= 800 ms
+#   combined per-call max <= 1200 ms (absolute)
+#
+# Every row must pass. The check also requires three runs of each variant for
+# both fixture sizes, for 18 rows total.
+name: Attribution v2 x86 latency
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out v0.6.2
+        uses: actions/checkout@v5
+        with:
+          ref: v0.6.2
+          fetch-depth: 0
+
+      - name: Verify architecture, revision, and runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(git rev-parse HEAD)" = "7a6444ece608f29ab7f26254a126316c097a2c79"
+          uname -a
+          lscpu
+          git --version
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build benchmark binary
+        run: make build
+
+      - name: Benchmark 500 files
+        shell: bash
+        env:
+          SEMANTICA_BENCH_FILES: "500"
+          SEMANTICA_BENCH_DIRTY: "500"
+        run: |
+          set -euo pipefail
+          go test -tags e2e -bench ToolWindow -benchtime 100x \
+            -count 3 -run xxx ./e2e | tee bench-500.txt
+
+      - name: Benchmark 5000 files
+        shell: bash
+        env:
+          SEMANTICA_BENCH_FILES: "5000"
+          SEMANTICA_BENCH_DIRTY: "500"
+        run: |
+          set -euo pipefail
+          go test -tags e2e -bench ToolWindow -benchtime 100x \
+            -count 3 -run xxx ./e2e | tee bench-5000.txt
+
+      - name: Enforce matrix and acceptance criteria
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, re, sys
+
+          PRE_P95_MAX = 300.0
+          COMBINED_P95_MAX = 800.0
+          COMBINED_MAX_ABS = 1200.0
+
+          EXPECTED_FILES = ["bench-500.txt", "bench-5000.txt"]
+          VARIANTS = [
+              "BenchmarkToolWindowCycleClean",
+              "BenchmarkToolWindowCycleDirtyUntracked",
+              "BenchmarkToolWindowCycleDirtyTracked",
+          ]
+          RUNS_PER_VARIANT = 3
+
+          def variant(tok):
+              # Strip the trailing -<GOMAXPROCS> Go appends to benchmark names.
+              return re.sub(r"-\d+$", "", tok)
+
+          rows = []
+          counts = {}
+          for path in EXPECTED_FILES:
+              try:
+                  fh = open(path)
+              except FileNotFoundError:
+                  sys.exit(f"missing benchmark output file: {path}")
+              with fh:
+                  for line in fh:
+                      if not line.startswith("Benchmark"):
+                          continue
+                      toks = line.split()
+                      v = variant(toks[0])
+                      counts[(path, v)] = counts.get((path, v), 0) + 1
+                      metrics = {}
+                      for i, t in enumerate(toks):
+                          if t.endswith("-ms") and i > 0:
+                              try:
+                                  metrics[t] = float(toks[i - 1])
+                              except ValueError:
+                                  pass
+                      rows.append((path, toks[0], metrics))
+
+          # Matrix completeness: exactly three runs of each variant per file.
+          shape_ok = True
+          for path in EXPECTED_FILES:
+              for v in VARIANTS:
+                  n = counts.get((path, v), 0)
+                  if n != RUNS_PER_VARIANT:
+                      print(f"SHAPE-FAIL {path}: {v} has {n} rows, want {RUNS_PER_VARIANT}")
+                      shape_ok = False
+              for (p, v), n in counts.items():
+                  if p == path and v not in VARIANTS:
+                      print(f"SHAPE-FAIL {path}: unexpected variant {v} ({n} rows)")
+                      shape_ok = False
+          if not shape_ok:
+              sys.exit("incomplete matrix: want 3 of each variant per file (18 rows total)")
+
+          # Ceilings: every row must pass.
+          failures = 0
+          for path, name, m in rows:
+              pre = m.get("pre-p95-ms")
+              cp95 = m.get("combined-p95-ms")
+              cmax = m.get("combined-max-ms")
+              if pre is None or cp95 is None or cmax is None:
+                  print(f"FAIL {path} {name}: missing metrics {m}")
+                  failures += 1
+                  continue
+              cmax_ceil = COMBINED_MAX_ABS
+              bad = []
+              if pre > PRE_P95_MAX:
+                  bad.append(f"pre-p95 {pre:.1f}>{PRE_P95_MAX:.0f}")
+              if cp95 > COMBINED_P95_MAX:
+                  bad.append(f"combined-p95 {cp95:.1f}>{COMBINED_P95_MAX:.0f}")
+              if cmax > cmax_ceil:
+                  bad.append(f"combined-max {cmax:.1f}>{cmax_ceil:.1f}")
+              if bad:
+                  failures += 1
+              print(f"{'FAIL' if bad else 'pass'} {path} {name}: "
+                    f"pre-p95={pre:.1f} combined-p95={cp95:.1f} "
+                    f"combined-max={cmax:.1f} (max ceil {cmax_ceil:.1f}) {'; '.join(bad)}")
+
+          if failures:
+              sys.exit(f"\n{failures} of {len(rows)} row(s) exceeded acceptance criteria")
+          print(f"\nall {len(rows)} rows complete and within ceilings")
+          PY
+
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attribution-v2-x86-latency-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bench-*.txt
+          if-no-files-found: error
+          retention-days: 30

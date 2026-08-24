@@ -21,6 +21,7 @@ type enrichResult struct {
 	filesChanged int64
 	fileCount    int
 	sessionCount int
+	commitHash   string // persisted commit anchor; empty for workspace checkpoints
 }
 
 // workerWindows holds the two different "previous checkpoint" boundaries
@@ -112,24 +113,49 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	blobStore := wctx.blobStore
 	cp := wctx.cp
 
-	paths, err := repo.ListFilesFromGit(ctx)
-	if err != nil {
-		return enrichResult{}, fmt.Errorf("list files: %w", err)
-	}
-
-	// Commit-linked checkpoints reuse only files Git verifies as unchanged
-	// across the commit range and current worktree.
-	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.RepositorySequence)
-	reusableFiles := prevManifest.files
-	if in.CommitHash != "" {
-		reusableFiles, err = reusableCommitRangeFiles(ctx, h, repo, prevManifest, in.CheckpointID, in.CommitHash)
-		if err != nil {
-			return enrichResult{}, fmt.Errorf("reusable manifest files: %w", err)
-		}
-	}
-	mr, err := blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, reusableFiles)
+	// The persisted commit link, not the worker's commit hint, decides scope.
+	anchorCommit, isCommit, err := resolveCommitAnchor(ctx, h, cp, in)
 	if err != nil {
 		return enrichResult{}, err
+	}
+	// Use the persisted anchor for attribution.
+	in.CommitHash = anchorCommit
+
+	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.RepositorySequence)
+
+	var (
+		mr           *blobs.ManifestResult
+		fileCount    int
+		filesChanged int64
+	)
+	if isCommit {
+		// Build commit manifests without reading the worktree.
+		mr, err = buildCommitManifest(ctx, repo, blobStore, anchorCommit, prevManifest)
+		if err != nil {
+			return enrichResult{}, fmt.Errorf("build commit manifest: %w", err)
+		}
+		fileCount = len(mr.Manifest.Files)
+		filesChanged, err = commitFilesChanged(ctx, repo, anchorCommit, fileCount)
+		if err != nil {
+			return enrichResult{}, err
+		}
+	} else {
+		// Workspace checkpoints use only workspace or legacy predecessors.
+		// Commit manifests have a different content basis.
+		wsPrev := prevManifest
+		if wsPrev.manifest != nil && wsPrev.manifest.IsCommitScoped() {
+			wsPrev = prevManifestResult{}
+		}
+		paths, perr := repo.ListFilesFromGit(ctx)
+		if perr != nil {
+			return enrichResult{}, fmt.Errorf("list files: %w", perr)
+		}
+		mr, err = blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, wsPrev.files)
+		if err != nil {
+			return enrichResult{}, err
+		}
+		fileCount = len(paths)
+		filesChanged = countChangedFiles(wsPrev, mr.Manifest.Files)
 	}
 
 	// Windows.
@@ -139,7 +165,6 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	seen := linkSessionsToCheckpoint(ctx, h, in.CheckpointID, cp, windows.sessionWindow)
 
 	// Stats.
-	filesChanged := countChangedFiles(prevManifest, mr.Manifest.Files)
 	if err := h.Queries.UpsertCheckpointStats(ctx, sqldb.UpsertCheckpointStatsParams{
 		CheckpointID: in.CheckpointID,
 		SessionCount: int64(len(seen)),
@@ -148,8 +173,8 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 		wlog("worker: upsert checkpoint stats: %v\n", err)
 	}
 
-	// AI attribution.
-	if in.CommitHash != "" {
+	// Score the same commit used by the manifest.
+	if isCommit {
 		computeEnrichmentAttribution(ctx, wctx, in, windows)
 	}
 
@@ -157,8 +182,9 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 		manifestHash: mr.ManifestHash,
 		totalBytes:   mr.TotalBytes,
 		filesChanged: filesChanged,
-		fileCount:    len(paths),
+		fileCount:    fileCount,
 		sessionCount: len(seen),
+		commitHash:   anchorCommit,
 	}, nil
 }
 

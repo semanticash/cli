@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -579,5 +580,120 @@ func TestBuildManifest_FileDisappearsBetweenStatAndRead(t *testing.T) {
 	}
 	if len(res.Manifest.Files) != 0 {
 		t.Errorf("expected 0 files in manifest, got %d", len(res.Manifest.Files))
+	}
+}
+
+// BuildManifest produces a valid version-2 workspace manifest.
+func TestBuildManifest_ProducesV2Workspace(t *testing.T) {
+	bs, err := NewStore(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir := t.TempDir()
+	writeTestFile(t, repoDir, "a.txt", "hi\n", 0o644)
+	readFile := func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(repoDir, rel)) }
+
+	ctx := context.Background()
+	mr, err := BuildManifest(ctx, bs, repoDir, []string{"a.txt"}, readFile, nil)
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+	if mr.Manifest.Version != 2 || mr.Manifest.Scope != ScopeWorkspace {
+		t.Errorf("manifest = v%d scope %q, want version 2 workspace", mr.Manifest.Version, mr.Manifest.Scope)
+	}
+	if mr.Manifest.IsCommitScoped() {
+		t.Error("workspace manifest must not be commit-scoped")
+	}
+	raw, err := bs.Get(ctx, mr.ManifestHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseManifest(raw); err != nil {
+		t.Errorf("stored workspace manifest fails ParseManifest: %v", err)
+	}
+}
+
+// A version-1 workspace manifest can seed validated version-2 reuse.
+func TestBuildManifest_ReusesFromV1Predecessor(t *testing.T) {
+	ctx := context.Background()
+	bs, err := NewStore(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoDir := t.TempDir()
+	writeTestFile(t, repoDir, "reuse.txt", "reused content\n", 0o644)
+	writeTestFile(t, repoDir, "missing.txt", "missing-ref content\n", 0o644)
+	writeTestFile(t, repoDir, "malformed.txt", "malformed-ref content\n", 0o644)
+
+	// Count reads to distinguish reuse from fallback.
+	reads := map[string]int{}
+	readFile := func(rel string) ([]byte, error) {
+		reads[rel]++
+		return os.ReadFile(filepath.Join(repoDir, rel))
+	}
+
+	// Store the reusable file's content in the CAS.
+	reuseContent, err := os.ReadFile(filepath.Join(repoDir, "reuse.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuseBlob, _, err := bs.Put(ctx, reuseContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v1Entry := func(rel, blob string) ManifestFile {
+		fi, err := os.Lstat(filepath.Join(repoDir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ManifestFile{
+			Path: rel, Blob: blob, Size: fi.Size(),
+			Mode: fi.Mode() & permMask, ModTimeNs: fi.ModTime().UnixNano(),
+		}
+	}
+	// Round-trip the predecessor through the version-1 wire format.
+	v1 := Manifest{Version: 1, CreatedAt: 1, RepoRoot: repoDir, Files: []ManifestFile{
+		v1Entry("reuse.txt", reuseBlob),                 // valid + present -> reused
+		v1Entry("missing.txt", strings.Repeat("d", 64)), // valid hex, absent -> re-read
+		v1Entry("malformed.txt", "not-a-hash"),          // malformed -> re-read
+	}}
+	rawV1, err := v1.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedV1, err := ParseManifest(rawV1)
+	if err != nil {
+		t.Fatalf("v1 ParseManifest: %v", err)
+	}
+
+	mr, err := BuildManifest(ctx, bs, repoDir, []string{"reuse.txt", "missing.txt", "malformed.txt"}, readFile, parsedV1.Files)
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+	if mr.Manifest.Version != 2 || mr.Manifest.Scope != ScopeWorkspace {
+		t.Errorf("result = v%d %q, want version 2 workspace", mr.Manifest.Version, mr.Manifest.Scope)
+	}
+	byPath := map[string]ManifestFile{}
+	for _, f := range mr.Manifest.Files {
+		byPath[f.Path] = f
+	}
+
+	// The reusable file is not read and keeps its content hash.
+	if reads["reuse.txt"] != 0 {
+		t.Errorf("reuse.txt read %d times, want 0 (reused)", reads["reuse.txt"])
+	}
+	if byPath["reuse.txt"].Blob != reuseBlob || reuseBlob != casOf(reuseContent) {
+		t.Errorf("reuse.txt blob = %q, want the file's content hash %q", byPath["reuse.txt"].Blob, casOf(reuseContent))
+	}
+	// Missing and malformed references are read once.
+	for _, rel := range []string{"missing.txt", "malformed.txt"} {
+		if reads[rel] != 1 {
+			t.Errorf("%s read %d times, want 1 (re-read)", rel, reads[rel])
+		}
+		content, _ := os.ReadFile(filepath.Join(repoDir, rel))
+		if byPath[rel].Blob != casOf(content) {
+			t.Errorf("%s blob = %q, want the re-read content hash %q", rel, byPath[rel].Blob, casOf(content))
+		}
 	}
 }

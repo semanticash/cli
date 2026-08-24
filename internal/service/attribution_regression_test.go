@@ -543,10 +543,8 @@ func TestRegression_CarryForward_HistoricalLookback(t *testing.T) {
 	}
 }
 
-// Covers modified-file carry-forward when the edit predates the previous
-// commit-linked checkpoint and the same provider appears in the current
-// window.
-func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
+// Same-file activity cannot unlock historical evidence for a modified file.
+func TestRegression_CarryForward_Modified_SameFileActivityFailsClosed(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
 	bs, _ := blobs.NewStore(t.TempDir())
@@ -569,8 +567,9 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
-	// Same-provider activity in the current window allows lookback for utils.go.
-	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
+	// Same-file activity does not prove that the historical line survived.
+	_ = insertEventWithPayload(t, h, bs, sessID, repoID, repoRoot,
+		250_000, "utils.go", "// current-window touch\n")
 
 	// Modified-file diff: the added line matches the historical payload.
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"
@@ -581,20 +580,12 @@ func TestRegression_CarryForward_HistoricalLookback_Modified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attributeWithCarryForward: %v", err)
 	}
-	if cfr.noEvents {
-		t.Error("noEvents should be false; historical window has the edit")
-	}
-	if cfr.result.AILines == 0 {
-		t.Errorf("AILines = 0, want > 0 (historical AI evidence should carry forward to modified file)")
-	}
-	if cfr.result.Percent == 0 {
-		t.Errorf("Percent = 0, want > 0 (deferred modified-file attribution should not fall back to human)")
+	if cfr.result.AILines != 0 {
+		t.Errorf("AILines = %d, want 0 (modified-file carry-forward must fail closed)", cfr.result.AILines)
 	}
 }
 
-// Historical evidence on the same file must still match the current diff.
-// Same-provider activity admits the historical candidates; line matching
-// rejects stale content.
+// Cross-file activity cannot unlock historical evidence for a modified file.
 func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
@@ -617,10 +608,10 @@ func TestRegression_CarryForward_ModifiedFile_ScorerBlocksStaleCredit(t *testing
 	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
-	// Same-provider activity admits the historical candidates for scoring.
+	// Provider activity only on an unrelated file in the current window.
 	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
 
-	// Historical candidates are loaded, but line matching should reject them.
+	// Historical evidence for the modified file must fail closed.
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,3 @@\n package utils\n+func Handler() { return 42 }\n"
 	cp1, _ := h.Queries.GetCheckpointByID(ctx, cp1ID)
 	cfr, err := attributeWithCarryForward(ctx, h, bs, []byte(diff), ComputeAIPercentInput{
@@ -673,9 +664,7 @@ func TestRegression_CarryForward_Modified_ZeroCurrentWindowEvents(t *testing.T) 
 	}
 }
 
-// Cross-provider historical evidence must not carry forward. When the
-// current window has only codex activity, older claude_code evidence for
-// the same file must be dropped, even if lines would match.
+// Cross-provider activity cannot unlock historical evidence for a modified file.
 func TestRegression_CarryForward_Modified_CrossProviderRejected(t *testing.T) {
 	h := testDB(t)
 	ctx := context.Background()
@@ -718,7 +707,7 @@ func TestRegression_CarryForward_Modified_CrossProviderRejected(t *testing.T) {
 	// The aggregated provider list should not include claude_code AI lines.
 	for _, p := range cfr.result.Providers {
 		if p.Provider == "claude_code" && p.AILines > 0 {
-			t.Errorf("Providers contains claude_code with AILines=%d; expected same-provider gate to drop it",
+			t.Errorf("Providers contains claude_code with AILines=%d; expected modified-file carry-forward to fail closed",
 				p.AILines)
 		}
 	}
@@ -748,7 +737,7 @@ func TestRegression_CarryForward_Modified_ProviderTouchOnlyRejected(t *testing.T
 	}
 	_ = insertCheckpointWithManifest(t, h, bs, repoID, 300_000, []string{"utils.go"})
 
-	// Current window has the same provider, satisfying the outer gate.
+	// Current window has the same provider on another file.
 	_ = insertProviderFileTouchEvent(t, h, sessID, repoID, "claude_code", "Edit", 250_000, "unrelated.go")
 
 	diff := "diff --git a/utils.go b/utils.go\n--- a/utils.go\n+++ b/utils.go\n@@ -1,2 +1,2 @@\n package utils\n-func Helper() {}\n+func Helper() { return 42 }\n"

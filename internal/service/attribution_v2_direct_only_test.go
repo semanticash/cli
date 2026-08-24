@@ -60,7 +60,30 @@ func insertDirectWriteEvent(t *testing.T, h *sqlstore.Handle, bs *blobs.Store, r
 	}
 }
 
-// setupDirectEvidenceRepo creates a commit with direct evidence from two providers.
+// directEvidenceProviders lists identities covered by the direct-evidence test.
+var directEvidenceProviders = []struct{ provider, file string }{
+	{"claude_code", "probe_claude.txt"},
+	{"codex", "probe_codex.txt"},
+	{"copilot", "probe_copilot.txt"},
+	{"gemini_cli", "probe_gemini.txt"},
+	{"kiro-cli", "probe_kirocli.txt"},
+	{"kiro-ide", "probe_kiroide.txt"},
+}
+
+// insertProviderSource creates a source for one provider.
+func insertProviderSource(t *testing.T, h *sqlstore.Handle, repoID, sourceKey, provider string) string {
+	t.Helper()
+	row, err := h.Queries.UpsertAgentSource(context.Background(), sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID, Provider: provider,
+		SourceKey: sourceKey, LastSeenAt: 100_000, CreatedAt: 100_000,
+	})
+	if err != nil {
+		t.Fatalf("insert %s source: %v", provider, err)
+	}
+	return row.SourceID
+}
+
+// setupDirectEvidenceRepo commits one direct-evidence file per provider.
 func setupDirectEvidenceRepo(t *testing.T) (string, string) {
 	t.Helper()
 
@@ -118,18 +141,20 @@ func setupDirectEvidenceRepo(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatalf("open blob store: %v", err)
 	}
-	srcID := insertSource(t, h, repoID, "/data/session.jsonl")
-	claudeSess := insertSessionWithProvider(t, h, repoID, srcID, uuid.NewString(), "claude_code")
-	codexSess := insertSessionWithProvider(t, h, repoID, srcID, uuid.NewString(), "codex")
-
-	// Distinct files avoid the shared-line provider narrowing tested by scoring.
-	insertDirectWriteEvent(t, h, bs, repoID, repoRoot, claudeSess, "feat.go", "package feat\nfunc Feat() {}\n", 200_000)
-	insertDirectWriteEvent(t, h, bs, repoID, repoRoot, codexSess, "util.go", "package util\nfunc Util() {}\n", 210_000)
-
-	mustWriteFile(t, filepath.Join(dir, "feat.go"), []byte("package feat\nfunc Feat() {}\n"))
-	mustWriteFile(t, filepath.Join(dir, "util.go"), []byte("package util\nfunc Util() {}\n"))
-	git("add", "feat.go", "util.go")
-	git("commit", "-m", "add feat and util")
+	// Use distinct content so evidence cannot overlap across providers.
+	ts := int64(200_000)
+	files := make([]string, 0, len(directEvidenceProviders))
+	for _, s := range directEvidenceProviders {
+		src := insertProviderSource(t, h, repoID, "/data/"+s.provider+".jsonl", s.provider)
+		sess := insertSessionWithProvider(t, h, repoID, src, uuid.NewString(), s.provider)
+		content := s.provider + " alpha\n" + s.provider + " beta\n"
+		insertDirectWriteEvent(t, h, bs, repoID, repoRoot, sess, s.file, content, ts)
+		mustWriteFile(t, filepath.Join(dir, s.file), []byte(content))
+		files = append(files, s.file)
+		ts += 10_000
+	}
+	git(append([]string{"add"}, files...)...)
+	git("commit", "-m", "add direct-evidence files")
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
@@ -157,8 +182,7 @@ func setupDirectEvidenceRepo(t *testing.T) (string, string) {
 	return dir, commitHash
 }
 
-// TestAttributionV2_DirectOnlyFlagSelectsPath compares both scorers on the same
-// mixed-provider commit without tool-delta evidence.
+// TestAttributionV2_DirectOnlyFlagSelectsPath compares both scorers without tool deltas.
 func TestAttributionV2_DirectOnlyFlagSelectsPath(t *testing.T) {
 	dir, commitHash := setupDirectEvidenceRepo(t)
 
@@ -183,19 +207,17 @@ func TestAttributionV2_DirectOnlyFlagSelectsPath(t *testing.T) {
 		t.Errorf("flag 1: AttrVersion = %q, want v2", v2.AttrVersion)
 	}
 
-	// Direct evidence retains its provider.
-	feat := fileByPath(t, v2.Files, "feat.go")
-	util := fileByPath(t, v2.Files, "util.go")
-	if feat.AIExactLines != 2 || len(feat.Providers) != 1 || feat.Providers[0] != "claude_code" {
-		t.Fatalf("feat.go = %+v, want 2 exact AI lines by claude_code", feat)
+	// Each file retains its provider and two exact lines.
+	for _, s := range directEvidenceProviders {
+		f := fileByPath(t, v2.Files, s.file)
+		if f.AIExactLines != 2 || len(f.Providers) != 1 || f.Providers[0] != s.provider {
+			t.Errorf("%s = %+v, want 2 exact AI lines by %s", s.file, f, s.provider)
+		}
 	}
-	if util.AIExactLines != 2 || len(util.Providers) != 1 || util.Providers[0] != "codex" {
-		t.Fatalf("util.go = %+v, want 2 exact AI lines by codex", util)
+	if want := 2 * len(directEvidenceProviders); v2.AILines != want {
+		t.Fatalf("v2 headline AILines = %d, want %d", v2.AILines, want)
 	}
-	if v2.AILines != 4 {
-		t.Fatalf("v2 headline AILines = %d, want 4", v2.AILines)
-	}
-	// Direct-only evidence must not populate delta counters.
+	// Direct evidence must not populate delta counters.
 	if v2.AIDeltaExactLines != 0 || v2.AIDeltaFormattedLines != 0 {
 		t.Errorf("v2 delta line counters non-zero on delta-free repo: exact=%d formatted=%d", v2.AIDeltaExactLines, v2.AIDeltaFormattedLines)
 	}
@@ -203,7 +225,7 @@ func TestAttributionV2_DirectOnlyFlagSelectsPath(t *testing.T) {
 		t.Errorf("v2 populated delta diagnostics on delta-free repo: %+v", v2.Diagnostics)
 	}
 
-	// Results must match apart from the scorer version.
+	// Results must match except for the scorer version.
 	v1.AttrVersion, v2.AttrVersion = "", ""
 	if !reflect.DeepEqual(v1, v2) {
 		t.Errorf("v1 and v2 results diverge on delta-free direct evidence:\n v1=%+v\n v2=%+v", v1, v2)

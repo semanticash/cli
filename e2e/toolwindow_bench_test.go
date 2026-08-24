@@ -13,11 +13,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/semanticash/cli/internal/doctor"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 )
+
+// benchStageDiag reports whether stage diagnostics are enabled. Diagnostics
+// record hook stages and export the slowest cycle, adding measurement overhead.
+func benchStageDiag() bool { return os.Getenv("SEMANTICA_BENCH_DIAG") != "" }
 
 // These benchmarks run real CLI pre- and post-Bash hooks in an isolated
 // repository. Each batch verifies workspace state, evidence links, pending
@@ -68,6 +74,10 @@ func newBenchWorld(b testing.TB) *benchWorld {
 		"CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"),
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL="+os.DevNull)
+	if benchStageDiag() {
+		// Record stage timings for each hook subprocess.
+		w.env = append(w.env, "SEMANTICA_DOCTOR_BENCH=1")
+	}
 
 	if src := os.Getenv("SEMANTICA_BENCH_SOURCE_REPO"); src != "" {
 		clone := exec.Command("git", "clone", "--local", "-q", src, repo)
@@ -95,6 +105,9 @@ func newBenchWorld(b testing.TB) *benchWorld {
 
 	// Suppress hooks while committing setup files to avoid worker contention.
 	w.run(semBinary, "enable", "--providers", "claude-code")
+	if benchStageDiag() {
+		_ = os.MkdirAll(filepath.Join(repo, ".semantica", "doctor"), 0o755)
+	}
 	w.editFile = "bench-edit-target.txt"
 	w.write(w.editFile, "initial\n")
 	w.gitIn("-c", "core.hooksPath="+filepath.Join(scratch, "hookless"), "add", "-A")
@@ -325,17 +338,87 @@ func runCycles(b *testing.B, w *benchWorld, wantDirty int) {
 	}
 	b.StopTimer()
 	w.assertFixtures()
-	// Combine samples before report sorts them so the percentile represents the
-	// combined per-call hook duration, not percentile(pre)+percentile(post).
+	// Combine samples before report sorts them to preserve pre/post pairing.
 	combined := pairwiseSum(pres, posts)
+	// Select the slowest cycle before report sorts the samples in place. External
+	// timing also captures delays outside the hook's internal timer.
+	maxIdx, maxComb, maxPost := -1, math.Inf(-1), 0.0
+	for i := range posts {
+		if c := pres[i] + posts[i]; c > maxComb {
+			maxComb, maxPost, maxIdx = c, posts[i], i
+		}
+	}
 	report(b, "pre", pres)
 	report(b, "post", posts)
 	report(b, "combined", combined)
+	if maxIdx >= 0 {
+		tu := fmt.Sprintf("toolu_bench_%d_%d", os.Getpid(), maxIdx)
+		w.dumpStageDiag(b, tu, maxComb, maxPost)
+	}
 }
 
-// pairwiseSum returns the per-call combined durations a[i]+b[i]. Pairing is
-// required: the combined percentile must come from summed-per-call samples, not
-// from adding the separate pre and post percentiles.
+// dumpStageDiag reports stages for the externally slowest cycle and preserves
+// the full series. It skips the benchmark framework's one-iteration probe.
+func (w *benchWorld) dumpStageDiag(b *testing.B, toolUseID string, extCombinedMS, extPostMS float64) {
+	if !benchStageDiag() || b.N <= 1 {
+		return
+	}
+	logPath := doctor.BenchLogPath(w.repo)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		b.Logf("stage-diag: no bench.jsonl at %s: %v", logPath, err)
+		return
+	}
+	var rec doctor.BenchRecord
+	found := false
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var r doctor.BenchRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			continue
+		}
+		if r.Phase == "post" && r.ToolUseID == toolUseID {
+			rec, found = r, true
+			break
+		}
+	}
+	if found {
+		type kv struct {
+			k string
+			v int64
+		}
+		leaves := make([]kv, 0, len(rec.StageLeafMS))
+		for k, v := range rec.StageLeafMS {
+			leaves = append(leaves, kv{k, v})
+		}
+		sort.Slice(leaves, func(i, j int) bool { return leaves[i].v > leaves[j].v })
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "STAGE-DIAG-MATCHED %s cycle=%s external_combined=%.1fms external_post=%.1fms internal=%dms outcome=%s partial=%q unaccounted=%dms leaves:",
+			b.Name(), toolUseID, extCombinedMS, extPostMS, rec.DurationMS, rec.Outcome, rec.PartialReason, rec.UnaccountedMS)
+		for _, l := range leaves {
+			fmt.Fprintf(&sb, " %s=%dms", l.k, l.v)
+		}
+		b.Log(sb.String())
+	} else {
+		// Without the matching post record, the diagnostic is inconclusive.
+		b.Logf("STAGE-DIAG-UNMATCHED %s cycle=%s external_combined=%.1fms external_post=%.1fms reason=no_post_record_inconclusive",
+			b.Name(), toolUseID, extCombinedMS, extPostMS)
+	}
+
+	// Use a unique name so repeated benchmark runs remain separate.
+	dir := os.Getenv("SEMANTICA_BENCH_DIAG_DIR")
+	if dir == "" {
+		dir = "."
+	}
+	name := fmt.Sprintf("%s-%d.bench.jsonl", strings.ReplaceAll(b.Name(), "/", "-"), time.Now().UnixNano())
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		b.Logf("stage-diag: preserve failed: %v", err)
+	}
+}
+
+// pairwiseSum returns each call's combined pre and post duration.
 func pairwiseSum(a, b []float64) []float64 {
 	out := make([]float64, len(a))
 	for i := range a {

@@ -65,14 +65,19 @@ func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map
 		}
 		stats.PayloadsLoaded++
 
-		fileLines, bashCommands := ExtractClaudeActions(ev.Payload, repoRoot)
+		actions := extractClaudeActions(ev.Payload, repoRoot)
 		stamp := LineStamp{Provider: ev.Provider, Ts: ev.Ts, InsertSeq: ev.InsertSeq, EventID: ev.EventID}
-		for fp, lines := range fileLines {
+		for fp := range actions.fileTouches {
 			if eligibleFiles != nil && !eligibleFiles[fp] {
 				continue
 			}
 			touch(fp, stamp)
 			c.FileProvider[fp] = ev.Provider
+		}
+		for fp, lines := range actions.fileLines {
+			if eligibleFiles != nil && !eligibleFiles[fp] {
+				continue
+			}
 			if c.AILines[fp] == nil {
 				c.AILines[fp] = make(map[string]struct{})
 			}
@@ -94,7 +99,7 @@ func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map
 		}
 
 		// A verified delta deletion can supersede this command inference.
-		for _, cmd := range bashCommands {
+		for _, cmd := range actions.bashCommands {
 			for _, fp := range ExtractDeletedPaths(cmd, repoRoot) {
 				if eligibleFiles != nil && !eligibleFiles[fp] {
 					continue

@@ -4,7 +4,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -279,22 +278,13 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		aiTouchedFiles[fp] = true
 	}
 
-	// Carry forward older evidence for created or modified files that
-	// have no current-window AI attribution. Created and modified paths
-	// share one historical query. Modified-file candidates require a
-	// matching provider in the current window.
+	// Historical lookback is limited to manifest-eligible created files.
+	// Modified files fail closed until checkpoint anchoring can prove continuity.
 	var needsCF map[string]bool
 	if prevErr == nil {
 		manifestFiles := loadManifestForCheckpoint(ctx, bs, prev.ManifestHash, semDir)
 		createdCands := createdCarryForwardCandidates(dr, manifestFiles)
-		modifiedCands := modifiedCarryForwardCandidates(dr)
-		currentProviders := providersInWindow(windowRows)
-		// Skip modified-file carry-forward entirely when the current
-		// window has no providers to anchor the gate against.
-		if len(currentProviders) == 0 {
-			modifiedCands = nil
-		}
-		if len(createdCands) > 0 || len(modifiedCands) > 0 {
+		if len(createdCands) > 0 {
 			// Only files with zero current-window AI lines need lookback.
 			currentCands := aiCandidates{
 				aiLines:              aiLines,
@@ -318,30 +308,16 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				}
 			}
 			needsCF = make(map[string]bool)
-			modifiedInNeedsCF := make(map[string]bool)
-			var createdDeferred, modifiedDeferred int
+			var createdDeferred int
 			for path := range createdCands {
 				if !scoredAI[path] {
 					needsCF[path] = true
 					createdDeferred++
 				}
 			}
-			for path := range modifiedCands {
-				if !scoredAI[path] {
-					needsCF[path] = true
-					modifiedInNeedsCF[path] = true
-					modifiedDeferred++
-				}
-			}
 			if len(needsCF) > 0 {
-				if createdDeferred > 0 {
-					util.AppendActivityLog(semDir,
-						"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
-				}
-				if modifiedDeferred > 0 {
-					util.AppendActivityLog(semDir,
-						"carry-forward: retrying historical attribution for %d deferred modified file(s)", modifiedDeferred)
-				}
+				util.AppendActivityLog(semDir,
+					"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
 				histInput := ComputeAIPercentInput{
 					RepoRoot: repoRoot,
 					RepoID:   cp.RepositoryID,
@@ -350,7 +326,6 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 				if histEvents, histErr := loadWindowEvents(ctx, h, histInput); histErr == nil {
 					histRows := toEventRows(ctx, bs, histEvents)
 					histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, repoRoot, needsCF)
-					filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
 					// Carry forward verified deltas from the historical window.
 					if v2 {
 						histDeltas, dErr := LoadDeltaCandidates(ctx, h, bs, histInput)
@@ -358,20 +333,15 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 							return nil, fmt.Errorf("load historical tool-delta evidence: %w", dErr)
 						}
 						attrevents.SuppressInferredDeletions(&histNewCands, histDeltas)
-						filterDeltaCandidatesForCF(histDeltas, dr, needsCF, modifiedInNeedsCF, currentProviders)
+						filterDeltaCandidatesForCF(histDeltas, needsCF)
 						mergeHistoricalDeltas(deltas, histDeltas)
 						for fp := range mergeDeltaInvolvement(providerTouchedFiles, histDeltas) {
 							deltaInvolved[fp] = true
 							aiTouchedFiles[fp] = true
 						}
 					}
-					// Modified files require a surviving historical line.
-					cfMatched := modifiedCarryForwardDiffMatches(dr, histNewCands, modifiedInNeedsCF)
 					var cfLines int
 					for fp, lines := range histNewCands.AILines {
-						if modifiedInNeedsCF[fp] && !cfMatched[fp] {
-							continue
-						}
 						aiTouchedFiles[fp] = true
 						if histNewCands.FileProvider[fp] != "" {
 							fileProvider[fp] = histNewCands.FileProvider[fp]
@@ -388,9 +358,6 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 					// scorer can credit historical providers when their
 					// carried-forward lines match the diff.
 					for fp, perLine := range histNewCands.LineProviders {
-						if modifiedInNeedsCF[fp] && !cfMatched[fp] {
-							continue
-						}
 						if lineProviders == nil {
 							lineProviders = make(map[string]map[string]map[string]struct{})
 						}
@@ -407,9 +374,6 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 						}
 					}
 					for fp, prov := range histNewCands.ProviderTouchedFiles {
-						if modifiedInNeedsCF[fp] && !cfMatched[fp] {
-							continue
-						}
 						// Keep current delta evidence ahead of historical fallback.
 						if !deltaInvolved[fp] {
 							providerTouchedFiles[fp] = prov
@@ -1024,112 +988,6 @@ func aggregateFileScores(scores []fileScore, providerModel map[string]string, fi
 	}
 }
 
-// providersInWindow returns providers seen in the current attribution
-// window. Modified-file carry-forward uses this to avoid carrying older
-// evidence from providers that are not active in the current window.
-func providersInWindow(rows []sqldb.ListEventsInWindowRow) map[string]bool {
-	if len(rows) == 0 {
-		return nil
-	}
-	set := make(map[string]bool)
-	for _, r := range rows {
-		if r.Provider != "" {
-			set[r.Provider] = true
-		}
-	}
-	return set
-}
-
-// filterModifiedCarryForwardCandidates trims historical candidates for
-// modified files so that only line-level evidence from providers active
-// in the current window survives. Provider-touch-only history is dropped
-// for modified files because it cannot be matched against the current
-// diff. Created files pass through unchanged.
-func filterModifiedCarryForwardCandidates(
-	cands attrevents.Candidates,
-	modifiedSet map[string]bool,
-	currentProviders map[string]bool,
-) {
-	if len(modifiedSet) == 0 {
-		return
-	}
-	for fp := range modifiedSet {
-		if lineProvs, ok := cands.LineProviders[fp]; ok {
-			for line, provs := range lineProvs {
-				keep := false
-				for p := range provs {
-					if currentProviders[p] {
-						keep = true
-						break
-					}
-				}
-				if !keep {
-					delete(lineProvs, line)
-					if lines := cands.AILines[fp]; lines != nil {
-						delete(lines, line)
-					}
-				}
-			}
-			if len(lineProvs) == 0 {
-				delete(cands.LineProviders, fp)
-			}
-		}
-		lineEvidence := len(cands.AILines[fp]) > 0
-		if !lineEvidence {
-			delete(cands.AILines, fp)
-			// Modified-file carry-forward requires line-level
-			// evidence; a same-provider file touch alone would
-			// otherwise surface as ProviderOnlyLines.
-			delete(cands.ProviderTouchedFiles, fp)
-			delete(cands.FileProvider, fp)
-			continue
-		}
-		if prov, ok := cands.ProviderTouchedFiles[fp]; ok && !currentProviders[prov] {
-			delete(cands.ProviderTouchedFiles, fp)
-		}
-		if prov, ok := cands.FileProvider[fp]; ok && !currentProviders[prov] {
-			delete(cands.FileProvider, fp)
-		}
-	}
-}
-
-// modifiedCarryForwardDiffMatches finds modified files with an exact or
-// whitespace-normalized historical line in the current diff.
-func modifiedCarryForwardDiffMatches(dr diffResult, cands attrevents.Candidates, modifiedSet map[string]bool) map[string]bool {
-	if len(modifiedSet) == 0 {
-		return nil
-	}
-	matched := make(map[string]bool, len(modifiedSet))
-	for _, fd := range dr.files {
-		if !modifiedSet[fd.path] || matched[fd.path] {
-			continue
-		}
-		lines := cands.AILines[fd.path]
-		if len(lines) == 0 {
-			continue
-		}
-		norm := make(map[string]struct{}, len(lines))
-		for line := range lines {
-			norm[attrscoring.NormalizeWhitespace(line)] = struct{}{}
-		}
-	groups:
-		for _, g := range fd.groups {
-			for _, raw := range g.lines {
-				trimmed := strings.TrimSpace(raw)
-				if _, ok := lines[trimmed]; ok {
-					matched[fd.path] = true
-					break groups
-				}
-				if _, ok := norm[attrscoring.NormalizeWhitespace(trimmed)]; ok {
-					matched[fd.path] = true
-					break groups
-				}
-			}
-		}
-	}
-	return matched
-}
-
 // createdCarryForwardCandidates maps manifest entries and applies the
 // created-file lookback rule.
 func createdCarryForwardCandidates(dr diffResult, manifestFiles []blobs.ManifestFile) map[string]bool {
@@ -1138,30 +996,6 @@ func createdCarryForwardCandidates(dr diffResult, manifestFiles []blobs.Manifest
 		entries[i] = attrcf.ManifestEntry{Path: mf.Path}
 	}
 	return attrcf.IdentifyCreatedCandidates(dr.filesCreated, entries)
-}
-
-// modifiedCarryForwardCandidates derives modified paths as
-// files - created - deleted. ParseDiff includes deleted paths in files
-// using the old-side path, so deletions must be excluded explicitly.
-func modifiedCarryForwardCandidates(dr diffResult) map[string]bool {
-	if len(dr.files) == 0 {
-		return nil
-	}
-	excluded := make(map[string]bool, len(dr.filesCreated)+len(dr.filesDeleted))
-	for _, p := range dr.filesCreated {
-		excluded[p] = true
-	}
-	for _, p := range dr.filesDeleted {
-		excluded[p] = true
-	}
-	edited := make([]string, 0, len(dr.files))
-	for _, fd := range dr.files {
-		if excluded[fd.path] {
-			continue
-		}
-		edited = append(edited, fd.path)
-	}
-	return attrcf.IdentifyModifiedCandidates(edited)
 }
 
 // loadManifestForCheckpoint loads the manifest for a checkpoint's manifest hash.
@@ -1176,10 +1010,10 @@ func loadManifestForCheckpoint(ctx context.Context, bs *blobs.Store, manifestHas
 			"carry-forward: load manifest failed: %v", err)
 		return nil
 	}
-	var m blobs.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
+	m, err := blobs.ParseManifest(raw)
+	if err != nil {
 		util.AppendActivityLog(semDir,
-			"carry-forward: unmarshal manifest failed: %v", err)
+			"carry-forward: parse manifest failed: %v", err)
 		return nil
 	}
 	return m.Files
@@ -1289,77 +1123,23 @@ func mergeDeltaInvolvement(providerTouchedFiles map[string]string, deltas *attre
 	return involved
 }
 
-// filterDeltaCandidatesForCF keeps eligible historical delta evidence.
-// Modified files require a surviving claim; touch-only evidence is dropped.
-func filterDeltaCandidatesForCF(d *attrevents.DeltaCandidates, dr diffResult, eligible, modified, currentProviders map[string]bool) {
-	diffFiles := make(map[string]*fileDiff, len(dr.files))
-	for i := range dr.files {
-		diffFiles[dr.files[i].path] = &dr.files[i]
-	}
-	for fp, gs := range d.Claims {
+// filterDeltaCandidatesForCF keeps historical deltas for eligible created files.
+func filterDeltaCandidatesForCF(d *attrevents.DeltaCandidates, eligible map[string]bool) {
+	for fp := range d.Claims {
 		if !eligible[fp] {
 			delete(d.Claims, fp)
-			continue
-		}
-		if !modified[fp] {
-			continue
-		}
-		kept := gs[:0]
-		for _, g := range gs {
-			if currentProviders[g.Provider] && deltaClaimSurvivesDiff(diffFiles[fp], g) {
-				g.Historical = true
-				kept = append(kept, g)
-			}
-		}
-		if len(kept) == 0 {
-			delete(d.Claims, fp)
-		} else {
-			d.Claims[fp] = kept
 		}
 	}
 	for fp := range d.Touched {
-		if !eligible[fp] || modified[fp] {
+		if !eligible[fp] {
 			delete(d.Touched, fp)
 		}
 	}
 	for fp := range d.Deleted {
-		if !eligible[fp] || modified[fp] {
+		if !eligible[fp] {
 			delete(d.Deleted, fp)
 		}
 	}
-}
-
-// deltaClaimSurvivesDiff checks for an exact or whitespace-normalized
-// nonblank claim in the file's added lines.
-func deltaClaimSurvivesDiff(fd *fileDiff, g attrevents.DeltaClaimGroup) bool {
-	if fd == nil {
-		return false
-	}
-	claimed := make(map[string]struct{}, len(g.Lines))
-	norm := make(map[string]struct{}, len(g.Lines))
-	for _, line := range g.Lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		claimed[trimmed] = struct{}{}
-		norm[attrscoring.NormalizeWhitespace(trimmed)] = struct{}{}
-	}
-	if len(claimed) == 0 {
-		return false
-	}
-	for _, grp := range fd.groups {
-		for _, raw := range grp.lines {
-			trimmed := strings.TrimSpace(raw)
-			if _, ok := claimed[trimmed]; ok {
-				return true
-			}
-			if _, ok := norm[attrscoring.NormalizeWhitespace(trimmed)]; ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // mergeHistoricalDeltas merges historical evidence and diagnostics.
@@ -1702,7 +1482,6 @@ func attributeWithCarryForward(
 	currentNoEvents := false
 	var currentScores []fileScore
 	var currentCands aiCandidates
-	var currentProviders map[string]bool
 
 	events, err := loadWindowEvents(ctx, h, in)
 	if errors.Is(err, ErrNoEventsInWindow) {
@@ -1726,7 +1505,6 @@ func attributeWithCarryForward(
 			providerTouchedFiles: newCands.ProviderTouchedFiles,
 			fileProvider:         newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
-		currentProviders = providersInWindow(events)
 		haveEvidence := len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 ||
 			(deltas != nil && len(deltas.Claims) > 0)
 		if haveEvidence {
@@ -1751,28 +1529,21 @@ func attributeWithCarryForward(
 	// Load previous manifest for candidate identification.
 	manifestFiles := loadManifestForCheckpoint(ctx, bs, prevCP.ManifestHash, semDir)
 
-	// Created and modified paths share one historical query.
+	// Historical lookback is limited to manifest-eligible created files.
+	// Modified files fail closed until checkpoint anchoring can prove continuity.
 	createdCands := createdCarryForwardCandidates(dr, manifestFiles)
-	modifiedCands := modifiedCarryForwardCandidates(dr)
 
-	// Skip modified-file carry-forward entirely when the current window
-	// has no providers to anchor the same-provider gate against.
-	if len(currentProviders) == 0 {
-		modifiedCands = nil
-	}
-
-	// Filter to files that scored 0 AI in the current window.
+	// Filter to created files that scored 0 AI in the current window.
 	currentByPath := make(map[string]*fileScore, len(currentScores))
 	for i := range currentScores {
 		currentByPath[currentScores[i].path] = &currentScores[i]
 	}
 
 	needsCF := make(map[string]bool)
-	modifiedInNeedsCF := make(map[string]bool)
-	var createdDeferred, modifiedDeferred int
-	addIfDeferred := func(path string, isCreated bool) {
+	var createdDeferred int
+	for path := range createdCands {
 		if needsCF[path] {
-			return
+			continue
 		}
 		if fs, ok := currentByPath[path]; ok && fileScoreAILines(fs) == 0 {
 			needsCF[path] = true
@@ -1780,20 +1551,9 @@ func attributeWithCarryForward(
 			// No score means no current-window attribution for this file.
 			needsCF[path] = true
 		} else {
-			return
+			continue
 		}
-		if isCreated {
-			createdDeferred++
-		} else {
-			modifiedInNeedsCF[path] = true
-			modifiedDeferred++
-		}
-	}
-	for path := range createdCands {
-		addIfDeferred(path, true)
-	}
-	for path := range modifiedCands {
-		addIfDeferred(path, false)
+		createdDeferred++
 	}
 
 	// Run historical scoring for eligible files.
@@ -1802,14 +1562,8 @@ func attributeWithCarryForward(
 	var histCands aiCandidates
 
 	if len(needsCF) > 0 {
-		if createdDeferred > 0 {
-			util.AppendActivityLog(semDir,
-				"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
-		}
-		if modifiedDeferred > 0 {
-			util.AppendActivityLog(semDir,
-				"carry-forward: retrying historical attribution for %d deferred modified file(s)", modifiedDeferred)
-		}
+		util.AppendActivityLog(semDir,
+			"carry-forward: retrying historical attribution for %d deferred created file(s)", createdDeferred)
 
 		histInput := ComputeAIPercentInput{
 			RepoRoot: in.RepoRoot,
@@ -1821,7 +1575,6 @@ func attributeWithCarryForward(
 			historicalNoEvents = false
 			histRows := toEventRows(ctx, bs, histEvents)
 			histNewCands, _ := attrevents.BuildCandidatesFromRows(histRows, in.RepoRoot, needsCF)
-			filterModifiedCarryForwardCandidates(histNewCands, modifiedInNeedsCF, currentProviders)
 			// Load historical deltas for carry-forward scoring.
 			var histDeltas *attrevents.DeltaCandidates
 			if useV2 {
@@ -1830,7 +1583,7 @@ func attributeWithCarryForward(
 					return carryForwardResult{}, fmt.Errorf("load historical tool-delta evidence: %w", err)
 				}
 				attrevents.SuppressInferredDeletions(&histNewCands, histDeltas)
-				filterDeltaCandidatesForCF(histDeltas, dr, needsCF, modifiedInNeedsCF, currentProviders)
+				filterDeltaCandidatesForCF(histDeltas, needsCF)
 				mergeDeltaInvolvement(histNewCands.ProviderTouchedFiles, histDeltas)
 			}
 			histCands = aiCandidates{

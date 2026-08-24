@@ -10,13 +10,52 @@ import (
 )
 
 type Manifest struct {
-	Version   int64          `json:"version"`
-	CreatedAt int64          `json:"created_at"`
-	RepoRoot  string         `json:"repo_root"`
-	Files     []ManifestFile `json:"files"`
+	Version int64  `json:"version"`
+	Scope   string `json:"scope,omitempty"` // workspace | commit (version 2)
+
+	// Git identity for commit-scoped version-2 manifests.
+	ObjectFormat string `json:"object_format,omitempty"` // sha1 | sha256
+	CommitHash   string `json:"commit_hash,omitempty"`
+	TreeID       string `json:"tree_id,omitempty"`
+
+	// Workspace context for version 1 and workspace-scoped version 2.
+	CreatedAt int64  `json:"created_at,omitempty"`
+	RepoRoot  string `json:"repo_root,omitempty"`
+
+	Files []ManifestFile `json:"files"`
 }
 
 type ManifestFile struct {
+	Path string `json:"path"`
+
+	// Semantica CAS hash and uncompressed byte length.
+	Blob string `json:"blob,omitempty"`
+	Size int64  `json:"size,omitempty"`
+
+	// Git identity for commit-scoped version-2 entries.
+	EntryType   string `json:"entry_type,omitempty"` // regular | symlink | gitlink
+	GitMode     string `json:"git_mode,omitempty"`
+	GitObjectID string `json:"git_object_id,omitempty"`
+
+	// Workspace-scope filesystem observations.
+	Mode       os.FileMode `json:"mode,omitempty"`
+	ModTimeNs  int64       `json:"mod_time_ns,omitempty"`
+	IsSymlink  bool        `json:"is_symlink,omitempty"`
+	LinkTarget string      `json:"link_target,omitempty"`
+}
+
+// Version-specific wire structs preserve the version-1 byte layout while
+// allowing version 2 to omit fields outside its scope. Tags on the exported
+// types are used for unmarshaling.
+
+type manifestV1Wire struct {
+	Version   int64            `json:"version"`
+	CreatedAt int64            `json:"created_at"`
+	RepoRoot  string           `json:"repo_root"`
+	Files     []manifestV1File `json:"files"`
+}
+
+type manifestV1File struct {
 	Path       string      `json:"path"`
 	Blob       string      `json:"blob"`
 	Size       int64       `json:"size"`
@@ -24,6 +63,60 @@ type ManifestFile struct {
 	ModTimeNs  int64       `json:"mod_time_ns,omitempty"`
 	IsSymlink  bool        `json:"is_symlink,omitempty"`
 	LinkTarget string      `json:"link_target,omitempty"`
+}
+
+type manifestV2Wire struct {
+	Version      int64            `json:"version"`
+	Scope        string           `json:"scope,omitempty"`
+	ObjectFormat string           `json:"object_format,omitempty"`
+	CommitHash   string           `json:"commit_hash,omitempty"`
+	TreeID       string           `json:"tree_id,omitempty"`
+	CreatedAt    int64            `json:"created_at,omitempty"`
+	RepoRoot     string           `json:"repo_root,omitempty"`
+	Files        []manifestV2File `json:"files"`
+}
+
+type manifestV2File struct {
+	Path        string      `json:"path"`
+	Blob        string      `json:"blob,omitempty"`
+	Size        int64       `json:"size,omitempty"`
+	EntryType   string      `json:"entry_type,omitempty"`
+	GitMode     string      `json:"git_mode,omitempty"`
+	GitObjectID string      `json:"git_object_id,omitempty"`
+	Mode        os.FileMode `json:"mode,omitempty"`
+	ModTimeNs   int64       `json:"mod_time_ns,omitempty"`
+	IsSymlink   bool        `json:"is_symlink,omitempty"`
+	LinkTarget  string      `json:"link_target,omitempty"`
+}
+
+// MarshalJSON emits the wire format for the manifest's version.
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	if m.Version == 2 {
+		w := manifestV2Wire{
+			Version: 2, Scope: m.Scope, ObjectFormat: m.ObjectFormat,
+			CommitHash: m.CommitHash, TreeID: m.TreeID,
+			CreatedAt: m.CreatedAt, RepoRoot: m.RepoRoot,
+		}
+		if m.Files != nil {
+			w.Files = make([]manifestV2File, len(m.Files))
+			for i, f := range m.Files {
+				// The wire type differs only in its JSON tags.
+				w.Files[i] = manifestV2File(f)
+			}
+		}
+		return json.Marshal(w)
+	}
+	w := manifestV1Wire{Version: m.Version, CreatedAt: m.CreatedAt, RepoRoot: m.RepoRoot}
+	if m.Files != nil {
+		w.Files = make([]manifestV1File, len(m.Files))
+		for i, f := range m.Files {
+			w.Files[i] = manifestV1File{
+				Path: f.Path, Blob: f.Blob, Size: f.Size, Mode: f.Mode,
+				ModTimeNs: f.ModTimeNs, IsSymlink: f.IsSymlink, LinkTarget: f.LinkTarget,
+			}
+		}
+	}
+	return json.Marshal(w)
 }
 
 // ManifestResult holds the output of BuildManifest.
@@ -39,12 +132,13 @@ const permMask = os.ModeSetuid | os.ModeSetgid | os.ModeSticky | os.ModePerm
 // marshalManifest lets tests cancel during serialization.
 var marshalManifest = func(m Manifest) ([]byte, error) { return json.Marshal(m) }
 
-// BuildManifest reads each file via readFile, stores blobs, builds a manifest,
-// and stores the manifest blob itself. Returns the manifest hash and total size.
+// BuildManifest stores file content and a version-2 workspace manifest.
+// The manifest may include tracked and untracked, non-ignored files.
 //
 // If prevFiles is non-nil, unchanged files (same path, size, mode, and mtime)
 // reuse the previous blob hash without re-reading or re-hashing the file.
-// Symlinks are always re-read regardless of previous state.
+// Symlinks are always re-read. Version-1 entries can seed reuse because their
+// workspace fields are unchanged in version 2.
 func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []string, readFile func(rel string) ([]byte, error), prevFiles []ManifestFile) (*ManifestResult, error) {
 	// Reject cancellation before publishing even an empty manifest.
 	if err := ctx.Err(); err != nil {
@@ -52,7 +146,8 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 	}
 	now := time.Now().UnixMilli()
 	m := Manifest{
-		Version:   1,
+		Version:   2,
+		Scope:     ScopeWorkspace,
 		CreatedAt: now,
 		RepoRoot:  repoRoot,
 		Files:     make([]ManifestFile, 0, len(paths)),
@@ -69,6 +164,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 		// Avoid hashing the remaining files after cancellation.
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		// Reject paths that JSON encoding could change.
+		if !validPath(rel) {
+			return nil, fmt.Errorf("manifest: invalid path %q", rel)
 		}
 		absPath := filepath.Join(repoRoot, rel)
 
@@ -108,8 +207,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 			prev.ModTimeNs != 0 &&
 			prev.Size == fi.Size() &&
 			prev.Mode == mode &&
-			prev.ModTimeNs == mtimeNs {
-			// Incremental reuse: metadata matches exactly - skip read+hash.
+			prev.ModTimeNs == mtimeNs &&
+			validCASHash(prev.Blob) &&
+			bs.Exists(prev.Blob) {
+			// Reuse only a valid, present CAS blob with matching metadata.
 			mf.Blob = prev.Blob
 			mf.Size = prev.Size
 			totalBytes += mf.Size
@@ -135,6 +236,11 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 		}
 
 		m.Files = append(m.Files, mf)
+	}
+
+	// Validate before publishing the manifest.
+	if err := m.validate(); err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
 	}
 
 	manifestBytes, err := marshalManifest(m)

@@ -66,6 +66,50 @@ func TestBuildCandidatesFromRows_ClaudeLineLevel(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesFromRows_EmptyEditOrWritePreservesTouch(t *testing.T) {
+	const repoRoot = "/test/repo"
+	for _, tc := range []struct {
+		name, tool, field string
+	}{
+		{name: "empty edit", tool: "Edit", field: "new_string"},
+		{name: "empty write", tool: "Write", field: "content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{
+				"type": "assistant",
+				"message": map[string]any{"content": []any{map[string]any{
+					"type": "tool_use",
+					"name": tc.tool,
+					"input": map[string]any{
+						"file_path": repoRoot + "/empty.go",
+						tc.field:    "",
+					},
+				}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			toolUses := fmt.Sprintf(`{"content_types":["tool_use"],"tools":[{"name":%q,"file_path":"empty.go","file_op":"edit"}]}`, tc.tool)
+			rows := []EventRow{{
+				Provider: "claude_code", Role: "assistant", ToolUses: toolUses,
+				PayloadHash: "hash", Payload: payload, EventID: "event", Ts: 100,
+			}}
+
+			cands, _ := BuildCandidatesFromRows(rows, repoRoot, nil)
+
+			if _, ok := cands.AILines["empty.go"]; ok {
+				t.Errorf("AILines = %v, want no line evidence", cands.AILines)
+			}
+			if got := cands.ProviderTouchedFiles["empty.go"]; got != "claude_code" {
+				t.Errorf("ProviderTouchedFiles[empty.go] = %q, want claude_code", got)
+			}
+			if got := cands.ExplicitTouches["empty.go"].Provider; got != "claude_code" {
+				t.Errorf("ExplicitTouches[empty.go] = %q, want claude_code", got)
+			}
+		})
+	}
+}
+
 // Multiple events that emit one line retain separate witnesses.
 func TestBuildCandidatesFromRows_LineStampsAllWitnesses(t *testing.T) {
 	repoRoot := "/test/repo"

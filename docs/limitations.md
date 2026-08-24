@@ -20,21 +20,21 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Git and repo boundaries
 
-- Lineage manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured in manifests.
+- Commit manifests contain the linked commit's tracked Git tree; untracked and ignored files are excluded. Workspace manifests, including manual and baseline checkpoints, also include untracked, non-ignored files.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
 - Commit-linked processing is serialized per repository. Transient failures retry with bounded backoff. A terminally failed queue head blocks later records until it is repaired and retried; `semantica doctor` reports the blocking record.
 - Without the optional launcher, retries due after the current worker exits wait for the next commit or manual drain. Launcher installations add a 30-minute recovery interval.
 
 ## Attribution fidelity
 
-- Attribution is anchored to captured session data within the commit lineage window. Deferred created or modified files can carry forward AI attribution from earlier history when matching AI output lands in a later commit.
+- Historical carry-forward applies to files added by the commit that were already present in the previous commit-linked checkpoint's manifest. Modified files fail closed until checkpoint-backed continuity can be proven.
 - **Provider metadata varies.** Claude Code, Kiro CLI, and Kiro IDE provide line-level file-edit content for supported edit actions, enabling exact and formatted matching. Providers such as Cursor may only report file-level tool metadata. Those weaker provider-touch signals are preserved as evidence and `ai_provider_only_lines`, but excluded from the headline AI percentage instead of being treated as equivalent to line-level matches.
-- **Shell attribution is experimental.** Claude Code and Codex Bash hooks capture bounded workspace deltas. Setting `attribution_v2` to `true`, or `SEMANTICA_ATTRIBUTION_V2=1`, enables scoring for verified single-actor deltas. Partial and ambiguous deltas are excluded; binary, truncated, symlink, gitlink, and unaligned changes retain file-level evidence only. Other shell providers contribute command provenance and recognized deletion evidence unless they also emit file-edit hooks.
+- **Shell attribution scores verified deltas only.** Claude Code and Codex Bash hooks capture bounded workspace deltas. Scoring is on by default; opt out with `attribution_v2: false` or `SEMANTICA_ATTRIBUTION_V2=0`. Only verified single-actor deltas are scored. Partial and ambiguous deltas are excluded; binary, truncated, symlink, gitlink, and unaligned changes retain file-level evidence only. Other shell providers contribute command provenance and recognized deletion evidence unless they also emit file-edit hooks.
 - **Tool-delta evidence is time-bounded, not exclusive.** A delta shows that changed lines appeared while an agent-issued tool was running. Concurrent saves, formatters, and file watchers can produce the same evidence.
 - **Capture and scoring are separate.** Semantica snapshots eligible Bash calls when capture state is active, even if `attribution_v2` is disabled. The flag controls scoring, not capture. Calls without capture state are ignored. On-demand or recomputed attribution can use earlier captures; enabling the flag alone does not update stored results.
 - Commit-message attribution remains on v1 to keep the synchronous hook bounded. Background enrichment, `semantica blame`, and hosted attribution use the repository's selected version.
 - Manual edits after direct AI generation may downgrade matches from "exact" to "modified." Tool-delta lines are attributed only when exact or whitespace-normalized content survives in the commit; unmatched later edits remain human.
-- Carry-forward is per-file, not per-line across windows. If the same file has current-window AI activity, Semantica keeps that file current-window authoritative instead of merging historical and current AI lines inside one file.
+- Carry-forward is per-file. Current-window attribution remains authoritative when an eligible created file already has AI evidence.
 - Attribution is computed against the diff between commit lineage records. Squashed or rebased commits that collapse multiple records may produce less precise results.
 
 ## Playbooks and suggestions

@@ -3,9 +3,8 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"runtime"
+	"fmt"
 
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/store/blobs"
@@ -16,6 +15,8 @@ import (
 // prevManifestResult holds the result of loading the previous manifest.
 type prevManifestResult struct {
 	files        []blobs.ManifestFile
+	manifest     *blobs.Manifest
+	commitHash   string // single full commit link, when available
 	checkpointID string
 	exists       bool
 	ok           bool
@@ -46,114 +47,104 @@ func loadPreviousManifest(ctx context.Context, h *sqlstore.Handle, bs *blobs.Sto
 		return prevManifestResult{checkpointID: prev.CheckpointID, exists: true}
 	}
 
-	var prevManifest blobs.Manifest
-	if err := json.Unmarshal(rawManifest, &prevManifest); err != nil {
-		wlog("worker: unmarshal previous manifest: %v\n", err)
+	prevManifest, err := blobs.ParseManifest(rawManifest)
+	if err != nil {
+		wlog("worker: parse previous manifest: %v\n", err)
 		return prevManifestResult{checkpointID: prev.CheckpointID, exists: true}
 	}
 
-	return prevManifestResult{files: prevManifest.Files, checkpointID: prev.CheckpointID, exists: true, ok: true}
+	res := prevManifestResult{
+		files:        prevManifest.Files,
+		manifest:     &prevManifest,
+		checkpointID: prev.CheckpointID,
+		exists:       true,
+		ok:           true,
+	}
+	// Reuse requires the previous manifest to match its persisted commit link.
+	if links, lerr := h.Queries.GetCommitLinksByCheckpoint(ctx, prev.CheckpointID); lerr == nil &&
+		len(links) == 1 && git.IsFullCommitHash(links[0].CommitHash) {
+		res.commitHash = links[0].CommitHash
+	}
+	return res
 }
 
-// reusableCommitRangeFiles returns previous manifest entries eligible for
-// reuse by a commit-linked checkpoint. Both checkpoints must have one
-// unambiguous commit link. Eligible paths must be unchanged between commits,
-// tracked normally in the current index, and unchanged in the worktree.
-// BuildManifest also applies its metadata check.
-//
-// Windows and unverifiable states return no reusable entries. Context errors
-// propagate; other failures conservatively rehash every file.
-func reusableCommitRangeFiles(ctx context.Context, h *sqlstore.Handle, repo *git.Repo, prev prevManifestResult, curCheckpointID, curCommit string) ([]blobs.ManifestFile, error) {
-	// Preserve cancellation while treating other failures as reuse misses.
-	failClosed := func(format string, args ...any) ([]blobs.ManifestFile, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+// resolveCommitAnchor derives manifest scope from persisted commit links.
+// Linked checkpoints require one full hash, an auto kind, and a matching hint
+// when supplied. Unlinked checkpoints reject commit hints.
+func resolveCommitAnchor(ctx context.Context, h *sqlstore.Handle, cp sqldb.Checkpoint, in WorkerInput) (commit string, isCommit bool, err error) {
+	links, err := h.Queries.GetCommitLinksByCheckpoint(ctx, in.CheckpointID)
+	if err != nil {
+		return "", false, fmt.Errorf("commit links for %s: %w", in.CheckpointID, err)
+	}
+	switch len(links) {
+	case 0:
+		if in.CommitHash != "" {
+			return "", false, fmt.Errorf("worker commit %q has no persisted commit link", in.CommitHash)
 		}
-		if format != "" {
-			wlog("worker: "+format+"\n", args...)
+		return "", false, nil
+	case 1:
+		c := links[0].CommitHash
+		if !git.IsFullCommitHash(c) {
+			return "", false, fmt.Errorf("commit link %q is not a full hash", c)
 		}
-		return nil, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// Git for Windows cannot reliably distinguish an in-place rewrite with
-	// restored size and mtime, so it cannot safely reuse manifest entries.
-	if runtime.GOOS == "windows" {
-		return failClosed("")
-	}
-
-	if !prev.ok || prev.checkpointID == "" || curCheckpointID == "" || !git.IsFullCommitHash(curCommit) {
-		return failClosed("")
-	}
-
-	prevLinks, err := h.Queries.GetCommitLinksByCheckpoint(ctx, prev.checkpointID)
-	if err != nil {
-		return failClosed("previous checkpoint commit links: %v", err)
-	}
-	if len(prevLinks) != 1 {
-		// Zero links means no boundary; multiple make it ambiguous.
-		return failClosed("")
-	}
-	prevCommit := prevLinks[0].CommitHash
-	if !git.IsFullCommitHash(prevCommit) {
-		return failClosed("")
-	}
-	curLinks, err := h.Queries.GetCommitLinksByCheckpoint(ctx, curCheckpointID)
-	if err != nil {
-		return failClosed("current checkpoint commit links: %v", err)
-	}
-	if len(curLinks) != 1 || curLinks[0].CommitHash != curCommit {
-		return failClosed("")
-	}
-
-	changed, err := repo.ChangedPathsBetween(ctx, prevCommit, curCommit)
-	if err != nil {
-		return failClosed("changed paths %s..%s: %v", prevCommit, curCommit, err)
-	}
-	atCommit, err := repo.TrackedFilesAtCommit(ctx, curCommit)
-	if err != nil {
-		return failClosed("tracked files at %s: %v", curCommit, err)
-	}
-	inIndex, err := repo.OrdinaryTrackedFiles(ctx)
-	if err != nil {
-		return failClosed("ordinary tracked files: %v", err)
-	}
-	drifted, err := repo.ChangedPathsFromCommitToWorktree(ctx, curCommit)
-	if err != nil {
-		return failClosed("worktree drift from %s: %v", curCommit, err)
-	}
-	// The final Git command may have consumed the deadline.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	excluded := make(map[string]bool, len(changed)+len(drifted))
-	for _, p := range changed {
-		excluded[p] = true
-	}
-	for _, p := range drifted {
-		excluded[p] = true
-	}
-	indexSet := make(map[string]bool, len(inIndex))
-	for _, p := range inIndex {
-		indexSet[p] = true
-	}
-	reusable := make(map[string]bool, len(atCommit))
-	for _, p := range atCommit {
-		if indexSet[p] && !excluded[p] {
-			reusable[p] = true
+		if in.CommitHash != "" && in.CommitHash != c {
+			return "", false, fmt.Errorf("worker commit %q does not match persisted link %q", in.CommitHash, c)
 		}
-	}
-
-	eligible := make([]blobs.ManifestFile, 0, len(prev.files))
-	for _, f := range prev.files {
-		if reusable[f.Path] {
-			eligible = append(eligible, f)
+		if cp.Kind != string(CheckpointAuto) {
+			return "", false, fmt.Errorf("checkpoint kind %q must not carry a commit link", cp.Kind)
 		}
+		return c, true, nil
+	default:
+		return "", false, fmt.Errorf("checkpoint %s has %d commit links; expected at most one", in.CheckpointID, len(links))
 	}
-	return eligible, nil
+}
+
+// buildCommitManifest builds a commit manifest from Git objects and reuses
+// blobs from a verified predecessor.
+func buildCommitManifest(ctx context.Context, repo *git.Repo, bs *blobs.Store, commit string, prev prevManifestResult) (*blobs.ManifestResult, error) {
+	objectFormat, err := repo.ObjectFormat(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("object format: %w", err)
+	}
+	treeID, err := repo.CommitTree(ctx, commit)
+	if err != nil {
+		return nil, fmt.Errorf("commit tree %s: %w", commit, err)
+	}
+	treeEntries, err := repo.LsTreeEntries(ctx, commit)
+	if err != nil {
+		return nil, fmt.Errorf("ls-tree %s: %w", commit, err)
+	}
+	entries := make([]blobs.CommitTreeEntry, len(treeEntries))
+	for i, e := range treeEntries {
+		entries[i] = blobs.CommitTreeEntry{Path: e.Path, GitMode: e.Mode, GitObjectID: e.ObjectID, GitType: e.Type}
+	}
+	input := blobs.CommitManifestInput{
+		ObjectFormat: objectFormat, CommitHash: commit, TreeID: treeID,
+		Entries: entries, ReadObjects: repo.CatFileBatch,
+	}
+	if prev.ok && prev.manifest != nil && prev.commitHash != "" {
+		input.Previous = prev.manifest
+		input.PreviousCommitLink = prev.commitHash
+	}
+	return blobs.BuildCommitManifest(ctx, bs, input)
+}
+
+// commitFilesChanged counts the paths a commit changed against its first parent,
+// with rename detection disabled (a rename counts as one deletion plus one
+// addition). A root commit counts all tracked tree entries.
+func commitFilesChanged(ctx context.Context, repo *git.Repo, commit string, treeEntryCount int) (int64, error) {
+	parent, err := repo.FirstParentOrEmpty(ctx, commit)
+	if err != nil {
+		return 0, fmt.Errorf("first parent of %s: %w", commit, err)
+	}
+	if parent == "" {
+		return int64(treeEntryCount), nil
+	}
+	changed, err := repo.ChangedPathsBetween(ctx, parent, commit)
+	if err != nil {
+		return 0, fmt.Errorf("changed paths %s..%s: %w", parent, commit, err)
+	}
+	return int64(len(changed)), nil
 }
 
 // countChangedFiles compares current files to the previous manifest when one
