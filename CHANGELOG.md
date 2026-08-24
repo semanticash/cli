@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Attribution v2 (tool-delta evidence) is now on by default. Disable it per repository with `attribution_v2: false` in settings, or per run with `SEMANTICA_ATTRIBUTION_V2=0`.
 - Manifests now record explicit commit or workspace scope. Commit manifests use the linked commit's tracked Git tree and exclude later worktree changes and untracked files.
+- Each post-commit provenance sync now processes up to 200 pending turns within two minutes, in batches of 50, with at most eight concurrent object uploads.
 - Removed the hidden `semantica rewind` command. Use Git to restore working-tree state.
 
 ### Fixed

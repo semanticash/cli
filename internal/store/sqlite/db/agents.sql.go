@@ -965,7 +965,7 @@ type ListPackagedManifestsParams struct {
 
 // Returns manifests ready for upload, scoped to a watermark timestamp.
 // Only packaged status with attempts below the retry cap. Pass 0 for
-// watermark_ts to drain all.
+// watermark_ts to apply no timestamp filter.
 func (q *Queries) ListPackagedManifests(ctx context.Context, arg ListPackagedManifestsParams) ([]ProvenanceManifest, error) {
 	rows, err := q.query(ctx, q.listPackagedManifestsStmt, listPackagedManifests,
 		arg.RepositoryID,

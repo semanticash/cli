@@ -65,6 +65,11 @@ type apiEnvelope[T any] struct {
 	Payload T      `json:"payload"`
 }
 
+const (
+	maxConcurrentObjectUploads = 8
+	uploadStateWriteTimeout    = 5 * time.Second
+)
+
 // UploadTurn performs the full upload cycle for a prepared sync result:
 // prepare -> S3 PUT -> complete.
 func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) UploadResult {
@@ -94,28 +99,9 @@ func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) 
 		return out
 	}
 
-	// PUT blobs to presigned S3 URLs in parallel.
-	type putResult struct {
-		kind, hash string
-		err        error
-	}
-	putCh := make(chan putResult, len(prepared.Uploads))
-	for _, upload := range prepared.Uploads {
-		blob, ok := result.RedactedBlobs[upload.Hash]
-		if !ok {
-			out.Err = fmt.Errorf("blob %s/%s not found in redacted blobs", upload.Kind, upload.Hash)
-			return out
-		}
-		go func(kind, hash, url string, data []byte) {
-			putCh <- putResult{kind, hash, putS3Blob(ctx, url, data)}
-		}(upload.Kind, upload.Hash, upload.PresignedURL, blob)
-	}
-	for range prepared.Uploads {
-		pr := <-putCh
-		if pr.err != nil {
-			out.Err = fmt.Errorf("S3 PUT %s/%s: %w", pr.kind, pr.hash, pr.err)
-			return out
-		}
+	if err := uploadPreparedBlobs(ctx, prepared.Uploads, result.RedactedBlobs); err != nil {
+		out.Err = err
+		return out
 	}
 
 	// POST /v1/provenance/complete with the full envelope.
@@ -126,6 +112,75 @@ func UploadTurn(ctx context.Context, endpoint, token string, result SyncResult) 
 
 	out.Uploaded = true
 	return out
+}
+
+type objectUpload struct {
+	kind string
+	hash string
+	url  string
+	data []byte
+}
+
+type objectUploadResult struct {
+	kind string
+	hash string
+	err  error
+}
+
+func uploadPreparedBlobs(
+	ctx context.Context,
+	uploads []prepareUploadEntry,
+	blobsByHash map[string][]byte,
+) error {
+	tasks := make([]objectUpload, 0, len(uploads))
+	for _, upload := range uploads {
+		blob, ok := blobsByHash[upload.Hash]
+		if !ok {
+			return fmt.Errorf("blob %s/%s not found in redacted blobs", upload.Kind, upload.Hash)
+		}
+		tasks = append(tasks, objectUpload{
+			kind: upload.Kind,
+			hash: upload.Hash,
+			url:  upload.PresignedURL,
+			data: blob,
+		})
+	}
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	uploadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan objectUpload, len(tasks))
+	results := make(chan objectUploadResult, len(tasks))
+	for _, task := range tasks {
+		jobs <- task
+	}
+	close(jobs)
+
+	workers := min(maxConcurrentObjectUploads, len(tasks))
+	for range workers {
+		go func() {
+			for task := range jobs {
+				results <- objectUploadResult{
+					kind: task.kind,
+					hash: task.hash,
+					err:  putS3Blob(uploadCtx, task.url, task.data),
+				}
+			}
+		}()
+	}
+
+	var firstErr error
+	for range tasks {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("S3 PUT %s/%s: %w", result.kind, result.hash, result.err)
+			cancel()
+		}
+	}
+	return firstErr
 }
 
 // callPrepare sends POST /v1/provenance/prepare and parses the response.
@@ -292,6 +347,9 @@ func SyncAndUpload(ctx context.Context, repoRoot, endpoint, token string, waterm
 
 	var out []UploadResult
 	for _, r := range results {
+		if ctx.Err() != nil {
+			break
+		}
 		// Surface locally-failed manifests (missing blobs) so callers can report them.
 		if r.Skipped {
 			ur := UploadResult{
@@ -321,9 +379,11 @@ func SyncAndUpload(ctx context.Context, repoRoot, endpoint, token string, waterm
 		// The caller (worker) refreshes the token and retries the batch.
 		if ur.Err != nil && IsUnauthorized(ur.Err) {
 			ur.Action = ActionRetry
-			if err := h.Queries.ResetManifestToPackaged(ctx, sqldb.ResetManifestToPackagedParams{
-				UpdatedAt:  time.Now().UnixMilli(),
-				ManifestID: r.ManifestID,
+			if err := writeUploadState(ctx, func(stateCtx context.Context) error {
+				return h.Queries.ResetManifestToPackaged(stateCtx, sqldb.ResetManifestToPackagedParams{
+					UpdatedAt:  time.Now().UnixMilli(),
+					ManifestID: r.ManifestID,
+				})
 			}); err != nil {
 				slog.Warn("upload: reset manifest after auth failure", "turn", r.TurnID, "manifest_id", r.ManifestID, "err", err)
 				ur.Action = ActionFail
@@ -334,11 +394,29 @@ func SyncAndUpload(ctx context.Context, repoRoot, endpoint, token string, waterm
 			progress(ur)
 			continue
 		}
+		if ur.Err != nil && ctx.Err() != nil {
+			ur.Action = ActionRetry
+			if err := writeUploadState(ctx, func(stateCtx context.Context) error {
+				return h.Queries.ResetManifestToPackaged(stateCtx, sqldb.ResetManifestToPackagedParams{
+					UpdatedAt:  time.Now().UnixMilli(),
+					ManifestID: r.ManifestID,
+				})
+			}); err != nil {
+				slog.Warn("upload: reset manifest after cancellation", "turn", r.TurnID, "manifest_id", r.ManifestID, "err", err)
+				ur.Action = ActionFail
+				ur.Err = fmt.Errorf("%v; reset manifest after cancellation: %w", ur.Err, err)
+			}
+			out = append(out, ur)
+			progress(ur)
+			break
+		}
 
 		action := ClassifyOutcome(ur.Err, r.UploadAttempts)
 		ur.Action = action
 
-		if err := persistManifestAction(ctx, h, r.ManifestID, action, ur.Err); err != nil {
+		if err := writeUploadState(ctx, func(stateCtx context.Context) error {
+			return persistManifestAction(stateCtx, h, r.ManifestID, action, ur.Err)
+		}); err != nil {
 			slog.Warn("upload: persist manifest action failed", "turn", r.TurnID, "manifest_id", r.ManifestID, "action", action, "err", err)
 			ur.Uploaded = false
 			ur.Action = ActionFail
@@ -353,6 +431,12 @@ func SyncAndUpload(ctx context.Context, repoRoot, endpoint, token string, waterm
 		progress(ur)
 	}
 	return out, nil
+}
+
+func writeUploadState(ctx context.Context, write func(context.Context) error) error {
+	stateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uploadStateWriteTimeout)
+	defer cancel()
+	return write(stateCtx)
 }
 
 // ManifestAction describes what the caller should do with a manifest after upload.

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestUploadTurn_HappyPath(t *testing.T) {
@@ -200,6 +201,103 @@ func TestUploadTurn_SkipsAlreadyUploaded(t *testing.T) {
 	}
 }
 
+func TestUploadTurn_LimitsConcurrentObjectUploads(t *testing.T) {
+	const objectCount = 12
+
+	release := make(chan struct{})
+	started := make(chan struct{}, objectCount)
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	var puts atomic.Int32
+
+	s3Mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := maxActive.Load()
+			if current <= observed || maxActive.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		puts.Add(1)
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer s3Mock.Close()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/provenance/prepare":
+			var body prepareRequestBody
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			uploads := make([]prepareUploadEntry, 0, len(body.Objects))
+			for _, obj := range body.Objects {
+				uploads = append(uploads, prepareUploadEntry{
+					Kind:         obj.Kind,
+					Hash:         obj.Hash,
+					PresignedURL: s3Mock.URL + "/" + obj.Hash,
+				})
+			}
+			_ = json.NewEncoder(w).Encode(apiEnvelope[preparePayload]{
+				Payload: preparePayload{Uploads: uploads},
+			})
+		case "/v1/provenance/complete":
+			_ = json.NewEncoder(w).Encode(apiEnvelope[json.RawMessage]{})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer backend.Close()
+
+	env := syncEnvelope{ConnectedRepoID: "r", Provider: "p", TurnID: "t", StartedAt: 1}
+	blobsByHash := make(map[string][]byte, objectCount)
+	for i := range objectCount {
+		hash := fmt.Sprintf("object-%02d-abcdef", i)
+		env.Objects = append(env.Objects, syncObject{Kind: "step_provenance", Hash: hash, SizeBytes: 1})
+		blobsByHash[hash] = []byte{byte(i)}
+	}
+	envJSON, _ := json.Marshal(env)
+
+	resultCh := make(chan UploadResult, 1)
+	go func() {
+		resultCh <- UploadTurn(context.Background(), backend.URL, "tok", SyncResult{
+			TurnID:        "t",
+			ManifestID:    "m",
+			Envelope:      envJSON,
+			RedactedBlobs: blobsByHash,
+		})
+	}()
+
+	for range maxConcurrentObjectUploads {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("timed out waiting for initial uploads")
+		}
+	}
+	select {
+	case <-started:
+		close(release)
+		<-resultCh
+		t.Fatalf("more than %d object uploads started concurrently", maxConcurrentObjectUploads)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	out := <-resultCh
+	if out.Err != nil {
+		t.Fatalf("UploadTurn: %v", out.Err)
+	}
+	if got := maxActive.Load(); got != maxConcurrentObjectUploads {
+		t.Fatalf("max concurrent uploads = %d, want %d", got, maxConcurrentObjectUploads)
+	}
+	if got := puts.Load(); got != objectCount {
+		t.Fatalf("S3 PUTs = %d, want %d", got, objectCount)
+	}
+}
+
 func TestUploadTurn_PrepareReturns401(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -332,6 +430,23 @@ func TestIsUnauthorized(t *testing.T) {
 	}
 	if IsUnauthorized(io.EOF) {
 		t.Error("expected false for io.EOF")
+	}
+}
+
+func TestWriteUploadStateIgnoresCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	err := writeUploadState(ctx, func(stateCtx context.Context) error {
+		called = true
+		return stateCtx.Err()
+	})
+	if err != nil {
+		t.Fatalf("writeUploadState: %v", err)
+	}
+	if !called {
+		t.Fatal("state update was not called")
 	}
 }
 

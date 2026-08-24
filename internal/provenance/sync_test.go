@@ -103,7 +103,7 @@ func TestFormatLoadOrRedactReason_RoutesRedactErrorsThroughHelper(t *testing.T) 
 
 // TestSyncPendingTurns_WatermarkSemantics covers the packaged-manifest
 // watermark filter. A non-zero watermark is an upper bound on
-// created_at; watermark=0 drains all packaged manifests.
+// created_at; watermark=0 applies no timestamp filter.
 func TestSyncPendingTurns_WatermarkSemantics(t *testing.T) {
 	ctx := context.Background()
 	const manifestCreatedAt int64 = 2000
@@ -119,7 +119,7 @@ func TestSyncPendingTurns_WatermarkSemantics(t *testing.T) {
 			wantCount: 0,
 		},
 		{
-			name:      "watermark=0 drains all packaged manifests",
+			name:      "watermark=0 applies no timestamp filter",
 			watermark: 0,
 			wantCount: 1,
 		},

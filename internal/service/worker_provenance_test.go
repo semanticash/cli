@@ -14,11 +14,7 @@ import (
 	"github.com/semanticash/cli/internal/util"
 )
 
-// TestDrainAllPackagedProvenance_PassesZeroWatermark pins the worker
-// drain contract: post-completion provenance sync must drain all
-// packaged manifests, including manifests packaged after the checkpoint
-// timestamp.
-func TestDrainAllPackagedProvenance_PassesZeroWatermark(t *testing.T) {
+func TestDrainPackagedProvenance_PassesZeroWatermark(t *testing.T) {
 	semDir := t.TempDir()
 	if err := util.WriteSettings(semDir, util.Settings{
 		Enabled:         true,
@@ -40,19 +36,18 @@ func TestDrainAllPackagedProvenance_PassesZeroWatermark(t *testing.T) {
 		return syncProvenanceResult{}
 	}
 
-	drainAllPackagedProvenance(context.Background(), semDir, "/fake/repo")
+	drainPackagedProvenance(context.Background(), semDir, "/fake/repo")
 
 	if called.Load() == 0 {
-		t.Fatal("syncProvenanceFn was not invoked; drainAllPackagedProvenance short-circuited")
+		t.Fatal("syncProvenanceFn was not invoked; drainPackagedProvenance short-circuited")
 	}
 	if got := capturedWatermark.Load(); got != 0 {
 		t.Errorf("watermark passed to syncProvenanceFn = %d, want 0", got)
 	}
 }
 
-// TestDrainAllPackagedProvenance_SkipsWhenNotConnected keeps local-only
-// repos from doing provenance sync work.
-func TestDrainAllPackagedProvenance_SkipsWhenNotConnected(t *testing.T) {
+// Local repositories do not start provenance uploads.
+func TestDrainPackagedProvenance_SkipsWhenNotConnected(t *testing.T) {
 	semDir := t.TempDir()
 
 	var called atomic.Int32
@@ -63,10 +58,79 @@ func TestDrainAllPackagedProvenance_SkipsWhenNotConnected(t *testing.T) {
 		return syncProvenanceResult{}
 	}
 
-	drainAllPackagedProvenance(context.Background(), semDir, "/fake/repo")
+	drainPackagedProvenance(context.Background(), semDir, "/fake/repo")
 
 	if called.Load() != 0 {
 		t.Errorf("syncProvenanceFn was invoked %d times on unconnected repo; want 0", called.Load())
+	}
+}
+
+func TestDrainProvenanceBatches_StopsAtTurnLimit(t *testing.T) {
+	var calls int
+	got := drainProvenanceBatches(context.Background(), 50, 200,
+		func(_ context.Context, limit int) syncProvenanceResult {
+			calls++
+			return syncProvenanceResult{Processed: limit, Uploaded: limit}
+		})
+
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4", calls)
+	}
+	if got.Processed != 200 || got.Uploaded != 200 || got.Failed != 0 {
+		t.Fatalf("result = %+v, want 200 processed and uploaded", got)
+	}
+}
+
+func TestDrainProvenanceBatches_StopsAfterShortBatch(t *testing.T) {
+	var calls int
+	got := drainProvenanceBatches(context.Background(), 50, 200,
+		func(_ context.Context, limit int) syncProvenanceResult {
+			calls++
+			if calls == 1 {
+				return syncProvenanceResult{Processed: limit, Uploaded: limit}
+			}
+			return syncProvenanceResult{Processed: 17, Uploaded: 17}
+		})
+
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if got.Processed != 67 || got.Uploaded != 67 {
+		t.Fatalf("result = %+v, want 67 processed and uploaded", got)
+	}
+}
+
+func TestDrainProvenanceBatches_StopsAfterFailure(t *testing.T) {
+	var calls int
+	got := drainProvenanceBatches(context.Background(), 50, 200,
+		func(_ context.Context, limit int) syncProvenanceResult {
+			calls++
+			return syncProvenanceResult{Processed: limit, Uploaded: limit - 1, Failed: 1}
+		})
+
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if got.Processed != 50 || got.Uploaded != 49 || got.Failed != 1 {
+		t.Fatalf("result = %+v, want failed first batch", got)
+	}
+}
+
+func TestDrainProvenanceBatches_StopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int
+	got := drainProvenanceBatches(ctx, 50, 200,
+		func(_ context.Context, limit int) syncProvenanceResult {
+			calls++
+			cancel()
+			return syncProvenanceResult{Processed: limit, Uploaded: limit}
+		})
+
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if got.Processed != 50 || got.Uploaded != 50 {
+		t.Fatalf("result = %+v, want one completed batch", got)
 	}
 }
 
