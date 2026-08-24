@@ -140,17 +140,22 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 			return enrichResult{}, err
 		}
 	} else {
-		// Workspace checkpoints retain worktree snapshot semantics.
+		// Workspace checkpoints use only workspace or legacy predecessors.
+		// Commit manifests have a different content basis.
+		wsPrev := prevManifest
+		if wsPrev.manifest != nil && wsPrev.manifest.IsCommitScoped() {
+			wsPrev = prevManifestResult{}
+		}
 		paths, perr := repo.ListFilesFromGit(ctx)
 		if perr != nil {
 			return enrichResult{}, fmt.Errorf("list files: %w", perr)
 		}
-		mr, err = blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, prevManifest.files)
+		mr, err = blobs.BuildManifest(ctx, blobStore, in.RepoRoot, paths, repo.ReadFile, wsPrev.files)
 		if err != nil {
 			return enrichResult{}, err
 		}
 		fileCount = len(paths)
-		filesChanged = countChangedFiles(prevManifest, mr.Manifest.Files)
+		filesChanged = countChangedFiles(wsPrev, mr.Manifest.Files)
 	}
 
 	// Windows.

@@ -199,7 +199,8 @@ semantica handoff --write # writes a redacted handoff bundle for a fresh agent s
 
 For automation, `semantica status --json` includes the latest checkpoint state,
 any failed checkpoint blocking the queue, and a named audit-readiness verdict
-for manifest, attribution, provenance, and sync evidence.
+for manifest, attribution, provenance, and sync evidence. It also identifies the
+stored attribution version and manifest version, scope, and integrity.
 
 ### Agent sessions
 

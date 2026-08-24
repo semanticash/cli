@@ -39,7 +39,7 @@ See the [Evidence Contract](evidence-contract.md) for evidence classes, strength
 
 ### Caveats
 
-- Historical carry-forward applies to files added by the commit that were already present in the previous lineage manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity.
+- Historical carry-forward applies to files added by the commit that were already present in the previous commit-linked checkpoint's manifest. Modified files do not inherit historical evidence without checkpoint-backed continuity.
 - Lines manually edited after direct AI generation may count as "modified" rather than "exact." Tool-delta lines must survive exactly or after whitespace normalization.
 - Tool-delta scoring is on by default. Opt out with `attribution_v2: false` in `.semantica/settings.json` or `SEMANTICA_ATTRIBUTION_V2=0`.
 - Tool-delta evidence shows that a changed line appeared while an agent-issued tool was running. It does not prove exclusive authorship: concurrent saves, formatters, and file watchers can produce the same evidence.

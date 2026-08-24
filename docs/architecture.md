@@ -155,11 +155,11 @@ explicit state under a named local or hosted policy.
 
 1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
 
-2. **File manifest** - Commit-linked checkpoints use the linked commit's tracked
-   Git tree, including canonical blob bytes without worktree filters. Manual and
-   baseline checkpoints snapshot tracked and untracked, non-ignored worktree
-   files. Files and manifests are stored in the repository CAS. Commit manifests
-   reuse blobs only when Git object identity is unchanged.
+2. **File manifest** - Commit manifests use the linked commit's tracked Git tree
+   and canonical blob bytes without worktree filters. Workspace manifests,
+   including manual and baseline checkpoints, capture tracked and untracked,
+   non-ignored files. Files and manifests are stored in the repository CAS.
+   Commit manifests reuse blobs only when Git object identity is unchanged.
 
 3. **Session linking and statistics** - Resolves the session and attribution
    windows, links sessions that contributed events, and records checkpoint
@@ -167,9 +167,9 @@ explicit state under a named local or hosted policy.
 
 4. **AI attribution** - Diffs the commit against its first parent and scores
    the current commit-linked event window. Historical lookback is limited to
-   files added by the commit that appear in the previous lineage manifest and
-   have zero current-window AI lines. Modified files never inherit historical
-   evidence. The line-level match classes are:
+   files added by the commit that appear in the previous commit-linked
+   checkpoint's manifest and have zero current-window AI lines. Modified files
+   never inherit historical evidence. The line-level match classes are:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: line belongs to a diff hunk overlapping captured AI output,

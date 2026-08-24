@@ -132,12 +132,13 @@ const permMask = os.ModeSetuid | os.ModeSetgid | os.ModeSticky | os.ModePerm
 // marshalManifest lets tests cancel during serialization.
 var marshalManifest = func(m Manifest) ([]byte, error) { return json.Marshal(m) }
 
-// BuildManifest reads each file via readFile, stores blobs, builds a manifest,
-// and stores the manifest blob itself. Returns the manifest hash and total size.
+// BuildManifest stores file content and a version-2 workspace manifest.
+// The manifest may include tracked and untracked, non-ignored files.
 //
 // If prevFiles is non-nil, unchanged files (same path, size, mode, and mtime)
 // reuse the previous blob hash without re-reading or re-hashing the file.
-// Symlinks are always re-read regardless of previous state.
+// Symlinks are always re-read. Version-1 entries can seed reuse because their
+// workspace fields are unchanged in version 2.
 func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []string, readFile func(rel string) ([]byte, error), prevFiles []ManifestFile) (*ManifestResult, error) {
 	// Reject cancellation before publishing even an empty manifest.
 	if err := ctx.Err(); err != nil {
@@ -145,7 +146,8 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 	}
 	now := time.Now().UnixMilli()
 	m := Manifest{
-		Version:   1,
+		Version:   2,
+		Scope:     ScopeWorkspace,
 		CreatedAt: now,
 		RepoRoot:  repoRoot,
 		Files:     make([]ManifestFile, 0, len(paths)),
@@ -162,6 +164,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 		// Avoid hashing the remaining files after cancellation.
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		// Reject paths that JSON encoding could change.
+		if !validPath(rel) {
+			return nil, fmt.Errorf("manifest: invalid path %q", rel)
 		}
 		absPath := filepath.Join(repoRoot, rel)
 
@@ -201,8 +207,10 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 			prev.ModTimeNs != 0 &&
 			prev.Size == fi.Size() &&
 			prev.Mode == mode &&
-			prev.ModTimeNs == mtimeNs {
-			// Incremental reuse: metadata matches exactly - skip read+hash.
+			prev.ModTimeNs == mtimeNs &&
+			validCASHash(prev.Blob) &&
+			bs.Exists(prev.Blob) {
+			// Reuse only a valid, present CAS blob with matching metadata.
 			mf.Blob = prev.Blob
 			mf.Size = prev.Size
 			totalBytes += mf.Size
@@ -228,6 +236,11 @@ func BuildManifest(ctx context.Context, bs *Store, repoRoot string, paths []stri
 		}
 
 		m.Files = append(m.Files, mf)
+	}
+
+	// Validate before publishing the manifest.
+	if err := m.validate(); err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
 	}
 
 	manifestBytes, err := marshalManifest(m)

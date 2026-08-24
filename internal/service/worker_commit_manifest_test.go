@@ -437,6 +437,44 @@ func TestWorkerRun_PostCompletionUsesResolvedAnchor(t *testing.T) {
 	}
 }
 
+// A workspace checkpoint does not use a commit manifest as its baseline.
+func TestEnrichCheckpoint_WorkspaceIgnoresCommitPredecessor(t *testing.T) {
+	ctx := context.Background()
+	w := newCommitWorld(t)
+	w.write(t, "a.txt", "a\n")
+	w.write(t, "b.txt", "b\n")
+	w.git("add", "-A")
+	w.git("commit", "-m", "A")
+	commitA := w.git("rev-parse", "HEAD")
+
+	cpA := w.checkpoint(t, commitA)
+	resA, err := w.enrich(t, cpA, commitA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.h.Queries.CompleteCheckpoint(ctx, sqldb.CompleteCheckpointParams{
+		CheckpointID: cpA, ManifestHash: sqlstore.NullStr(resA.manifestHash),
+		SizeBytes: sqlNullInt(resA.totalBytes), CompletedAt: sqlNullInt(2),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add an untracked file before the workspace checkpoint.
+	w.write(t, "c.txt", "c\n")
+	cpB := w.checkpoint(t) // no commit link -> workspace
+	resB, err := w.enrich(t, cpB, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := w.parseManifest(t, resB.manifestHash); m.IsCommitScoped() {
+		t.Error("workspace checkpoint produced a commit manifest")
+	}
+	// Without a workspace baseline, all three files count as changed.
+	if resB.filesChanged != 3 {
+		t.Errorf("filesChanged = %d, want 3 (no comparable workspace baseline)", resB.filesChanged)
+	}
+}
+
 func TestEnrichCheckpoint_CommitReusesPreviousBlobs(t *testing.T) {
 	ctx := context.Background()
 	w := newCommitWorld(t)

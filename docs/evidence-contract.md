@@ -33,7 +33,7 @@ to the headline percentage. The five fallback classes do not.
 | `tool_delta_touch` | Verified tool-window delta with no surviving line match | fallback | a file change was captured while an agent tool ran | which lines changed or which process produced them |
 | `provider_touch` | Explicit file-edit tool event from a provider, no line-level payload | fallback | the provider reported a file-edit event for this file | which lines, or that the edit survived to the commit |
 | `provider_coarse` | Session-level linkage only (no direct file-edit event) | fallback | an AI session was active in this file's window | that the provider edited this specific file |
-| `carry_forward` | Prior-window evidence for a file added by the commit, present in the previous lineage manifest, and carrying no current-window AI lines | fallback | earlier captured AI evidence exists for the added file | current-window authorship, or content continuity for modified files |
+| `carry_forward` | Prior-window evidence for a file added by the commit, present in the previous commit-linked checkpoint's manifest, and carrying no current-window AI lines | fallback | earlier captured AI evidence exists for the added file | current-window authorship, or content continuity for modified files |
 | `deletion` | Inferred from `bash rm` or a provider deletion event | fallback | a captured agent action removed content | line authorship of anything added |
 | `none` | No captured AI evidence | - | no AI evidence was captured | that the file is human-authored |
 
@@ -63,18 +63,19 @@ evidence determines `evidence_class`.
 ## Historical carry-forward
 
 Carry-forward is a bounded fallback for files added by the current commit. It
-is considered only when the path appears in the previous lineage manifest and
-the current attribution window produces zero AI-attributed lines for that
-file. Missing or unreadable prior evidence fails closed.
+is considered only when the path appears in the previous commit-linked
+checkpoint's manifest and the current attribution window produces zero
+AI-attributed lines for that file. Missing or unreadable prior evidence fails
+closed.
 
 Modified files never inherit historical evidence. Current activity by the
 same provider, including activity on the same path, does not establish content
 continuity and cannot unlock an older claim. Carry-forward also does not add
 historical lines to a file that already has current-window line attribution.
 
-Manifest path presence establishes eligibility for historical lookback, not
-proof that unchanged content moved between checkpoints. For this reason,
-carry-forward remains fallback evidence rather than line-level evidence.
+Path presence in that manifest establishes eligibility for historical
+lookback, not proof that unchanged content moved between checkpoints. For this
+reason, carry-forward remains fallback evidence rather than line-level evidence.
 
 ## Commit evidence level
 
