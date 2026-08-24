@@ -438,22 +438,17 @@ func (r *Repo) CommitFormat(ctx context.Context, commitHash, format string) (str
 	return cleanGitOutput(out), nil
 }
 
-// parentForCommit resolves the first parent of a commit hash, returning the
-// magic empty-tree SHA for the initial commit (no parents).
+// parentForCommit returns the first parent, or the repository's empty tree for
+// a root commit. Missing history returns an error.
 func (r *Repo) parentForCommit(ctx context.Context, hash string) (string, error) {
-	cmd := r.gitCmd(ctx, "rev-list", "--parents", "-n1", hash)
-	out, err := cmd.Output()
+	parent, isRoot, err := r.CommitParent(ctx, hash)
 	if err != nil {
-		return "", fmt.Errorf("git rev-list failed for %s: %w", hash, err)
+		return "", err
 	}
-
-	parts := strings.Fields(cleanGitOutput(out))
-	if len(parts) < 2 {
-		// Initial commit - diff against empty tree
-		return "4b825dc642cb6eb9a060e54bf8d69288fbee4904", nil
+	if isRoot {
+		return r.EmptyTreeID(ctx)
 	}
-	// Use first parent (handles both normal and merge commits)
-	return parts[1], nil
+	return parent, nil
 }
 
 // DiffCached returns the unified diff of staged changes against HEAD.

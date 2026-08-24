@@ -885,8 +885,8 @@ func TestCommitBindingHelpers(t *testing.T) {
 	if tree, err := repo.CommitTree(ctx, root); err != nil || tree != stagedBefore {
 		t.Errorf("CommitTree(root) = %q err=%v, want %q", tree, err, stagedBefore)
 	}
-	if p, err := repo.FirstParentOrEmpty(ctx, root); err != nil || p != "" {
-		t.Errorf("root parent = %q err=%v, want empty", p, err)
+	if p, isRoot, err := repo.CommitParent(ctx, root); err != nil || !isRoot || p != "" {
+		t.Errorf("root parent = %q isRoot=%v err=%v, want empty root", p, isRoot, err)
 	}
 
 	// A child commit chains by first parent.
@@ -896,8 +896,8 @@ func TestCommitBindingHelpers(t *testing.T) {
 	runGit("add", "b.txt")
 	runGit("commit", "-m", "child")
 	child := runGit("rev-parse", "HEAD")
-	if p, err := repo.FirstParentOrEmpty(ctx, child); err != nil || p != root {
-		t.Errorf("child parent = %q err=%v, want %q", p, err, root)
+	if p, isRoot, err := repo.CommitParent(ctx, child); err != nil || isRoot || p != root {
+		t.Errorf("child parent = %q isRoot=%v err=%v, want %q", p, isRoot, err, root)
 	}
 }
 

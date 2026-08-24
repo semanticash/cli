@@ -2,27 +2,20 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/semanticash/cli/internal/auth"
 	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/util"
 )
 
-// syncProvenanceResult summarizes one syncProvenance call without
-// requiring callers to parse worker logs.
-//
-// Fields mirror the UploadResult batch reported by syncProvenance:
-//
-//   - Processed = len(reported results); total turns the upload pipeline
-//     attempted in the final reportable batch. If a 401 retry succeeds,
-//     this counts the retry batch. If refresh or retry fails, this counts
-//     the initial batch.
-//   - Uploaded = sum of r.Uploaded == true in the reported batch.
-//   - Failed = sum of r.Err != nil in the reported batch. Missing-blob
-//     skips (UploadResult{Action: ActionFail, Err: "skipped: missing
-//     local blobs"}) count as failures.
-//   - AuthFailed = any r.Err in the initial batch was IsUnauthorized.
-//     This remains true even when refresh and retry later succeed.
+const (
+	provenanceSyncBatchSize = 50
+	provenanceSyncTurnLimit = 200
+	provenanceSyncTimeLimit = 2 * time.Minute
+)
+
+// syncProvenanceResult summarizes a post-completion upload run.
 type syncProvenanceResult struct {
 	Processed  int
 	Uploaded   int
@@ -34,29 +27,42 @@ type syncProvenanceResult struct {
 // constructing a full workerContext.
 var syncProvenanceFn = syncProvenance
 
-// drainAllPackagedProvenance is the post-completion provenance drain.
-// It uses watermark=0 so manifests packaged after the checkpoint
-// timestamp are included. It skips unconnected repos.
-func drainAllPackagedProvenance(ctx context.Context, semDir, repoRoot string) syncProvenanceResult {
+// drainPackagedProvenance uploads pending turns after checkpoint completion.
+func drainPackagedProvenance(ctx context.Context, semDir, repoRoot string) syncProvenanceResult {
 	if !util.IsConnected(semDir) {
 		return syncProvenanceResult{}
 	}
 	return syncProvenanceFn(ctx, repoRoot, 0)
 }
 
-// syncProvenance prepares and uploads packaged provenance manifests.
-// Pass watermarkTs=0 to drain all packaged manifests.
+// syncProvenance uploads pending turns in bounded batches.
+// A zero watermark includes manifests regardless of creation time.
 func syncProvenance(ctx context.Context, repoRoot string, watermarkTs int64) syncProvenanceResult {
-	var out syncProvenanceResult
-
 	endpoint := auth.EffectiveEndpoint()
 	token, tokenErr := auth.AccessToken(ctx)
 	if tokenErr != nil {
 		wlog("worker: sync-provenance: auth failed: %v\n", tokenErr)
-		return out
+		return syncProvenanceResult{}
 	}
 
-	results, err := provenance.SyncAndUpload(ctx, repoRoot, endpoint, token, watermarkTs, 50, nil)
+	drainCtx, cancel := context.WithTimeout(ctx, provenanceSyncTimeLimit)
+	defer cancel()
+
+	return drainProvenanceBatches(drainCtx, provenanceSyncBatchSize, provenanceSyncTurnLimit,
+		func(batchCtx context.Context, limit int) syncProvenanceResult {
+			return syncProvenanceBatch(batchCtx, repoRoot, endpoint, &token, watermarkTs, limit)
+		})
+}
+
+func syncProvenanceBatch(
+	ctx context.Context,
+	repoRoot, endpoint string,
+	token *string,
+	watermarkTs int64,
+	limit int,
+) syncProvenanceResult {
+	var out syncProvenanceResult
+	results, err := provenance.SyncAndUpload(ctx, repoRoot, endpoint, *token, watermarkTs, limit, nil)
 	if err != nil {
 		wlog("worker: sync-provenance: %v\n", err)
 		return out
@@ -73,12 +79,13 @@ func syncProvenance(ctx context.Context, repoRoot string, watermarkTs int64) syn
 
 	// On 401, refresh the token and retry the full batch once. If refresh
 	// or retry fails, report the initial batch instead of dropping it.
-	if out.AuthFailed && token != "" && !auth.IsAPIKeyAuth() {
+	if out.AuthFailed && *token != "" && !auth.IsAPIKeyAuth() {
 		refreshed, refreshErr := auth.ForceRefresh(ctx)
 		if refreshErr != nil {
 			wlog("worker: sync-provenance: refresh after 401 failed: %v\n", refreshErr)
 		} else {
-			retryResults, retryErr := provenance.SyncAndUpload(ctx, repoRoot, endpoint, refreshed, watermarkTs, 50, nil)
+			*token = refreshed
+			retryResults, retryErr := provenance.SyncAndUpload(ctx, repoRoot, endpoint, refreshed, watermarkTs, limit, nil)
 			if retryErr != nil {
 				wlog("worker: sync-provenance: retry after refresh: %v\n", retryErr)
 			} else {
@@ -98,4 +105,27 @@ func syncProvenance(ctx context.Context, repoRoot string, watermarkTs int64) syn
 	}
 	out.Processed = len(results)
 	return out
+}
+
+func drainProvenanceBatches(
+	ctx context.Context,
+	batchSize, turnLimit int,
+	upload func(context.Context, int) syncProvenanceResult,
+) syncProvenanceResult {
+	var total syncProvenanceResult
+	for total.Processed < turnLimit && ctx.Err() == nil {
+		limit := min(batchSize, turnLimit-total.Processed)
+		batch := upload(ctx, limit)
+		total.Processed += batch.Processed
+		total.Uploaded += batch.Uploaded
+		total.Failed += batch.Failed
+		total.AuthFailed = total.AuthFailed || batch.AuthFailed
+
+		// A failed turn may return to the packaged state. Stop here so it is
+		// retried by a later sync instead of consuming retries immediately.
+		if batch.Failed > 0 || batch.Processed < limit {
+			break
+		}
+	}
+	return total
 }

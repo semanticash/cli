@@ -60,7 +60,7 @@ const staleUploadingThreshold = 5 * time.Minute
 // does not write them yet. Wire these when adding GC or version-aware
 // re-upload logic.
 // The watermarkTs bounds the sync to manifests created at or before this
-// timestamp. Pass 0 to drain all packaged manifests.
+// timestamp. A zero watermark applies no timestamp filter.
 func SyncPendingTurns(ctx context.Context, repoPath string, watermarkTs int64, limit int) ([]SyncResult, error) {
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")

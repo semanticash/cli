@@ -506,7 +506,7 @@ where manifest_id = ? and status = 'packaged';
 -- name: ListPackagedManifests :many
 -- Returns manifests ready for upload, scoped to a watermark timestamp.
 -- Only packaged status with attempts below the retry cap. Pass 0 for
--- watermark_ts to drain all.
+-- watermark_ts to apply no timestamp filter.
 select * from provenance_manifests
 where repository_id = ? and status = 'packaged'
   and upload_attempts < 5

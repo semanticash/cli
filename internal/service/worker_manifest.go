@@ -133,11 +133,11 @@ func buildCommitManifest(ctx context.Context, repo *git.Repo, bs *blobs.Store, c
 // with rename detection disabled (a rename counts as one deletion plus one
 // addition). A root commit counts all tracked tree entries.
 func commitFilesChanged(ctx context.Context, repo *git.Repo, commit string, treeEntryCount int) (int64, error) {
-	parent, err := repo.FirstParentOrEmpty(ctx, commit)
+	parent, isRoot, err := repo.CommitParent(ctx, commit)
 	if err != nil {
-		return 0, fmt.Errorf("first parent of %s: %w", commit, err)
+		return 0, fmt.Errorf("commit parent of %s: %w", commit, err)
 	}
-	if parent == "" {
+	if isRoot {
 		return int64(treeEntryCount), nil
 	}
 	changed, err := repo.ChangedPathsBetween(ctx, parent, commit)

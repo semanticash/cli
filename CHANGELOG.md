@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Attribution v2 (tool-delta evidence) is now on by default. Disable it per repository with `attribution_v2: false` in settings, or per run with `SEMANTICA_ATTRIBUTION_V2=0`.
 - Manifests now record explicit commit or workspace scope. Commit manifests use the linked commit's tracked Git tree and exclude later worktree changes and untracked files.
+- Each post-commit provenance sync now processes up to 200 pending turns within two minutes, in batches of 50, with at most eight concurrent object uploads.
 - Removed the hidden `semantica rewind` command. Use Git to restore working-tree state.
 
 ### Fixed
 
 - `semantica blame` no longer applies historical evidence to modified files without checkpoint-backed continuity, preventing unrelated agent activity from attributing human edits. Manifest-anchored carry-forward for created files is unchanged.
 - Deletion-only Claude Code edits and file truncations now retain file-level provider evidence without receiving AI line credit.
+- Invalid commit receipts now block commit sequencing and are reported by `semantica doctor`.
+- Commit parent resolution now supports SHA-256 root commits and rejects shallow boundaries with unavailable history.
 
 ## [0.6.2] - 2026-08-23
 

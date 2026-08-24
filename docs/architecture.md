@@ -108,7 +108,8 @@ the lineage record ID, commit SHA, and original pre-commit timestamp.
 The fast path creates or finds the pending checkpoint, links the commit, and
 removes the receipt. If SQLite is unavailable, the receipt remains for the
 worker to drain later. Receipts are processed in creation order so a newer
-commit cannot overtake an older pending link.
+commit cannot overtake an older pending link. Invalid or unreadable receipts
+block processing and are reported by `semantica doctor`.
 
 By default, Semantica then spawns a detached background worker process:
 
