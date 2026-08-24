@@ -155,16 +155,11 @@ explicit state under a named local or hosted policy.
 
 1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
 
-2. **File manifest** - Hashes tracked files plus untracked, non-ignored files
-   from the worktree at enrichment time. File contents and the JSON manifest
-   are stored in the repository CAS. For commit-linked checkpoints,
-   incremental reuse requires both matching filesystem metadata and Git
-   verification that a path is unchanged.
-
-   A commit-linked manifest is currently a delayed workspace snapshot, not an
-   immutable reconstruction of the linked commit tree. This distinction is
-   why manifest path presence is treated as carry-forward eligibility rather
-   than proof of content continuity.
+2. **File manifest** - Commit-linked checkpoints use the linked commit's tracked
+   Git tree, including canonical blob bytes without worktree filters. Manual and
+   baseline checkpoints snapshot tracked and untracked, non-ignored worktree
+   files. Files and manifests are stored in the repository CAS. Commit manifests
+   reuse blobs only when Git object identity is unchanged.
 
 3. **Session linking and statistics** - Resolves the session and attribution
    windows, links sessions that contributed events, and records checkpoint

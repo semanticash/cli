@@ -37,7 +37,7 @@ func NewWorkerService(registry *hooks.Registry) *WorkerService {
 
 type WorkerInput struct {
 	CheckpointID string
-	CommitHash   string // optional, for logging
+	CommitHash   string // optional hint checked against the persisted commit link
 	RepoRoot     string
 }
 
@@ -429,6 +429,8 @@ func (s *WorkerService) processOne(ctx context.Context, in WorkerInput) error {
 	if err != nil {
 		return err
 	}
+	// Use the persisted anchor for completion logging and side effects.
+	in.CommitHash = er.commitHash
 
 	// Mark the checkpoint complete only after enrichment is written.
 	if err := wctx.h.Queries.CompleteCheckpoint(ctx, sqldb.CompleteCheckpointParams{
@@ -445,10 +447,13 @@ func (s *WorkerService) processOne(ctx context.Context, in WorkerInput) error {
 
 	// Run post-completion side effects. Errors are logged and do not fail
 	// the worker after checkpoint completion.
-	runPostCompletion(ctx, wctx, in)
+	runPostCompletionFn(ctx, wctx, in)
 
 	return nil
 }
+
+// runPostCompletionFn is a seam for post-completion input tests.
+var runPostCompletionFn = runPostCompletion
 
 // runPostCompletion runs all best-effort side effects after the checkpoint
 // has been marked complete. Errors are logged, not propagated.

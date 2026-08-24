@@ -20,7 +20,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 
 ## Git and repo boundaries
 
-- Lineage manifests include git-tracked files and untracked, non-ignored files. Ignored files are not captured in manifests.
+- Commit-linked manifests contain the linked commit's tracked Git tree; untracked and ignored files are excluded. Manual and baseline manifests also include untracked, non-ignored worktree files.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
 - Commit-linked processing is serialized per repository. Transient failures retry with bounded backoff. A terminally failed queue head blocks later records until it is repaired and retried; `semantica doctor` reports the blocking record.
 - Without the optional launcher, retries due after the current worker exits wait for the next commit or manual drain. Launcher installations add a 30-minute recovery interval.

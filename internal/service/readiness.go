@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 
+	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -53,6 +55,11 @@ type AuditReadiness struct {
 	AuditReady  bool               `json:"audit_ready"`
 	// AttributionVersion identifies the algorithm used for the stored result.
 	AttributionVersion string `json:"attribution_version,omitempty"`
+	// Manifest fields describe the stored manifest and its checkpoint anchor.
+	// Integrity is verified, workspace, legacy, unanchored, or invalid.
+	ManifestVersion   int64  `json:"manifest_version,omitempty"`
+	ManifestScope     string `json:"manifest_scope,omitempty"`
+	ManifestIntegrity string `json:"manifest_integrity,omitempty"`
 }
 
 // EvaluateAuditReadiness derives a checkpoint verdict from stored evidence.
@@ -75,7 +82,7 @@ func EvaluateAuditReadiness(ctx context.Context, h *sqlstore.Handle, semDir stri
 		ar.AttributionVersion = stats.AttributionVersion.String
 	}
 
-	ar.Manifest = manifestReadiness(cp)
+	ar.Manifest, ar.ManifestVersion, ar.ManifestScope, ar.ManifestIntegrity = manifestReadiness(ctx, semDir, cp, links, linksErr)
 	if linksErr != nil {
 		ar.Attribution = ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("commit links unavailable: %v", linksErr)}
 	} else {
@@ -97,20 +104,60 @@ func EvaluateAuditReadiness(ctx context.Context, h *sqlstore.Handle, semDir stri
 	return ar
 }
 
-func manifestReadiness(cp sqldb.Checkpoint) ReadinessComponent {
-	switch {
-	case cp.ManifestHash.Valid && cp.ManifestHash.String != "":
-		return ReadinessComponent{State: ReadinessReady}
-	case cp.Status == "pending":
-		return ReadinessComponent{State: ReadinessPending, Reason: "checkpoint not yet processed"}
-	case cp.Status == "failed":
-		reason := "checkpoint failed"
-		if cp.LastError.Valid && cp.LastError.String != "" {
-			reason += ": " + cp.LastError.String
+// manifestReadiness validates a stored manifest and its checkpoint anchor.
+// Version 2 enforces commit-link and scope consistency. Readable version-1
+// manifests remain ready as legacy records.
+func manifestReadiness(ctx context.Context, semDir string, cp sqldb.Checkpoint, links []sqldb.CommitLink, linksErr error) (comp ReadinessComponent, version int64, scope, integrity string) {
+	if !cp.ManifestHash.Valid || cp.ManifestHash.String == "" {
+		switch cp.Status {
+		case "pending":
+			return ReadinessComponent{State: ReadinessPending, Reason: "checkpoint not yet processed"}, 0, "", ""
+		case "failed":
+			reason := "checkpoint failed"
+			if cp.LastError.Valid && cp.LastError.String != "" {
+				reason += ": " + cp.LastError.String
+			}
+			return ReadinessComponent{State: ReadinessFailed, Reason: reason}, 0, "", ""
+		default:
+			return ReadinessComponent{State: ReadinessUnknown, Reason: "complete checkpoint without manifest hash"}, 0, "", ""
 		}
-		return ReadinessComponent{State: ReadinessFailed, Reason: reason}
+	}
+
+	bs, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		return ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("open blob store: %v", err)}, 0, "", ""
+	}
+	raw, err := bs.Get(ctx, cp.ManifestHash.String)
+	if err != nil {
+		return ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("manifest unreadable: %v", err)}, 0, "", ""
+	}
+	m, err := blobs.ParseManifest(raw)
+	if err != nil {
+		return ReadinessComponent{State: ReadinessFailed, Reason: fmt.Sprintf("invalid manifest: %v", err)}, 0, "", "invalid"
+	}
+
+	switch {
+	case m.IsCommitScoped():
+		if linksErr != nil {
+			return ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("commit links unavailable: %v", linksErr)}, m.Version, blobs.ScopeCommit, ""
+		}
+		if len(links) != 1 || links[0].CommitHash != m.CommitHash {
+			return ReadinessComponent{State: ReadinessFailed, Reason: "commit manifest is not anchored to a single matching commit link"}, m.Version, blobs.ScopeCommit, "unanchored"
+		}
+		if cp.Kind != string(CheckpointAuto) {
+			return ReadinessComponent{State: ReadinessFailed, Reason: fmt.Sprintf("commit manifest on non-auto checkpoint kind %q", cp.Kind)}, m.Version, blobs.ScopeCommit, "unanchored"
+		}
+		return ReadinessComponent{State: ReadinessReady}, m.Version, blobs.ScopeCommit, "verified"
+	case m.Version == 2 && m.Scope == blobs.ScopeWorkspace:
+		if linksErr != nil {
+			return ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("commit links unavailable: %v", linksErr)}, m.Version, blobs.ScopeWorkspace, ""
+		}
+		if len(links) != 0 {
+			return ReadinessComponent{State: ReadinessFailed, Reason: "workspace manifest on a commit-linked checkpoint"}, m.Version, blobs.ScopeWorkspace, "unanchored"
+		}
+		return ReadinessComponent{State: ReadinessReady, Reason: "workspace observation"}, m.Version, blobs.ScopeWorkspace, "workspace"
 	default:
-		return ReadinessComponent{State: ReadinessUnknown, Reason: "complete checkpoint without manifest hash"}
+		return ReadinessComponent{State: ReadinessReady, Reason: "legacy workspace/unknown manifest"}, m.Version, "legacy", "legacy"
 	}
 }
 

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Attribution v2 (tool-delta evidence) is now on by default. Disable it per repository with `attribution_v2: false` in settings, or per run with `SEMANTICA_ATTRIBUTION_V2=0`.
+- Commit-linked manifests are now built from the linked commit's tracked Git tree, excluding later worktree changes and untracked files.
 - Removed the hidden `semantica rewind` command. Use Git to restore working-tree state.
 
 ### Fixed
