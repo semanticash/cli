@@ -411,6 +411,52 @@ func TestCommitCapture_DefersWhenReceiptsPending(t *testing.T) {
 	}
 }
 
+// A corrupt receipt prevents a newer commit from linking.
+func TestCommitCapture_DefersBehindCorruptReceipt(t *testing.T) {
+	dir, semDir, dbPath := setupCommitRepo(t)
+	ctx := context.Background()
+
+	// Seed an older receipt with malformed JSON.
+	if err := os.MkdirAll(commitReceiptsDir(semDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := filepath.Join(commitReceiptsDir(semDir), strings.Repeat("a", 40)+".json")
+	if err := os.WriteFile(corrupt, []byte("{corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "f.txt")
+	if err := NewPreCommitService().HandlePreCommit(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "commit", "-m", "c")
+	cSHA := headSHA(t, dir)
+
+	res, err := NewPostCommitService().HandlePostCommit(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Linked {
+		t.Error("commit linked inline while a corrupt receipt was pending")
+	}
+
+	if err := drainCommitReceipts(ctx, dir); err == nil {
+		t.Error("drainCommitReceipts = nil error; want the corrupt receipt to block the drain")
+	}
+
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	if _, err := h.Queries.GetCommitLinkByCommitHash(ctx, cSHA); err == nil {
+		t.Error("newer commit was linked despite the corrupt older receipt")
+	}
+}
+
 // A failed receipt blocks newer receipts.
 func TestDrainCommitReceipts_StopsAtFirstFailure(t *testing.T) {
 	dir, semDir, dbPath := setupCommitRepo(t)
@@ -466,5 +512,91 @@ func TestRemoveCommitReceipt_RejectsTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Errorf("traversal deleted a file outside the receipts dir: %v", err)
+	}
+}
+
+// Invalid receipts block processing and are reported for repair.
+func TestListCommitReceipts_StrictValidation(t *testing.T) {
+	sha1 := strings.Repeat("a", 40)
+	sha256 := strings.Repeat("b", 64)
+	validJSON := func(sha string) string {
+		return fmt.Sprintf(`{"checkpoint_id":"ck-1","created_at":100,"commit_sha":%q}`, sha)
+	}
+	writeReceipt := func(t *testing.T, name, content string) string {
+		t.Helper()
+		dir := t.TempDir()
+		rdir := filepath.Join(dir, ".semantica", "commit-receipts")
+		if err := os.MkdirAll(rdir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(rdir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(dir, ".semantica")
+	}
+
+	for _, sha := range []string{sha1, sha256} {
+		semDir := writeReceipt(t, sha+".json", validJSON(sha))
+		got, err := listCommitReceipts(semDir)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("valid %d-hex receipt: got %v err %v, want 1", len(sha), got, err)
+		}
+	}
+
+	bad := []struct{ name, content, why string }{
+		{sha1 + ".json", "{not json", "malformed JSON"},
+		{sha1 + ".json", `{"created_at":100,"commit_sha":"` + sha1 + `"}`, "missing checkpoint_id"},
+		{sha1 + ".json", `{"checkpoint_id":"ck","created_at":0,"commit_sha":"` + sha1 + `"}`, "non-positive created_at"},
+		{sha1 + ".json", `{"checkpoint_id":"ck","created_at":1,"commit_sha":"short"}`, "bad commit_sha"},
+		{"deadbeef.json", validJSON(sha1), "filename/sha mismatch"},
+	}
+	for _, b := range bad {
+		t.Run(b.why, func(t *testing.T) {
+			semDir := writeReceipt(t, b.name, b.content)
+			if got, err := listCommitReceipts(semDir); err == nil {
+				t.Errorf("listCommitReceipts = %v, nil error; want error", got)
+			}
+			if _, err := commitReceiptsPending(semDir); err == nil {
+				t.Error("commitReceiptsPending = nil error; want error")
+			}
+			probs := InspectCommitReceipts(semDir)
+			if len(probs) != 1 || probs[0].File != b.name || probs[0].Reason == "" {
+				t.Errorf("InspectCommitReceipts = %+v, want one problem for %s", probs, b.name)
+			}
+		})
+	}
+}
+
+// Non-regular receipt entries block processing.
+func TestCommitReceipts_NonRegularEntryBlocks(t *testing.T) {
+	dir := t.TempDir()
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(filepath.Join(commitReceiptsDir(semDir), strings.Repeat("a", 40)+".json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := listCommitReceipts(semDir); err == nil {
+		t.Errorf("listCommitReceipts = %v, nil error; want a block for a non-regular entry", got)
+	}
+	if probs := InspectCommitReceipts(semDir); len(probs) != 1 || probs[0].Reason != "not a regular file" {
+		t.Errorf("InspectCommitReceipts = %+v, want one 'not a regular file' problem", probs)
+	}
+}
+
+// Directory read failures are reported; an absent directory is healthy.
+func TestInspectCommitReceipts_DirUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	semDir := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Put a regular file where the receipt directory should be.
+	if err := os.WriteFile(commitReceiptsDir(semDir), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if probs := InspectCommitReceipts(semDir); len(probs) != 1 || !strings.Contains(probs[0].Reason, "unreadable") {
+		t.Errorf("InspectCommitReceipts = %+v, want one directory-unreadable problem", probs)
+	}
+	if probs := InspectCommitReceipts(filepath.Join(t.TempDir(), ".semantica")); probs != nil {
+		t.Errorf("InspectCommitReceipts(absent) = %+v, want nil", probs)
 	}
 }

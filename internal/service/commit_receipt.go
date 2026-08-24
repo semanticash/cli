@@ -90,9 +90,36 @@ func promoteToReceipt(semDir, sha string, h commitHandoff) (commitReceipt, error
 	return r, nil
 }
 
-// listCommitReceipts returns valid receipts ordered by creation time and SHA.
+// validateReceiptFile reads and validates a <commit_sha>.json receipt.
+func validateReceiptFile(dir, name string) (commitReceipt, error) {
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return commitReceipt{}, fmt.Errorf("unreadable: %w", err)
+	}
+	var r commitReceipt
+	if err := json.Unmarshal(data, &r); err != nil {
+		return commitReceipt{}, fmt.Errorf("malformed JSON: %w", err)
+	}
+	if r.CheckpointID == "" {
+		return commitReceipt{}, errors.New("missing checkpoint_id")
+	}
+	if r.CreatedAt <= 0 {
+		return commitReceipt{}, fmt.Errorf("non-positive created_at (%d)", r.CreatedAt)
+	}
+	if !git.IsFullCommitHash(r.CommitSHA) {
+		return commitReceipt{}, fmt.Errorf("commit_sha %q is not a full commit hash", r.CommitSHA)
+	}
+	if name != r.CommitSHA+".json" {
+		return commitReceipt{}, fmt.Errorf("filename does not match commit_sha (expected %s.json)", r.CommitSHA)
+	}
+	return r, nil
+}
+
+// listCommitReceipts returns receipts in commit order. Invalid receipts block
+// processing and remain on disk for repair.
 func listCommitReceipts(semDir string) ([]commitReceipt, error) {
-	entries, err := os.ReadDir(commitReceiptsDir(semDir))
+	dir := commitReceiptsDir(semDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -101,16 +128,16 @@ func listCommitReceipts(semDir string) ([]commitReceipt, error) {
 	}
 	var out []commitReceipt
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(commitReceiptsDir(semDir), e.Name()))
-		if err != nil {
-			continue
+		// Receipt files must be regular files; do not follow symlinks.
+		if !e.Type().IsRegular() {
+			return nil, fmt.Errorf("commit receipt %s: not a regular file", e.Name())
 		}
-		var r commitReceipt
-		if json.Unmarshal(data, &r) != nil || r.CheckpointID == "" || r.CommitSHA == "" {
-			continue
+		r, verr := validateReceiptFile(dir, e.Name())
+		if verr != nil {
+			return nil, fmt.Errorf("commit receipt %s: %w", e.Name(), verr)
 		}
 		out = append(out, r)
 	}
@@ -121,6 +148,39 @@ func listCommitReceipts(semDir string) ([]commitReceipt, error) {
 		return out[i].CommitSHA < out[j].CommitSHA
 	})
 	return out, nil
+}
+
+// ReceiptProblem is one invalid commit receipt, reported by doctor.
+type ReceiptProblem struct {
+	File   string
+	Reason string
+}
+
+// InspectCommitReceipts returns invalid receipts and directory read failures.
+func InspectCommitReceipts(semDir string) []ReceiptProblem {
+	dir := commitReceiptsDir(semDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return []ReceiptProblem{{File: "commit-receipts/", Reason: fmt.Sprintf("directory unreadable: %v", err)}}
+	}
+	var problems []ReceiptProblem
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		if !e.Type().IsRegular() {
+			problems = append(problems, ReceiptProblem{File: e.Name(), Reason: "not a regular file"})
+			continue
+		}
+		if _, verr := validateReceiptFile(dir, e.Name()); verr != nil {
+			problems = append(problems, ReceiptProblem{File: e.Name(), Reason: verr.Error()})
+		}
+	}
+	sort.Slice(problems, func(i, j int) bool { return problems[i].File < problems[j].File })
+	return problems
 }
 
 // commitReceiptsPending reports whether a receipt awaits processing.
@@ -142,9 +202,9 @@ func removeCommitReceipt(semDir, sha string) error {
 	return nil
 }
 
-// commitMatchesHandoffParent accepts normal and amended commit parentage.
+// commitMatchesHandoffParent accepts normal commits and amendments.
 func commitMatchesHandoffParent(ctx context.Context, repo *git.Repo, sha, recordedHead string) (bool, error) {
-	commitParent, err := repo.FirstParentOrEmpty(ctx, sha)
+	commitParent, _, err := repo.CommitParent(ctx, sha)
 	if err != nil {
 		return false, err
 	}
@@ -154,7 +214,7 @@ func commitMatchesHandoffParent(ctx context.Context, repo *git.Repo, sha, record
 	if recordedHead == "" {
 		return false, nil // nothing to amend from an unborn branch
 	}
-	amendParent, err := repo.FirstParentOrEmpty(ctx, recordedHead)
+	amendParent, _, err := repo.CommitParent(ctx, recordedHead)
 	if err != nil {
 		return false, err
 	}
