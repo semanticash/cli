@@ -4,7 +4,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1011,10 +1010,10 @@ func loadManifestForCheckpoint(ctx context.Context, bs *blobs.Store, manifestHas
 			"carry-forward: load manifest failed: %v", err)
 		return nil
 	}
-	var m blobs.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
+	m, err := blobs.ParseManifest(raw)
+	if err != nil {
 		util.AppendActivityLog(semDir,
-			"carry-forward: unmarshal manifest failed: %v", err)
+			"carry-forward: parse manifest failed: %v", err)
 		return nil
 	}
 	return m.Files

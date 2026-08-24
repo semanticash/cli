@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"runtime"
 
@@ -46,9 +45,9 @@ func loadPreviousManifest(ctx context.Context, h *sqlstore.Handle, bs *blobs.Sto
 		return prevManifestResult{checkpointID: prev.CheckpointID, exists: true}
 	}
 
-	var prevManifest blobs.Manifest
-	if err := json.Unmarshal(rawManifest, &prevManifest); err != nil {
-		wlog("worker: unmarshal previous manifest: %v\n", err)
+	prevManifest, err := blobs.ParseManifest(rawManifest)
+	if err != nil {
+		wlog("worker: parse previous manifest: %v\n", err)
 		return prevManifestResult{checkpointID: prev.CheckpointID, exists: true}
 	}
 
