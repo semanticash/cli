@@ -34,21 +34,21 @@ func translateTimeout(ctx context.Context, err error) error {
 	return err
 }
 
-// CaptureAfter compares the post-tool workspace with a prior snapshot.
-// Capture limits and unavailable evidence return typed partial errors.
-func (s *Store) CaptureAfter(ctx context.Context, before Snapshot) (CaptureResult, error) {
+// CaptureAfter compares the post-tool workspace with a prior snapshot using
+// the caller-resolved HEAD. Capture limits return typed partial errors.
+func (s *Store) CaptureAfter(ctx context.Context, before Snapshot, post HeadAnchor) (CaptureResult, error) {
 	stop := measureStage(ctx, "capture_after", stageAggregate)
 	defer stop()
-	res, err := s.captureAfter(ctx, before)
+	res, err := s.captureAfter(ctx, before, post)
 	if err != nil {
 		return CaptureResult{}, translateTimeout(ctx, err)
 	}
 	return res, nil
 }
 
-func (s *Store) captureAfter(ctx context.Context, before Snapshot) (CaptureResult, error) {
-	// Resolve HEAD again because the pre-tool process may have exited.
-	post, err := s.capture(ctx, false)
+func (s *Store) captureAfter(ctx context.Context, before Snapshot, anchor HeadAnchor) (CaptureResult, error) {
+	// The status branch.oid check rejects a stale anchor.
+	post, err := s.capture(ctx, &anchor)
 	if err != nil {
 		return CaptureResult{}, err
 	}

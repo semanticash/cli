@@ -104,6 +104,11 @@ func ResolveRepoContext(ctx context.Context, dir string) (RepoContext, error) {
 	return rc, nil
 }
 
+// HeadAnchor returns the commit and tree resolved with this context.
+func (rc RepoContext) HeadAnchor() HeadAnchor {
+	return HeadAnchor{commit: rc.HeadCommit, tree: rc.HeadTree}
+}
+
 // worktreeID returns a stable identity for a worktree. Linked worktrees
 // use Git's repository-local administrative directory name.
 func worktreeID(gitDir, commonDir string) string {

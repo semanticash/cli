@@ -19,18 +19,26 @@ type Snapshot struct {
 	DirtyPath []string
 }
 
+// HeadAnchor identifies the commit and tree resolved for a capture.
+// Private fields prevent callers from constructing inconsistent pairs.
+// The zero value represents an unborn branch.
+type HeadAnchor struct {
+	commit string
+	tree   string
+}
+
 // CaptureBefore builds a workspace tree from HEAD and current changes.
 // Unchanged subtrees retain their existing object IDs.
 func (s *Store) CaptureBefore(ctx context.Context) (Snapshot, error) {
 	stop := measureStage(ctx, "capture_before", stageAggregate)
 	defer stop()
-	return s.capture(ctx, true)
+	return s.capture(ctx, nil)
 }
 
-// capture builds a snapshot, optionally using the HEAD resolved at open.
-func (s *Store) capture(ctx context.Context, useCachedHead bool) (Snapshot, error) {
+// capture builds a snapshot from the store's HEAD or an explicit anchor.
+func (s *Store) capture(ctx context.Context, anchor *HeadAnchor) (Snapshot, error) {
 	stopHead := measureStage(ctx, "resolve_head", stageLeaf)
-	headCommit, headTree, err := s.resolveHead(ctx, useCachedHead)
+	headCommit, headTree, err := s.resolveHead(ctx, anchor)
 	stopHead()
 	if err != nil {
 		return Snapshot{}, err
@@ -71,10 +79,21 @@ func verifyHeadUnmoved(headCommit, statusOID string) error {
 	return nil
 }
 
-// resolveHead returns the current commit and tree. An unborn branch
-// uses the empty tree.
-func (s *Store) resolveHead(ctx context.Context, useCached bool) (commit, tree string, err error) {
-	if useCached && s.repo.HeadCommit != "" && s.repo.HeadTree != "" {
+// resolveHead uses the explicit anchor when present. Otherwise it uses the
+// store's repository context and falls back to Git when needed.
+func (s *Store) resolveHead(ctx context.Context, anchor *HeadAnchor) (commit, tree string, err error) {
+	if anchor != nil {
+		// Both fields must be set or empty.
+		if (anchor.commit == "") != (anchor.tree == "") {
+			return "", "", fmt.Errorf("toolsnap: inconsistent HEAD anchor")
+		}
+		if anchor.tree != "" {
+			return anchor.commit, anchor.tree, nil
+		}
+		empty, eerr := s.emptyTree(ctx)
+		return anchor.commit, empty, eerr
+	}
+	if s.repo.HeadCommit != "" && s.repo.HeadTree != "" {
 		return s.repo.HeadCommit, s.repo.HeadTree, nil
 	}
 	out, err := gitOutput(ctx, s.repo.WorktreeRoot, "rev-parse", "HEAD", "HEAD^{tree}")
@@ -346,7 +365,8 @@ func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin []byte, a
 }
 
 func (s *Store) gitStdinDir(ctx context.Context, dir string, extraEnv []string, stdin []byte, args ...string) (string, error) {
-	full := append([]string{"--git-dir", s.Dir}, args...)
+	// Keep stdin-based commands consistent with gitOutputEnv on Windows.
+	full := append([]string{"-c", "core.longpaths=true", "--git-dir", s.Dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
 	cmd.Env = storeGitEnv(extraEnv)

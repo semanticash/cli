@@ -1,6 +1,7 @@
 package toolsnap
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -128,6 +129,33 @@ func validHash(s, format string) bool {
 func (s *Store) DeleteRef(ctx context.Context, ref, expectedTree string) error {
 	if _, err := s.git(ctx, "update-ref", "-d", ref, expectedTree); err != nil {
 		return fmt.Errorf("toolsnap: delete ref %s: %w", ref, err)
+	}
+	return nil
+}
+
+// DeleteRefs conditionally deletes refs in one transaction.
+// A target conflict leaves the full batch unchanged.
+func (s *Store) DeleteRefs(ctx context.Context, refs map[string]string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	var in bytes.Buffer
+	for ref, tree := range refs {
+		if !validRefName(ref) {
+			return fmt.Errorf("toolsnap: refusing to delete ref outside %s: %s", refPrefix, ref)
+		}
+		// Validate targets before writing the NUL-delimited protocol.
+		if !validHash(tree, s.repo.ObjectFormat) {
+			return fmt.Errorf("toolsnap: invalid delete target %q for ref %s", tree, ref)
+		}
+		in.WriteString("delete ")
+		in.WriteString(ref)
+		in.WriteByte(0)
+		in.WriteString(tree)
+		in.WriteByte(0)
+	}
+	if _, err := s.gitStdin(ctx, nil, in.Bytes(), "update-ref", "-z", "--stdin"); err != nil {
+		return fmt.Errorf("toolsnap: batch delete refs: %w", err)
 	}
 	return nil
 }
