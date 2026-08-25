@@ -5,6 +5,14 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - Unreleased
+
+### Changed
+
+- Reduced post-tool hook latency by reusing the already-resolved HEAD.
+- Reduced post-tool cleanup latency by deleting closed snapshot refs in one
+  conditional `git update-ref` transaction.
+
 ## [0.7.0] - 2026-08-25
 
 ### Changed

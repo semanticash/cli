@@ -12,6 +12,9 @@ import (
 	"testing"
 )
 
+// postAnchor returns the store's resolved HEAD for tests.
+func (s *Store) postAnchor() HeadAnchor { return s.repo.HeadAnchor() }
+
 func TestCaptureAfterEmptyDelta(t *testing.T) {
 	root := testRepo(t)
 	s := openTestStore(t, root)
@@ -21,7 +24,7 @@ func TestCaptureAfterEmptyDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre: %v", err)
 	}
-	res, err := s.CaptureAfter(ctx, pre)
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after: %v", err)
 	}
@@ -45,7 +48,7 @@ func TestCaptureAfterComputesHunks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := s.CaptureAfter(ctx, pre)
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestCaptureAfterBinaryFileTouchOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "blob.bin"), []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.CaptureAfter(ctx, pre)
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after: %v", err)
 	}
@@ -114,10 +117,108 @@ func TestCaptureAfterHeadMovedFailsPartial(t *testing.T) {
 	run(t, root, "git", "add", "a.txt")
 	run(t, root, "git", "commit", "-q", "-m", "window commit")
 
-	_, err = s.CaptureAfter(ctx, pre)
+	_, err = s.CaptureAfter(ctx, pre, s.postAnchor())
 	var pe *PartialError
 	if !errors.As(err, &pe) || pe.Reason != ReasonHeadChanged {
 		t.Fatalf("err = %v, want PartialError %s", err, ReasonHeadChanged)
+	}
+}
+
+// A stale caller-provided anchor fails the status cross-check.
+func TestCaptureAfterUsesProvidedAnchor(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	ctx := context.Background()
+
+	pre, err := s.CaptureBefore(ctx)
+	if err != nil {
+		t.Fatalf("pre: %v", err)
+	}
+	writeFile(t, root, "a.txt", "edit under a stale anchor\n")
+
+	bogus := strings.Repeat("0", hashLen(s.repo.ObjectFormat)-1) + "1"
+	_, err = s.CaptureAfter(ctx, pre, HeadAnchor{commit: bogus, tree: pre.TreeHash})
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonHeadChanged {
+		t.Fatalf("err = %v, want PartialError %s", err, ReasonHeadChanged)
+	}
+}
+
+// A fresh post anchor still detects movement from the pre-tool HEAD.
+func TestCaptureAfterFreshAnchorDetectsHeadMove(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	ctx := context.Background()
+
+	pre, err := s.CaptureBefore(ctx)
+	if err != nil {
+		t.Fatalf("pre: %v", err)
+	}
+	writeFile(t, root, "a.txt", "committed during window\n")
+	run(t, root, "git", "add", "a.txt")
+	run(t, root, "git", "commit", "-q", "-m", "window commit")
+
+	// A fresh post-tool hook re-resolves the repository after the commit.
+	s = openTestStore(t, root)
+	_, err = s.CaptureAfter(ctx, pre, s.postAnchor())
+	var pe *PartialError
+	if !errors.As(err, &pe) || pe.Reason != ReasonHeadChanged {
+		t.Fatalf("err = %v, want PartialError %s", err, ReasonHeadChanged)
+	}
+}
+
+// A mixed anchor is invalid rather than an unborn branch.
+func TestCaptureAfterRejectsInconsistentAnchor(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	ctx := context.Background()
+
+	pre, err := s.CaptureBefore(ctx)
+	if err != nil {
+		t.Fatalf("pre: %v", err)
+	}
+	res, err := s.CaptureAfter(ctx, pre, HeadAnchor{commit: s.repo.HeadCommit, tree: ""})
+	if err == nil {
+		t.Fatalf("mixed anchor accepted; result = %+v", res)
+	}
+	if !strings.Contains(err.Error(), "inconsistent HEAD anchor") {
+		t.Fatalf("err = %v, want inconsistent HEAD anchor", err)
+	}
+}
+
+// An unborn branch uses the empty tree and reports new files as creates.
+func TestCaptureAfterUnbornPost(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "git", "init", "-q", "-b", "main")
+	run(t, root, "git", "config", "user.email", "t@example.com")
+	run(t, root, "git", "config", "user.name", "t")
+	writeFile(t, root, ".gitignore", ".semantica/\n")
+	if err := os.MkdirAll(filepath.Join(root, ".semantica"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := openTestStore(t, root)
+	ctx := context.Background()
+
+	pre, err := s.CaptureBefore(ctx)
+	if err != nil {
+		t.Fatalf("pre: %v", err)
+	}
+	if pre.HeadHash != "" {
+		t.Fatalf("unborn pre HeadHash = %q, want empty", pre.HeadHash)
+	}
+	writeFile(t, root, "new.txt", "created on an unborn branch\n")
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
+	if err != nil {
+		t.Fatalf("after: %v", err)
+	}
+	var created *FileDelta
+	for i := range res.Files {
+		if res.Files[i].Path == "new.txt" {
+			created = &res.Files[i]
+		}
+	}
+	if created == nil || created.Operation != "create" {
+		t.Fatalf("new.txt delta = %+v", res.Files)
 	}
 }
 
@@ -132,7 +233,7 @@ func TestCaptureAfterByteLimitFailsPartial(t *testing.T) {
 	}
 	s.MaxBytesRead = 8
 	writeFile(t, root, "big.txt", "well beyond eight bytes of content\n")
-	_, err = s.CaptureAfter(ctx, pre)
+	_, err = s.CaptureAfter(ctx, pre, s.postAnchor())
 	var pe *PartialError
 	if !errors.As(err, &pe) || pe.Reason != ReasonByteLimit {
 		t.Fatalf("err = %v, want PartialError %s", err, ReasonByteLimit)
@@ -165,7 +266,7 @@ func TestSubmoduleLifecycleIsTouchOnlyEvidence(t *testing.T) {
 		t.Fatalf("pre add: %v", err)
 	}
 	run(t, root, "git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor/dep")
-	res, err := s.CaptureAfter(ctx, pre)
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after add: %v", err)
 	}
@@ -191,7 +292,7 @@ func TestSubmoduleLifecycleIsTouchOnlyEvidence(t *testing.T) {
 	subWT := filepath.Join(root, "vendor", "dep")
 	writeFile(t, root, "vendor/dep/inner.txt", "inner v2\n")
 	run(t, subWT, "git", "commit", "-aqm", "advance")
-	res, err = s.CaptureAfter(ctx, pre)
+	res, err = s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after update: %v", err)
 	}
@@ -208,7 +309,7 @@ func TestSubmoduleLifecycleIsTouchOnlyEvidence(t *testing.T) {
 		t.Fatalf("pre delete: %v", err)
 	}
 	run(t, root, "git", "rm", "-qf", "vendor/dep")
-	res, err = s.CaptureAfter(ctx, pre)
+	res, err = s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after delete: %v", err)
 	}
@@ -404,7 +505,7 @@ func TestNewlineDenseFileDegradesToTruncatedTouch(t *testing.T) {
 	}
 	dense := strings.Repeat("\n", maxDiffLinesPerFile+2)
 	writeFile(t, root, "dense.txt", dense)
-	res, err := s.CaptureAfter(ctx, pre)
+	res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
 	if err != nil {
 		t.Fatalf("after: %v", err)
 	}
@@ -549,7 +650,7 @@ func TestCaptureAfterExpiredDeadlineIsTimeoutPartial(t *testing.T) {
 	defer cancel()
 	<-ctx.Done()
 
-	_, err = s.CaptureAfter(ctx, pre)
+	_, err = s.CaptureAfter(ctx, pre, s.postAnchor())
 	var pe *PartialError
 	if !errors.As(err, &pe) || pe.Reason != ReasonTimeout {
 		t.Fatalf("err = %v, want PartialError %s", err, ReasonTimeout)

@@ -323,7 +323,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	cleanupRefs := map[string]string{}
 	closed, err := reg.Complete(wctx, key, info, writeEvents,
 		func(members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
-			return finalizeGroup(wctx, store, repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs, bench)
+			return finalizeGroup(wctx, store, rc.HeadAnchor(), repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs, bench)
 		})
 	switch {
 	case err == nil:
@@ -380,7 +380,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 
 // finalizeGroup persists a group's events, delta, and evidence links.
 // Retries use durable state, and refs remain until registry closure succeeds.
-func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string, bench *toolWindowBench) (toolsnap.FinalizeResult, error) {
+func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsnap.HeadAnchor, repoBlobs *blobs.Store, target *toolWindowTarget, key toolsnap.ToolKey, info toolsnap.CompletionInfo, event *Event, events []broker.RawEvent, globalBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string, bench *toolWindowBench) (toolsnap.FinalizeResult, error) {
 	groupID := members[0].GroupID
 	earliest := members[0]
 	bench.groupMembers = len(members)
@@ -432,7 +432,7 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.
 			break
 		}
 		captureStage("capture_after")
-		res, err := store.CaptureAfter(ctx, toolsnap.Snapshot{TreeHash: earliest.TreeHash, HeadHash: earliest.HeadHash})
+		res, err := store.CaptureAfter(ctx, toolsnap.Snapshot{TreeHash: earliest.TreeHash, HeadHash: earliest.HeadHash}, postAnchor)
 		var pe *toolsnap.PartialError
 		switch {
 		case err == nil:
@@ -538,12 +538,9 @@ func releaseGroupRefs(ctx context.Context, reg *toolsnap.Registry, store *toolsn
 	lockCtx, cancel := context.WithTimeout(ctx, toolWindowRefReleaseWait)
 	defer cancel()
 	if err := reg.WithCoordinationLock(lockCtx, func() error {
-		for ref, tree := range refs {
-			// Bound deletion with the same context so a slow Git command
-			// cannot hold the coordination lock past the release budget.
-			if err := store.DeleteRef(lockCtx, ref, tree); err != nil {
-				slog.Warn("tool window: release ref", "ref", ref, "err", err)
-			}
+		// Conflicts leave the full batch for maintenance.
+		if err := store.DeleteRefs(lockCtx, refs); err != nil {
+			slog.Warn("tool window: release refs", "err", err)
 		}
 		return nil
 	}); err != nil {
