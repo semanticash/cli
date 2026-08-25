@@ -2,6 +2,8 @@ package toolsnap
 
 import (
 	"context"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -116,5 +118,38 @@ func TestDeleteRefsAtomicAbort(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Errorf("refs after batch delete = %v, want none", refs)
+	}
+}
+
+func TestDeleteRefsSupportsLongStorePaths(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	ctx := context.Background()
+
+	snap, err := s.CaptureBefore(ctx)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	ref := SnapshotRef(
+		strings.Repeat("worktree", 10),
+		strings.Repeat("group", 10),
+		strings.Repeat("tool", 10),
+	)
+	refPath := filepath.Join(s.Dir, filepath.FromSlash(ref))
+	if runtime.GOOS == "windows" && len(refPath) <= 260 {
+		t.Fatalf("test ref path length = %d, want more than 260", len(refPath))
+	}
+	if err := s.CreateRef(ctx, ref, snap.TreeHash); err != nil {
+		t.Fatalf("create ref: %v", err)
+	}
+	if err := s.DeleteRefs(ctx, map[string]string{ref: snap.TreeHash}); err != nil {
+		t.Fatalf("delete ref at path length %d: %v", len(refPath), err)
+	}
+	refs, err := s.ListRefs(ctx)
+	if err != nil {
+		t.Fatalf("list refs: %v", err)
+	}
+	if _, ok := refs[ref]; ok {
+		t.Fatalf("ref %s still exists", ref)
 	}
 }

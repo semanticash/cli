@@ -365,7 +365,8 @@ func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin []byte, a
 }
 
 func (s *Store) gitStdinDir(ctx context.Context, dir string, extraEnv []string, stdin []byte, args ...string) (string, error) {
-	full := append([]string{"--git-dir", s.Dir}, args...)
+	// Keep stdin-based commands consistent with gitOutputEnv on Windows.
+	full := append([]string{"-c", "core.longpaths=true", "--git-dir", s.Dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
 	cmd.Env = storeGitEnv(extraEnv)
