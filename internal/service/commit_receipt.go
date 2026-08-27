@@ -26,13 +26,24 @@ type commitHandoff struct {
 	CreatedAt    int64  // Preserved as the checkpoint creation time.
 	Tree         string // Staged tree recorded by pre-commit.
 	Head         string // HEAD recorded by pre-commit.
+	// Freeze identifies an optional workspace observation paired with the commit.
+	Freeze *freezeHandoff
 }
 
-// commitReceipt records a commit whose checkpoint link is still pending.
+// freezeHandoff identifies a frozen workspace observation.
+type freezeHandoff struct {
+	ObservationID string `json:"observation_id"`
+	Tree          string `json:"tree"`
+	Ref           string `json:"ref"`
+	EventCursor   int64  `json:"event_cursor"`
+}
+
+// commitReceipt records a commit whose checkpoint link is pending.
 type commitReceipt struct {
-	CheckpointID string `json:"checkpoint_id"`
-	CreatedAt    int64  `json:"created_at"`
-	CommitSHA    string `json:"commit_sha"`
+	CheckpointID string         `json:"checkpoint_id"`
+	CreatedAt    int64          `json:"created_at"`
+	CommitSHA    string         `json:"commit_sha"`
+	Freeze       *freezeHandoff `json:"freeze,omitempty"`
 }
 
 func commitReceiptsDir(semDir string) string {
@@ -55,34 +66,67 @@ func readCommitReceiptEntries(semDir string) (string, []os.DirEntry, error) {
 	return dir, entries, err
 }
 
-// writeCommitHandoff stores checkpoint_id|created_at|tree|head. The checkpoint
-// ID remains first for compatibility with the commit-msg hook.
+// writeCommitHandoff stores commit checkpoint state for post-commit processing.
+// The checkpoint ID remains first for commit-msg compatibility.
 func writeCommitHandoff(semDir string, h commitHandoff) error {
-	line := fmt.Sprintf("%s|%d|%s|%s\n", h.CheckpointID, h.CreatedAt, h.Tree, h.Head)
+	line := fmt.Sprintf("%s|%d|%s|%s", h.CheckpointID, h.CreatedAt, h.Tree, h.Head)
+	if h.Freeze != nil {
+		line += fmt.Sprintf("|%s|%s|%s|%d",
+			h.Freeze.ObservationID, h.Freeze.Tree, h.Freeze.Ref, h.Freeze.EventCursor)
+	}
+	line += "\n"
 	return platform.WriteFileAtomic(util.PreCommitCheckpointPath(semDir), []byte(line), 0o644)
 }
 
-// readCommitHandoff reads the current pre-commit handoff.
-func readCommitHandoff(semDir string) (commitHandoff, bool) {
+// readCommitHandoff returns ok=false when no handoff exists. Unreadable or
+// malformed handoffs return an error and remain available for repair.
+func readCommitHandoff(semDir string) (commitHandoff, bool, error) {
 	raw, err := os.ReadFile(util.PreCommitCheckpointPath(semDir))
 	if err != nil {
-		return commitHandoff{}, false
+		if os.IsNotExist(err) {
+			return commitHandoff{}, false, nil
+		}
+		return commitHandoff{}, false, fmt.Errorf("read handoff: %w", err)
 	}
-	fields := strings.Split(strings.TrimSpace(string(raw)), "|")
-	if len(fields) == 0 || strings.TrimSpace(fields[0]) == "" {
-		return commitHandoff{}, false
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return commitHandoff{}, false, fmt.Errorf("handoff is empty")
 	}
-	h := commitHandoff{CheckpointID: strings.TrimSpace(fields[0])}
-	if len(fields) > 1 {
-		h.CreatedAt, _ = strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
+	fields := strings.Split(trimmed, "|")
+	if len(fields) != 4 && len(fields) != 8 {
+		return commitHandoff{}, false, fmt.Errorf("handoff has %d fields, want 4 or 8", len(fields))
 	}
-	if len(fields) > 2 {
-		h.Tree = strings.TrimSpace(fields[2])
+	checkpointID := strings.TrimSpace(fields[0])
+	if checkpointID == "" {
+		return commitHandoff{}, false, fmt.Errorf("handoff missing checkpoint id")
 	}
-	if len(fields) > 3 {
-		h.Head = strings.TrimSpace(fields[3])
+	createdAt, err := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
+	if err != nil || createdAt <= 0 {
+		return commitHandoff{}, false, fmt.Errorf("handoff created_at invalid: %q", fields[1])
 	}
-	return h, true
+	tree := strings.TrimSpace(fields[2])
+	if tree == "" {
+		return commitHandoff{}, false, fmt.Errorf("handoff missing staged tree")
+	}
+	// fields[3] (parent HEAD) may be empty for an unborn branch.
+	h := commitHandoff{CheckpointID: checkpointID, CreatedAt: createdAt, Tree: tree, Head: strings.TrimSpace(fields[3])}
+	if len(fields) == 8 {
+		cursor, cerr := strconv.ParseInt(strings.TrimSpace(fields[7]), 10, 64)
+		if cerr != nil {
+			return commitHandoff{}, false, fmt.Errorf("handoff freeze cursor invalid: %q", fields[7])
+		}
+		freeze := freezeHandoff{
+			ObservationID: strings.TrimSpace(fields[4]),
+			Tree:          strings.TrimSpace(fields[5]),
+			Ref:           strings.TrimSpace(fields[6]),
+			EventCursor:   cursor,
+		}
+		if verr := validateFreezePairing(freeze, createdAt); verr != nil {
+			return commitHandoff{}, false, fmt.Errorf("handoff freeze pairing invalid: %w", verr)
+		}
+		h.Freeze = &freeze
+	}
+	return h, true, nil
 }
 
 func removeCommitHandoff(semDir string) {
@@ -91,7 +135,7 @@ func removeCommitHandoff(semDir string) {
 
 // promoteToReceipt persists a committed receipt before removing its handoff.
 func promoteToReceipt(semDir, sha string, h commitHandoff) (commitReceipt, error) {
-	r := commitReceipt{CheckpointID: h.CheckpointID, CreatedAt: h.CreatedAt, CommitSHA: sha}
+	r := commitReceipt{CheckpointID: h.CheckpointID, CreatedAt: h.CreatedAt, CommitSHA: sha, Freeze: h.Freeze}
 	if err := os.MkdirAll(commitReceiptsDir(semDir), 0o755); err != nil {
 		return r, err
 	}
@@ -127,6 +171,11 @@ func validateReceiptFile(dir, name string) (commitReceipt, error) {
 	}
 	if name != r.CommitSHA+".json" {
 		return commitReceipt{}, fmt.Errorf("filename does not match commit_sha (expected %s.json)", r.CommitSHA)
+	}
+	if r.Freeze != nil {
+		if err := validateFreezePairing(*r.Freeze, r.CreatedAt); err != nil {
+			return commitReceipt{}, fmt.Errorf("invalid freeze pairing: %w", err)
+		}
 	}
 	return r, nil
 }
@@ -232,10 +281,15 @@ func commitMatchesHandoffParent(ctx context.Context, repo *git.Repo, sha, record
 // linkReceiptFn allows tests to inject a receipt-link failure.
 var linkReceiptFn = linkReceipt
 
-// linkReceipt idempotently creates the checkpoint and commit link.
+// linkReceipt idempotently creates the checkpoint pair and commit link.
 func linkReceipt(ctx context.Context, h *sqlstore.Handle, repoID string, r commitReceipt) error {
-	if _, err := h.Queries.GetCheckpointByID(ctx, r.CheckpointID); errors.Is(err, sql.ErrNoRows) {
-		if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
+	switch commit, err := h.Queries.GetCheckpointByID(ctx, r.CheckpointID); {
+	case errors.Is(err, sql.ErrNoRows):
+		if r.Freeze != nil {
+			if err := insertPairedCheckpoints(ctx, h, repoID, r.CheckpointID, r.CreatedAt, *r.Freeze); err != nil {
+				return err
+			}
+		} else if err := h.Queries.InsertCheckpoint(ctx, sqldb.InsertCheckpointParams{
 			CheckpointID: r.CheckpointID,
 			RepositoryID: repoID,
 			CreatedAt:    r.CreatedAt,
@@ -249,8 +303,15 @@ func linkReceipt(ctx context.Context, h *sqlstore.Handle, repoID string, r commi
 		}); err != nil {
 			return err
 		}
-	} else if err != nil {
+	case err != nil:
 		return err
+	default:
+		// Existing paired checkpoints must agree with the receipt.
+		if r.Freeze != nil {
+			if err := verifyObservationPairing(ctx, h, commit, *r.Freeze); err != nil {
+				return fmt.Errorf("freeze pairing disagreement for %s: %w", r.CommitSHA, err)
+			}
+		}
 	}
 	return h.Queries.InsertCommitLink(ctx, sqldb.InsertCommitLinkParams{
 		CommitHash:   r.CommitSHA,
@@ -258,6 +319,27 @@ func linkReceipt(ctx context.Context, h *sqlstore.Handle, repoID string, r commi
 		CheckpointID: r.CheckpointID,
 		LinkedAt:     time.Now().UnixMilli(),
 	})
+}
+
+// verifyObservationPairing validates an existing workspace observation pair.
+func verifyObservationPairing(ctx context.Context, h *sqlstore.Handle, commit sqldb.Checkpoint, freeze freezeHandoff) error {
+	obs, err := h.Queries.GetCheckpointByID(ctx, freeze.ObservationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("observation %s missing", freeze.ObservationID)
+	}
+	if err != nil {
+		return err
+	}
+	if obs.Trigger.String != "workspace_freeze" {
+		return fmt.Errorf("observation %s has trigger %q", freeze.ObservationID, obs.Trigger.String)
+	}
+	if obs.RepositorySequence >= commit.RepositorySequence {
+		return fmt.Errorf("observation seq %d not below commit seq %d", obs.RepositorySequence, commit.RepositorySequence)
+	}
+	if !obs.EventCursor.Valid || obs.EventCursor.Int64 != freeze.EventCursor {
+		return fmt.Errorf("observation cursor %v != pinned %d", obs.EventCursor, freeze.EventCursor)
+	}
+	return nil
 }
 
 // drainCommitReceipts links receipts in order under the repository lock. It

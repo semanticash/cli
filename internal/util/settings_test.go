@@ -178,6 +178,79 @@ func TestSettings_PreservesUnknownKeysAtAllLevels(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFreezeEnabled(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	t.Run("default off", func(t *testing.T) {
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "")
+		if WorkspaceFreezeEnabled(t.TempDir()) {
+			t.Error("expected off with no settings and no env")
+		}
+	})
+
+	t.Run("env on overrides default", func(t *testing.T) {
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "1")
+		if !WorkspaceFreezeEnabled(t.TempDir()) {
+			t.Error("expected on with env=1 and no settings")
+		}
+	})
+
+	t.Run("settings on", func(t *testing.T) {
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "")
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, WorkspaceFreeze: boolPtr(true)}); err != nil {
+			t.Fatal(err)
+		}
+		if !WorkspaceFreezeEnabled(dir) {
+			t.Error("expected on from settings field")
+		}
+	})
+
+	t.Run("settings off explicit", func(t *testing.T) {
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "")
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, WorkspaceFreeze: boolPtr(false)}); err != nil {
+			t.Fatal(err)
+		}
+		if WorkspaceFreezeEnabled(dir) {
+			t.Error("expected off from explicit settings false")
+		}
+	})
+
+	t.Run("malformed settings fail off", func(t *testing.T) {
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "")
+		dir := t.TempDir()
+		if err := os.WriteFile(SettingsPath(dir), []byte("{not valid json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if WorkspaceFreezeEnabled(dir) {
+			t.Error("expected off when settings cannot be read")
+		}
+	})
+
+	t.Run("env off overrides settings on", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, WorkspaceFreeze: boolPtr(true)}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "0")
+		if WorkspaceFreezeEnabled(dir) {
+			t.Error("expected env=0 to override settings on")
+		}
+	})
+
+	t.Run("env on overrides settings off", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := WriteSettings(dir, Settings{Enabled: true, Version: 1, WorkspaceFreeze: boolPtr(false)}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SEMANTICA_WORKSPACE_FREEZE", "1")
+		if !WorkspaceFreezeEnabled(dir) {
+			t.Error("expected env=1 to override settings off")
+		}
+	})
+}
+
 func TestAttributionV2Enabled(t *testing.T) {
 	boolPtr := func(v bool) *bool { return &v }
 

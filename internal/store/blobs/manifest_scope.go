@@ -52,6 +52,12 @@ func (m Manifest) IsCommitScoped() bool {
 	return m.Version == 2 && m.Scope == ScopeCommit && m.validateCommit() == nil
 }
 
+// IsWorkspaceScoped reports whether m is a valid workspace-scoped version-2
+// manifest. Version 1 is a legacy workspace observation and is not accepted.
+func (m Manifest) IsWorkspaceScoped() bool {
+	return m.Version == 2 && m.Scope == ScopeWorkspace && m.validateWorkspace() == nil
+}
+
 func (m Manifest) validate() error {
 	switch m.Version {
 	case 1:
@@ -103,10 +109,16 @@ func (m Manifest) validateWorkspace() error {
 	if m.ObjectFormat != "" || m.CommitHash != "" || m.TreeID != "" {
 		return fmt.Errorf("manifest: workspace scope must omit commit Git identity")
 	}
+	seen := make(map[string]bool, len(m.Files))
 	for _, f := range m.Files {
 		if err := f.validateWorkspaceEntry(); err != nil {
 			return err
 		}
+		// Each path must identify one blob.
+		if seen[f.Path] {
+			return fmt.Errorf("manifest: workspace entry has a duplicate path %q", f.Path)
+		}
+		seen[f.Path] = true
 	}
 	return nil
 }

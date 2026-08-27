@@ -94,8 +94,8 @@ func TestCommitCapture_LinksCurrentCommit(t *testing.T) {
 	if r, _ := listCommitReceipts(semDir); len(r) != 0 {
 		t.Errorf("receipts after success = %+v, want none", r)
 	}
-	if _, ok := readCommitHandoff(semDir); ok {
-		t.Error("handoff left behind after success")
+	if _, ok, err := readCommitHandoff(semDir); ok || err != nil {
+		t.Errorf("handoff left behind after success: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -126,8 +126,8 @@ func TestCommitCapture_MismatchLeavesHandoff(t *testing.T) {
 	if res.Linked {
 		t.Error("mismatched handoff was attached to an unrelated commit")
 	}
-	if _, ok := readCommitHandoff(semDir); !ok {
-		t.Error("mismatched handoff was consumed instead of left in place")
+	if _, ok, err := readCommitHandoff(semDir); !ok || err != nil {
+		t.Errorf("mismatched handoff was consumed or corrupted: ok=%v err=%v", ok, err)
 	}
 	if r, _ := listCommitReceipts(semDir); len(r) != 0 {
 		t.Errorf("receipts = %+v, want none for a mismatch", r)

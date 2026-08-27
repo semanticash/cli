@@ -147,6 +147,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.insertSessionCheckpointStmt, err = db.PrepareContext(ctx, insertSessionCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionCheckpoint: %w", err)
 	}
+	if q.insertWorkspaceObservationCheckpointStmt, err = db.PrepareContext(ctx, insertWorkspaceObservationCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query InsertWorkspaceObservationCheckpoint: %w", err)
+	}
 	if q.listAgentEventsBySessionStmt, err = db.PrepareContext(ctx, listAgentEventsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAgentEventsBySession: %w", err)
 	}
@@ -534,6 +537,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing insertSessionCheckpointStmt: %w", cerr)
 		}
 	}
+	if q.insertWorkspaceObservationCheckpointStmt != nil {
+		if cerr := q.insertWorkspaceObservationCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing insertWorkspaceObservationCheckpointStmt: %w", cerr)
+		}
+	}
 	if q.listAgentEventsBySessionStmt != nil {
 		if cerr := q.listAgentEventsBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listAgentEventsBySessionStmt: %w", cerr)
@@ -909,6 +917,7 @@ type Queries struct {
 	insertEvidenceLinkIfAbsentStmt               *sql.Stmt
 	insertRepositoryStmt                         *sql.Stmt
 	insertSessionCheckpointStmt                  *sql.Stmt
+	insertWorkspaceObservationCheckpointStmt     *sql.Stmt
 	listAgentEventsBySessionStmt                 *sql.Stmt
 	listAgentEventsBySessionPagedStmt            *sql.Stmt
 	listAgentSessionsByProviderSessionIDStmt     *sql.Stmt
@@ -1015,6 +1024,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		insertEvidenceLinkIfAbsentStmt:               q.insertEvidenceLinkIfAbsentStmt,
 		insertRepositoryStmt:                         q.insertRepositoryStmt,
 		insertSessionCheckpointStmt:                  q.insertSessionCheckpointStmt,
+		insertWorkspaceObservationCheckpointStmt:     q.insertWorkspaceObservationCheckpointStmt,
 		listAgentEventsBySessionStmt:                 q.listAgentEventsBySessionStmt,
 		listAgentEventsBySessionPagedStmt:            q.listAgentEventsBySessionPagedStmt,
 		listAgentSessionsByProviderSessionIDStmt:     q.listAgentSessionsByProviderSessionIDStmt,

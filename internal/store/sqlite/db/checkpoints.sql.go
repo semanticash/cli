@@ -485,6 +485,38 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 	return err
 }
 
+const insertWorkspaceObservationCheckpoint = `-- name: InsertWorkspaceObservationCheckpoint :exec
+insert into checkpoints(
+    checkpoint_id, repository_id, created_at, kind, trigger, message,
+    manifest_hash, size_bytes, status, completed_at, repository_sequence,
+    event_cursor
+) values (
+    ?1, ?2, ?3,
+    'auto', 'workspace_freeze', 'Workspace observation',
+    null, null, 'pending', null,
+    (select coalesce(max(repository_sequence), 0) + 1
+     from checkpoints c2 where c2.repository_id = ?2),
+    ?4)
+`
+
+type InsertWorkspaceObservationCheckpointParams struct {
+	CheckpointID string        `json:"checkpoint_id"`
+	RepositoryID string        `json:"repository_id"`
+	CreatedAt    int64         `json:"created_at"`
+	EventCursor  sql.NullInt64 `json:"event_cursor"`
+}
+
+// Inserts a pending workspace observation before its paired commit checkpoint.
+func (q *Queries) InsertWorkspaceObservationCheckpoint(ctx context.Context, arg InsertWorkspaceObservationCheckpointParams) error {
+	_, err := q.exec(ctx, q.insertWorkspaceObservationCheckpointStmt, insertWorkspaceObservationCheckpoint,
+		arg.CheckpointID,
+		arg.RepositoryID,
+		arg.CreatedAt,
+		arg.EventCursor,
+	)
+	return err
+}
+
 const listCheckpointsByRepository = `-- name: ListCheckpointsByRepository :many
 select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints where repository_id = ? order by created_at desc limit ?
 `
