@@ -60,6 +60,36 @@ func resolveToolWindowTarget(ctx context.Context, bh *broker.Handle, cwd string)
 	}, nil
 }
 
+// toolWindowCWD returns the command directory, then the session directory.
+func toolWindowCWD(event *Event, state *CaptureState) string {
+	if event.EffectiveCWD != "" {
+		return event.EffectiveCWD
+	}
+	if event.CWD != "" {
+		return event.CWD
+	}
+	if state != nil {
+		return state.CWD
+	}
+	return ""
+}
+
+// effectiveDirProvider reports whether shell windows require persisted
+// command-directory routing. Cursor supplies this directory.
+func effectiveDirProvider(providerName string) bool {
+	return providerName == "cursor"
+}
+
+// receiptKeyFor returns the identity used to persist a window target.
+func receiptKeyFor(providerName string, event *Event) toolWindowReceiptKey {
+	return toolWindowReceiptKey{
+		Provider:  providerName,
+		SessionID: event.SessionID,
+		TurnID:    event.TurnID,
+		ToolUseID: event.ToolUseID,
+	}
+}
+
 // toolWindowBench describes a hook's capture result.
 type toolWindowBench struct {
 	outcome       string
@@ -134,11 +164,7 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 		return nil
 	}
 
-	cwd := event.CWD
-	if cwd == "" {
-		cwd = state.CWD
-	}
-	target, err := resolveToolWindowTarget(wctx, bh, cwd)
+	target, err := resolveToolWindowTarget(wctx, bh, toolWindowCWD(event, state))
 	if err != nil || target == nil {
 		if err != nil {
 			slog.Warn("tool window: resolve target", "err", err)
@@ -154,6 +180,25 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	}
 	scope := doctor.BenchScopeFrom(wctx)
 	defer func() { emitToolWindowBench(target, event, "pre", start, bench, stages, scope) }()
+
+	// Persist command-directory targets before opening a window so the post hook
+	// completes the same repository. A failed write leaves the window unopened.
+	if effectiveDirProvider(providerName) {
+		key := receiptKeyFor(providerName, event)
+		if err := SaveToolWindowTarget(key, target.repoPath, target.repositoryID); err != nil {
+			bench.outcome = "error"
+			slog.Warn("tool window: persist target", "err", err)
+			return nil
+		}
+		// Remove the target if the window does not open.
+		defer func() {
+			if bench.outcome != "registered" {
+				if derr := DeleteToolWindowTarget(key); derr != nil {
+					slog.Warn("tool window: reclaim target", "err", derr)
+				}
+			}
+		}()
+	}
 
 	stopSetup := toolsnap.MeasureStage(wctx, "snapshot_store_setup")
 	rc, err := toolsnap.ResolveRepoContext(wctx, target.repoPath)
@@ -215,11 +260,28 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	return nil
 }
 
-// completeToolWindow finalizes a Bash window. It returns true when it
-// persisted the closing events; otherwise the caller writes them normally.
-func completeToolWindow(ctx context.Context, providerName string, event *Event, bh *broker.Handle, globalBlobs *blobs.Store, events []broker.RawEvent) bool {
+// toolWindowDisposition is completeToolWindow's outcome for the caller.
+type toolWindowDisposition int
+
+const (
+	// windowPassthrough lets the caller route events normally.
+	windowPassthrough toolWindowDisposition = iota
+	// windowHandled means the closing events were persisted.
+	windowHandled
+	// windowSuppressed prevents routing to an unverified repository.
+	windowSuppressed
+)
+
+// completeToolWindow finalizes a Bash window and tells the caller whether to
+// stop, continue, or suppress event routing.
+func completeToolWindow(ctx context.Context, providerName string, event *Event, bh *broker.Handle, globalBlobs *blobs.Store, events []broker.RawEvent) toolWindowDisposition {
+	// Command-directory providers suppress events when completion fails.
+	failDisp := windowPassthrough
+	if effectiveDirProvider(providerName) {
+		failDisp = windowSuppressed
+	}
 	if len(events) == 0 || event.ToolUseID == "" {
-		return false
+		return failDisp
 	}
 	wctx, cancel := context.WithTimeout(ctx, toolWindowDeadline)
 	defer cancel()
@@ -227,18 +289,47 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 
 	state, err := LoadCaptureState(event.SessionID)
 	if err != nil {
-		return false
+		return failDisp
 	}
 	if event.TurnID == "" {
 		event.TurnID = state.TurnID
 	}
-	cwd := event.CWD
-	if cwd == "" {
-		cwd = state.CWD
-	}
-	target, err := resolveToolWindowTarget(wctx, bh, cwd)
-	if err != nil || target == nil {
-		return false
+	// Command-directory providers complete the target selected by the pre hook.
+	// Missing or invalid targets suppress routing to the session repository.
+	var target *toolWindowTarget
+	if effectiveDirProvider(providerName) {
+		receiptKey := receiptKeyFor(providerName, event)
+		defer func() {
+			if derr := DeleteToolWindowTarget(receiptKey); derr != nil {
+				slog.Warn("tool window: delete target", "err", derr)
+			}
+		}()
+		rec, lerr := LoadToolWindowTarget(receiptKey)
+		if lerr != nil {
+			slog.Warn("tool window: load target", "err", lerr)
+			return failDisp
+		}
+		if rec == nil {
+			// Never replace a missing target with the session repository.
+			slog.Warn("tool window: routing receipt missing", "tool_use", event.ToolUseID)
+			return failDisp
+		}
+		// Verify the repository identity before using the persisted path.
+		resolvedID, ridErr := broker.RepositoryIDForPath(wctx, rec.RepoPath)
+		if ridErr != nil || resolvedID != rec.RepositoryID {
+			slog.Warn("tool window: target identity mismatch", "repo", rec.RepoPath, "err", ridErr)
+			return failDisp
+		}
+		target = &toolWindowTarget{
+			repoPath:     rec.RepoPath,
+			semDir:       filepath.Join(rec.RepoPath, ".semantica"),
+			repositoryID: rec.RepositoryID,
+		}
+	} else {
+		target, err = resolveToolWindowTarget(wctx, bh, toolWindowCWD(event, state))
+		if err != nil || target == nil {
+			return failDisp
+		}
 	}
 	bench := &toolWindowBench{}
 	var stages *toolsnap.StageTimes
@@ -261,21 +352,21 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: resolve repository", "err", err)
-		return false
+		return failDisp
 	}
 	store, err := toolsnap.OpenStore(wctx, rc, target.semDir)
 	if err != nil {
 		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open snapshot store", "err", err)
-		return false
+		return failDisp
 	}
 	reg, err := toolsnap.OpenRegistry(target.semDir)
 	if err != nil {
 		stopSetup()
 		bench.outcome = "error"
 		slog.Warn("tool window: open registry", "err", err)
-		return false
+		return failDisp
 	}
 	stopSetup()
 
@@ -288,26 +379,26 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		} else {
 			bench.outcome = "error"
 		}
-		return false
+		return failDisp
 	}
 
 	eventID, ok := closingEventID(events, event.ToolUseID)
 	if !ok {
 		bench.outcome = "error"
 		slog.Warn("tool window: no hook event for closing tool use", "tool_use", event.ToolUseID)
-		return false
+		return failDisp
 	}
 	repoBlobs, err := blobs.NewStore(filepath.Join(target.semDir, "objects"))
 	if err != nil {
 		bench.outcome = "error"
 		slog.Warn("tool window: open repo blob store", "err", err)
-		return false
+		return failDisp
 	}
 
 	if isBackgroundBash(event) {
 		// Record the detached command as a partial without file evidence.
 		bench.outcome = "background_command"
-		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, toolsnap.ReasonBackgroundCommand, events, globalBlobs)
+		return partialDisposition(persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, toolsnap.ReasonBackgroundCommand, events, globalBlobs), failDisp)
 	}
 
 	info := toolsnap.CompletionInfo{
@@ -340,24 +431,24 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		} else {
 			bench.outcome = "non_final"
 		}
-		return true
+		return windowHandled
 	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
 		bench.outcome = "missing_pre"
 		bench.partialReason = "pre_snapshot_missing"
 		// Preserve missing-pre evidence without blocking the ordinary write path.
-		return persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, "pre_snapshot_missing", events, globalBlobs)
+		return partialDisposition(persistPartialDelta(wctx, reg, repoBlobs, target, key, event, eventID, "pre_snapshot_missing", events, globalBlobs), failDisp)
 	case errors.Is(err, toolsnap.ErrWindowTombstoned):
 		bench.outcome = "tombstoned"
 		// Preserve the event without creating evidence for an abandoned window.
 		util.AppendActivityLog(target.semDir,
 			"tool-window post skipped (tombstoned): tool_use=%s", event.ToolUseID)
-		return false
+		return failDisp
 	case errors.Is(err, toolsnap.ErrWindowSealed):
 		bench.outcome = "sealed"
 		// Reclamation records partial evidence without reading the workspace.
 		util.AppendActivityLog(target.semDir,
 			"tool-window post sealed (join horizon passed): tool_use=%s", event.ToolUseID)
-		return false
+		return failDisp
 	case err != nil:
 		var pe *toolsnap.PartialError
 		if errors.As(err, &pe) && pe.Reason == toolsnap.ReasonLockTimeout {
@@ -369,13 +460,21 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 			}
 			util.AppendActivityLog(target.semDir,
 				"tool-window post lock timeout: tool_use=%s tombstoned", event.ToolUseID)
-			return false
+			return failDisp
 		}
 		bench.outcome = "error"
 		slog.Warn("tool window: complete", "tool_use", event.ToolUseID, "err", err)
-		return false
+		return failDisp
 	}
-	return false
+	return failDisp
+}
+
+// partialDisposition marks a stored partial as handled.
+func partialDisposition(persisted bool, failDisp toolWindowDisposition) toolWindowDisposition {
+	if persisted {
+		return windowHandled
+	}
+	return failDisp
 }
 
 // finalizeGroup persists a group's events, delta, and evidence links.

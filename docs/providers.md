@@ -124,7 +124,9 @@ For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 - **`subagentStop`** - Captures the parent `Agent` step and triggers child transcript discovery.
 - **`sessionStart`** / **`sessionEnd`** / **`preCompact`** - Lifecycle tracking, final flush, and offset reset handling.
 
-Cursor IDE uses direct-provenance packaging for prompt, file edit, shell, and subagent boundary events.
+Cursor IDE uses direct-provenance packaging for prompt, file edit, shell, and
+subagent boundary events. Shell tool windows use the command's working
+directory, including when the command runs in another enabled repository.
 
 Cursor CLI shares the IDE configuration file but exposes a smaller hook surface. Semantica uses transcript capture for CLI sessions and does not assume IDE file-step parity.
 

@@ -341,7 +341,7 @@ func TestCompleteToolWindowProducesDelta(t *testing.T) {
 
 	post := postBashEvent("sess-d", "toolu_d", w.repoPath, "some-generator --write")
 	events := []broker.RawEvent{bashRawEvent("evt-close", "toolu_d", "sess-d")}
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
 		t.Fatal("window completion not handled")
 	}
 
@@ -438,7 +438,7 @@ func TestCompleteToolWindowProducesDelta_Codex(t *testing.T) {
 		EventSource: "hook", ProviderSessionID: "sess-cx",
 		SessionStartedAt: 1500, SessionMetaJSON: `{"source_key":"x"}`,
 	}
-	if !completeToolWindow(ctx, "codex", post, w.bh, nil, []broker.RawEvent{closing}) {
+	if windowHandled != completeToolWindow(ctx, "codex", post, w.bh, nil, []broker.RawEvent{closing}) {
 		t.Fatal("codex window completion not handled")
 	}
 
@@ -491,7 +491,7 @@ func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
 
 	// The first completion persists its event while the group stays open.
 	postA := postBashEvent("sess-g", "toolu_a", w.repoPath, "first")
-	if !completeToolWindow(ctx, "claude-code", postA, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-a", "toolu_a", "sess-g")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", postA, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-a", "toolu_a", "sess-g")}) {
 		t.Fatal("non-final completion did not write its event under the lock")
 	}
 	if wins := windowsIn(t, w.semDir); len(wins) != 2 {
@@ -512,7 +512,7 @@ func TestCompleteToolWindowConcurrentGroup(t *testing.T) {
 	}
 
 	postB := postBashEvent("sess-g", "toolu_b", w.repoPath, "second")
-	if !completeToolWindow(ctx, "claude-code", postB, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-b", "toolu_b", "sess-g")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", postB, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-b", "toolu_b", "sess-g")}) {
 		t.Fatal("final completion not handled")
 	}
 	deltas := findDeltas(t, w.semDir)
@@ -655,7 +655,7 @@ func TestRetryWithPersistedDeltaSkipsRecompute(t *testing.T) {
 	}
 	stages := recordStages(t)
 	post := postBashEvent("sess-r", "toolu_r", w.repoPath, "retry")
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-r", "toolu_r", "sess-r")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-r", "toolu_r", "sess-r")}) {
 		t.Fatal("retry not handled")
 	}
 	if len(*stages) != 0 {
@@ -688,7 +688,7 @@ func TestMissingPreSnapshotPersistsLinkedPartial(t *testing.T) {
 	post := postBashEvent("sess-mp", "toolu_mp", w.repoPath, "cmd")
 	post.Timestamp = 5000
 	events := []broker.RawEvent{bashRawEvent(evtMP, "toolu_mp", "sess-mp")}
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
 		t.Fatal("missing-pre partial not handled")
 	}
 
@@ -732,7 +732,7 @@ func TestMissingPreSnapshotPersistsLinkedPartial(t *testing.T) {
 	}
 	dup := postBashEvent("sess-mp", "toolu_mp", w.repoPath, "cmd")
 	dup.Timestamp = 9000
-	if !completeToolWindow(ctx, "claude-code", dup, w.bh, nil, []broker.RawEvent{bashRawEvent(evtMP, "toolu_mp", "sess-mp")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", dup, w.bh, nil, []broker.RawEvent{bashRawEvent(evtMP, "toolu_mp", "sess-mp")}) {
 		t.Fatal("duplicate delivery not handled")
 	}
 	if deltas := findDeltas(t, w.semDir); len(deltas) != 1 || deltas[0].Window.StartedAt != 5000 {
@@ -776,7 +776,7 @@ func TestPartialReplayUsesRecordedFields(t *testing.T) {
 	// Reparse with different values; the record remains authoritative.
 	post := postBashEvent("sess-rp", "toolu_rp", w.repoPath, "reparsed-cmd")
 	post.Timestamp = 9000
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent(evtRP, "toolu_rp", "sess-rp")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent(evtRP, "toolu_rp", "sess-rp")}) {
 		t.Fatal("replay not handled")
 	}
 
@@ -829,7 +829,7 @@ func TestConflictingEvidenceLinkBlocksClosure(t *testing.T) {
 	}
 
 	post := postBashEvent("sess-cf", "toolu_cf", w.repoPath, "cmd")
-	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-cf", "toolu_cf", "sess-cf")}) {
+	if windowHandled == completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-cf", "toolu_cf", "sess-cf")}) {
 		t.Fatal("conflicting link accepted as closure")
 	}
 
@@ -902,7 +902,7 @@ func TestPostRefPreventsWorkspaceRecapture(t *testing.T) {
 
 	stages := recordStages(t)
 	post := postBashEvent("sess-p", "toolu_p", w.repoPath, "crashed-tool")
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-p", "toolu_p", "sess-p")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-p", "toolu_p", "sess-p")}) {
 		t.Fatal("completion not handled")
 	}
 	for _, s := range *stages {
@@ -940,7 +940,7 @@ func TestDuplicatePreAfterClosureIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := postBashEvent("sess-dp", "toolu_dp", w.repoPath, "cmd")
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-dp", "toolu_dp", "sess-dp")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-dp", "toolu_dp", "sess-dp")}) {
 		t.Fatal("closure not handled")
 	}
 
@@ -978,7 +978,7 @@ func TestEventWriteFailureLeavesNoResumableIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := postBashEvent("sess-ef", "toolu_ef", w.repoPath, "cmd")
-	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ef", "toolu_ef", "sess-ef")}) {
+	if windowHandled == completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ef", "toolu_ef", "sess-ef")}) {
 		t.Fatal("failed event write reported handled")
 	}
 	if err := os.WriteFile(enabledPath, nil, 0o644); err != nil {
@@ -1014,7 +1014,7 @@ func TestEventWriteFailureLeavesNoResumableIdentity(t *testing.T) {
 
 	// The retry emits partial evidence without another snapshot.
 	stages := recordStages(t)
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ef", "toolu_ef", "sess-ef")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ef", "toolu_ef", "sess-ef")}) {
 		t.Fatal("retry not handled")
 	}
 	for _, s := range *stages {

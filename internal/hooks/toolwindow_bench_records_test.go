@@ -73,7 +73,7 @@ func TestToolWindowBenchRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	post := postBashEvent("sess-br", "toolu_br", w.repoPath, "cmd")
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-br", "toolu_br", "sess-br")}) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-br", "toolu_br", "sess-br")}) {
 		t.Fatal("completion not handled")
 	}
 
@@ -163,7 +163,7 @@ func TestPostOpenFailureRecordsErrorOutcome(t *testing.T) {
 	}
 
 	post := postBashEvent("sess-er", "toolu_er", w.repoPath, "cmd")
-	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-er", "toolu_er", "sess-er")}) {
+	if windowHandled == completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-er", "toolu_er", "sess-er")}) {
 		t.Fatal("broken registry reported handled")
 	}
 	records := benchRecords(t, w.repoPath)

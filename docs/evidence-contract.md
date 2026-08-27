@@ -47,6 +47,13 @@ notes.
 `provider_edit`, `tool_delta`, `deletion`, or `coarse`. Classification prefers
 line-level evidence and uses the touch origin when no line matches.
 
+### Tool-window routing
+
+Tool-window evidence is stored in the repository selected when the pre-tool
+hook runs. Cursor shell hooks use the command's working directory and retain
+that target for the matching post hook. If the target is missing or cannot be
+verified, Semantica records no event or delta in the session repository.
+
 ## Per-file evidence: primary vs all
 
 Each file reports:

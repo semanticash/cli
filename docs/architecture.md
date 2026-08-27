@@ -277,6 +277,10 @@ them to their tool events. Recovery runs during worker drains and with
 deltas against committed lines; partial or ambiguous evidence remains
 file-level only.
 
+Cursor shell windows are bound to the command repository at the pre-tool hook.
+The post-tool hook uses the persisted target and suppresses routing when that
+target cannot be verified.
+
 ### Settings (`settings.json`)
 
 ```json

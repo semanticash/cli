@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Reduced post-tool cleanup latency by deleting closed snapshot refs in one
   conditional `git update-ref` transaction.
 
+### Fixed
+
+- Cursor shell tool windows now use the command's working directory, so
+  cross-repository changes are captured in the repository where they occur.
+  Missing or invalid routing state is not redirected to the session repository.
+
 ## [0.7.0] - 2026-08-25
 
 ### Changed

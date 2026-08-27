@@ -336,10 +336,18 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 			return nil
 		}
 		// Bash completion may persist events while closing its tool window.
-		if event.ToolName == "Bash" &&
-			completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
-			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
-			return nil
+		if event.ToolName == "Bash" {
+			switch completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
+			case windowHandled:
+				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+				return nil
+			case windowSuppressed:
+				// Do not route an unresolved command to the session repository.
+				slog.Warn("tool window: suppressed event after failed completion",
+					"provider", provider.Name(), "tool_use", event.ToolUseID)
+				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+				return nil
+			}
 		}
 		err = routeAndWriteEvents(benchCtx, events, bh, blobStore)
 		if err != nil {

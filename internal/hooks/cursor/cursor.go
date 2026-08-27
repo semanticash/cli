@@ -291,6 +291,8 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 			event.ToolName = "Bash"
 			event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
 			event.ToolInput = bytes.TrimSpace(data)
+			// Route the tool window from the shell command's directory.
+			event.EffectiveCWD = commandCWD(payload.ToolInput, cwd)
 		default:
 			return nil, nil
 		}
@@ -302,6 +304,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		event.ToolName = "Bash"
 		event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
 		event.ToolInput = bytes.TrimSpace(data)
+		event.EffectiveCWD = commandCWD(payload.ToolInput, cwd)
 	case "after-file-edit":
 		toolName := classifyCursorEdit(payload.Edits)
 		if toolName == "" {
@@ -349,6 +352,31 @@ func firstWorkspaceRoot(roots []string) string {
 		if root != "" {
 			return root
 		}
+	}
+	return ""
+}
+
+// commandCWD returns Cursor's shell-command directory. Relative paths resolve
+// against the session directory. Invalid or unresolvable values return empty.
+func commandCWD(toolInput json.RawMessage, sessionCWD string) string {
+	if len(toolInput) == 0 {
+		return ""
+	}
+	var ti struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal(toolInput, &ti); err != nil {
+		return ""
+	}
+	raw := ti.Cwd
+	if raw == "" {
+		return ""
+	}
+	if filepath.IsAbs(raw) {
+		return filepath.Clean(raw)
+	}
+	if filepath.IsAbs(sessionCWD) {
+		return filepath.Clean(filepath.Join(sessionCWD, raw))
 	}
 	return ""
 }
