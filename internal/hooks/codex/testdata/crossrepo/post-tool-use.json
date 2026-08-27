@@ -1,0 +1,15 @@
+{
+  "session_id": "sess-codex-crossrepo-0001",
+  "turn_id": "codex-turn-0001",
+  "cwd": "/Users/dev/projects/cli",
+  "model": "gpt-5-codex",
+  "tool_name": "Bash",
+  "tool_use_id": "call_sqlc_generate_1",
+  "tool_input": {
+    "command": "/private/tmp/semantica-tools/sqlc generate"
+  },
+  "tool_response": {
+    "output": "",
+    "exit_code": 0
+  }
+}

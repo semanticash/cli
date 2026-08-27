@@ -87,6 +87,20 @@ where repository_id = ?
 order by repository_sequence desc
 limit 1;
 
+-- name: ListCompletedManifestCheckpointsBefore :many
+-- Lists completed manifest checkpoints before a sequence, newest first.
+-- commit_link_count identifies linked checkpoints without duplicating rows.
+select c.checkpoint_id, c.repository_sequence, c.event_cursor,
+       c.manifest_hash, c.created_at,
+       (select count(*) from commit_links cl where cl.checkpoint_id = c.checkpoint_id) as commit_link_count
+from checkpoints c
+where c.repository_id = ?
+  and c.status = 'complete'
+  and c.manifest_hash is not null
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
+limit ?;
+
 -- name: UpsertCheckpointStats :exec
 insert into checkpoint_stats (
     checkpoint_id, session_count, files_changed

@@ -598,6 +598,66 @@ func (q *Queries) ListCheckpointsWithCommit(ctx context.Context, arg ListCheckpo
 	return items, nil
 }
 
+const listCompletedManifestCheckpointsBefore = `-- name: ListCompletedManifestCheckpointsBefore :many
+select c.checkpoint_id, c.repository_sequence, c.event_cursor,
+       c.manifest_hash, c.created_at,
+       (select count(*) from commit_links cl where cl.checkpoint_id = c.checkpoint_id) as commit_link_count
+from checkpoints c
+where c.repository_id = ?
+  and c.status = 'complete'
+  and c.manifest_hash is not null
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
+limit ?
+`
+
+type ListCompletedManifestCheckpointsBeforeParams struct {
+	RepositoryID       string `json:"repository_id"`
+	RepositorySequence int64  `json:"repository_sequence"`
+	Limit              int64  `json:"limit"`
+}
+
+type ListCompletedManifestCheckpointsBeforeRow struct {
+	CheckpointID       string         `json:"checkpoint_id"`
+	RepositorySequence int64          `json:"repository_sequence"`
+	EventCursor        sql.NullInt64  `json:"event_cursor"`
+	ManifestHash       sql.NullString `json:"manifest_hash"`
+	CreatedAt          int64          `json:"created_at"`
+	CommitLinkCount    int64          `json:"commit_link_count"`
+}
+
+// Lists completed manifest checkpoints before a sequence, newest first.
+// commit_link_count identifies linked checkpoints without duplicating rows.
+func (q *Queries) ListCompletedManifestCheckpointsBefore(ctx context.Context, arg ListCompletedManifestCheckpointsBeforeParams) ([]ListCompletedManifestCheckpointsBeforeRow, error) {
+	rows, err := q.query(ctx, q.listCompletedManifestCheckpointsBeforeStmt, listCompletedManifestCheckpointsBefore, arg.RepositoryID, arg.RepositorySequence, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCompletedManifestCheckpointsBeforeRow{}
+	for rows.Next() {
+		var i ListCompletedManifestCheckpointsBeforeRow
+		if err := rows.Scan(
+			&i.CheckpointID,
+			&i.RepositorySequence,
+			&i.EventCursor,
+			&i.ManifestHash,
+			&i.CreatedAt,
+			&i.CommitLinkCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingCommitLinkedCheckpoints = `-- name: ListPendingCommitLinkedCheckpoints :many
 select c.checkpoint_id, c.repository_sequence, c.status, cl.commit_hash,
        c.attempt_count, c.last_error, c.next_attempt_at, c.lease_until

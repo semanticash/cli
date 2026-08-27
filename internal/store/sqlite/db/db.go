@@ -168,6 +168,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listCommitLinksByRepositoryStmt, err = db.PrepareContext(ctx, listCommitLinksByRepository); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCommitLinksByRepository: %w", err)
 	}
+	if q.listCompletedManifestCheckpointsBeforeStmt, err = db.PrepareContext(ctx, listCompletedManifestCheckpointsBefore); err != nil {
+		return nil, fmt.Errorf("error preparing query ListCompletedManifestCheckpointsBefore: %w", err)
+	}
 	if q.listCrossRepoSessionsStmt, err = db.PrepareContext(ctx, listCrossRepoSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCrossRepoSessions: %w", err)
 	}
@@ -566,6 +569,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listCommitLinksByRepositoryStmt: %w", cerr)
 		}
 	}
+	if q.listCompletedManifestCheckpointsBeforeStmt != nil {
+		if cerr := q.listCompletedManifestCheckpointsBeforeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listCompletedManifestCheckpointsBeforeStmt: %w", cerr)
+		}
+	}
 	if q.listCrossRepoSessionsStmt != nil {
 		if cerr := q.listCrossRepoSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listCrossRepoSessionsStmt: %w", cerr)
@@ -908,6 +916,7 @@ type Queries struct {
 	listCheckpointsByRepositoryStmt              *sql.Stmt
 	listCheckpointsWithCommitStmt                *sql.Stmt
 	listCommitLinksByRepositoryStmt              *sql.Stmt
+	listCompletedManifestCheckpointsBeforeStmt   *sql.Stmt
 	listCrossRepoSessionsStmt                    *sql.Stmt
 	listDistinctProvidersStmt                    *sql.Stmt
 	listEventsByProviderInWindowStmt             *sql.Stmt
@@ -1013,6 +1022,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listCheckpointsByRepositoryStmt:              q.listCheckpointsByRepositoryStmt,
 		listCheckpointsWithCommitStmt:                q.listCheckpointsWithCommitStmt,
 		listCommitLinksByRepositoryStmt:              q.listCommitLinksByRepositoryStmt,
+		listCompletedManifestCheckpointsBeforeStmt:   q.listCompletedManifestCheckpointsBeforeStmt,
 		listCrossRepoSessionsStmt:                    q.listCrossRepoSessionsStmt,
 		listDistinctProvidersStmt:                    q.listDistinctProvidersStmt,
 		listEventsByProviderInWindowStmt:             q.listEventsByProviderInWindowStmt,
