@@ -2,6 +2,8 @@ package hooks
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/semanticash/cli/internal/agents/api"
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/util"
@@ -1501,6 +1504,196 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 	})
 	if got := manifestCount("turn-no-cwd"); got != 0 {
 		t.Fatalf("packaging ran without any CWD: %d manifests, want 0", got)
+	}
+}
+
+func TestPackageTurnFromState_PackagesRepositoriesWithTurnEvents(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+
+	a := newToolWindowWorld(t, home, "repoA")
+	b := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "repoB"))
+	c := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "repoC"))
+
+	source, err := blobs.NewStore(filepath.Join(home, "hook-objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptBytes := []byte(`{"version":1,"kind":"prompt","text":"update generated code"}`)
+	promptHash, _, err := source.Put(ctx, promptBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBytes := []byte(`{"version":1,"kind":"turn_response","text":"done"}`)
+	responseHash, _, err := source.Put(ctx, responseBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		provider  = "cursor"
+		sessionID = "cursor-session"
+		turnID    = "turn-cross-repo"
+	)
+	baseEvent := broker.RawEvent{
+		Provider: provider, SourceKey: "/data/cursor-session.jsonl",
+		ProviderSessionID: sessionID, SessionStartedAt: 100,
+		SessionMetaJSON: `{}`, SourceProjectPath: a.repoPath,
+		Timestamp: 1000, TurnID: turnID, EventSource: "hook",
+	}
+	promptEvent := baseEvent
+	promptEvent.EventID = "prompt-event"
+	promptEvent.Kind = "user"
+	promptEvent.Role = "user"
+	promptEvent.PayloadHash = promptHash
+	if _, err := broker.WriteEventsToRepo(ctx, a.repoPath, []broker.RawEvent{promptEvent}, source); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	stepEvent := baseEvent
+	stepEvent.EventID = "step-event"
+	stepEvent.Kind = "assistant"
+	stepEvent.Role = "assistant"
+	stepEvent.ToolName = "Bash"
+	stepEvent.ToolUseID = "tool-call"
+	if _, err := broker.WriteEventsToRepo(ctx, b.repoPath, []broker.RawEvent{stepEvent}, source); err != nil {
+		t.Fatalf("write routed step: %v", err)
+	}
+
+	otherTurn := baseEvent
+	otherTurn.EventID = "other-turn-event"
+	otherTurn.TurnID = "other-turn"
+	otherTurn.Kind = "assistant"
+	otherTurn.Role = "assistant"
+	otherTurn.ToolName = "Bash"
+	otherTurn.ToolUseID = "other-tool"
+	if _, err := broker.WriteEventsToRepo(ctx, c.repoPath, []broker.RawEvent{otherTurn}, source); err != nil {
+		t.Fatalf("write unrelated turn: %v", err)
+	}
+	if err := broker.Deactivate(ctx, a.bh, b.repoPath); err != nil {
+		t.Fatalf("deactivate routed repository: %v", err)
+	}
+
+	packageTurnFromState(ctx, &fakeProvider{name: provider}, &Event{
+		SessionID: sessionID,
+		CWD:       a.repoPath,
+	}, a.bh, source, &CaptureState{
+		TurnID:              turnID,
+		PromptSubmittedAt:   1000,
+		CWD:                 a.repoPath,
+		ResponseStatus:      "complete",
+		ResponseHash:        responseHash,
+		ResponseSummary:     "done",
+		ResponseEventID:     "response-event",
+		ResponseCompletedAt: 1100,
+	})
+
+	type bundleView struct {
+		Prompt *struct {
+			EventID  string `json:"event_id"`
+			BlobHash string `json:"blob_hash"`
+		} `json:"prompt"`
+		Steps []struct {
+			EventID string `json:"event_id"`
+		} `json:"steps"`
+		Response *struct {
+			EventID string `json:"event_id"`
+			Hash    string `json:"hash"`
+			Status  string `json:"status"`
+		} `json:"response"`
+	}
+	readBundle := func(repo *toolWindowWorld) (bundleView, bool) {
+		t.Helper()
+		h, err := sqlstore.Open(ctx, filepath.Join(repo.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sqlstore.Close(h) }()
+		var hash string
+		err = h.DB.QueryRowContext(ctx,
+			`select provenance_bundle_hash from provenance_manifests where turn_id = ? and kind = 'turn_bundle'`, turnID,
+		).Scan(&hash)
+		if err == sql.ErrNoRows {
+			return bundleView{}, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := blobs.NewStore(filepath.Join(repo.semDir, "objects"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := store.Get(ctx, hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bundle bundleView
+		if err := json.Unmarshal(raw, &bundle); err != nil {
+			t.Fatal(err)
+		}
+		return bundle, true
+	}
+
+	if _, ok := readBundle(a); !ok {
+		t.Fatal("source repository has no turn bundle")
+	}
+	bundle, ok := readBundle(b)
+	if !ok {
+		t.Fatal("routed repository has no turn bundle")
+	}
+	if bundle.Prompt == nil || bundle.Prompt.EventID != "prompt-event" || bundle.Prompt.BlobHash != promptHash {
+		t.Fatalf("routed prompt = %+v, want source prompt", bundle.Prompt)
+	}
+	if len(bundle.Steps) != 1 || bundle.Steps[0].EventID != "step-event" {
+		t.Fatalf("routed steps = %+v, want step-event", bundle.Steps)
+	}
+	if bundle.Response == nil || bundle.Response.EventID != "response-event" || bundle.Response.Hash != responseHash || bundle.Response.Status != "complete" {
+		t.Fatalf("routed response = %+v, want source response", bundle.Response)
+	}
+	if _, ok := readBundle(c); ok {
+		t.Fatal("unrelated repository received a turn bundle")
+	}
+
+	bStore, err := blobs.NewStore(filepath.Join(b.semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPrompt, err := bStore.Get(ctx, promptHash)
+	if err != nil || string(gotPrompt) != string(promptBytes) {
+		t.Fatalf("routed prompt object = %q, %v", gotPrompt, err)
+	}
+	gotResponse, err := bStore.Get(ctx, responseHash)
+	if err != nil || string(gotResponse) != string(responseBytes) {
+		t.Fatalf("routed response object = %q, %v", gotResponse, err)
+	}
+
+	bh, err := sqlstore.Open(ctx, filepath.Join(b.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(bh) }()
+	coverage, err := bh.Queries.CountWindowTurnProvenance(ctx, sqldb.CountWindowTurnProvenanceParams{
+		RepositoryID: b.repoID,
+		AfterTs:      0,
+		UpToTs:       2000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coverage.TotalTurns != 1 || coverage.PackagedTurns != 1 {
+		t.Fatalf("routed coverage = %+v, want one packaged turn", coverage)
+	}
+	sess, err := bh.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
+		RepositoryID:      b.repoID,
+		Provider:          provider,
+		ProviderSessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.SourceRepoPath.Valid || !sameRepoPath(sess.SourceRepoPath.String, a.repoPath) {
+		t.Fatalf("source_repo_path = %q, want %q", sess.SourceRepoPath.String, a.repoPath)
 	}
 }
 

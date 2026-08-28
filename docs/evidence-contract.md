@@ -52,7 +52,9 @@ line-level evidence and uses the touch origin when no line matches.
 Tool-window evidence is stored in the repository selected when the pre-tool
 hook runs. Cursor shell hooks use the command's working directory and retain
 that target for the matching post hook. If the target is missing or cannot be
-verified, Semantica records no event or delta in the session repository.
+verified, Semantica records no event or delta in the session repository. At
+turn completion, each repository with recorded events receives its own turn
+bundle. Prompt and response objects are propagated from the session repository.
 
 ## Per-file evidence: primary vs all
 
@@ -72,8 +74,8 @@ evidence determines `evidence_class`.
 Carry-forward is a bounded fallback for files with no current-window AI lines.
 For created files, the path must appear in the previous commit-linked manifest.
 For modified files, committed content must match the newest earlier unlinked
-workspace observation. Modified-file evidence is limited to that observation's
-event window.
+workspace observation created by `semantica checkpoint`. Modified-file evidence
+is limited to that observation's event window.
 
 Missing, unreadable, or mismatched observations fail closed. Matching observed
 content does not prove uninterrupted continuity; a file may change and later

@@ -1978,6 +1978,23 @@ func (q *Queries) StepEventExists(ctx context.Context, arg StepEventExistsParams
 	return exists_flag, err
 }
 
+const turnEventExists = `-- name: TurnEventExists :one
+select count(*) > 0 as exists_flag from agent_events
+where session_id = ? and turn_id = ?
+`
+
+type TurnEventExistsParams struct {
+	SessionID string         `json:"session_id"`
+	TurnID    sql.NullString `json:"turn_id"`
+}
+
+func (q *Queries) TurnEventExists(ctx context.Context, arg TurnEventExistsParams) (bool, error) {
+	row := q.queryRow(ctx, q.turnEventExistsStmt, turnEventExists, arg.SessionID, arg.TurnID)
+	var exists_flag bool
+	err := row.Scan(&exists_flag)
+	return exists_flag, err
+}
+
 const upsertAgentSession = `-- name: UpsertAgentSession :one
 insert into agent_sessions (
     session_id, provider_session_id, parent_session_id,

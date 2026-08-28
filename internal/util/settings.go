@@ -89,7 +89,7 @@ type Settings struct {
 	ConnectedRepoID string
 	// AttributionV2 controls tool-delta scoring. Nil uses the default (on).
 	AttributionV2 *bool
-	// WorkspaceFreeze controls optional pre-commit observations. Nil disables them.
+	// WorkspaceFreeze controls an incomplete internal experiment. Nil disables it.
 	WorkspaceFreeze *bool
 	extra           map[string]json.RawMessage
 }
@@ -271,9 +271,8 @@ func AttributionV2Enabled(semDir string) bool {
 	return *s.AttributionV2
 }
 
-// WorkspaceFreezeEnabled reports whether pre-commit workspace observations are
-// enabled. The environment overrides repository settings; errors and missing
-// values disable it.
+// WorkspaceFreezeEnabled reports whether the internal freeze experiment is enabled.
+// The environment overrides repository settings. Errors and missing values disable it.
 func WorkspaceFreezeEnabled(semDir string) bool {
 	switch os.Getenv("SEMANTICA_WORKSPACE_FREEZE") {
 	case "1", "true":

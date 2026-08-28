@@ -27,9 +27,16 @@ type TurnContext struct {
 	StartedAt     int64
 	CompletedAt   int64
 	CWD           string
+	Prompt        PromptCandidate
 
 	// Empty status means no hook-provided response.
 	ResponseCandidate ResponseCandidate
+}
+
+// PromptCandidate identifies a prompt object available during packaging.
+type PromptCandidate struct {
+	EventID string
+	Hash    string
 }
 
 // PackageTurn builds a turn bundle and persists its manifest. Hook-provided
@@ -57,21 +64,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	// Resolve internal session ID.
 	// Try the provider name as-is first (matches most providers), then
 	// fall back to underscore normalization for legacy sessions.
-	sess, err := h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
-		RepositoryID:      repo.RepositoryID,
-		Provider:          tc.Provider,
-		ProviderSessionID: tc.SessionID,
-	})
-	if err != nil {
-		normalized := strings.ReplaceAll(tc.Provider, "-", "_")
-		if normalized != tc.Provider {
-			sess, err = h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
-				RepositoryID:      repo.RepositoryID,
-				Provider:          normalized,
-				ProviderSessionID: tc.SessionID,
-			})
-		}
-	}
+	sess, err := resolveProviderSession(ctx, h, repo.RepositoryID, tc.Provider, tc.SessionID)
 	if err != nil {
 		slog.Debug("provenance: resolve session failed", "err", err)
 		return
@@ -85,6 +78,13 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 
 	// Find the prompt event for the bundle.
 	promptEvent := findPromptEvent(ctx, h, sess.SessionID, tc.TurnID)
+	if promptEvent == nil {
+		promptEvent, err = ensurePromptCandidate(ctx, bs, sourceBlobs, tc.Prompt)
+		if err != nil {
+			slog.Debug("provenance: propagate prompt failed", "err", err)
+			return
+		}
+	}
 
 	// Load direct tool events for this turn.
 	steps, err := h.Queries.ListStepEventsForTurn(ctx, sqldb.ListStepEventsForTurnParams{

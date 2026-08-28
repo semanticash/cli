@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Modified files can now carry forward prior AI evidence when their committed
-  content matches an earlier unlinked workspace observation, such as a manual
+  content matches an earlier unlinked workspace observation created by
   `semantica checkpoint`. Evidence is limited to that observation's event window
   and does not replace current-window line attribution. Missing or mismatched
   observations fail closed.
@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Cursor shell tool windows now use the command's working directory, so
-  cross-repository changes are captured in the repository where they occur.
+  cross-repository changes and their turn bundles are recorded in the
+  repository where they occur.
   Missing or invalid routing state is not redirected to the session repository.
 
 ## [0.7.0] - 2026-08-25
