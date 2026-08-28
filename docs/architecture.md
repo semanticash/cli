@@ -167,10 +167,11 @@ explicit state under a named local or hosted policy.
    aggregates such as session and changed-file counts.
 
 4. **AI attribution** - Diffs the commit against its first parent and scores
-   the current commit-linked event window. Historical lookback is limited to
-   files added by the commit that appear in the previous commit-linked
-   checkpoint's manifest and have zero current-window AI lines. Modified files
-   never inherit historical evidence. The line-level match classes are:
+   the current commit-linked event window. Historical lookback covers created
+   files present in the previous commit-linked manifest and modified files whose
+   committed content matches an earlier workspace observation. It applies only
+   when the current window has no AI lines for the file. The line-level match
+   classes are:
    - **Exact**: line matches AI output character-for-character
    - **Formatted**: match after normalizing whitespace
    - **Modified**: line belongs to a diff hunk overlapping captured AI output,
@@ -276,6 +277,12 @@ them to their tool events. Recovery runs during worker drains and with
 `semantica tidy --apply`. By default, v2 scoring verifies and aligns these
 deltas against committed lines; partial or ambiguous evidence remains
 file-level only.
+
+Cursor shell windows are bound to the command repository at the pre-tool hook.
+The post-tool hook uses the persisted target and suppresses routing when that
+target cannot be verified. Turn packaging includes every repository that
+recorded events for the completed turn, with available prompt and response
+objects copied from the session repository.
 
 ### Settings (`settings.json`)
 

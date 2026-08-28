@@ -57,8 +57,11 @@ type Event struct {
 	Metadata      map[string]string
 
 	// Step capture fields (ToolStepCompleted, SubagentPromptSubmitted).
-	TurnID       string          // resolved from capture state or set by dispatcher
-	CWD          string          // working directory from hook payload
+	TurnID string // resolved from capture state or set by dispatcher
+	CWD    string // session/launch working directory from hook payload
+	// EffectiveCWD selects the tool-window repository when a provider supplies
+	// a command-specific working directory. An empty value uses CWD.
+	EffectiveCWD string
 	ToolName     string          // Write, Edit, Bash, Agent, etc.
 	ToolInput    json.RawMessage // raw tool_input from hook payload
 	ToolResponse json.RawMessage // raw tool_response from hook payload

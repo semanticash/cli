@@ -278,8 +278,21 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		aiTouchedFiles[fp] = true
 	}
 
-	// Historical lookback is limited to manifest-eligible created files.
-	// Modified files fail closed until checkpoint anchoring can prove continuity.
+	// Carry forward evidence for modified files whose committed content matches a
+	// workspace observation and whose current window has no line attribution.
+	// Ensure the shared maps can receive historical candidates.
+	if aiLines == nil {
+		aiLines = map[string]map[string]struct{}{}
+	}
+	if lineProviders == nil {
+		lineProviders = map[string]map[string]map[string]struct{}{}
+	}
+	modifiedCF := applyModifiedCarryForward(ctx, h, bs, cp, repoRoot, dr, v2, cands.LineStamps, deltas, candidateMaps{
+		aiLines: aiLines, lineProviders: lineProviders, providerTouchedFiles: providerTouchedFiles,
+		fileProvider: fileProvider, providerModel: providerModel, aiTouchedFiles: aiTouchedFiles,
+	})
+
+	// Look back for created files that the current window did not attribute.
 	var needsCF map[string]bool
 	if prevErr == nil {
 		manifestFiles := loadManifestForCheckpoint(ctx, bs, prev.ManifestHash, semDir)
@@ -422,9 +435,9 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	// still have zero AI lines after carry-forward if the historical window
 	// also had no matching candidates.
 	actualCF := make(map[string]bool)
-	if len(needsCF) > 0 {
+	if len(needsCF) > 0 || len(modifiedCF) > 0 {
 		for _, fs := range scores {
-			if needsCF[fs.path] && fileScoreAILines(&fs) > 0 {
+			if (needsCF[fs.path] || modifiedCF[fs.path]) && fileScoreAILines(&fs) > 0 {
 				actualCF[fs.path] = true
 			}
 		}
@@ -1123,7 +1136,8 @@ func mergeDeltaInvolvement(providerTouchedFiles map[string]string, deltas *attre
 	return involved
 }
 
-// filterDeltaCandidatesForCF keeps historical deltas for eligible created files.
+// filterDeltaCandidatesForCF keeps historical deltas for eligible carry-forward
+// files, dropping the rest.
 func filterDeltaCandidatesForCF(d *attrevents.DeltaCandidates, eligible map[string]bool) {
 	for fp := range d.Claims {
 		if !eligible[fp] {
@@ -1142,10 +1156,13 @@ func filterDeltaCandidatesForCF(d *attrevents.DeltaCandidates, eligible map[stri
 	}
 }
 
-// mergeHistoricalDeltas merges historical evidence and diagnostics.
+// mergeHistoricalDeltas merges diagnostics and marks copied claims as historical.
 func mergeHistoricalDeltas(dst, src *attrevents.DeltaCandidates) {
 	for fp, gs := range src.Claims {
-		dst.Claims[fp] = append(dst.Claims[fp], gs...)
+		for _, g := range gs {
+			g.Historical = true
+			dst.Claims[fp] = append(dst.Claims[fp], g)
+		}
 	}
 	for fp, provs := range src.Touched {
 		for _, p := range provs {
@@ -1529,8 +1546,7 @@ func attributeWithCarryForward(
 	// Load previous manifest for candidate identification.
 	manifestFiles := loadManifestForCheckpoint(ctx, bs, prevCP.ManifestHash, semDir)
 
-	// Historical lookback is limited to manifest-eligible created files.
-	// Modified files fail closed until checkpoint anchoring can prove continuity.
+	// This path carries forward created files only.
 	createdCands := createdCarryForwardCandidates(dr, manifestFiles)
 
 	// Filter to created files that scored 0 AI in the current window.

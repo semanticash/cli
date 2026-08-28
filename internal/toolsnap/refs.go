@@ -13,6 +13,14 @@ import (
 // are not visible to operations on the user repository.
 const refPrefix = "refs/semantica/tool-windows"
 
+// workspaceFreezeRefPrefix separates workspace freezes from tool-window refs.
+const workspaceFreezeRefPrefix = "refs/semantica/workspace-freeze"
+
+// WorkspaceFreezeRef returns the private ref that protects a workspace freeze.
+func WorkspaceFreezeRef(id string) string {
+	return fmt.Sprintf("%s/%s", workspaceFreezeRefPrefix, sanitizeRefComponent(id))
+}
+
 // SnapshotRef returns the private pre-snapshot ref for a tool window.
 func SnapshotRef(worktreeID, groupID, toolUseID string) string {
 	return fmt.Sprintf("%s/%s/%s/%s/pre", refPrefix,
@@ -44,12 +52,19 @@ func (s *Store) EnsureRef(ctx context.Context, ref, tree string) error {
 	return err
 }
 
-// validRefName accepts only snapshot refs produced by sanitizeRefComponent.
+// validRefName accepts private refs with valid namespace-specific components.
 func validRefName(ref string) bool {
-	rest, ok := strings.CutPrefix(ref, refPrefix+"/")
-	if !ok {
-		return false
+	if rest, ok := strings.CutPrefix(ref, workspaceFreezeRefPrefix+"/"); ok {
+		return !strings.Contains(rest, "/") && validRefComponents(rest)
 	}
+	if rest, ok := strings.CutPrefix(ref, refPrefix+"/"); ok {
+		return validRefComponents(rest)
+	}
+	return false
+}
+
+// validRefComponents enforces the sanitized-component character set.
+func validRefComponents(rest string) bool {
 	for _, comp := range strings.Split(rest, "/") {
 		if comp == "" {
 			return false
@@ -68,7 +83,7 @@ func validRefName(ref string) bool {
 // CreateRef atomically publishes a tree ref without replacing an existing ref.
 func (s *Store) CreateRef(ctx context.Context, ref, tree string) error {
 	if !validRefName(ref) {
-		return fmt.Errorf("toolsnap: refusing to create ref outside %s: %s", refPrefix, ref)
+		return fmt.Errorf("toolsnap: refusing to create ref outside a toolsnap namespace: %s", ref)
 	}
 	// The caller guarantees that the object exists in the store.
 	if !validHash(tree, s.repo.ObjectFormat) {
@@ -127,6 +142,12 @@ func validHash(s, format string) bool {
 
 // DeleteRef removes ref only when it still points to expectedTree.
 func (s *Store) DeleteRef(ctx context.Context, ref, expectedTree string) error {
+	if !validRefName(ref) {
+		return fmt.Errorf("toolsnap: refusing to delete ref outside a toolsnap namespace: %s", ref)
+	}
+	if !validHash(expectedTree, s.repo.ObjectFormat) {
+		return fmt.Errorf("toolsnap: invalid delete target %q for ref %s", expectedTree, ref)
+	}
 	if _, err := s.git(ctx, "update-ref", "-d", ref, expectedTree); err != nil {
 		return fmt.Errorf("toolsnap: delete ref %s: %w", ref, err)
 	}
@@ -142,7 +163,7 @@ func (s *Store) DeleteRefs(ctx context.Context, refs map[string]string) error {
 	var in bytes.Buffer
 	for ref, tree := range refs {
 		if !validRefName(ref) {
-			return fmt.Errorf("toolsnap: refusing to delete ref outside %s: %s", refPrefix, ref)
+			return fmt.Errorf("toolsnap: refusing to delete ref outside a toolsnap namespace: %s", ref)
 		}
 		// Validate targets before writing the NUL-delimited protocol.
 		if !validHash(tree, s.repo.ObjectFormat) {
@@ -160,9 +181,19 @@ func (s *Store) DeleteRefs(ctx context.Context, refs map[string]string) error {
 	return nil
 }
 
-// ListRefs returns all snapshot refs and their targets.
+// ListRefs returns all tool-window snapshot refs and their targets.
 func (s *Store) ListRefs(ctx context.Context) (map[string]string, error) {
-	out, err := s.git(ctx, "for-each-ref", "--format=%(refname) %(objectname)", refPrefix)
+	return s.listRefsUnder(ctx, refPrefix)
+}
+
+// ListWorkspaceFreezeRefs returns workspace-freeze refs and their targets.
+func (s *Store) ListWorkspaceFreezeRefs(ctx context.Context) (map[string]string, error) {
+	return s.listRefsUnder(ctx, workspaceFreezeRefPrefix)
+}
+
+// listRefsUnder returns validated refs and targets beneath prefix.
+func (s *Store) listRefsUnder(ctx context.Context, prefix string) (map[string]string, error) {
+	out, err := s.git(ctx, "for-each-ref", "--format=%(refname) %(objectname)", prefix)
 	if err != nil {
 		return nil, fmt.Errorf("toolsnap: list refs: %w", err)
 	}
@@ -172,9 +203,17 @@ func (s *Store) ListRefs(ctx context.Context) (map[string]string, error) {
 			continue
 		}
 		parts := strings.Fields(line)
-		if len(parts) == 2 {
-			refs[parts[0]] = parts[1]
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("toolsnap: malformed ref line under %s: %q", prefix, line)
 		}
+		ref, target := parts[0], parts[1]
+		if !strings.HasPrefix(ref, prefix+"/") || !validRefName(ref) {
+			return nil, fmt.Errorf("toolsnap: invalid ref %q under %s", ref, prefix)
+		}
+		if !validHash(target, s.repo.ObjectFormat) {
+			return nil, fmt.Errorf("toolsnap: invalid target %q for ref %s", target, ref)
+		}
+		refs[ref] = target
 	}
 	return refs, nil
 }

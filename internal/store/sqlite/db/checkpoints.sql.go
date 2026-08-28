@@ -485,6 +485,38 @@ func (q *Queries) InsertCheckpoint(ctx context.Context, arg InsertCheckpointPara
 	return err
 }
 
+const insertWorkspaceObservationCheckpoint = `-- name: InsertWorkspaceObservationCheckpoint :exec
+insert into checkpoints(
+    checkpoint_id, repository_id, created_at, kind, trigger, message,
+    manifest_hash, size_bytes, status, completed_at, repository_sequence,
+    event_cursor
+) values (
+    ?1, ?2, ?3,
+    'auto', 'workspace_freeze', 'Workspace observation',
+    null, null, 'pending', null,
+    (select coalesce(max(repository_sequence), 0) + 1
+     from checkpoints c2 where c2.repository_id = ?2),
+    ?4)
+`
+
+type InsertWorkspaceObservationCheckpointParams struct {
+	CheckpointID string        `json:"checkpoint_id"`
+	RepositoryID string        `json:"repository_id"`
+	CreatedAt    int64         `json:"created_at"`
+	EventCursor  sql.NullInt64 `json:"event_cursor"`
+}
+
+// Inserts a pending workspace observation before its paired commit checkpoint.
+func (q *Queries) InsertWorkspaceObservationCheckpoint(ctx context.Context, arg InsertWorkspaceObservationCheckpointParams) error {
+	_, err := q.exec(ctx, q.insertWorkspaceObservationCheckpointStmt, insertWorkspaceObservationCheckpoint,
+		arg.CheckpointID,
+		arg.RepositoryID,
+		arg.CreatedAt,
+		arg.EventCursor,
+	)
+	return err
+}
+
 const listCheckpointsByRepository = `-- name: ListCheckpointsByRepository :many
 select checkpoint_id, repository_id, created_at, kind, "trigger", message, manifest_hash, size_bytes, status, completed_at, summary_json, summary_model, repository_sequence, event_cursor, attempt_count, last_error, next_attempt_at, lease_owner, lease_until from checkpoints where repository_id = ? order by created_at desc limit ?
 `
@@ -584,6 +616,66 @@ func (q *Queries) ListCheckpointsWithCommit(ctx context.Context, arg ListCheckpo
 			&i.CompletedAt,
 			&i.CommitHash,
 			&i.ManifestHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCompletedManifestCheckpointsBefore = `-- name: ListCompletedManifestCheckpointsBefore :many
+select c.checkpoint_id, c.repository_sequence, c.event_cursor,
+       c.manifest_hash, c.created_at,
+       (select count(*) from commit_links cl where cl.checkpoint_id = c.checkpoint_id) as commit_link_count
+from checkpoints c
+where c.repository_id = ?
+  and c.status = 'complete'
+  and c.manifest_hash is not null
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
+limit ?
+`
+
+type ListCompletedManifestCheckpointsBeforeParams struct {
+	RepositoryID       string `json:"repository_id"`
+	RepositorySequence int64  `json:"repository_sequence"`
+	Limit              int64  `json:"limit"`
+}
+
+type ListCompletedManifestCheckpointsBeforeRow struct {
+	CheckpointID       string         `json:"checkpoint_id"`
+	RepositorySequence int64          `json:"repository_sequence"`
+	EventCursor        sql.NullInt64  `json:"event_cursor"`
+	ManifestHash       sql.NullString `json:"manifest_hash"`
+	CreatedAt          int64          `json:"created_at"`
+	CommitLinkCount    int64          `json:"commit_link_count"`
+}
+
+// Lists completed manifest checkpoints before a sequence, newest first.
+// commit_link_count identifies linked checkpoints without joining duplicate rows.
+func (q *Queries) ListCompletedManifestCheckpointsBefore(ctx context.Context, arg ListCompletedManifestCheckpointsBeforeParams) ([]ListCompletedManifestCheckpointsBeforeRow, error) {
+	rows, err := q.query(ctx, q.listCompletedManifestCheckpointsBeforeStmt, listCompletedManifestCheckpointsBefore, arg.RepositoryID, arg.RepositorySequence, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCompletedManifestCheckpointsBeforeRow{}
+	for rows.Next() {
+		var i ListCompletedManifestCheckpointsBeforeRow
+		if err := rows.Scan(
+			&i.CheckpointID,
+			&i.RepositorySequence,
+			&i.EventCursor,
+			&i.ManifestHash,
+			&i.CreatedAt,
+			&i.CommitLinkCount,
 		); err != nil {
 			return nil, err
 		}

@@ -64,7 +64,7 @@ func TestBackgroundBashPostRecordsPartial(t *testing.T) {
 	post.ToolInput = []byte(`{"command":"sleep 20 && echo hi > bg.txt","description":"bg","run_in_background":true}`)
 	post.Timestamp = 5000
 	events := []broker.RawEvent{bashRawEvent(evt, "toolu_bg2", "sess-bg2")}
-	if !completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
+	if windowHandled != completeToolWindow(ctx, "claude-code", post, w.bh, nil, events) {
 		t.Fatal("background partial not handled")
 	}
 

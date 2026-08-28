@@ -155,6 +155,9 @@ func TestWorkspaceValidate_Rejects(t *testing.T) {
 		{"entry has git_mode", func(m *Manifest) { m.Files[0].GitMode = "100644" }},
 		{"entry has git_object_id", func(m *Manifest) { m.Files[0].GitObjectID = sha1Hex }},
 		{"entry missing blob", func(m *Manifest) { m.Files[0].Blob = "" }},
+		{"duplicate path different blobs", func(m *Manifest) {
+			m.Files = append(m.Files, ManifestFile{Path: "a.go", Blob: sha256Hex, Size: 3})
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

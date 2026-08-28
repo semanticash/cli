@@ -75,4 +75,11 @@ func SweepToolWindows(ctx context.Context) {
 			RefsDeleted:         report.Maintenance.RefsDeleted,
 		})
 	}
+
+	// Remove expired global routing targets left by missing post hooks.
+	if n, err := hooks.SweepToolWindowTargets(); err != nil {
+		wlog("worker: toolwindow sweep: reclaim routing receipts: %v\n", err)
+	} else if n > 0 {
+		wlog("worker: toolwindow sweep: reclaimed %d stale routing receipt(s)\n", n)
+	}
 }

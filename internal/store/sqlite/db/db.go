@@ -147,6 +147,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.insertSessionCheckpointStmt, err = db.PrepareContext(ctx, insertSessionCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertSessionCheckpoint: %w", err)
 	}
+	if q.insertWorkspaceObservationCheckpointStmt, err = db.PrepareContext(ctx, insertWorkspaceObservationCheckpoint); err != nil {
+		return nil, fmt.Errorf("error preparing query InsertWorkspaceObservationCheckpoint: %w", err)
+	}
 	if q.listAgentEventsBySessionStmt, err = db.PrepareContext(ctx, listAgentEventsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAgentEventsBySession: %w", err)
 	}
@@ -167,6 +170,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listCommitLinksByRepositoryStmt, err = db.PrepareContext(ctx, listCommitLinksByRepository); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCommitLinksByRepository: %w", err)
+	}
+	if q.listCompletedManifestCheckpointsBeforeStmt, err = db.PrepareContext(ctx, listCompletedManifestCheckpointsBefore); err != nil {
+		return nil, fmt.Errorf("error preparing query ListCompletedManifestCheckpointsBefore: %w", err)
 	}
 	if q.listCrossRepoSessionsStmt, err = db.PrepareContext(ctx, listCrossRepoSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCrossRepoSessions: %w", err)
@@ -302,6 +308,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.stepEventExistsStmt, err = db.PrepareContext(ctx, stepEventExists); err != nil {
 		return nil, fmt.Errorf("error preparing query StepEventExists: %w", err)
+	}
+	if q.turnEventExistsStmt, err = db.PrepareContext(ctx, turnEventExists); err != nil {
+		return nil, fmt.Errorf("error preparing query TurnEventExists: %w", err)
 	}
 	if q.updateRepositoryEnabledAtStmt, err = db.PrepareContext(ctx, updateRepositoryEnabledAt); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateRepositoryEnabledAt: %w", err)
@@ -531,6 +540,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing insertSessionCheckpointStmt: %w", cerr)
 		}
 	}
+	if q.insertWorkspaceObservationCheckpointStmt != nil {
+		if cerr := q.insertWorkspaceObservationCheckpointStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing insertWorkspaceObservationCheckpointStmt: %w", cerr)
+		}
+	}
 	if q.listAgentEventsBySessionStmt != nil {
 		if cerr := q.listAgentEventsBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listAgentEventsBySessionStmt: %w", cerr)
@@ -564,6 +578,11 @@ func (q *Queries) Close() error {
 	if q.listCommitLinksByRepositoryStmt != nil {
 		if cerr := q.listCommitLinksByRepositoryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listCommitLinksByRepositoryStmt: %w", cerr)
+		}
+	}
+	if q.listCompletedManifestCheckpointsBeforeStmt != nil {
+		if cerr := q.listCompletedManifestCheckpointsBeforeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listCompletedManifestCheckpointsBeforeStmt: %w", cerr)
 		}
 	}
 	if q.listCrossRepoSessionsStmt != nil {
@@ -791,6 +810,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing stepEventExistsStmt: %w", cerr)
 		}
 	}
+	if q.turnEventExistsStmt != nil {
+		if cerr := q.turnEventExistsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing turnEventExistsStmt: %w", cerr)
+		}
+	}
 	if q.updateRepositoryEnabledAtStmt != nil {
 		if cerr := q.updateRepositoryEnabledAtStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateRepositoryEnabledAtStmt: %w", cerr)
@@ -901,6 +925,7 @@ type Queries struct {
 	insertEvidenceLinkIfAbsentStmt               *sql.Stmt
 	insertRepositoryStmt                         *sql.Stmt
 	insertSessionCheckpointStmt                  *sql.Stmt
+	insertWorkspaceObservationCheckpointStmt     *sql.Stmt
 	listAgentEventsBySessionStmt                 *sql.Stmt
 	listAgentEventsBySessionPagedStmt            *sql.Stmt
 	listAgentSessionsByProviderSessionIDStmt     *sql.Stmt
@@ -908,6 +933,7 @@ type Queries struct {
 	listCheckpointsByRepositoryStmt              *sql.Stmt
 	listCheckpointsWithCommitStmt                *sql.Stmt
 	listCommitLinksByRepositoryStmt              *sql.Stmt
+	listCompletedManifestCheckpointsBeforeStmt   *sql.Stmt
 	listCrossRepoSessionsStmt                    *sql.Stmt
 	listDistinctProvidersStmt                    *sql.Stmt
 	listEventsByProviderInWindowStmt             *sql.Stmt
@@ -953,6 +979,7 @@ type Queries struct {
 	retryFailedCheckpointStmt                    *sql.Stmt
 	saveCheckpointSummaryStmt                    *sql.Stmt
 	stepEventExistsStmt                          *sql.Stmt
+	turnEventExistsStmt                          *sql.Stmt
 	updateRepositoryEnabledAtStmt                *sql.Stmt
 	upsertAgentSessionStmt                       *sql.Stmt
 	upsertAgentSourceStmt                        *sql.Stmt
@@ -1006,6 +1033,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		insertEvidenceLinkIfAbsentStmt:               q.insertEvidenceLinkIfAbsentStmt,
 		insertRepositoryStmt:                         q.insertRepositoryStmt,
 		insertSessionCheckpointStmt:                  q.insertSessionCheckpointStmt,
+		insertWorkspaceObservationCheckpointStmt:     q.insertWorkspaceObservationCheckpointStmt,
 		listAgentEventsBySessionStmt:                 q.listAgentEventsBySessionStmt,
 		listAgentEventsBySessionPagedStmt:            q.listAgentEventsBySessionPagedStmt,
 		listAgentSessionsByProviderSessionIDStmt:     q.listAgentSessionsByProviderSessionIDStmt,
@@ -1013,6 +1041,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listCheckpointsByRepositoryStmt:              q.listCheckpointsByRepositoryStmt,
 		listCheckpointsWithCommitStmt:                q.listCheckpointsWithCommitStmt,
 		listCommitLinksByRepositoryStmt:              q.listCommitLinksByRepositoryStmt,
+		listCompletedManifestCheckpointsBeforeStmt:   q.listCompletedManifestCheckpointsBeforeStmt,
 		listCrossRepoSessionsStmt:                    q.listCrossRepoSessionsStmt,
 		listDistinctProvidersStmt:                    q.listDistinctProvidersStmt,
 		listEventsByProviderInWindowStmt:             q.listEventsByProviderInWindowStmt,
@@ -1058,6 +1087,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		retryFailedCheckpointStmt:                    q.retryFailedCheckpointStmt,
 		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
 		stepEventExistsStmt:                          q.stepEventExistsStmt,
+		turnEventExistsStmt:                          q.turnEventExistsStmt,
 		updateRepositoryEnabledAtStmt:                q.updateRepositoryEnabledAtStmt,
 		upsertAgentSessionStmt:                       q.upsertAgentSessionStmt,
 		upsertAgentSourceStmt:                        q.upsertAgentSourceStmt,

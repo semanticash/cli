@@ -858,6 +858,47 @@ func (r *Registry) CaptureAndBegin(ctx context.Context, s *Store, key ToolKey, t
 	return result, nil
 }
 
+// WorkspaceFreeze identifies an immutable worktree capture and its protecting ref.
+type WorkspaceFreeze struct {
+	ID           string
+	Ref          string
+	TreeHash     string
+	HeadHash     string
+	ObjectFormat string
+}
+
+// FreezeWorkspace captures the worktree and publishes its ref under one lock.
+func (r *Registry) FreezeWorkspace(ctx context.Context, s *Store, id string) (WorkspaceFreeze, error) {
+	if id == "" {
+		return WorkspaceFreeze{}, fmt.Errorf("toolsnap: empty workspace-freeze id")
+	}
+	// The registry lock protects only the store in the same .semantica directory.
+	if filepath.Dir(r.dir) != filepath.Dir(s.Dir) {
+		return WorkspaceFreeze{}, fmt.Errorf("toolsnap: registry %s and store %s belong to different directories",
+			filepath.Dir(r.dir), filepath.Dir(s.Dir))
+	}
+	ref := WorkspaceFreezeRef(id)
+	var result WorkspaceFreeze
+	_, err := r.withLock(ctx, func(state *registryState) (bool, error) {
+		snap, err := s.CaptureBefore(ctx)
+		if err != nil {
+			return false, err
+		}
+		if err := s.CreateRef(ctx, ref, snap.TreeHash); err != nil {
+			return false, err
+		}
+		result = WorkspaceFreeze{
+			ID: id, Ref: ref, TreeHash: snap.TreeHash, HeadHash: snap.HeadHash,
+			ObjectFormat: s.repo.ObjectFormat,
+		}
+		return false, nil
+	})
+	if err != nil {
+		return WorkspaceFreeze{}, err
+	}
+	return result, nil
+}
+
 // Begin registers a pre-existing snapshot. Hook callers use
 // CaptureAndBegin so capture and registration share one lock.
 func (r *Registry) Begin(ctx context.Context, entry PendingToolSnapshot) (string, error) {

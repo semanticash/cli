@@ -5,13 +5,25 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.7.1] - Unreleased
+## [0.7.1] - 2026-08-28
 
 ### Changed
 
+- Modified files can now carry forward prior AI evidence when their committed
+  content matches an earlier unlinked workspace observation created by
+  `semantica checkpoint`. Evidence is limited to that observation's event window
+  and does not replace current-window line attribution. Missing or mismatched
+  observations fail closed.
 - Reduced post-tool hook latency by reusing the already-resolved HEAD.
 - Reduced post-tool cleanup latency by deleting closed snapshot refs in one
   conditional `git update-ref` transaction.
+
+### Fixed
+
+- Cursor shell tool windows now use the command's working directory, so
+  cross-repository changes and their turn bundles are recorded in the
+  repository where they occur.
+  Missing or invalid routing state is not redirected to the session repository.
 
 ## [0.7.0] - 2026-08-25
 

@@ -11,6 +11,20 @@ insert into checkpoints(
      from checkpoints c2 where c2.repository_id = sqlc.arg(repository_id)),
     (select coalesce(max(e.insert_seq), 0) from agent_events e));
 
+-- name: InsertWorkspaceObservationCheckpoint :exec
+-- Inserts a pending workspace observation before its paired commit checkpoint.
+insert into checkpoints(
+    checkpoint_id, repository_id, created_at, kind, trigger, message,
+    manifest_hash, size_bytes, status, completed_at, repository_sequence,
+    event_cursor
+) values (
+    sqlc.arg(checkpoint_id), sqlc.arg(repository_id), sqlc.arg(created_at),
+    'auto', 'workspace_freeze', 'Workspace observation',
+    null, null, 'pending', null,
+    (select coalesce(max(repository_sequence), 0) + 1
+     from checkpoints c2 where c2.repository_id = sqlc.arg(repository_id)),
+    sqlc.arg(event_cursor));
+
 -- name: GetCheckpointByID :one
 select * from checkpoints where checkpoint_id = ?;
 
@@ -86,6 +100,20 @@ where repository_id = ?
   and repository_sequence < ?
 order by repository_sequence desc
 limit 1;
+
+-- name: ListCompletedManifestCheckpointsBefore :many
+-- Lists completed manifest checkpoints before a sequence, newest first.
+-- commit_link_count identifies linked checkpoints without joining duplicate rows.
+select c.checkpoint_id, c.repository_sequence, c.event_cursor,
+       c.manifest_hash, c.created_at,
+       (select count(*) from commit_links cl where cl.checkpoint_id = c.checkpoint_id) as commit_link_count
+from checkpoints c
+where c.repository_id = ?
+  and c.status = 'complete'
+  and c.manifest_hash is not null
+  and c.repository_sequence < ?
+order by c.repository_sequence desc
+limit ?;
 
 -- name: UpsertCheckpointStats :exec
 insert into checkpoint_stats (

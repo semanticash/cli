@@ -45,8 +45,12 @@ func (s *PostCommitService) HandlePostCommit(ctx context.Context, repoPath strin
 	// Print the attribution summary prepared by commit-msg.
 	printAttributionSummary(semDir)
 
-	// Without a handoff, there is no checkpoint that can be linked safely.
-	handoff, ok := readCommitHandoff(semDir)
+	// Leave malformed handoffs intact for repair.
+	handoff, ok, herr := readCommitHandoff(semDir)
+	if herr != nil {
+		util.AppendActivityLog(semDir, "post-commit warning: handoff corrupt (left intact): %v", herr)
+		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
+	}
 	if !ok {
 		return &PostCommitResult{RepoRoot: repoRoot, Linked: false}, nil
 	}

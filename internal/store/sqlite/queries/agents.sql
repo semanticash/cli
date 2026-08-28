@@ -574,6 +574,10 @@ where session_id = ? and turn_id = ?
   and role = 'user' and kind = 'user' and event_source = 'hook'
 limit 1;
 
+-- name: TurnEventExists :one
+select count(*) > 0 as exists_flag from agent_events
+where session_id = ? and turn_id = ?;
+
 -- name: ListStepEventsForTurn :many
 -- Returns step events for provenance bundle packaging.
 -- Includes both hook-captured and transcript-sourced events

@@ -89,7 +89,9 @@ type Settings struct {
 	ConnectedRepoID string
 	// AttributionV2 controls tool-delta scoring. Nil uses the default (on).
 	AttributionV2 *bool
-	extra         map[string]json.RawMessage
+	// WorkspaceFreeze controls an incomplete internal experiment. Nil disables it.
+	WorkspaceFreeze *bool
+	extra           map[string]json.RawMessage
 }
 
 // settingsKnown mirrors Settings' known fields for JSON decoding.
@@ -102,11 +104,12 @@ type settingsKnown struct {
 	Connected       bool         `json:"connected"`
 	ConnectedRepoID string       `json:"connected_repo_id,omitempty"`
 	AttributionV2   *bool        `json:"attribution_v2,omitempty"`
+	WorkspaceFreeze *bool        `json:"workspace_freeze,omitempty"`
 }
 
 var settingsKnownKeys = []string{
 	"enabled", "version", "providers", "trailers", "automations",
-	"connected", "connected_repo_id", "attribution_v2",
+	"connected", "connected_repo_id", "attribution_v2", "workspace_freeze",
 }
 
 func (s *Settings) UnmarshalJSON(b []byte) error {
@@ -130,6 +133,7 @@ func (s *Settings) UnmarshalJSON(b []byte) error {
 		Connected:       known.Connected,
 		ConnectedRepoID: known.ConnectedRepoID,
 		AttributionV2:   known.AttributionV2,
+		WorkspaceFreeze: known.WorkspaceFreeze,
 		extra:           raw,
 	}
 	return nil
@@ -145,6 +149,7 @@ func (s Settings) MarshalJSON() ([]byte, error) {
 		Connected:       s.Connected,
 		ConnectedRepoID: s.ConnectedRepoID,
 		AttributionV2:   s.AttributionV2,
+		WorkspaceFreeze: s.WorkspaceFreeze,
 	})
 	if err != nil {
 		return nil, err
@@ -264,6 +269,25 @@ func AttributionV2Enabled(semDir string) bool {
 		return true
 	}
 	return *s.AttributionV2
+}
+
+// WorkspaceFreezeEnabled reports whether the internal freeze experiment is enabled.
+// The environment overrides repository settings. Errors and missing values disable it.
+func WorkspaceFreezeEnabled(semDir string) bool {
+	switch os.Getenv("SEMANTICA_WORKSPACE_FREEZE") {
+	case "1", "true":
+		return true
+	case "0", "false":
+		return false
+	}
+	s, err := ReadSettings(semDir)
+	if err != nil {
+		return false
+	}
+	if s.WorkspaceFreeze == nil {
+		return false
+	}
+	return *s.WorkspaceFreeze
 }
 
 // IsPlaybookEnabled returns true if the auto-playbook automation is enabled.

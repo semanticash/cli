@@ -415,7 +415,7 @@ func TestPostAfterAbandonmentFabricatesNoEvidence(t *testing.T) {
 	}
 
 	post := postBashEvent("sess-ab", "toolu_ab", w.repoPath, "cmd")
-	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ab", "toolu_ab", "sess-ab")}) {
+	if windowHandled == completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-ab", "toolu_ab", "sess-ab")}) {
 		t.Fatal("tombstoned window reported handled")
 	}
 	if deltas := findDeltas(t, w.semDir); len(deltas) != 0 {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -336,10 +337,18 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 			return nil
 		}
 		// Bash completion may persist events while closing its tool window.
-		if event.ToolName == "Bash" &&
-			completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
-			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
-			return nil
+		if event.ToolName == "Bash" {
+			switch completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
+			case windowHandled:
+				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+				return nil
+			case windowSuppressed:
+				// Do not route an unresolved command to the session repository.
+				slog.Warn("tool window: suppressed event after failed completion",
+					"provider", provider.Name(), "tool_use", event.ToolUseID)
+				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
+				return nil
+			}
 		}
 		err = routeAndWriteEvents(benchCtx, events, bh, blobStore)
 		if err != nil {
@@ -897,9 +906,13 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	var repoPath string
 	var bestLen int
 	for _, r := range repos {
-		if broker.PathBelongsToRepo(cwd, r.Path) && len(r.CanonicalPath) > bestLen {
+		matchPath := r.CanonicalPath
+		if matchPath == "" {
+			matchPath = r.Path
+		}
+		if broker.PathBelongsToRepo(cwd, matchPath) && len(matchPath) > bestLen {
 			repoPath = r.Path
-			bestLen = len(r.CanonicalPath)
+			bestLen = len(matchPath)
 		}
 	}
 	if repoPath == "" {
@@ -917,7 +930,48 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 			tc.SessionID = derived
 		}
 	}
+	prompt, promptErr := provenance.LoadTurnPrompt(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
+	if promptErr != nil {
+		slog.Debug("provenance: load turn prompt failed", "repo", repoPath, "err", promptErr)
+		prompt = provenance.PromptCandidate{}
+	}
+	tc.Prompt = prompt
+
+	candidates, err := broker.ListAllRepos(ctx, bh)
+	if err != nil {
+		candidates = repos
+	}
+	targets := []string{repoPath}
+	for _, repo := range candidates {
+		if sameRepoPath(repo.Path, repoPath) {
+			continue
+		}
+		if !repo.Active && (tc.StartedAt <= 0 || repo.DisabledAt == nil || *repo.DisabledAt < tc.StartedAt) {
+			continue
+		}
+		if state := broker.CheckRepoState(ctx, repo.Path); state.Verdict != broker.RepoStateOK {
+			continue
+		}
+		recorded, rerr := provenance.TurnRecorded(ctx, repo.Path, tc.Provider, tc.SessionID, tc.TurnID)
+		if rerr != nil {
+			slog.Debug("provenance: inspect turn repository failed", "repo", repo.Path, "err", rerr)
+			continue
+		}
+		if recorded {
+			targets = append(targets, repo.Path)
+		}
+	}
 	provenance.PackageTurn(ctx, repoPath, tc, blobStore)
+	if len(targets) == 1 {
+		return
+	}
+	packageSource := blobStore
+	if originStore, oerr := blobs.NewStore(filepath.Join(repoPath, ".semantica", "objects")); oerr == nil {
+		packageSource = originStore
+	}
+	for _, target := range targets[1:] {
+		provenance.PackageTurn(ctx, target, tc, packageSource)
+	}
 }
 
 func buildTurnContext(preState *CaptureState, event *Event, providerName string) provenance.TurnContext {

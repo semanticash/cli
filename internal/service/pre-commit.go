@@ -44,14 +44,10 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 
 	checkpointID := uuid.NewString()
 	now := time.Now().UnixMilli()
+	baseHandoff := commitHandoff{CheckpointID: checkpointID, CreatedAt: now, Tree: tree, Head: head}
 
 	// Persist the handoff before SQLite so database failures remain recoverable.
-	if err := writeCommitHandoff(semDir, commitHandoff{
-		CheckpointID: checkpointID,
-		CreatedAt:    now,
-		Tree:         tree,
-		Head:         head,
-	}); err != nil {
+	if err := writeCommitHandoff(semDir, baseHandoff); err != nil {
 		util.AppendActivityLog(semDir, "pre-commit warning: write handoff failed: %v", err)
 		return nil
 	}
@@ -79,6 +75,13 @@ func (s *PreCommitService) HandlePreCommit(ctx context.Context, repoPath string)
 	repoID, err := sqlstore.EnsureRepository(ctx, h.Queries, repoRoot)
 	if err != nil {
 		util.AppendActivityLog(semDir, "pre-commit warning: ensure repo failed: %v", err)
+		return nil
+	}
+
+	// Optionally pair a bounded workspace freeze with the commit checkpoint.
+	// Failures fall back to the existing commit-only path.
+	if util.WorkspaceFreezeEnabled(semDir) &&
+		s.tryPairWorkspaceObservation(ctx, h, repoID, repoRoot, semDir, baseHandoff, checkpointID, now) {
 		return nil
 	}
 
