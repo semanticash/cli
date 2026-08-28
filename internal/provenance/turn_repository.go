@@ -80,7 +80,7 @@ func LoadTurnPrompt(ctx context.Context, repoPath, provider, providerSessionID, 
 		return PromptCandidate{}, fmt.Errorf("resolve session: %w", err)
 	}
 	prompt := findPromptEvent(ctx, h, sess.SessionID, turnID)
-	if prompt == nil {
+	if prompt == nil || prompt.EventID == "" || prompt.PayloadHash == "" {
 		return PromptCandidate{}, nil
 	}
 	return PromptCandidate{EventID: prompt.EventID, Hash: prompt.PayloadHash}, nil
@@ -106,20 +106,17 @@ func resolveProviderSession(ctx context.Context, h *sqlstore.Handle, repositoryI
 	})
 }
 
-func ensurePromptCandidate(ctx context.Context, target, source *blobs.Store, candidate PromptCandidate) (*promptInfo, error) {
-	if candidate.EventID == "" && candidate.Hash == "" {
-		return nil, nil
-	}
+func ensurePromptCandidate(ctx context.Context, target, source *blobs.Store, candidate PromptCandidate) *promptInfo {
 	if candidate.EventID == "" || candidate.Hash == "" {
-		return nil, fmt.Errorf("incomplete prompt candidate")
+		return nil
 	}
 	if !target.Exists(candidate.Hash) {
 		if source == nil {
-			return nil, fmt.Errorf("prompt source unavailable")
+			return nil
 		}
 		if err := target.Propagate(ctx, candidate.Hash, source); err != nil {
-			return nil, fmt.Errorf("propagate prompt object: %w", err)
+			return nil
 		}
 	}
-	return &promptInfo{EventID: candidate.EventID, PayloadHash: candidate.Hash}, nil
+	return &promptInfo{EventID: candidate.EventID, PayloadHash: candidate.Hash}
 }

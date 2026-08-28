@@ -281,8 +281,8 @@ file-level only.
 Cursor shell windows are bound to the command repository at the pre-tool hook.
 The post-tool hook uses the persisted target and suppresses routing when that
 target cannot be verified. Turn packaging includes every repository that
-recorded events for the completed turn, with prompt and response objects copied
-from the session repository.
+recorded events for the completed turn, with available prompt and response
+objects copied from the session repository.
 
 ### Settings (`settings.json`)
 

@@ -79,11 +79,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	// Find the prompt event for the bundle.
 	promptEvent := findPromptEvent(ctx, h, sess.SessionID, tc.TurnID)
 	if promptEvent == nil {
-		promptEvent, err = ensurePromptCandidate(ctx, bs, sourceBlobs, tc.Prompt)
-		if err != nil {
-			slog.Debug("provenance: propagate prompt failed", "err", err)
-			return
-		}
+		promptEvent = ensurePromptCandidate(ctx, bs, sourceBlobs, tc.Prompt)
 	}
 
 	// Load direct tool events for this turn.

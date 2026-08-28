@@ -933,9 +933,9 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	prompt, promptErr := provenance.LoadTurnPrompt(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
 	if promptErr != nil {
 		slog.Debug("provenance: load turn prompt failed", "repo", repoPath, "err", promptErr)
-	} else {
-		tc.Prompt = prompt
+		prompt = provenance.PromptCandidate{}
 	}
+	tc.Prompt = prompt
 
 	candidates, err := broker.ListAllRepos(ctx, bh)
 	if err != nil {
@@ -962,7 +962,7 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 		}
 	}
 	provenance.PackageTurn(ctx, repoPath, tc, blobStore)
-	if len(targets) == 1 || promptErr != nil {
+	if len(targets) == 1 {
 		return
 	}
 	packageSource := blobStore

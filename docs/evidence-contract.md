@@ -54,7 +54,8 @@ hook runs. Cursor shell hooks use the command's working directory and retain
 that target for the matching post hook. If the target is missing or cannot be
 verified, Semantica records no event or delta in the session repository. At
 turn completion, each repository with recorded events receives its own turn
-bundle. Prompt and response objects are propagated from the session repository.
+bundle. Available prompt and response objects are propagated from the session
+repository.
 
 ## Per-file evidence: primary vs all
 

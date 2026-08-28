@@ -14,11 +14,11 @@ func TestEnsurePromptCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt, err := ensurePromptCandidate(ctx, target, nil, PromptCandidate{}); err != nil || prompt != nil {
-		t.Fatalf("empty candidate = (%+v, %v), want no prompt", prompt, err)
+	if prompt := ensurePromptCandidate(ctx, target, nil, PromptCandidate{}); prompt != nil {
+		t.Fatalf("empty candidate = %+v, want no prompt", prompt)
 	}
-	if _, err := ensurePromptCandidate(ctx, target, nil, PromptCandidate{EventID: "prompt", Hash: "missing"}); err == nil {
-		t.Fatal("missing source accepted")
+	if prompt := ensurePromptCandidate(ctx, target, nil, PromptCandidate{EventID: "prompt", Hash: "missing"}); prompt != nil {
+		t.Fatalf("unresolvable candidate = %+v, want no prompt", prompt)
 	}
 
 	source, err := blobs.NewStore(filepath.Join(t.TempDir(), "source"))
@@ -29,10 +29,7 @@ func TestEnsurePromptCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt, err := ensurePromptCandidate(ctx, target, source, PromptCandidate{EventID: "prompt", Hash: hash})
-	if err != nil {
-		t.Fatal(err)
-	}
+	prompt := ensurePromptCandidate(ctx, target, source, PromptCandidate{EventID: "prompt", Hash: hash})
 	if prompt == nil || prompt.EventID != "prompt" || prompt.PayloadHash != hash || !target.Exists(hash) {
 		t.Fatalf("propagated prompt = %+v, exists=%v", prompt, target.Exists(hash))
 	}

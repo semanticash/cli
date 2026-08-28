@@ -1697,6 +1697,109 @@ func TestPackageTurnFromState_PackagesRepositoriesWithTurnEvents(t *testing.T) {
 	}
 }
 
+func TestPackageTurnFromState_PackagesCrossRepoTurnWithoutUsablePrompt(t *testing.T) {
+	tests := []struct {
+		name       string
+		withPrompt bool
+	}{
+		{name: "no source prompt"},
+		{name: "prompt without payload", withPrompt: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			home := t.TempDir()
+			t.Setenv("SEMANTICA_HOME", home)
+
+			a := newToolWindowWorld(t, home, "repoA")
+			b := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "repoB"))
+			source, err := blobs.NewStore(filepath.Join(home, "hook-objects"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			const (
+				provider  = "cursor"
+				sessionID = "cursor-session"
+				turnID    = "turn-without-prompt"
+			)
+			baseEvent := broker.RawEvent{
+				Provider: provider, SourceKey: "/data/cursor-session.jsonl",
+				ProviderSessionID: sessionID, SessionStartedAt: 100,
+				SessionMetaJSON: `{}`, SourceProjectPath: a.repoPath,
+				Timestamp: 1000, TurnID: turnID, EventSource: "hook",
+			}
+			originEvent := baseEvent
+			originEvent.EventID = "origin-event"
+			originEvent.Kind = "assistant"
+			originEvent.Role = "assistant"
+			if tt.withPrompt {
+				originEvent.EventID = "prompt-event"
+				originEvent.Kind = "user"
+				originEvent.Role = "user"
+			}
+			if _, err := broker.WriteEventsToRepo(ctx, a.repoPath, []broker.RawEvent{originEvent}, source); err != nil {
+				t.Fatalf("write origin event: %v", err)
+			}
+
+			stepEvent := baseEvent
+			stepEvent.EventID = "step-event"
+			stepEvent.Kind = "assistant"
+			stepEvent.Role = "assistant"
+			stepEvent.ToolName = "Bash"
+			stepEvent.ToolUseID = "tool-call"
+			if _, err := broker.WriteEventsToRepo(ctx, b.repoPath, []broker.RawEvent{stepEvent}, source); err != nil {
+				t.Fatalf("write routed step: %v", err)
+			}
+
+			packageTurnFromState(ctx, &fakeProvider{name: provider}, &Event{
+				SessionID: sessionID,
+				CWD:       a.repoPath,
+			}, a.bh, source, &CaptureState{
+				TurnID:            turnID,
+				PromptSubmittedAt: 1000,
+				CWD:               a.repoPath,
+			})
+
+			h, err := sqlstore.Open(ctx, filepath.Join(b.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sqlstore.Close(h) }()
+			var bundleHash string
+			if err := h.DB.QueryRowContext(ctx,
+				`select provenance_bundle_hash from provenance_manifests where turn_id = ? and kind = 'turn_bundle'`, turnID,
+			).Scan(&bundleHash); err != nil {
+				t.Fatalf("read routed bundle: %v", err)
+			}
+			store, err := blobs.NewStore(filepath.Join(b.semDir, "objects"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := store.Get(ctx, bundleHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var bundle struct {
+				Prompt json.RawMessage `json:"prompt"`
+				Steps  []struct {
+					EventID string `json:"event_id"`
+				} `json:"steps"`
+			}
+			if err := json.Unmarshal(raw, &bundle); err != nil {
+				t.Fatal(err)
+			}
+			if len(bundle.Prompt) != 0 {
+				t.Fatalf("routed prompt = %s, want omitted", bundle.Prompt)
+			}
+			if len(bundle.Steps) != 1 || bundle.Steps[0].EventID != "step-event" {
+				t.Fatalf("routed steps = %+v, want step-event", bundle.Steps)
+			}
+		})
+	}
+}
+
 func TestCaptureAndRouteForRepo_DefersCrossRepoEvents(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
