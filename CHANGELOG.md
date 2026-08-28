@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Modified files can now carry forward prior AI evidence when their committed
+  content matches an earlier unlinked workspace observation, such as a manual
+  `semantica checkpoint`. Evidence is limited to that observation's event window
+  and does not replace current-window line attribution. Missing or mismatched
+  observations fail closed.
 - Reduced post-tool hook latency by reusing the already-resolved HEAD.
 - Reduced post-tool cleanup latency by deleting closed snapshot refs in one
   conditional `git update-ref` transaction.

@@ -3,7 +3,51 @@ package service
 import (
 	"reflect"
 	"testing"
+
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
+	attrreporting "github.com/semanticash/cli/internal/attribution/reporting"
 )
+
+// Historical delta claims are copied without mutating the source.
+func TestMergeHistoricalDeltas_MarksHistorical(t *testing.T) {
+	dst := &attrevents.DeltaCandidates{Claims: map[string][]attrevents.DeltaClaimGroup{}, Touched: map[string][]string{}, Deleted: map[string][]string{}}
+	src := &attrevents.DeltaCandidates{
+		Claims:  map[string][]attrevents.DeltaClaimGroup{"p.go": {{Provider: "claude_code", Historical: false}}},
+		Touched: map[string][]string{}, Deleted: map[string][]string{},
+	}
+	mergeHistoricalDeltas(dst, src)
+	if got := dst.Claims["p.go"]; len(got) != 1 || !got[0].Historical {
+		t.Fatalf("merged group = %+v, want Historical=true", got)
+	}
+	if src.Claims["p.go"][0].Historical {
+		t.Error("src was mutated to Historical=true")
+	}
+}
+
+// Refused historical claims receive no fallback attribution.
+func TestApplyDeltaRefusals_HistoricalGetsNoFallback(t *testing.T) {
+	refused := func() []fileScore { return []fileScore{{path: "p.go", deltaAlignmentRefused: true}} }
+
+	histDeltas := &attrevents.DeltaCandidates{
+		Claims:  map[string][]attrevents.DeltaClaimGroup{"p.go": {{Provider: "claude_code", Historical: true}}},
+		Touched: map[string][]string{},
+	}
+	aiTouched, provider := map[string]bool{}, map[string]string{}
+	applyDeltaRefusals(refused(), histDeltas, aiTouched, provider, map[string]attrreporting.TouchOrigin{})
+	if aiTouched["p.go"] || provider["p.go"] != "" {
+		t.Errorf("historical refused claim granted fallback: aiTouched=%v provider=%q", aiTouched["p.go"], provider["p.go"])
+	}
+
+	curDeltas := &attrevents.DeltaCandidates{
+		Claims:  map[string][]attrevents.DeltaClaimGroup{"p.go": {{Provider: "claude_code", Historical: false}}},
+		Touched: map[string][]string{},
+	}
+	aiTouched2, provider2 := map[string]bool{}, map[string]string{}
+	applyDeltaRefusals(refused(), curDeltas, aiTouched2, provider2, map[string]attrreporting.TouchOrigin{})
+	if !aiTouched2["p.go"] || provider2["p.go"] != "claude_code" {
+		t.Errorf("current refused claim missing fallback: aiTouched=%v provider=%q", aiTouched2["p.go"], provider2["p.go"])
+	}
+}
 
 // mkScore builds a file score for selector tests.
 func mkScore(path string, exact, formatted, modified, providerOnly int) *fileScore {
