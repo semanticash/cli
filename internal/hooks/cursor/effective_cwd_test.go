@@ -10,12 +10,13 @@ import (
 // Relative command directories resolve against the session directory.
 func TestCursor_ShellRelativeCommandCWD(t *testing.T) {
 	p := &Provider{}
-	rel := `{"conversation_id":"c","cwd":"/work/repoA","tool_name":"Bash","tool_use_id":"call 9","tool_input":{"command":"x","cwd":"nested/dir"}}`
+	sessionCWD := filepath.Join(t.TempDir(), "repoA")
+	rel := `{"conversation_id":"c","cwd":` + jsonQuote(sessionCWD) + `,"tool_name":"Bash","tool_use_id":"call 9","tool_input":{"command":"x","cwd":"nested/dir"}}`
 	ev, err := p.ParseHookEvent(context.Background(), "pre-tool-use", strings.NewReader(rel))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if want := filepath.Clean("/work/repoA/nested/dir"); ev.EffectiveCWD != want {
+	if want := filepath.Join(sessionCWD, "nested", "dir"); ev.EffectiveCWD != want {
 		t.Errorf("EffectiveCWD = %q, want %q (relative resolved against session cwd)", ev.EffectiveCWD, want)
 	}
 
@@ -33,7 +34,10 @@ func TestCursor_ShellRelativeCommandCWD(t *testing.T) {
 // Cursor exposes the shell command directory on pre- and post-tool events.
 func TestCursor_ShellEffectiveCWD(t *testing.T) {
 	p := &Provider{}
-	payload := `{"conversation_id":"conv-1","cwd":"/work/repoA","tool_name":"Bash","tool_use_id":"call 9","tool_input":{"command":"sqlc generate","cwd":"/work/repoB"}}`
+	base := t.TempDir()
+	sessionCWD := filepath.Join(base, "repoA")
+	commandCWD := filepath.Join(base, "repoB")
+	payload := `{"conversation_id":"conv-1","cwd":` + jsonQuote(sessionCWD) + `,"tool_name":"Bash","tool_use_id":"call 9","tool_input":{"command":"sqlc generate","cwd":` + jsonQuote(commandCWD) + `}}`
 
 	for _, hook := range []string{"pre-tool-use", "post-tool-use"} {
 		t.Run(hook, func(t *testing.T) {
@@ -44,11 +48,11 @@ func TestCursor_ShellEffectiveCWD(t *testing.T) {
 			if ev == nil {
 				t.Fatal("nil event")
 			}
-			if ev.CWD != "/work/repoA" {
-				t.Errorf("CWD = %q, want the session dir /work/repoA", ev.CWD)
+			if ev.CWD != sessionCWD {
+				t.Errorf("CWD = %q, want the session dir %q", ev.CWD, sessionCWD)
 			}
-			if ev.EffectiveCWD != "/work/repoB" {
-				t.Errorf("EffectiveCWD = %q, want the command dir /work/repoB", ev.EffectiveCWD)
+			if ev.EffectiveCWD != commandCWD {
+				t.Errorf("EffectiveCWD = %q, want the command dir %q", ev.EffectiveCWD, commandCWD)
 			}
 		})
 	}

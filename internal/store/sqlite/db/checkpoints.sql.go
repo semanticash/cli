@@ -659,7 +659,7 @@ type ListCompletedManifestCheckpointsBeforeRow struct {
 }
 
 // Lists completed manifest checkpoints before a sequence, newest first.
-// commit_link_count identifies linked checkpoints without duplicating rows.
+// commit_link_count identifies linked checkpoints without joining duplicate rows.
 func (q *Queries) ListCompletedManifestCheckpointsBefore(ctx context.Context, arg ListCompletedManifestCheckpointsBeforeParams) ([]ListCompletedManifestCheckpointsBeforeRow, error) {
 	rows, err := q.query(ctx, q.listCompletedManifestCheckpointsBeforeStmt, listCompletedManifestCheckpointsBefore, arg.RepositoryID, arg.RepositorySequence, arg.Limit)
 	if err != nil {

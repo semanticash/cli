@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/semanticash/cli/internal/broker"
@@ -46,6 +47,10 @@ func TestParseHookEvent_PreToolUseShellPairsWithPost(t *testing.T) {
 
 // A paired Cursor shell window produces a complete delta and evidence link.
 func TestParseAndDispatch_CursorShellWindowProducesCompleteDelta(t *testing.T) {
+	// Real Git and SQLite work can exceed the production deadline on slower CI
+	// runners.
+	t.Cleanup(hooks.SetToolWindowDeadlineForTest(30 * time.Second))
+
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
 	ctx := context.Background()
