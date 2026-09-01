@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 
 	"github.com/semanticash/cli/internal/git"
@@ -70,7 +69,7 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 			} else {
 				_, _ = fmt.Fprintln(out, "  No agent sessions linked to this commit")
 			}
-			if providers := distinctSessionProviders(res.Sessions); len(providers) > 0 {
+			if providers := service.DistinctSessionProviders(res.Sessions); len(providers) > 0 {
 				header := "Provider"
 				if len(providers) > 1 {
 					header = "Providers"
@@ -89,16 +88,10 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 						_, _ = fmt.Fprintf(out, "  Subagent %s: %d steps, %d tool calls\n",
 							id, sess.StepCount, sess.ToolCallCount)
 					} else {
-						tok := fmt.Sprintf("tok %s/%s",
-							service.CompactTokens(sess.TokensIn),
-							service.CompactTokens(sess.TokensOut))
-						if sess.TokensCached > 0 {
-							tok += fmt.Sprintf(" (+%s cached)", service.CompactTokens(sess.TokensCached))
-						}
-						_, _ = fmt.Fprintf(out, "  %s (%s): %d steps, %d tool calls, %s\n",
-							id, sess.Provider,
+						_, _ = fmt.Fprintf(out, "  %s: %s, %d steps, %d tool calls, %s\n",
+							id, sessionIdentity(sess),
 							sess.StepCount, sess.ToolCallCount,
-							tok)
+							sessionTokenSummary(sess))
 					}
 				}
 				_, _ = fmt.Fprintln(out)
@@ -286,22 +279,22 @@ func buildTranscriptEntries(res *service.ExplainResult) []llm.TranscriptEntry {
 	return entries
 }
 
-// distinctSessionProviders returns the sorted provider set represented
-// by linked sessions for a commit.
-func distinctSessionProviders(sessions []service.SessionSummary) []string {
-	if len(sessions) == 0 {
-		return nil
+func sessionIdentity(s service.SessionSummary) string {
+	if s.Model == "" {
+		return s.Provider
 	}
-	seen := make(map[string]struct{}, len(sessions))
-	for _, s := range sessions {
-		if s.Provider != "" {
-			seen[s.Provider] = struct{}{}
-		}
+	return s.Provider + " (" + s.Model + ")"
+}
+
+func sessionTokenSummary(s service.SessionSummary) string {
+	if !s.TokenUsageValid {
+		return "tok unavailable"
 	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
+	summary := fmt.Sprintf("tok %s/%s",
+		service.CompactTokens(s.TokensIn),
+		service.CompactTokens(s.TokensOut))
+	if s.TokensCached > 0 {
+		summary += fmt.Sprintf(" (+%s cached)", service.CompactTokens(s.TokensCached))
 	}
-	sort.Strings(out)
-	return out
+	return summary
 }

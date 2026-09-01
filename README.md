@@ -144,7 +144,9 @@ Before prompt content or remote sync payloads leave the machine, Semantica redac
 
 ### AI attribution
 
-See what percentage of a commit was AI-attributed, broken down by file:
+See what percentage of a commit was AI-attributed, broken down by file. The
+plain-text report lists contributing agents and their captured models when
+available:
 
 ```bash
 semantica blame HEAD
@@ -174,7 +176,7 @@ semantica set trailers disabled    # keep only the lineage trailer
 
 Get a structured breakdown of what happened in a commit, including AI attribution,
 changed files, session context, and optional playbook generation. Explain also
-shows provider/session details and token usage when available:
+shows session providers, captured models, and token usage when available:
 
 ```bash
 semantica explain HEAD                  # stats + AI involvement

@@ -93,11 +93,11 @@ func TestFormatProvenance_ProvidersLine(t *testing.T) {
 		SessionCount:  1,
 		RootSessions:  1,
 		Sessions: []service.SessionSummary{
-			{SessionID: "s1", Provider: "claude_code"},
+			{SessionID: "s1", Provider: "claude_code", Model: "opus-4.6"},
 		},
 	}
 	out := formatProvenance(single)
-	if !strings.Contains(out, "Provider: claude_code") {
+	if !strings.Contains(out, "Provider: claude_code (opus-4.6)") {
 		t.Errorf("single-provider line missing:\n%s", out)
 	}
 
@@ -115,6 +115,21 @@ func TestFormatProvenance_ProvidersLine(t *testing.T) {
 	out = formatProvenance(multi)
 	if !strings.Contains(out, "Providers: claude_code, codex") {
 		t.Errorf("multi-provider line missing or unsorted:\n%s", out)
+	}
+
+	mixedModels := &service.ExplainResult{
+		CommitHash:    "abc12345",
+		CommitSubject: "feat: x",
+		SessionCount:  2,
+		RootSessions:  2,
+		Sessions: []service.SessionSummary{
+			{SessionID: "s1", Provider: "cursor", Model: "grok-4.6"},
+			{SessionID: "s2", Provider: "cursor", Model: "claude-4.6"},
+		},
+	}
+	out = formatProvenance(mixedModels)
+	if !strings.Contains(out, "Provider: cursor\n") {
+		t.Errorf("mixed models should retain one provider label:\n%s", out)
 	}
 
 	none := &service.ExplainResult{

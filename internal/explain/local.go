@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/semanticash/cli/internal/service"
@@ -75,7 +74,7 @@ func formatProvenance(res *service.ExplainResult) string {
 	} else {
 		b.WriteString("  No agent sessions linked to this commit\n")
 	}
-	if providers := distinctProviders(res.Sessions); len(providers) > 0 {
+	if providers := service.DistinctSessionProviders(res.Sessions); len(providers) > 0 {
 		fmt.Fprintf(&b, "  %s: %s\n", plural(len(providers), "Provider"), strings.Join(providers, ", "))
 	}
 	fmt.Fprintf(&b, "  %.1f%% AI-Attributed (%d AI / %d human)\n",
@@ -149,24 +148,4 @@ func plural(n int, word string) string {
 		return word
 	}
 	return word + "s"
-}
-
-// distinctProviders returns the sorted provider set represented by
-// linked sessions for a commit.
-func distinctProviders(sessions []service.SessionSummary) []string {
-	if len(sessions) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(sessions))
-	for _, s := range sessions {
-		if s.Provider != "" {
-			seen[s.Provider] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out
 }
