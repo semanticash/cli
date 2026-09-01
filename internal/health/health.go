@@ -552,7 +552,7 @@ func checkState(ctx context.Context, opts Options) []Check {
 			Category: "state",
 			ID:       "capture_states",
 			Status:   StatusOK,
-			Message:  "no active capture sessions (idle is normal)",
+			Message:  "no agent turns currently being captured across all tracked repositories",
 		})
 	default:
 		perProvider := map[string]int{}
@@ -567,7 +567,7 @@ func checkState(ctx context.Context, opts Options) []Check {
 			Category: "state",
 			ID:       "capture_states",
 			Status:   StatusOK,
-			Message:  "active capture sessions: " + strings.Join(parts, ", "),
+			Message:  "agent turns currently being captured across all tracked repositories: " + strings.Join(parts, ", "),
 		})
 	}
 

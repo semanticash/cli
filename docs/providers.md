@@ -120,7 +120,9 @@ For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 - **`preToolUse`** - Captures subagent prompt boundaries.
 - **`postToolUse`** - Captures shell provenance.
 - **`afterFileEdit`** - Captures direct file edit and file write provenance.
-- **`stop`** - Replays the transcript from the saved offset and packages the completed turn.
+- **`afterAgentResponse`** - Captures the final assistant response.
+- **`stop`** - Replays the transcript, records available model and parent-turn
+  token usage, and packages the completed turn.
 - **`subagentStop`** - Captures the parent `Agent` step and triggers child transcript discovery.
 - **`sessionStart`** / **`sessionEnd`** / **`preCompact`** - Lifecycle tracking, final flush, and offset reset handling.
 
@@ -140,6 +142,8 @@ Cursor after `semantica enable` so the new hooks are loaded. See the
 - Cursor's internal database format is not a public API and may change between versions.
 - The legacy `.vscdb` format contains many workspace state entries beyond AI interactions - Semantica filters for relevant keys.
 - Cursor IDE subagent child sessions are discovered and linked, but child-side file mutations may still be text-only when Cursor does not expose structured file hooks for the child conversation.
+- Cursor's hook token totals cover the parent turn. Cursor does not provide
+  subagent or reasoning-token usage through these hooks.
 - Cursor CLI support is still more limited than Cursor IDE for direct hook provenance.
 
 ---

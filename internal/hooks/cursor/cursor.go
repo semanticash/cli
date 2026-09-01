@@ -210,6 +210,11 @@ type stdinPayload struct {
 	TranscriptPath     string          `json:"transcript_path,omitempty"`
 	Prompt             string          `json:"prompt,omitempty"`
 	Model              string          `json:"model,omitempty"`
+	ModelID            string          `json:"model_id,omitempty"`
+	InputTokens        *int64          `json:"input_tokens,omitempty"`
+	OutputTokens       *int64          `json:"output_tokens,omitempty"`
+	CacheReadTokens    *int64          `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   *int64          `json:"cache_write_tokens,omitempty"`
 	WorkspaceRoots     []string        `json:"workspace_roots,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolUseID          string          `json:"tool_use_id,omitempty"`
@@ -270,7 +275,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		SessionID:     payload.ConversationID,
 		TranscriptRef: transcriptRef,
 		Prompt:        payload.Prompt,
-		Model:         payload.Model,
+		Model:         cursorModel(payload),
 		Timestamp:     time.Now().UnixMilli(),
 		CWD:           cwd,
 	}
@@ -323,6 +328,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		}
 	case "stop":
 		event.Type = hooks.AgentCompleted
+		event.TokenUsage = cursorTokenUsage(payload)
 	case "subagent-stop":
 		event.Type = hooks.SubagentCompleted
 		event.SubagentID = normalizeCursorToolUseID(payload.SubagentID)
@@ -340,6 +346,40 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	}
 
 	return event, nil
+}
+
+func cursorModel(payload stdinPayload) string {
+	if modelID := strings.TrimSpace(payload.ModelID); modelID != "" {
+		return modelID
+	}
+	return strings.TrimSpace(payload.Model)
+}
+
+func cursorTokenUsage(payload stdinPayload) *hooks.TokenUsage {
+	values := []*int64{
+		payload.InputTokens,
+		payload.OutputTokens,
+		payload.CacheReadTokens,
+		payload.CacheWriteTokens,
+	}
+	for _, value := range values {
+		if value == nil || *value < 0 {
+			return nil
+		}
+	}
+
+	// Cursor stop hooks include cached tokens in input_tokens. Semantica stores
+	// them separately, so TokensIn contains only uncached input.
+	uncached := *payload.InputTokens - *payload.CacheReadTokens - *payload.CacheWriteTokens
+	if uncached < 0 {
+		return nil
+	}
+	return &hooks.TokenUsage{
+		TokensIn:          uncached,
+		TokensOut:         *payload.OutputTokens,
+		TokensCacheRead:   *payload.CacheReadTokens,
+		TokensCacheCreate: *payload.CacheWriteTokens,
+	}
 }
 
 type cursorEdit struct {
@@ -570,6 +610,9 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 		eventTs++
 		lineNum++
 	}
+	if usage, ok := hooks.TokenUsageFromContext(ctx); ok && !attachTurnUsage(events, usage) {
+		slog.Debug("cursor: token usage has no assistant event")
+	}
 
 	// Enrich events that lack file paths with data from Cursor's
 	// ai-code-tracking.db. The IDE Composer doesn't write tool_use blocks
@@ -586,6 +629,21 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 	}
 
 	return events, lineNum, scanner.Err()
+}
+
+func attachTurnUsage(events []broker.RawEvent, usage hooks.TokenUsage) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Role != "assistant" {
+			continue
+		}
+		events[i].TokensIn = usage.TokensIn
+		events[i].TokensOut = usage.TokensOut
+		events[i].TokensCacheRead = usage.TokensCacheRead
+		events[i].TokensCacheCreate = usage.TokensCacheCreate
+		events[i].TokenUsageValid = true
+		return true
+	}
+	return false
 }
 
 // DiscoverSubagentTranscripts scans the parent transcript's subagents/

@@ -815,6 +815,66 @@ func TestWriteEventsToRepo_HookCapturedBlobIsToolAttributable(t *testing.T) {
 	}
 }
 
+func TestWriteEventsToRepo_PreservesMeasuredZeroTokens(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "repo")
+	tempRepoWithDB(t, repoPath)
+	ctx := context.Background()
+
+	sessions, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{
+		{
+			EventID:           "measured-zero",
+			SourceKey:         "cursor:session",
+			Provider:          "cursor",
+			Timestamp:         1,
+			Kind:              "assistant",
+			Role:              "assistant",
+			ProviderSessionID: "session",
+			TokenUsageValid:   true,
+		},
+		{
+			EventID:           "usage-absent",
+			SourceKey:         "cursor:session",
+			Provider:          "cursor",
+			Timestamp:         2,
+			Kind:              "user",
+			Role:              "user",
+			ProviderSessionID: "session",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("write events: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+
+	h, err := sqlstore.Open(ctx, filepath.Join(repoPath, ".semantica", "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	rows, err := h.Queries.ListAgentEventsBySession(ctx, sqldb.ListAgentEventsBySessionParams{
+		SessionID: sessions[0],
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	byID := make(map[string]sqldb.AgentEvent, len(rows))
+	for _, row := range rows {
+		byID[row.EventID] = row
+	}
+	measured := byID["measured-zero"]
+	if !measured.TokensIn.Valid || !measured.TokensOut.Valid || !measured.TokensCacheRead.Valid || !measured.TokensCacheCreate.Valid {
+		t.Fatalf("measured zero tokens lost validity: %+v", measured)
+	}
+	absent := byID["usage-absent"]
+	if absent.TokensIn.Valid || absent.TokensOut.Valid || absent.TokensCacheRead.Valid || absent.TokensCacheCreate.Valid {
+		t.Fatalf("absent usage stored as measured: %+v", absent)
+	}
+}
+
 func TestWriteEventsToRepo_SubdirLaunchIsNotCrossRepo(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

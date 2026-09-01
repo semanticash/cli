@@ -69,14 +69,50 @@ type FileDelta struct {
 }
 
 type SessionSummary struct {
-	SessionID     string `json:"session_id"`
-	Provider      string `json:"provider"`
-	IsSubagent    bool   `json:"is_subagent,omitempty"`
-	StepCount     int64  `json:"step_count"`
-	ToolCallCount int64  `json:"tool_call_count"`
-	TokensIn      int64  `json:"tokens_in"`
-	TokensOut     int64  `json:"tokens_out"`
-	TokensCached  int64  `json:"tokens_cached,omitempty"`
+	SessionID       string `json:"session_id"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model,omitempty"`
+	IsSubagent      bool   `json:"is_subagent,omitempty"`
+	StepCount       int64  `json:"step_count"`
+	ToolCallCount   int64  `json:"tool_call_count"`
+	TokenUsageValid bool   `json:"token_usage_valid,omitempty"`
+	TokensIn        int64  `json:"tokens_in"`
+	TokensOut       int64  `json:"tokens_out"`
+	TokensCached    int64  `json:"tokens_cached,omitempty"`
+}
+
+// DistinctSessionProviders returns sorted provider labels. A model is included
+// only when every session for that provider reports the same non-empty value.
+func DistinctSessionProviders(sessions []SessionSummary) []string {
+	if len(sessions) == 0 {
+		return nil
+	}
+	models := make(map[string]string, len(sessions))
+	ambiguous := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		if session.Provider == "" {
+			continue
+		}
+		model, seen := models[session.Provider]
+		if !seen {
+			models[session.Provider] = session.Model
+			continue
+		}
+		if model != session.Model {
+			ambiguous[session.Provider] = true
+		}
+	}
+
+	labels := make([]string, 0, len(models))
+	for provider, model := range models {
+		label := provider
+		if model != "" && !ambiguous[provider] {
+			label += " (" + model + ")"
+		}
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 // NarrativeResultJSON is the persisted form of an LLM-generated playbook.
@@ -392,6 +428,7 @@ func (s *ExplainService) sessionsForCommit(
 		tokensIn     int64
 		tokensOut    int64
 		tokensCached int64
+		tokensValid  bool
 	}
 	accum := make(map[string]*sessAcc)
 	for _, e := range events {
@@ -410,24 +447,30 @@ func (s *ExplainService) sessionsForCommit(
 		a.tokensIn += e.TokensIn.Int64
 		a.tokensOut += e.TokensOut.Int64
 		a.tokensCached += e.TokensCacheRead.Int64 + e.TokensCacheCreate.Int64
+		a.tokensValid = a.tokensValid || e.TokensIn.Valid || e.TokensOut.Valid ||
+			e.TokensCacheRead.Valid || e.TokensCacheCreate.Valid
 	}
 
 	// Build result with root/subagent classification.
 	var result []SessionSummary
 	for sid, a := range accum {
 		isSubagent := false
+		model := ""
 		if sess, err := h.Queries.GetAgentSessionByID(ctx, sid); err == nil {
 			isSubagent = sess.ParentSessionID.Valid && sess.ParentSessionID.String != ""
+			model = sess.Model.String
 		}
 		result = append(result, SessionSummary{
-			SessionID:     sid,
-			Provider:      a.provider,
-			IsSubagent:    isSubagent,
-			StepCount:     a.steps,
-			ToolCallCount: a.toolCalls,
-			TokensIn:      a.tokensIn,
-			TokensOut:     a.tokensOut,
-			TokensCached:  a.tokensCached,
+			SessionID:       sid,
+			Provider:        a.provider,
+			Model:           model,
+			IsSubagent:      isSubagent,
+			StepCount:       a.steps,
+			ToolCallCount:   a.toolCalls,
+			TokenUsageValid: a.tokensValid,
+			TokensIn:        a.tokensIn,
+			TokensOut:       a.tokensOut,
+			TokensCached:    a.tokensCached,
 		})
 	}
 

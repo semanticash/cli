@@ -59,6 +59,9 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 			_, _ = fmt.Fprintf(out, "Total:        %d lines\n", res.TotalLines)
 			_, _ = fmt.Fprintf(out, "AI %%:         %.1f%%\n", res.AIPercentage)
 			_, _ = fmt.Fprintf(out, "AI touched:   %d / %d files\n", res.FilesAITouched, res.FilesTotal)
+			if agents := attributionAgentLabels(res.ProviderDetails); len(agents) > 0 {
+				_, _ = fmt.Fprintf(out, "AI agent(s):  %s\n", strings.Join(agents, ", "))
+			}
 
 			nCreated := len(res.FilesCreated)
 			nEdited := len(res.FilesEdited)
@@ -130,4 +133,47 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output full result as JSON (includes per-file breakdown)")
 
 	return cmd
+}
+
+func attributionAgentLabels(details []service.ProviderAttribution) []string {
+	labels := make([]string, 0, len(details))
+	seen := make(map[string]struct{}, len(details))
+	for _, detail := range details {
+		provider := strings.TrimSpace(detail.Provider)
+		if provider == "" {
+			continue
+		}
+
+		label := attributionAgentName(provider)
+		if model := strings.TrimSpace(detail.Model); model != "" {
+			label += " (" + model + ")"
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func attributionAgentName(provider string) string {
+	switch provider {
+	case "claude-code", "claude_code":
+		return "Claude Code"
+	case "codex":
+		return "Codex"
+	case "cursor":
+		return "Cursor"
+	case "copilot", "github-copilot":
+		return "GitHub Copilot"
+	case "gemini-cli", "gemini_cli":
+		return "Gemini CLI"
+	case "kiro-cli":
+		return "Kiro CLI"
+	case "kiro-ide":
+		return "Kiro IDE"
+	default:
+		return provider
+	}
 }
