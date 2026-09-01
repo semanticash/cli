@@ -286,10 +286,10 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				PayloadHash:       sqlstore.NullStr(payloadHash),
 				Role:              sqlstore.NullStr(ev.Role),
 				ToolUses:          sqlstore.NullStr(toolUsesJSON),
-				TokensIn:          sqlstore.NullInt64(ev.TokensIn),
-				TokensOut:         sqlstore.NullInt64(ev.TokensOut),
-				TokensCacheRead:   sqlstore.NullInt64(ev.TokensCacheRead),
-				TokensCacheCreate: sqlstore.NullInt64(ev.TokensCacheCreate),
+				TokensIn:          nullableToken(ev.TokensIn, ev.TokenUsageValid),
+				TokensOut:         nullableToken(ev.TokensOut, ev.TokenUsageValid),
+				TokensCacheRead:   nullableToken(ev.TokensCacheRead, ev.TokenUsageValid),
+				TokensCacheCreate: nullableToken(ev.TokensCacheCreate, ev.TokenUsageValid),
 				Summary:           sqlstore.NullStr(ev.Summary),
 				ProviderEventID:   sqlstore.NullStr(ev.ProviderEventID),
 				TurnID:            sqlstore.NullStr(ev.TurnID),
@@ -318,6 +318,13 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 	})
 
 	return sessionIDs, nil
+}
+
+func nullableToken(value int64, measured bool) sql.NullInt64 {
+	if measured {
+		return sql.NullInt64{Int64: value, Valid: true}
+	}
+	return sqlstore.NullInt64(value)
 }
 
 // EvidenceLink attaches a content-addressed evidence blob to an event row.

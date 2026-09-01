@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
 )
 
@@ -340,7 +341,16 @@ func TestParseHookEvent_BeforeSubmitPrompt_DerivesTranscriptPath(t *testing.T) {
 
 func TestParseHookEvent_Stop(t *testing.T) {
 	p := &Provider{}
-	input := `{"conversation_id":"conv-123","transcript_path":"/path/to/transcript.jsonl"}`
+	input := `{
+		"conversation_id":"conv-123",
+		"transcript_path":"/path/to/transcript.jsonl",
+		"model":"cursor-grok-4.6-high-fast",
+		"model_id":"grok-4.6",
+		"input_tokens":1000,
+		"output_tokens":80,
+		"cache_read_tokens":700,
+		"cache_write_tokens":250
+	}`
 
 	event, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(input))
 	if err != nil {
@@ -348,6 +358,57 @@ func TestParseHookEvent_Stop(t *testing.T) {
 	}
 	if event.Type != hooks.AgentCompleted {
 		t.Errorf("type: got %v, want AgentCompleted", event.Type)
+	}
+	if event.Model != "grok-4.6" {
+		t.Errorf("model = %q, want model_id", event.Model)
+	}
+	if event.TokenUsage == nil {
+		t.Fatal("expected token usage")
+	}
+	if got := *event.TokenUsage; got != (hooks.TokenUsage{
+		TokensIn:          50,
+		TokensOut:         80,
+		TokensCacheRead:   700,
+		TokensCacheCreate: 250,
+	}) {
+		t.Errorf("token usage = %+v", got)
+	}
+}
+
+func TestParseHookEvent_StopUsageFailsClosed(t *testing.T) {
+	p := &Provider{}
+	for _, input := range []string{
+		`{"conversation_id":"c","input_tokens":10}`,
+		`{"conversation_id":"c","input_tokens":10,"output_tokens":1,"cache_read_tokens":-1,"cache_write_tokens":0}`,
+		`{"conversation_id":"c","input_tokens":10,"output_tokens":1,"cache_read_tokens":8,"cache_write_tokens":3}`,
+	} {
+		event, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if event.TokenUsage != nil {
+			t.Errorf("payload %s: token usage = %+v, want nil", input, event.TokenUsage)
+		}
+	}
+
+	event, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(
+		`{"conversation_id":"c","model":"legacy-model"}`,
+	))
+	if err != nil {
+		t.Fatalf("parse fallback model: %v", err)
+	}
+	if event.Model != "legacy-model" {
+		t.Errorf("model = %q, want legacy fallback", event.Model)
+	}
+}
+
+func TestAttachTurnUsage_NoAssistantEvent(t *testing.T) {
+	events := []broker.RawEvent{{Role: "user"}}
+	if attachTurnUsage(events, hooks.TokenUsage{TokensIn: 1}) {
+		t.Fatal("usage attached without an assistant event")
+	}
+	if events[0].TokenUsageValid {
+		t.Fatal("user event contains token usage")
 	}
 }
 
@@ -630,6 +691,43 @@ func TestReadFromOffset(t *testing.T) {
 	}
 	if events[1].Summary != "I will create it" {
 		t.Errorf("event[1] summary: got %q", events[1].Summary)
+	}
+}
+
+func TestReadFromOffset_AttachesTurnUsageOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+	transcript := `{"role":"assistant","message":{"content":[{"type":"text","text":"working"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"tool result"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+`
+	if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	usage := hooks.TokenUsage{
+		TokensIn:          12,
+		TokensOut:         3,
+		TokensCacheRead:   40,
+		TokensCacheCreate: 5,
+	}
+	ctx := context.WithValue(context.Background(), hooks.TokenUsageKey, usage)
+	events, _, err := (&Provider{}).ReadFromOffset(ctx, path, 0, nil)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
+	}
+	if events[0].TokenUsageValid {
+		t.Fatal("usage attached to an earlier assistant event")
+	}
+	last := events[2]
+	if !last.TokenUsageValid {
+		t.Fatal("final assistant event has no measured usage")
+	}
+	if last.TokensIn != 12 || last.TokensOut != 3 || last.TokensCacheRead != 40 || last.TokensCacheCreate != 5 {
+		t.Errorf("final usage = in:%d out:%d read:%d create:%d", last.TokensIn, last.TokensOut, last.TokensCacheRead, last.TokensCacheCreate)
 	}
 }
 

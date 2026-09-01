@@ -19,7 +19,9 @@ type RawEvent struct {
 	TokensOut         int64
 	TokensCacheRead   int64
 	TokensCacheCreate int64
-	ProviderEventID   string
+	// TokenUsageValid preserves measured zero values in storage.
+	TokenUsageValid bool `json:"-"`
+	ProviderEventID string
 
 	// Normalized source position. Provider-specific: line number
 	// (JSONL providers), message index (JSON providers). Used for

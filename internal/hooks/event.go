@@ -51,6 +51,7 @@ type Event struct {
 	TranscriptRef string // path to transcript file
 	Prompt        string // user prompt (PromptSubmitted only)
 	Model         string // LLM model name
+	TokenUsage    *TokenUsage
 	Timestamp     int64  // unix ms, from hook payload or time.Now()
 	ToolUseID     string // for subagent events and tool steps
 	SubagentID    string
@@ -69,4 +70,12 @@ type Event struct {
 	// Response is hook-provided final assistant text. Nil means absent; an empty
 	// string means the provider returned an empty response.
 	Response *string
+}
+
+// TokenUsage is a provider-reported turn total. TokensIn excludes cached input.
+type TokenUsage struct {
+	TokensIn          int64
+	TokensOut         int64
+	TokensCacheRead   int64
+	TokensCacheCreate int64
 }

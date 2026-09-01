@@ -31,6 +31,8 @@ type fakeProvider struct {
 	readCalls        int
 	readPaths        []string // tracks which transcript paths were read
 	readOffsets      []int    // offsets used for each ReadFromOffset call
+	tokenUsage       TokenUsage
+	tokenUsageSeen   bool
 }
 
 type fakeReadResult struct {
@@ -69,6 +71,7 @@ func (f *fakeProvider) ReadFromOffset(ctx context.Context, transcriptRef string,
 	f.readCalls++
 	f.readPaths = append(f.readPaths, transcriptRef)
 	f.readOffsets = append(f.readOffsets, offset)
+	f.tokenUsage, f.tokenUsageSeen = TokenUsageFromContext(ctx)
 	if f.readByOffset != nil {
 		return append([]broker.RawEvent(nil), f.readByOffset[offset]...), f.transcriptOffset, nil
 	}
@@ -187,6 +190,33 @@ func TestDispatch_AgentCompleted_DeletesState(t *testing.T) {
 	_, err := LoadCaptureState("sess-2")
 	if err != ErrNoCaptureState {
 		t.Errorf("state should be deleted, got: %v", err)
+	}
+}
+
+func TestDispatch_AgentCompleted_PassesTokenUsageToReplay(t *testing.T) {
+	setupTestCaptureDir(t)
+	prov := &fakeProvider{name: "cursor", transcriptOffset: 1}
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:        "usage-session",
+		Provider:         "cursor",
+		TranscriptRef:    "/transcript.jsonl",
+		TranscriptOffset: 0,
+		Timestamp:        1,
+	}); err != nil {
+		t.Fatalf("save capture state: %v", err)
+	}
+	usage := TokenUsage{TokensIn: 4, TokensOut: 2, TokensCacheRead: 8, TokensCacheCreate: 1}
+	event := &Event{
+		Type:          AgentCompleted,
+		SessionID:     "usage-session",
+		TranscriptRef: "/transcript.jsonl",
+		TokenUsage:    &usage,
+	}
+	if err := Dispatch(context.Background(), prov, event, nil, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !prov.tokenUsageSeen || prov.tokenUsage != usage {
+		t.Fatalf("replay usage = %+v, seen=%v", prov.tokenUsage, prov.tokenUsageSeen)
 	}
 }
 

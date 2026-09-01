@@ -23,6 +23,7 @@ type modelKeyType struct{}
 type hookEventTypeKeyType struct{}
 type hookTimestampKeyType struct{}
 type cwdKeyType struct{}
+type tokenUsageKeyType struct{}
 
 // CaptureTimestampKey carries the capture state's unix-ms timestamp into
 // ReadFromOffset for turn-scoped enrichment.
@@ -43,12 +44,21 @@ var HookTimestampKey = hookTimestampKeyType{}
 // for providers whose transcripts don't embed a project path.
 var CWDKey = cwdKeyType{}
 
+// TokenUsageKey carries provider-reported turn totals into transcript replay.
+var TokenUsageKey = tokenUsageKeyType{}
+
 // ModelFromContext extracts the model name from the context, or "" if absent.
 func ModelFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ModelKey).(string); ok {
 		return v
 	}
 	return ""
+}
+
+// TokenUsageFromContext returns provider-reported turn totals when available.
+func TokenUsageFromContext(ctx context.Context) (TokenUsage, bool) {
+	usage, ok := ctx.Value(TokenUsageKey).(TokenUsage)
+	return usage, ok
 }
 
 // CWDFromContext extracts the working directory from the context, or "" if absent.
@@ -439,6 +449,9 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 	readCtx := context.WithValue(ctx, CaptureTimestampKey, state.Timestamp)
 	if event.Model != "" {
 		readCtx = context.WithValue(readCtx, ModelKey, event.Model)
+	}
+	if event.TokenUsage != nil {
+		readCtx = context.WithValue(readCtx, TokenUsageKey, *event.TokenUsage)
 	}
 	readCtx = context.WithValue(readCtx, HookEventTypeKey, event.Type)
 	readCtx = context.WithValue(readCtx, HookTimestampKey, event.Timestamp)

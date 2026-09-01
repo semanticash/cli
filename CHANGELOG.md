@@ -5,6 +5,13 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - Unreleased
+
+### Added
+
+- Cursor hook capture now records the selected model and parent-turn input,
+  output, and cache token usage when Cursor provides it.
+
 ## [0.7.1] - 2026-08-28
 
 ### Changed
