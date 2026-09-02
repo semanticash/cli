@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   token usage from measured zero. `semantica blame` shows the agents and models
   represented in its attribution evidence.
 
+### Fixed
+
+- Claude Code turn usage now preserves measured zero cache-token values.
+
 ## [0.7.1] - 2026-08-28
 
 ### Changed

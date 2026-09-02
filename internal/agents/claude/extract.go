@@ -25,12 +25,20 @@ type extractedFields struct {
 	TokensOut         int64
 	TokensCacheRead   int64 // cache_read_input_tokens
 	TokensCacheCreate int64 // cache_creation_input_tokens
+	TokenUsageValid   bool
 	Summary           string
 	IsToolResult      bool // true when user-role event is a tool_result, not an actual user prompt
 	IsFileReadResult  bool // true when tool_result contains file content from a Read tool
 	ProviderEventID   string
 	SessionID         string
 	Model             string // LLM model name from assistant messages (e.g. "claude-sonnet-4-20250514")
+}
+
+type assistantUsage struct {
+	InputTokens              *int64 `json:"input_tokens"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+	OutputTokens             *int64 `json:"output_tokens"`
 }
 
 // extractFields parses a single Claude JSONL line and returns structured fields.
@@ -88,12 +96,7 @@ func extractAssistantFields(msgRaw json.RawMessage, f *extractedFields) {
 		Model   string            `json:"model"`
 		Role    string            `json:"role"`
 		Content []json.RawMessage `json:"content"`
-		Usage   struct {
-			InputTokens              float64 `json:"input_tokens"`
-			CacheReadInputTokens     float64 `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens float64 `json:"cache_creation_input_tokens"`
-			OutputTokens             float64 `json:"output_tokens"`
-		} `json:"usage"`
+		Usage   json.RawMessage   `json:"usage"`
 	}
 	if err := json.Unmarshal(msgRaw, &msg); err != nil {
 		return
@@ -107,10 +110,13 @@ func extractAssistantFields(msgRaw json.RawMessage, f *extractedFields) {
 
 	f.ProviderEventID = msg.ID
 	f.Model = msg.Model
-	f.TokensIn = int64(msg.Usage.InputTokens)
-	f.TokensOut = int64(msg.Usage.OutputTokens)
-	f.TokensCacheRead = int64(msg.Usage.CacheReadInputTokens)
-	f.TokensCacheCreate = int64(msg.Usage.CacheCreationInputTokens)
+	if usage, ok := parseAssistantUsage(msg.Usage); ok {
+		f.TokensIn = *usage.InputTokens
+		f.TokensOut = *usage.OutputTokens
+		f.TokensCacheRead = *usage.CacheReadInputTokens
+		f.TokensCacheCreate = *usage.CacheCreationInputTokens
+		f.TokenUsageValid = true
+	}
 
 	// Track what content types are present to determine the event kind.
 	hasThinking := false
@@ -182,6 +188,25 @@ func extractAssistantFields(msgRaw json.RawMessage, f *extractedFields) {
 			f.Summary = first.Name
 		}
 	}
+}
+
+func parseAssistantUsage(raw json.RawMessage) (assistantUsage, bool) {
+	var usage assistantUsage
+	if len(raw) == 0 || json.Unmarshal(raw, &usage) != nil {
+		return assistantUsage{}, false
+	}
+	values := []*int64{
+		usage.InputTokens,
+		usage.OutputTokens,
+		usage.CacheReadInputTokens,
+		usage.CacheCreationInputTokens,
+	}
+	for _, value := range values {
+		if value == nil || *value < 0 {
+			return assistantUsage{}, false
+		}
+	}
+	return usage, true
 }
 
 // extractUserSummary parses a user-role message and returns the summary text

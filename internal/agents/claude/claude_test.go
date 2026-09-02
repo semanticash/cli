@@ -63,6 +63,48 @@ func TestExtractFields_ReadToolResultUsesMetadataSummary(t *testing.T) {
 	}
 }
 
+func TestExtractFields_TokenUsagePresence(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage string
+		valid bool
+	}{
+		{
+			name:  "complete with measured zero",
+			usage: `{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`,
+			valid: true,
+		},
+		{
+			name:  "missing cache field",
+			usage: `{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0}`,
+		},
+		{
+			name:  "negative value",
+			usage: `{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":-1}`,
+		},
+		{
+			name:  "fractional value",
+			usage: `{"input_tokens":100.5,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := `{"type":"assistant","message":{"id":"msg-1","model":"claude-opus-4-6","content":[],"usage":` + tt.usage + `}}`
+			fields := ExtractFields(line)
+			if fields.TokenUsageValid != tt.valid {
+				t.Fatalf("TokenUsageValid = %v, want %v", fields.TokenUsageValid, tt.valid)
+			}
+			if tt.valid && (fields.TokensIn != 100 || fields.TokensOut != 30 || fields.TokensCacheRead != 0 || fields.TokensCacheCreate != 0) {
+				t.Fatalf("token usage = %d/%d/%d/%d, want 100/30/0/0",
+					fields.TokensIn, fields.TokensOut, fields.TokensCacheRead, fields.TokensCacheCreate)
+			}
+			if fields.Model != "claude-opus-4-6" {
+				t.Fatalf("model = %q, want preserved", fields.Model)
+			}
+		})
+	}
+}
+
 func TestSerializeToolUses_DropsTextOnlyContentTypes(t *testing.T) {
 	result := serializeToolUses(nil, []string{"text"})
 	if result.Valid {
