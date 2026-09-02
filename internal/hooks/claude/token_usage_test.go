@@ -62,12 +62,15 @@ func TestClaudeTokenUsagePreservesMeasuredZero(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	usage, err := provenance.LoadTurnTokenUsage(ctx, repoPath, providerName, events[0].ProviderSessionID, "turn-1")
+	usage, state, err := provenance.LoadTurnTokenUsage(ctx, repoPath, providerName, events[0].ProviderSessionID, "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := provenance.TurnTokenUsage{InputUncached: 100, Output: 30, CacheRead: 0, CacheWrite: 0}
 	if usage == nil || *usage != want {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, want %+v", usage, want)
+	}
+	if state != provenance.TurnTokenUsageValid {
+		t.Fatalf("state = %v, want valid", state)
 	}
 }

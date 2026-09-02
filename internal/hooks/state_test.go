@@ -50,6 +50,9 @@ func TestSaveAndLoadCaptureState(t *testing.T) {
 		TranscriptRef:    "/workspace/.claude/projects/test/session.jsonl",
 		TranscriptOffset: 42,
 		Timestamp:        1000,
+		TokenUsage: &TokenUsage{
+			TokensIn: 1, TokensOut: 2, TokensCacheRead: 3, TokensCacheCreate: 4,
+		},
 	}
 
 	if err := SaveCaptureState(state); err != nil {
@@ -75,6 +78,9 @@ func TestSaveAndLoadCaptureState(t *testing.T) {
 	}
 	if loaded.Timestamp != state.Timestamp {
 		t.Errorf("timestamp: got %d, want %d", loaded.Timestamp, state.Timestamp)
+	}
+	if loaded.TokenUsage == nil || *loaded.TokenUsage != *state.TokenUsage {
+		t.Errorf("token usage: got %+v, want %+v", loaded.TokenUsage, state.TokenUsage)
 	}
 }
 

@@ -186,6 +186,18 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 				slog.Warn("persist response candidate failed", "err", err)
 			}
 		}
+		if preState != nil && preState.Provider == provider.Name() {
+			changed, conflict := freezeTurnTokenUsage(preState, event.TokenUsage)
+			if conflict {
+				slog.Warn("capture: preserving existing turn token usage", "turn", preState.TurnID)
+			}
+			event.TokenUsage = cloneCapturedTokenUsage(preState.TokenUsage)
+			if changed {
+				if err := SaveCaptureState(preState); err != nil {
+					return fmt.Errorf("save turn token usage: %w", err)
+				}
+			}
+		}
 
 		captureStart := time.Now()
 		if err := CaptureAndRoute(benchCtx, provider, event, bh, blobStore); err != nil {
@@ -949,11 +961,14 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 		prompt = provenance.PromptCandidate{}
 	}
 	tc.Prompt = prompt
-	usage, usageErr := provenance.LoadTurnTokenUsage(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
+	usage, usageState, usageErr := provenance.LoadTurnTokenUsage(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
 	if usageErr != nil {
 		slog.Debug("provenance: load turn token usage failed", "repo", repoPath, "err", usageErr)
 	} else {
-		tc.TokenUsage = usage
+		tc.TokenUsage = selectTurnTokenUsage(usage, usageState, preState.TokenUsage)
+		if usageState == provenance.TurnTokenUsageInvalid {
+			slog.Warn("provenance: invalid persisted turn token usage", "repo", repoPath, "turn", tc.TurnID)
+		}
 	}
 
 	candidates, err := broker.ListAllRepos(ctx, bh)
@@ -990,6 +1005,53 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	}
 	for _, target := range targets[1:] {
 		provenance.PackageTurn(ctx, target, tc, packageSource)
+	}
+}
+
+// freezeTurnTokenUsage keeps the first valid usage report for the active turn.
+func freezeTurnTokenUsage(state *CaptureState, incoming *TokenUsage) (changed, conflict bool) {
+	if state == nil || state.TurnID == "" || projectCapturedTokenUsage(incoming) == nil {
+		return false, false
+	}
+	if state.TokenUsage == nil {
+		usage := *incoming
+		state.TokenUsage = &usage
+		return true, false
+	}
+	return false, *state.TokenUsage != *incoming
+}
+
+// projectCapturedTokenUsage validates and converts captured usage.
+func projectCapturedTokenUsage(usage *TokenUsage) *provenance.TurnTokenUsage {
+	if usage == nil || usage.TokensIn < 0 || usage.TokensOut < 0 || usage.TokensCacheRead < 0 || usage.TokensCacheCreate < 0 {
+		return nil
+	}
+	return &provenance.TurnTokenUsage{
+		InputUncached: usage.TokensIn,
+		Output:        usage.TokensOut,
+		CacheRead:     usage.TokensCacheRead,
+		CacheWrite:    usage.TokensCacheCreate,
+	}
+}
+
+// cloneCapturedTokenUsage returns a copy of valid captured usage.
+func cloneCapturedTokenUsage(usage *TokenUsage) *TokenUsage {
+	if projectCapturedTokenUsage(usage) == nil {
+		return nil
+	}
+	cloned := *usage
+	return &cloned
+}
+
+// selectTurnTokenUsage uses captured usage only when persisted usage is absent.
+func selectTurnTokenUsage(persisted *provenance.TurnTokenUsage, state provenance.TurnTokenUsageState, captured *TokenUsage) *provenance.TurnTokenUsage {
+	switch state {
+	case provenance.TurnTokenUsageValid:
+		return persisted
+	case provenance.TurnTokenUsageAbsent:
+		return projectCapturedTokenUsage(captured)
+	default:
+		return nil
 	}
 }
 

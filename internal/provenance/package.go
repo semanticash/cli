@@ -111,7 +111,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	// Resolve the final response and ensure its object is available locally.
 	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID, tc.ResponseCandidate)
 	response = ensureResponseResolvable(ctx, bs, sourceBlobs, response)
-	usage := validTurnTokenUsage(tc.TokenUsage)
+	usage := validateTurnTokenUsage(tc.TokenUsage)
 	usageColumns := nullableTurnTokenUsage(usage)
 
 	// Successful responses require a positive completion time for ordering. Use

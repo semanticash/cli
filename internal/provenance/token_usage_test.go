@@ -36,13 +36,28 @@ func TestLoadTurnTokenUsage_DeduplicatesAndScopesRootSession(t *testing.T) {
 	}
 	insertUsageEvent(t, h.DB, "child-e1", "child", repoID, "turn-1", "child-message", 100, 100, 100, 100)
 
-	usage, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	usage, state, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := TurnTokenUsage{InputUncached: 1, Output: 5, CacheRead: 3, CacheWrite: 4}
 	if usage == nil || *usage != want {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, want %+v", usage, want)
+	}
+	if state != TurnTokenUsageValid {
+		t.Fatalf("state = %v, want valid", state)
+	}
+}
+
+func TestLoadTurnTokenUsage_Absent(t *testing.T) {
+	ctx := context.Background()
+	repoRoot, _, _ := newSyncRepo(t, ctx)
+	usage, state, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage != nil || state != TurnTokenUsageAbsent {
+		t.Fatalf("LoadTurnTokenUsage() = %+v, %v; want unavailable, absent", usage, state)
 	}
 }
 
@@ -65,12 +80,15 @@ func TestLoadTurnTokenUsage_InvalidRowFailsClosed(t *testing.T) {
 		 values ('partial', ?, ?, 1, 'assistant', 'assistant', 1, 'turn-1', 'hook')`, sessionID, repoID); err != nil {
 		t.Fatal(err)
 	}
-	usage, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	usage, state, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage != nil {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, want unavailable", usage)
+	}
+	if state != TurnTokenUsageInvalid {
+		t.Fatalf("state = %v, want invalid", state)
 	}
 }
 
@@ -95,12 +113,15 @@ func TestLoadTurnTokenUsage_InvalidDuplicateFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	usage, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	usage, state, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage != nil {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, want unavailable", usage)
+	}
+	if state != TurnTokenUsageInvalid {
+		t.Fatalf("state = %v, want invalid", state)
 	}
 }
 
@@ -122,7 +143,7 @@ func TestLoadTurnTokenUsage_OverflowFailsClosed(t *testing.T) {
 	insertUsageEvent(t, h.DB, "max", sessionID, repoID, "turn-1", "message-1", maxInt64, 0, 0, 0)
 	insertUsageEvent(t, h.DB, "one", sessionID, repoID, "turn-1", "message-2", 1, 0, 0, 0)
 
-	usage, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	usage, _, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
 	if err == nil {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, nil error; want overflow error", usage)
 	}
@@ -147,12 +168,15 @@ func TestLoadTurnTokenUsage_NegativeRowCannotCancel(t *testing.T) {
 	}
 	insertUsageEvent(t, h.DB, "negative", sessionID, repoID, "turn-1", "message-1", -5, 1, 1, 1)
 	insertUsageEvent(t, h.DB, "positive", sessionID, repoID, "turn-1", "message-2", 10, 1, 1, 1)
-	usage, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
+	usage, state, err := LoadTurnTokenUsage(ctx, repoRoot, "codex", "ps", "turn-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage != nil {
 		t.Fatalf("LoadTurnTokenUsage() = %+v, want unavailable", usage)
+	}
+	if state != TurnTokenUsageInvalid {
+		t.Fatalf("state = %v, want invalid", state)
 	}
 }
 
