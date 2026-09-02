@@ -120,6 +120,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getPromptEventForTurnStmt, err = db.PrepareContext(ctx, getPromptEventForTurn); err != nil {
 		return nil, fmt.Errorf("error preparing query GetPromptEventForTurn: %w", err)
 	}
+	if q.getProvenanceManifestStmt, err = db.PrepareContext(ctx, getProvenanceManifest); err != nil {
+		return nil, fmt.Errorf("error preparing query GetProvenanceManifest: %w", err)
+	}
 	if q.getRepositoryByIDStmt, err = db.PrepareContext(ctx, getRepositoryByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetRepositoryByID: %w", err)
 	}
@@ -128,6 +131,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getSessionWithStatsStmt, err = db.PrepareContext(ctx, getSessionWithStats); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionWithStats: %w", err)
+	}
+	if q.getTurnTokenUsageStmt, err = db.PrepareContext(ctx, getTurnTokenUsage); err != nil {
+		return nil, fmt.Errorf("error preparing query GetTurnTokenUsage: %w", err)
 	}
 	if q.insertAgentEventStmt, err = db.PrepareContext(ctx, insertAgentEvent); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertAgentEvent: %w", err)
@@ -495,6 +501,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getPromptEventForTurnStmt: %w", cerr)
 		}
 	}
+	if q.getProvenanceManifestStmt != nil {
+		if cerr := q.getProvenanceManifestStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getProvenanceManifestStmt: %w", cerr)
+		}
+	}
 	if q.getRepositoryByIDStmt != nil {
 		if cerr := q.getRepositoryByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getRepositoryByIDStmt: %w", cerr)
@@ -508,6 +519,11 @@ func (q *Queries) Close() error {
 	if q.getSessionWithStatsStmt != nil {
 		if cerr := q.getSessionWithStatsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionWithStatsStmt: %w", cerr)
+		}
+	}
+	if q.getTurnTokenUsageStmt != nil {
+		if cerr := q.getTurnTokenUsageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getTurnTokenUsageStmt: %w", cerr)
 		}
 	}
 	if q.insertAgentEventStmt != nil {
@@ -916,9 +932,11 @@ type Queries struct {
 	getPreviousCommitLinkedCheckpointStmt        *sql.Stmt
 	getPreviousCompletedCheckpointStmt           *sql.Stmt
 	getPromptEventForTurnStmt                    *sql.Stmt
+	getProvenanceManifestStmt                    *sql.Stmt
 	getRepositoryByIDStmt                        *sql.Stmt
 	getRepositoryByRootPathStmt                  *sql.Stmt
 	getSessionWithStatsStmt                      *sql.Stmt
+	getTurnTokenUsageStmt                        *sql.Stmt
 	insertAgentEventStmt                         *sql.Stmt
 	insertCheckpointStmt                         *sql.Stmt
 	insertCommitLinkStmt                         *sql.Stmt
@@ -1024,9 +1042,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getPreviousCommitLinkedCheckpointStmt:        q.getPreviousCommitLinkedCheckpointStmt,
 		getPreviousCompletedCheckpointStmt:           q.getPreviousCompletedCheckpointStmt,
 		getPromptEventForTurnStmt:                    q.getPromptEventForTurnStmt,
+		getProvenanceManifestStmt:                    q.getProvenanceManifestStmt,
 		getRepositoryByIDStmt:                        q.getRepositoryByIDStmt,
 		getRepositoryByRootPathStmt:                  q.getRepositoryByRootPathStmt,
 		getSessionWithStatsStmt:                      q.getSessionWithStatsStmt,
+		getTurnTokenUsageStmt:                        q.getTurnTokenUsageStmt,
 		insertAgentEventStmt:                         q.insertAgentEventStmt,
 		insertCheckpointStmt:                         q.insertCheckpointStmt,
 		insertCommitLinkStmt:                         q.insertCommitLinkStmt,

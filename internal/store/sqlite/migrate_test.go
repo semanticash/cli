@@ -389,6 +389,43 @@ func TestMigration000008_PartialMigrationNotClean(t *testing.T) {
 	}
 }
 
+func TestMigration000009_UpDownOnExistingDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "lineage.db")
+	db := openRaw(t, dbPath)
+	if err := migrateWithSource(db, schemaAt(t, 8), 8); err != nil {
+		t.Fatal(err)
+	}
+	seeds := []string{
+		`insert into repositories (repository_id, root_path, created_at, enabled_at) values ('repo-a', '/tmp/a', 1, 1)`,
+		`insert into agent_sources (source_id, repository_id, provider, source_key, last_seen_at, created_at) values ('src-1', 'repo-a', 'cursor', '/k', 1, 1)`,
+		`insert into agent_sessions (session_id, provider_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json) values ('sess-1', 'p1', 'repo-a', 'cursor', 'src-1', 1, 1, '{}')`,
+		`insert into provenance_manifests (manifest_id, repository_id, session_id, turn_id, provider, kind, started_at, status, created_at, updated_at) values ('m-1', 'repo-a', 'sess-1', 't-1', 'cursor', 'turn_bundle', 1, 'packaged', 1, 1)`,
+	}
+	for _, statement := range seeds {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement, err)
+		}
+	}
+
+	if err := migrateWithSource(db, schemaAt(t, 9), 9); err != nil {
+		t.Fatal(err)
+	}
+	var tokens sql.NullInt64
+	if err := db.QueryRow("select tokens_in from provenance_manifests where manifest_id = 'm-1'").Scan(&tokens); err != nil {
+		t.Fatal(err)
+	}
+	if tokens.Valid {
+		t.Errorf("legacy tokens_in = %d, want NULL", tokens.Int64)
+	}
+
+	if err := migrateWithSource(db, schemaAt(t, 9), 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("select tokens_in from provenance_manifests").Scan(&tokens); err == nil {
+		t.Error("tokens_in still selectable after down migration")
+	}
+}
+
 func TestMigration_DirtyAfterCommitClearsWithoutReplay(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "lineage.db")

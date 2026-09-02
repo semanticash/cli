@@ -59,7 +59,8 @@ The capture command:
 2. On prompt-submit: saves the current transcript offset to `$SEMANTICA_HOME/capture/` so it knows where new content starts
 3. On direct tool hooks: stores prompt, file edit, shell, and subagent boundary events immediately when the provider exposes them
 4. On stop: reads the transcript or provider store from the saved offset, extracts events, and routes them through the broker to the correct repo's database
-5. Packages prompt, step, and bundle provenance blobs for each completed turn
+5. Packages prompt, step, and bundle provenance blobs for each completed turn,
+   and stores available provider-reported token usage with the turn manifest
 
 When a new prompt arrives before pending transcript data is replayed, Semantica preserves ordered turn boundaries. Providers with authoritative offsets recover ownership by transcript position; other providers leave ambiguous ownership unset. If a session switches transcripts while evidence is pending, Semantica preserves the old state as an orphan snapshot reported by `semantica doctor`.
 

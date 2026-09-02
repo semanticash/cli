@@ -37,17 +37,18 @@ type syncObject struct {
 // step_count, file_count, and prompt_hash are derived from the bundle blob
 // by the receiver, not sent by the CLI.
 type syncEnvelope struct {
-	ConnectedRepoID   string       `json:"connected_repo_id"`
-	Provider          string       `json:"provider"`
-	ProviderSessionID string       `json:"provider_session_id"`
-	TurnID            string       `json:"turn_id"`
-	Model             string       `json:"model,omitempty"`
-	CommitHash        string       `json:"commit_hash,omitempty"`
-	CheckpointID      string       `json:"checkpoint_id,omitempty"`
-	GitAuthor         string       `json:"git_author,omitempty"`
-	StartedAt         int64        `json:"started_at"`
-	CompletedAt       int64        `json:"completed_at,omitempty"`
-	Objects           []syncObject `json:"objects"`
+	ConnectedRepoID   string          `json:"connected_repo_id"`
+	Provider          string          `json:"provider"`
+	ProviderSessionID string          `json:"provider_session_id"`
+	TurnID            string          `json:"turn_id"`
+	Model             string          `json:"model,omitempty"`
+	CommitHash        string          `json:"commit_hash,omitempty"`
+	CheckpointID      string          `json:"checkpoint_id,omitempty"`
+	GitAuthor         string          `json:"git_author,omitempty"`
+	StartedAt         int64           `json:"started_at"`
+	CompletedAt       int64           `json:"completed_at,omitempty"`
+	TokenUsage        *TurnTokenUsage `json:"token_usage,omitempty"`
+	Objects           []syncObject    `json:"objects"`
 }
 
 // staleUploadingThreshold is how long a manifest can stay in 'uploading'
@@ -238,6 +239,7 @@ func buildSyncResult(
 		TurnID:            m.TurnID,
 		Model:             sessModel,
 		StartedAt:         m.StartedAt,
+		TokenUsage:        projectManifestTokenUsage(m),
 		Objects:           objects,
 	}
 	if m.CompletedAt.Valid {
@@ -268,6 +270,18 @@ func buildSyncResult(
 	result.Envelope = envJSON
 
 	return result
+}
+
+func projectManifestTokenUsage(m sqldb.ProvenanceManifest) *TurnTokenUsage {
+	if !m.TokensIn.Valid || !m.TokensOut.Valid || !m.TokensCacheRead.Valid || !m.TokensCacheCreate.Valid {
+		return nil
+	}
+	return validTurnTokenUsage(&TurnTokenUsage{
+		InputUncached: m.TokensIn.Int64,
+		Output:        m.TokensOut.Int64,
+		CacheRead:     m.TokensCacheRead.Int64,
+		CacheWrite:    m.TokensCacheCreate.Int64,
+	})
 }
 
 // loadAndRedact loads a CAS blob and returns upload-ready redacted bytes.

@@ -118,7 +118,8 @@ All capture and attribution data are stored locally in `.semantica/` - a directo
 Semantica never writes to Git history or creates side branches; lineage metadata lives in its own database and content-addressed blob store.
 
 Each completed AI turn is also packaged locally into a provenance bundle. The
-bundle references the prompt and step blobs captured for that turn. When a
+bundle references the prompt and step blobs captured for that turn, and its
+manifest preserves provider-reported token usage when available. When a
 provider transcript includes enough structured detail, packaging can also fill
 in missing step provenance from transcript evidence before the bundle is saved
 under `.semantica/` or later synced. File-backed provenance for paths ignored

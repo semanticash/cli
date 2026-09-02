@@ -443,6 +443,47 @@ order by last_seen_at desc limit ?;
 -- name: ListDistinctProviders :many
 select distinct provider from agent_sessions where repository_id = ?;
 
+-- name: GetTurnTokenUsage :one
+-- Deduplicates provider events before summing usage for one session turn.
+with token_groups as (
+    select
+        e.tokens_in,
+        e.tokens_out,
+        e.tokens_cache_read,
+        e.tokens_cache_create,
+        row_number() over (
+            partition by case
+                when e.role = 'assistant' and e.provider_event_id is not null and e.provider_event_id != ''
+                    then e.provider_event_id
+                else e.event_id
+            end
+            order by
+                case when e.tokens_in is not null and e.tokens_out is not null
+                    and e.tokens_cache_read is not null and e.tokens_cache_create is not null
+                    then 1 else 0 end desc,
+                coalesce(e.tokens_out, 0) desc,
+                e.ts desc,
+                e.event_id desc
+        ) as rn
+    from agent_events e
+    where e.session_id = ? and e.turn_id = ?
+)
+select
+    cast(coalesce(sum(case when rn = 1 then tokens_in else 0 end), 0) as integer) as tokens_in,
+    cast(coalesce(sum(case when rn = 1 then tokens_out else 0 end), 0) as integer) as tokens_out,
+    cast(coalesce(sum(case when rn = 1 then tokens_cache_read else 0 end), 0) as integer) as tokens_cache_read,
+    cast(coalesce(sum(case when rn = 1 then tokens_cache_create else 0 end), 0) as integer) as tokens_cache_create,
+    cast(coalesce(sum(case when rn = 1 and tokens_in is not null and tokens_out is not null
+        and tokens_cache_read is not null and tokens_cache_create is not null then 1 else 0 end), 0) as integer) as usage_count,
+    cast(coalesce(sum(case when ((tokens_in is not null or tokens_out is not null
+        or tokens_cache_read is not null or tokens_cache_create is not null)
+        and not (tokens_in is not null and tokens_out is not null
+            and tokens_cache_read is not null and tokens_cache_create is not null))
+        or coalesce(tokens_in, 0) < 0 or coalesce(tokens_out, 0) < 0
+        or coalesce(tokens_cache_read, 0) < 0 or coalesce(tokens_cache_create, 0) < 0
+        then 1 else 0 end), 0) as integer) as invalid_count
+from token_groups;
+
 -- name: ListProvidersByCheckpoint :many
 select distinct s.provider from agent_sessions s
     join session_checkpoints sc on sc.session_id = s.session_id
@@ -455,8 +496,9 @@ insert into provenance_manifests (
     started_at, completed_at, status,
     response_event_id, response_hash, response_summary,
     response_status, response_completed_at,
+    tokens_in, tokens_out, tokens_cache_read, tokens_cache_create,
     upload_attempts, created_at, updated_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 on conflict(repository_id, session_id, turn_id, kind) do update set
     transcript_ref=excluded.transcript_ref,
     provenance_bundle_hash=excluded.provenance_bundle_hash,
@@ -478,7 +520,31 @@ on conflict(repository_id, session_id, turn_id, kind) do update set
     response_completed_at=case when excluded.response_status in ('complete','empty')
         or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
         then excluded.response_completed_at else provenance_manifests.response_completed_at end,
+    tokens_in=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_in else provenance_manifests.tokens_in end,
+    tokens_out=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_out else provenance_manifests.tokens_out end,
+    tokens_cache_read=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_cache_read else provenance_manifests.tokens_cache_read end,
+    tokens_cache_create=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_cache_create else provenance_manifests.tokens_cache_create end,
     updated_at=excluded.updated_at;
+
+-- name: GetProvenanceManifest :one
+select * from provenance_manifests
+where repository_id = ? and session_id = ? and turn_id = ? and kind = ?;
 
 -- name: MarkManifestUploaded :exec
 update provenance_manifests set status = 'uploaded', updated_at = ? where manifest_id = ?;

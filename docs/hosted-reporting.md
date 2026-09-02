@@ -21,6 +21,7 @@ Semantica keeps provenance packaging local. Each completed turn can produce:
 - step provenance blobs for captured tool steps, and for transcript-replayed
   steps when the provider transcript has enough structured detail
 - a provenance bundle that ties those blobs together
+- provider-reported token usage when the provider supplied complete turn totals
 
 These artifacts are written under `.semantica/` first. If the repo is
 connected, the background worker attempts a best-effort sync after each commit.
@@ -29,6 +30,7 @@ packaged turns and already-captured commit attribution so older history can
 start draining right away.
 Steps whose primary file is ignored by Git are filtered out during packaging,
 so ignored-file provenance stays local and is not included in synced bundles.
+Token usage is optional metadata, not a billing or completeness measure.
 
 `semantica disconnect` stops future sync attempts from the current repo:
 
