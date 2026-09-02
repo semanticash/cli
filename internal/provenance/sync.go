@@ -276,7 +276,7 @@ func projectManifestTokenUsage(m sqldb.ProvenanceManifest) *TurnTokenUsage {
 	if !m.TokensIn.Valid || !m.TokensOut.Valid || !m.TokensCacheRead.Valid || !m.TokensCacheCreate.Valid {
 		return nil
 	}
-	return validTurnTokenUsage(&TurnTokenUsage{
+	return validateTurnTokenUsage(&TurnTokenUsage{
 		InputUncached: m.TokensIn.Int64,
 		Output:        m.TokensOut.Int64,
 		CacheRead:     m.TokensCacheRead.Int64,

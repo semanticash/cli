@@ -15,6 +15,7 @@ import (
 
 	"github.com/semanticash/cli/internal/agents/api"
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -202,6 +203,7 @@ func TestDispatch_AgentCompleted_PassesTokenUsageToReplay(t *testing.T) {
 		TranscriptRef:    "/transcript.jsonl",
 		TranscriptOffset: 0,
 		Timestamp:        1,
+		TurnID:           "turn-1",
 	}); err != nil {
 		t.Fatalf("save capture state: %v", err)
 	}
@@ -217,6 +219,139 @@ func TestDispatch_AgentCompleted_PassesTokenUsageToReplay(t *testing.T) {
 	}
 	if !prov.tokenUsageSeen || prov.tokenUsage != usage {
 		t.Fatalf("replay usage = %+v, seen=%v", prov.tokenUsage, prov.tokenUsageSeen)
+	}
+}
+
+func TestDispatch_AgentCompleted_FreezesFirstUsageBeforeCapture(t *testing.T) {
+	setupTestCaptureDir(t)
+	provider := &fakeProvider{
+		name:             "cursor",
+		transcriptOffset: 1,
+		readSequence: []fakeReadResult{
+			{err: fmt.Errorf("capture failed")},
+			{err: fmt.Errorf("capture failed again")},
+		},
+	}
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:        "usage-session",
+		Provider:         "cursor",
+		TranscriptRef:    "/transcript.jsonl",
+		TranscriptOffset: 0,
+		Timestamp:        1,
+		TurnID:           "turn-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := TokenUsage{TokensIn: 4, TokensOut: 2, TokensCacheRead: 8, TokensCacheCreate: 1}
+	event := &Event{Type: AgentCompleted, SessionID: "usage-session", TranscriptRef: "/transcript.jsonl", TokenUsage: &first}
+	if err := Dispatch(context.Background(), provider, event, nil, nil); err == nil {
+		t.Fatal("Dispatch() error = nil, want capture failure")
+	}
+	state, err := LoadCaptureState("usage-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TokenUsage == nil || *state.TokenUsage != first {
+		t.Fatalf("frozen usage = %+v, want %+v", state.TokenUsage, first)
+	}
+
+	second := TokenUsage{TokensIn: 40, TokensOut: 20, TokensCacheRead: 80, TokensCacheCreate: 10}
+	event.TokenUsage = &second
+	if err := Dispatch(context.Background(), provider, event, nil, nil); err == nil {
+		t.Fatal("retry Dispatch() error = nil, want capture failure")
+	}
+	state, err = LoadCaptureState("usage-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TokenUsage == nil || *state.TokenUsage != first {
+		t.Fatalf("usage after conflicting retry = %+v, want first value %+v", state.TokenUsage, first)
+	}
+	if !provider.tokenUsageSeen || provider.tokenUsage != first {
+		t.Fatalf("retry replay usage = %+v, want frozen first value %+v", provider.tokenUsage, first)
+	}
+}
+
+func TestPromptSubmitted_DoesNotCarryTokenUsageToNextTurn(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	world := newToolWindowWorld(t, home, "repo")
+	defer func() { _ = broker.Close(world.bh) }()
+
+	const sessionID = "cursor-session"
+	if err := SaveCaptureState(&CaptureState{
+		SessionID:        sessionID,
+		Provider:         "cursor",
+		TranscriptRef:    "/transcript.jsonl",
+		TranscriptOffset: 0,
+		Timestamp:        1,
+		TurnID:           "turn-1",
+		TokenUsage: &TokenUsage{
+			TokensIn: 10, TokensOut: 20, TokensCacheRead: 30, TokensCacheCreate: 40,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &fakeProvider{name: "cursor", transcriptOffset: 1}
+	prompt := &Event{
+		Type: PromptSubmitted, SessionID: sessionID, TranscriptRef: "/transcript.jsonl",
+		Prompt: "next turn", Timestamp: 2, CWD: world.repoPath,
+	}
+	if err := Dispatch(ctx, provider, prompt, world.bh, nil); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadCaptureState(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TokenUsage != nil {
+		t.Fatalf("new turn inherited token usage: %+v", state.TokenUsage)
+	}
+
+	if _, err := broker.WriteEventsToRepo(ctx, world.repoPath, []broker.RawEvent{{
+		EventID: "turn-2-prompt", SourceKey: "/transcript.jsonl", Provider: "cursor",
+		ProviderSessionID: sessionID, SessionStartedAt: 2,
+		Timestamp: 2, Kind: "user", Role: "user", TurnID: state.TurnID, EventSource: "hook",
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Dispatch(ctx, provider, &Event{
+		Type: AgentCompleted, SessionID: sessionID, TranscriptRef: "/transcript.jsonl", CWD: world.repoPath,
+	}, world.bh, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := sqlstore.Open(ctx, filepath.Join(world.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	var input, output, cacheRead, cacheWrite sql.NullInt64
+	if err := h.DB.QueryRowContext(ctx,
+		"select tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests where turn_id = ?",
+		state.TurnID,
+	).Scan(&input, &output, &cacheRead, &cacheWrite); err != nil {
+		t.Fatal(err)
+	}
+	if input.Valid || output.Valid || cacheRead.Valid || cacheWrite.Valid {
+		t.Fatalf("new turn usage = %v/%v/%v/%v, want unavailable", input, output, cacheRead, cacheWrite)
+	}
+}
+
+func TestSelectTurnTokenUsage(t *testing.T) {
+	persisted := &provenance.TurnTokenUsage{InputUncached: 1, Output: 2, CacheRead: 3, CacheWrite: 4}
+	frozen := &TokenUsage{TokensIn: 10, TokensOut: 20, TokensCacheRead: 30, TokensCacheCreate: 40}
+	if got := selectTurnTokenUsage(persisted, provenance.TurnTokenUsageValid, frozen); got != persisted {
+		t.Fatalf("valid persisted usage = %+v, want persisted value", got)
+	}
+	wantFallback := provenance.TurnTokenUsage{InputUncached: 10, Output: 20, CacheRead: 30, CacheWrite: 40}
+	if got := selectTurnTokenUsage(nil, provenance.TurnTokenUsageAbsent, frozen); got == nil || *got != wantFallback {
+		t.Fatalf("absent persisted usage = %+v, want frozen %+v", got, wantFallback)
+	}
+	if got := selectTurnTokenUsage(nil, provenance.TurnTokenUsageInvalid, frozen); got != nil {
+		t.Fatalf("invalid persisted usage = %+v, want unavailable", got)
 	}
 }
 
@@ -1504,6 +1639,9 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 		TranscriptRef:     "",
 		PromptSubmittedAt: 1,
 		CWD:               repoDir,
+		TokenUsage: &TokenUsage{
+			TokensIn: 10, TokensOut: 20, TokensCacheRead: 0, TokensCacheCreate: 0,
+		},
 	}
 	event := &Event{SessionID: "ps-1"}
 
@@ -1526,6 +1664,24 @@ func TestPackageTurnFromState_CWDFallbackReachesEnabledRepo(t *testing.T) {
 
 	if got := manifestCount("turn-cwd-fallback"); got != 1 {
 		t.Fatalf("packaging did not reach the enabled repo: %d manifests for turn, want 1", got)
+	}
+	usageDB, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input, output, cacheRead, cacheWrite sql.NullInt64
+	if err := usageDB.DB.QueryRowContext(ctx,
+		"select tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests where turn_id = ?",
+		"turn-cwd-fallback",
+	).Scan(&input, &output, &cacheRead, &cacheWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(usageDB); err != nil {
+		t.Fatal(err)
+	}
+	if !input.Valid || input.Int64 != 10 || !output.Valid || output.Int64 != 20 ||
+		!cacheRead.Valid || cacheRead.Int64 != 0 || !cacheWrite.Valid || cacheWrite.Int64 != 0 {
+		t.Fatalf("manifest usage = %v/%v/%v/%v, want 10/20/0/0", input, output, cacheRead, cacheWrite)
 	}
 
 	// Packaging requires a CWD from either the event or capture state.

@@ -72,10 +72,11 @@ type Event struct {
 	Response *string
 }
 
-// TokenUsage is a provider-reported turn total. TokensIn excludes cached input.
+// TokenUsage contains provider-reported totals for one turn.
+// TokensIn excludes cached input.
 type TokenUsage struct {
-	TokensIn          int64
-	TokensOut         int64
-	TokensCacheRead   int64
-	TokensCacheCreate int64
+	TokensIn          int64 `json:"input_uncached"`
+	TokensOut         int64 `json:"output"`
+	TokensCacheRead   int64 `json:"cache_read"`
+	TokensCacheCreate int64 `json:"cache_write"`
 }

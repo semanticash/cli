@@ -18,6 +18,15 @@ type TurnTokenUsage struct {
 	CacheWrite    int64 `json:"cache_write"`
 }
 
+// TurnTokenUsageState describes the validation state of persisted turn usage.
+type TurnTokenUsageState uint8
+
+const (
+	TurnTokenUsageAbsent TurnTokenUsageState = iota
+	TurnTokenUsageValid
+	TurnTokenUsageInvalid
+)
+
 type nullableUsage struct {
 	inputUncached sql.NullInt64
 	output        sql.NullInt64
@@ -25,45 +34,48 @@ type nullableUsage struct {
 	cacheWrite    sql.NullInt64
 }
 
-// LoadTurnTokenUsage returns measured usage for one session turn.
-// It returns nil when usage is missing or invalid.
-func LoadTurnTokenUsage(ctx context.Context, repoPath, provider, providerSessionID, turnID string) (*TurnTokenUsage, error) {
+// LoadTurnTokenUsage returns persisted usage and its validation state.
+func LoadTurnTokenUsage(ctx context.Context, repoPath, provider, providerSessionID, turnID string) (*TurnTokenUsage, TurnTokenUsageState, error) {
 	h, err := sqlstore.Open(ctx, filepath.Join(repoPath, ".semantica", "lineage.db"), sqlstore.OpenOptions{
 		BusyTimeout: 100 * time.Millisecond,
 		Synchronous: "NORMAL",
 	})
 	if err != nil {
-		return nil, err
+		return nil, TurnTokenUsageAbsent, err
 	}
 	defer func() { _ = sqlstore.Close(h) }()
 	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
 	if err != nil {
-		return nil, err
+		return nil, TurnTokenUsageAbsent, err
 	}
 	sess, err := resolveProviderSession(ctx, h, repo.RepositoryID, provider, providerSessionID)
 	if err != nil {
-		return nil, err
+		return nil, TurnTokenUsageAbsent, err
 	}
 	row, err := h.Queries.GetTurnTokenUsage(ctx, sqldb.GetTurnTokenUsageParams{
 		SessionID: sess.SessionID,
 		TurnID:    sqlstore.NullStr(turnID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, TurnTokenUsageAbsent, err
 	}
 	// Reject malformed rows even when deduplication selects a valid copy.
-	if row.InvalidCount != 0 || row.UsageCount == 0 || row.TokensIn < 0 || row.TokensOut < 0 || row.TokensCacheRead < 0 || row.TokensCacheCreate < 0 {
-		return nil, nil
+	if row.InvalidCount != 0 || row.TokensIn < 0 || row.TokensOut < 0 || row.TokensCacheRead < 0 || row.TokensCacheCreate < 0 {
+		return nil, TurnTokenUsageInvalid, nil
+	}
+	if row.UsageCount == 0 {
+		return nil, TurnTokenUsageAbsent, nil
 	}
 	return &TurnTokenUsage{
 		InputUncached: row.TokensIn,
 		Output:        row.TokensOut,
 		CacheRead:     row.TokensCacheRead,
 		CacheWrite:    row.TokensCacheCreate,
-	}, nil
+	}, TurnTokenUsageValid, nil
 }
 
-func validTurnTokenUsage(usage *TurnTokenUsage) *TurnTokenUsage {
+// validateTurnTokenUsage returns nil for absent or negative usage.
+func validateTurnTokenUsage(usage *TurnTokenUsage) *TurnTokenUsage {
 	if usage == nil || usage.InputUncached < 0 || usage.Output < 0 || usage.CacheRead < 0 || usage.CacheWrite < 0 {
 		return nil
 	}

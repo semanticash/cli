@@ -607,6 +607,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 			TokensOut:         fields.TokensOut,
 			TokensCacheRead:   fields.TokensCacheRead,
 			TokensCacheCreate: fields.TokensCacheCreate,
+			TokenUsageValid:   fields.TokenUsageValid,
 			ProviderEventID:   fields.ProviderEventID,
 			FilePaths:         filePaths,
 			ProviderSessionID: providerSessionID,

@@ -49,6 +49,8 @@ type CaptureState struct {
 	ResponseSummary     string `json:"response_summary,omitempty"`
 	ResponseEventID     string `json:"response_event_id,omitempty"`
 	ResponseCompletedAt int64  `json:"response_completed_at,omitempty"`
+	// TokenUsage is the first valid provider report for the active turn.
+	TokenUsage *TokenUsage `json:"token_usage,omitempty"`
 }
 
 // PendingTurnBoundary records where an interrupted turn begins.
