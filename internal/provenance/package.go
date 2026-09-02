@@ -28,6 +28,7 @@ type TurnContext struct {
 	CompletedAt   int64
 	CWD           string
 	Prompt        PromptCandidate
+	TokenUsage    *TurnTokenUsage
 
 	// Empty status means no hook-provided response.
 	ResponseCandidate ResponseCandidate
@@ -110,6 +111,8 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	// Resolve the final response and ensure its object is available locally.
 	response := captureFinalResponse(ctx, h, bs, sess.Provider, sess.SessionID, tc.TurnID, tc.ResponseCandidate)
 	response = ensureResponseResolvable(ctx, bs, sourceBlobs, response)
+	usage := validTurnTokenUsage(tc.TokenUsage)
+	usageColumns := nullableTurnTokenUsage(usage)
 
 	// Successful responses require a positive completion time for ordering. Use
 	// the turn completion time when the provider omitted one; otherwise record missing.
@@ -156,11 +159,28 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 		ResponseSummary:      sqlstore.NullStr(response.Summary),
 		ResponseStatus:       sqlstore.NullStr(response.Status),
 		ResponseCompletedAt:  sql.NullInt64{Int64: response.CompletedAt, Valid: response.CompletedAt > 0},
+		TokensIn:             usageColumns.inputUncached,
+		TokensOut:            usageColumns.output,
+		TokensCacheRead:      usageColumns.cacheRead,
+		TokensCacheCreate:    usageColumns.cacheWrite,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}); err != nil {
 		slog.Debug("provenance: upsert manifest failed", "err", err)
 		return
+	}
+	if usage != nil {
+		stored, err := h.Queries.GetProvenanceManifest(ctx, sqldb.GetProvenanceManifestParams{
+			RepositoryID: repo.RepositoryID,
+			SessionID:    sess.SessionID,
+			TurnID:       tc.TurnID,
+			Kind:         "turn_bundle",
+		})
+		if err != nil {
+			slog.Debug("provenance: read stored token usage failed", "turn", tc.TurnID, "err", err)
+		} else if tokenUsageDiffers(usage, stored) {
+			slog.Warn("provenance: preserving existing token usage", "turn", tc.TurnID)
+		}
 	}
 	dbDuration := time.Since(dbStart)
 

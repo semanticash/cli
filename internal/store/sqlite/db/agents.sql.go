@@ -352,6 +352,57 @@ func (q *Queries) GetPromptEventForTurn(ctx context.Context, arg GetPromptEventF
 	return i, err
 }
 
+const getProvenanceManifest = `-- name: GetProvenanceManifest :one
+select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests
+where repository_id = ? and session_id = ? and turn_id = ? and kind = ?
+`
+
+type GetProvenanceManifestParams struct {
+	RepositoryID string `json:"repository_id"`
+	SessionID    string `json:"session_id"`
+	TurnID       string `json:"turn_id"`
+	Kind         string `json:"kind"`
+}
+
+func (q *Queries) GetProvenanceManifest(ctx context.Context, arg GetProvenanceManifestParams) (ProvenanceManifest, error) {
+	row := q.queryRow(ctx, q.getProvenanceManifestStmt, getProvenanceManifest,
+		arg.RepositoryID,
+		arg.SessionID,
+		arg.TurnID,
+		arg.Kind,
+	)
+	var i ProvenanceManifest
+	err := row.Scan(
+		&i.ManifestID,
+		&i.RepositoryID,
+		&i.SessionID,
+		&i.TurnID,
+		&i.Provider,
+		&i.Kind,
+		&i.TranscriptRef,
+		&i.ProvenanceBundleHash,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Status,
+		&i.UploadAttempts,
+		&i.LastError,
+		&i.UploadTransformVersion,
+		&i.RemoteVerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ResponseEventID,
+		&i.ResponseHash,
+		&i.ResponseSummary,
+		&i.ResponseStatus,
+		&i.ResponseCompletedAt,
+		&i.TokensIn,
+		&i.TokensOut,
+		&i.TokensCacheRead,
+		&i.TokensCacheCreate,
+	)
+	return i, err
+}
+
 const getSessionWithStats = `-- name: GetSessionWithStats :one
 with session_scope as (
     select session_id, provider_session_id, parent_session_id, repository_id, provider, source_id, started_at, last_seen_at, metadata_json, source_repo_path, model from agent_sessions as base where base.session_id = ?
@@ -455,6 +506,76 @@ func (q *Queries) GetSessionWithStats(ctx context.Context, sessionID string) (Ge
 		&i.TokensIn,
 		&i.TokensOut,
 		&i.TokensCached,
+	)
+	return i, err
+}
+
+const getTurnTokenUsage = `-- name: GetTurnTokenUsage :one
+with token_groups as (
+    select
+        e.tokens_in,
+        e.tokens_out,
+        e.tokens_cache_read,
+        e.tokens_cache_create,
+        row_number() over (
+            partition by case
+                when e.role = 'assistant' and e.provider_event_id is not null and e.provider_event_id != ''
+                    then e.provider_event_id
+                else e.event_id
+            end
+            order by
+                case when e.tokens_in is not null and e.tokens_out is not null
+                    and e.tokens_cache_read is not null and e.tokens_cache_create is not null
+                    then 1 else 0 end desc,
+                coalesce(e.tokens_out, 0) desc,
+                e.ts desc,
+                e.event_id desc
+        ) as rn
+    from agent_events e
+    where e.session_id = ? and e.turn_id = ?
+)
+select
+    cast(coalesce(sum(case when rn = 1 then tokens_in else 0 end), 0) as integer) as tokens_in,
+    cast(coalesce(sum(case when rn = 1 then tokens_out else 0 end), 0) as integer) as tokens_out,
+    cast(coalesce(sum(case when rn = 1 then tokens_cache_read else 0 end), 0) as integer) as tokens_cache_read,
+    cast(coalesce(sum(case when rn = 1 then tokens_cache_create else 0 end), 0) as integer) as tokens_cache_create,
+    cast(coalesce(sum(case when rn = 1 and tokens_in is not null and tokens_out is not null
+        and tokens_cache_read is not null and tokens_cache_create is not null then 1 else 0 end), 0) as integer) as usage_count,
+    cast(coalesce(sum(case when ((tokens_in is not null or tokens_out is not null
+        or tokens_cache_read is not null or tokens_cache_create is not null)
+        and not (tokens_in is not null and tokens_out is not null
+            and tokens_cache_read is not null and tokens_cache_create is not null))
+        or coalesce(tokens_in, 0) < 0 or coalesce(tokens_out, 0) < 0
+        or coalesce(tokens_cache_read, 0) < 0 or coalesce(tokens_cache_create, 0) < 0
+        then 1 else 0 end), 0) as integer) as invalid_count
+from token_groups
+`
+
+type GetTurnTokenUsageParams struct {
+	SessionID string         `json:"session_id"`
+	TurnID    sql.NullString `json:"turn_id"`
+}
+
+type GetTurnTokenUsageRow struct {
+	TokensIn          int64 `json:"tokens_in"`
+	TokensOut         int64 `json:"tokens_out"`
+	TokensCacheRead   int64 `json:"tokens_cache_read"`
+	TokensCacheCreate int64 `json:"tokens_cache_create"`
+	UsageCount        int64 `json:"usage_count"`
+	InvalidCount      int64 `json:"invalid_count"`
+}
+
+// Deduplicates provider events before summing usage for one session turn.
+func (q *Queries) GetTurnTokenUsage(ctx context.Context, arg GetTurnTokenUsageParams) (GetTurnTokenUsageRow, error) {
+	row := q.queryRow(ctx, q.getTurnTokenUsageStmt, getTurnTokenUsage, arg.SessionID, arg.TurnID)
+	var i GetTurnTokenUsageRow
+	err := row.Scan(
+		&i.TokensIn,
+		&i.TokensOut,
+		&i.TokensCacheRead,
+		&i.TokensCacheCreate,
+		&i.UsageCount,
+		&i.InvalidCount,
 	)
 	return i, err
 }
@@ -948,7 +1069,7 @@ func (q *Queries) ListFailedManifestReasons(ctx context.Context, arg ListFailedM
 }
 
 const listPackagedManifests = `-- name: ListPackagedManifests :many
-select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at from provenance_manifests
+select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests
 where repository_id = ? and status = 'packaged'
   and upload_attempts < 5
   and (? = 0 or created_at <= ?)
@@ -1003,6 +1124,10 @@ func (q *Queries) ListPackagedManifests(ctx context.Context, arg ListPackagedMan
 			&i.ResponseSummary,
 			&i.ResponseStatus,
 			&i.ResponseCompletedAt,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.TokensCacheRead,
+			&i.TokensCacheCreate,
 		); err != nil {
 			return nil, err
 		}
@@ -1018,7 +1143,7 @@ func (q *Queries) ListPackagedManifests(ctx context.Context, arg ListPackagedMan
 }
 
 const listPendingManifests = `-- name: ListPendingManifests :many
-select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at from provenance_manifests
+select manifest_id, repository_id, session_id, turn_id, provider, kind, transcript_ref, provenance_bundle_hash, started_at, completed_at, status, upload_attempts, last_error, upload_transform_version, remote_verified_at, created_at, updated_at, response_event_id, response_hash, response_summary, response_status, response_completed_at, tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests
 where repository_id = ? and status in ('pending', 'packaged')
 order by created_at
 limit ?
@@ -1061,6 +1186,10 @@ func (q *Queries) ListPendingManifests(ctx context.Context, arg ListPendingManif
 			&i.ResponseSummary,
 			&i.ResponseStatus,
 			&i.ResponseCompletedAt,
+			&i.TokensIn,
+			&i.TokensOut,
+			&i.TokensCacheRead,
+			&i.TokensCacheCreate,
 		); err != nil {
 			return nil, err
 		}
@@ -2102,8 +2231,9 @@ insert into provenance_manifests (
     started_at, completed_at, status,
     response_event_id, response_hash, response_summary,
     response_status, response_completed_at,
+    tokens_in, tokens_out, tokens_cache_read, tokens_cache_create,
     upload_attempts, created_at, updated_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
 on conflict(repository_id, session_id, turn_id, kind) do update set
     transcript_ref=excluded.transcript_ref,
     provenance_bundle_hash=excluded.provenance_bundle_hash,
@@ -2125,6 +2255,26 @@ on conflict(repository_id, session_id, turn_id, kind) do update set
     response_completed_at=case when excluded.response_status in ('complete','empty')
         or coalesce(provenance_manifests.response_status,'') not in ('complete','empty')
         then excluded.response_completed_at else provenance_manifests.response_completed_at end,
+    tokens_in=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_in else provenance_manifests.tokens_in end,
+    tokens_out=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_out else provenance_manifests.tokens_out end,
+    tokens_cache_read=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_cache_read else provenance_manifests.tokens_cache_read end,
+    tokens_cache_create=case when provenance_manifests.tokens_in is null
+        and provenance_manifests.tokens_out is null
+        and provenance_manifests.tokens_cache_read is null
+        and provenance_manifests.tokens_cache_create is null
+        then excluded.tokens_cache_create else provenance_manifests.tokens_cache_create end,
     updated_at=excluded.updated_at
 `
 
@@ -2145,6 +2295,10 @@ type UpsertProvenanceManifestParams struct {
 	ResponseSummary      sql.NullString `json:"response_summary"`
 	ResponseStatus       sql.NullString `json:"response_status"`
 	ResponseCompletedAt  sql.NullInt64  `json:"response_completed_at"`
+	TokensIn             sql.NullInt64  `json:"tokens_in"`
+	TokensOut            sql.NullInt64  `json:"tokens_out"`
+	TokensCacheRead      sql.NullInt64  `json:"tokens_cache_read"`
+	TokensCacheCreate    sql.NullInt64  `json:"tokens_cache_create"`
 	CreatedAt            int64          `json:"created_at"`
 	UpdatedAt            int64          `json:"updated_at"`
 }
@@ -2167,6 +2321,10 @@ func (q *Queries) UpsertProvenanceManifest(ctx context.Context, arg UpsertProven
 		arg.ResponseSummary,
 		arg.ResponseStatus,
 		arg.ResponseCompletedAt,
+		arg.TokensIn,
+		arg.TokensOut,
+		arg.TokensCacheRead,
+		arg.TokensCacheCreate,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)

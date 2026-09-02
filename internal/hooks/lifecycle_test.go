@@ -1580,6 +1580,18 @@ func TestPackageTurnFromState_PackagesRepositoriesWithTurnEvents(t *testing.T) {
 	if _, err := broker.WriteEventsToRepo(ctx, a.repoPath, []broker.RawEvent{promptEvent}, source); err != nil {
 		t.Fatalf("write prompt: %v", err)
 	}
+	usageEvent := baseEvent
+	usageEvent.EventID = "usage-event"
+	usageEvent.Kind = "assistant"
+	usageEvent.Role = "assistant"
+	usageEvent.TokenUsageValid = true
+	usageEvent.TokensIn = 10
+	usageEvent.TokensOut = 20
+	usageEvent.TokensCacheRead = 30
+	usageEvent.TokensCacheCreate = 40
+	if _, err := broker.WriteEventsToRepo(ctx, a.repoPath, []broker.RawEvent{usageEvent}, source); err != nil {
+		t.Fatalf("write token usage: %v", err)
+	}
 
 	stepEvent := baseEvent
 	stepEvent.EventID = "step-event"
@@ -1684,6 +1696,25 @@ func TestPackageTurnFromState_PackagesRepositoriesWithTurnEvents(t *testing.T) {
 	if _, ok := readBundle(c); ok {
 		t.Fatal("unrelated repository received a turn bundle")
 	}
+	assertUsage := func(repo *toolWindowWorld) {
+		t.Helper()
+		h, err := sqlstore.Open(ctx, filepath.Join(repo.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sqlstore.Close(h) }()
+		var in, out, read, write sql.NullInt64
+		if err := h.DB.QueryRowContext(ctx,
+			`select tokens_in, tokens_out, tokens_cache_read, tokens_cache_create from provenance_manifests where turn_id = ?`, turnID,
+		).Scan(&in, &out, &read, &write); err != nil {
+			t.Fatal(err)
+		}
+		if !in.Valid || in.Int64 != 10 || out.Int64 != 20 || read.Int64 != 30 || write.Int64 != 40 {
+			t.Fatalf("%s usage = %v/%v/%v/%v", repo.repoPath, in, out, read, write)
+		}
+	}
+	assertUsage(a)
+	assertUsage(b)
 
 	bStore, err := blobs.NewStore(filepath.Join(b.semDir, "objects"))
 	if err != nil {

@@ -124,6 +124,10 @@ type ProvenanceManifest struct {
 	ResponseSummary        sql.NullString `json:"response_summary"`
 	ResponseStatus         sql.NullString `json:"response_status"`
 	ResponseCompletedAt    sql.NullInt64  `json:"response_completed_at"`
+	TokensIn               sql.NullInt64  `json:"tokens_in"`
+	TokensOut              sql.NullInt64  `json:"tokens_out"`
+	TokensCacheRead        sql.NullInt64  `json:"tokens_cache_read"`
+	TokensCacheCreate      sql.NullInt64  `json:"tokens_cache_create"`
 }
 
 type RemoteAttributionBackfill struct {

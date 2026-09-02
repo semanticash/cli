@@ -48,6 +48,9 @@ var dirtyProbes = map[int]func(ctx context.Context, db *sql.DB) (bool, error){
 		// The final column confirms that the migration completed.
 		return schemaHasColumn(ctx, db, "provenance_manifests", "response_completed_at")
 	},
+	9: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasColumn(ctx, db, "provenance_manifests", "tokens_cache_create")
+	},
 }
 
 func schemaHasTable(ctx context.Context, db *sql.DB, table string) (bool, error) {

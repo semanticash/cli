@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
+- Packaged turn provenance now preserves available provider-reported token
+  usage for hosted PR Journey and turn-detail views.
 - `semantica explain` now shows session models and distinguishes unavailable
   token usage from measured zero. `semantica blame` shows the agents and models
   represented in its attribution evidence.

@@ -949,6 +949,12 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 		prompt = provenance.PromptCandidate{}
 	}
 	tc.Prompt = prompt
+	usage, usageErr := provenance.LoadTurnTokenUsage(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
+	if usageErr != nil {
+		slog.Debug("provenance: load turn token usage failed", "repo", repoPath, "err", usageErr)
+	} else {
+		tc.TokenUsage = usage
+	}
 
 	candidates, err := broker.ListAllRepos(ctx, bh)
 	if err != nil {
