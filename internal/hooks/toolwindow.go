@@ -497,8 +497,6 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 	}
 
 	d := captureGroupDelta(ctx, store, earliest, groupID, postAnchor, prior, retry, event.Timestamp)
-	files, bytesRead, truncated := d.files, d.bytesRead, d.truncated
-	partialReason, postTree, capturedAt := d.partialReason, d.postTree, d.capturedAt
 
 	// Record completion before other writes so a crash cannot strand the
 	// member as active. Failure is non-fatal because capture can continue.
@@ -513,38 +511,56 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 	if evErr != nil {
 		return toolsnap.FinalizeResult{}, evErr
 	}
-	if postTree != "" && (prior == nil || prior.PostTreeHash == "") {
-		stopRef := toolsnap.MeasureStage(ctx, "ref_publish")
-		refErr := store.EnsureRef(ctx, toolsnap.GroupPostRef(store.WorktreeID(), groupID), postTree)
-		stopRef()
-		if refErr != nil {
-			// An unreachable post tree cannot support a retry.
-			partialReason = toolsnap.ReasonAlternateGone
-			postTree = ""
-			files, bytesRead, truncated = nil, 0, false
-		}
-	}
-	bench.filesChanged, bench.bytesRead, bench.partialReason = len(files), bytesRead, partialReason
-	delta := assembleDelta(members, files, bytesRead, truncated, partialReason, capturedAt)
-	canonical, err := delta.CanonicalBytes()
+
+	ensureGroupPostRef(ctx, store, groupID, prior, &d)
+
+	bench.filesChanged, bench.bytesRead, bench.partialReason = len(d.files), d.bytesRead, d.partialReason
+	deltaHash, err := storeGroupDelta(ctx, repoBlobs, members, d)
 	if err != nil {
-		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
-	}
-	stopBlob := toolsnap.MeasureStage(ctx, "persist_delta_blob")
-	deltaHash, _, err := repoBlobs.Put(ctx, canonical)
-	stopBlob()
-	if err != nil {
-		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, err
+		return toolsnap.FinalizeResult{Final: finalIdentity(d.postTree, "", d.partialReason, d.capturedAt)}, err
 	}
 	// Evidence links must be durable before the group can close.
 	stopLinks := toolsnap.MeasureStage(ctx, "persist_evidence_links")
 	linkErr := persistEvidenceLinks(ctx, target, members, deltaHash, info.At)
 	stopLinks()
 	if linkErr != nil {
-		return toolsnap.FinalizeResult{Final: finalIdentity(postTree, deltaHash, partialReason, capturedAt)}, linkErr
+		return toolsnap.FinalizeResult{Final: finalIdentity(d.postTree, deltaHash, d.partialReason, d.capturedAt)}, linkErr
 	}
-	collectGroupRefs(cleanupRefs, store, members, groupID, postTree)
+	collectGroupRefs(cleanupRefs, store, members, groupID, d.postTree)
 	return toolsnap.FinalizeResult{Done: true}, nil
+}
+
+// ensureGroupPostRef ensures the post-tree ref when d has a post tree and prior
+// finalization has none recorded. Failure marks d partial and clears file evidence.
+func ensureGroupPostRef(ctx context.Context, store *toolsnap.Store, groupID string, prior *toolsnap.GroupFinal, d *groupDelta) {
+	if d.postTree == "" || (prior != nil && prior.PostTreeHash != "") {
+		return
+	}
+	stopRef := toolsnap.MeasureStage(ctx, "ref_publish")
+	refErr := store.EnsureRef(ctx, toolsnap.GroupPostRef(store.WorktreeID(), groupID), d.postTree)
+	stopRef()
+	if refErr != nil {
+		d.partialReason = toolsnap.ReasonAlternateGone
+		d.postTree = ""
+		d.files, d.bytesRead, d.truncated = nil, 0, false
+	}
+}
+
+// storeGroupDelta stores the canonical group delta and returns its hash.
+// It does not publish events or evidence links.
+func storeGroupDelta(ctx context.Context, repoBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, d groupDelta) (string, error) {
+	delta := assembleDelta(members, d.files, d.bytesRead, d.truncated, d.partialReason, d.capturedAt)
+	canonical, err := delta.CanonicalBytes()
+	if err != nil {
+		return "", err
+	}
+	stopBlob := toolsnap.MeasureStage(ctx, "persist_delta_blob")
+	deltaHash, _, err := repoBlobs.Put(ctx, canonical)
+	stopBlob()
+	if err != nil {
+		return "", err
+	}
+	return deltaHash, nil
 }
 
 // groupDelta is the file-change result for a tool-window group, produced
