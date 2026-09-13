@@ -1083,3 +1083,349 @@ func newToolWindowWorldAt(t *testing.T, bh *broker.Handle, repoPath string) *too
 	}
 	return &toolWindowWorld{repoPath: repoPath, semDir: semDir, repoID: repoID, bh: bh}
 }
+
+// addBrokerRepo creates an enabled repository and registers it with the broker.
+// It returns the repository path, Semantica directory, and lineage repository ID.
+func addBrokerRepo(t *testing.T, bh *broker.Handle, parent, name string) (repoPath, semDir, repoID string) {
+	t.Helper()
+	ctx := context.Background()
+	repoPath = filepath.Join(parent, name)
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repoPath, "init", "-q", "-b", "main")
+	gitIn(t, repoPath, "config", "user.email", "t@example.com")
+	gitIn(t, repoPath, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repoPath, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repoPath, "add", ".")
+	gitIn(t, repoPath, "commit", "-q", "-m", "init")
+	semDir = filepath.Join(repoPath, ".semantica")
+	if err := os.MkdirAll(semDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semDir, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(semDir, "lineage.db")
+	if err := sqlstore.MigratePath(ctx, dbPath); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoID = uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: repoPath, CreatedAt: 1000, EnabledAt: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.Close(h); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.Register(ctx, bh, repoPath, repoPath); err != nil {
+		t.Fatal(err)
+	}
+	return repoPath, semDir, repoID
+}
+
+// Enabled observation opens additional windows and records them in the manifest.
+func TestHandleToolStepStarted_ObservesOtherRepos(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, _ := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	// Primary: one publishing window.
+	pwins := windowsIn(t, w.semDir)
+	if len(pwins) != 1 || pwins[0].Key.Mode != "" {
+		t.Fatalf("primary windows = %+v, want one publishing window", pwins)
+	}
+	// Other repo: one observation-only window.
+	owins := windowsIn(t, otherSem)
+	if len(owins) != 1 || owins[0].Key.Mode != toolsnap.ToolModeObserve {
+		t.Fatalf("other windows = %+v, want one observe window", owins)
+	}
+	// Manifest records the other repo as an observed candidate.
+	rec, err := LoadToolWindowObservation(receiptKeyFor("claude-code", &Event{
+		SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x",
+	}))
+	if err != nil || rec == nil {
+		t.Fatalf("manifest: rec=%+v err=%v", rec, err)
+	}
+	found := false
+	for _, c := range rec.Candidates {
+		if c.RepoPath == otherPath && c.Outcome == observationObserved {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("manifest candidates = %+v, want observed %s", rec.Candidates, otherPath)
+	}
+	if rec.PrimaryRepoPath != w.repoPath {
+		t.Fatalf("manifest primary = %q, want %q", rec.PrimaryRepoPath, w.repoPath)
+	}
+}
+
+// addBrokerRepoNoIdentity registers a repository without a lineage repository row.
+func addBrokerRepoNoIdentity(t *testing.T, bh *broker.Handle, parent, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	repoPath := filepath.Join(parent, name)
+	if err := os.MkdirAll(filepath.Join(repoPath, ".semantica"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repoPath, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repoPath, ".semantica", "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Leave the lineage repository row absent so identity lookup fails.
+	if err := broker.Register(ctx, bh, repoPath, repoPath); err != nil {
+		t.Fatal(err)
+	}
+	return repoPath
+}
+
+// Retried pre-hooks exclude repositories absent from the frozen manifest.
+func TestObserve_RetryIgnoresNewlyRegisteredRepo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	parent := filepath.Dir(w.repoPath)
+	_, otherSem, _ := addBrokerRepo(t, w.bh, parent, "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := startedEvent("sess", "toolu_x", w.repoPath)
+	if err := handleToolStepStarted(ctx, "claude-code", ev, w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new repository appears only after the first pass.
+	_, thirdSem, _ := addBrokerRepo(t, w.bh, parent, "third")
+
+	// Re-deliver the same pre hook.
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	if wins := windowsIn(t, thirdSem); len(wins) != 0 {
+		t.Fatalf("newly-registered repo observed on retry: %+v", wins)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("original observe window changed: %+v", wins)
+	}
+	rec, err := LoadToolWindowObservation(receiptKeyFor("claude-code", ev))
+	if err != nil || rec == nil {
+		t.Fatalf("manifest: %+v %v", rec, err)
+	}
+	for _, c := range rec.Candidates {
+		if c.RepoPath == filepath.Join(parent, "third") {
+			t.Fatalf("newly-registered repo entered the frozen manifest: %+v", rec.Candidates)
+		}
+	}
+}
+
+// Retries never snapshot a budget-expired candidate, even after its files change.
+func TestObserve_RetryDoesNotSnapshotBudgetExpired(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, _ := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	// Exhaust the budget before the candidate can be snapshotted.
+	origBudget := toolWindowObserveBudget
+	toolWindowObserveBudget = -1
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := startedEvent("sess", "toolu_x", w.repoPath)
+	if err := handleToolStepStarted(ctx, "claude-code", ev, w.bh); err != nil {
+		t.Fatal(err)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 0 {
+		t.Fatalf("budget-expired candidate got a snapshot on first pass: %+v", wins)
+	}
+
+	// The command runs and changes the candidate's files.
+	if err := os.WriteFile(filepath.Join(otherPath, "changed.txt"), []byte("after command\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restore the budget; a retry must not capture a new before-state.
+	toolWindowObserveBudget = 30 * time.Second
+	t.Cleanup(func() { toolWindowObserveBudget = origBudget })
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 0 {
+		t.Fatalf("budget-expired candidate got a fresh snapshot on retry: %+v", wins)
+	}
+	rec, err := LoadToolWindowObservation(receiptKeyFor("claude-code", ev))
+	if err != nil || rec == nil {
+		t.Fatalf("manifest: %+v %v", rec, err)
+	}
+	if len(rec.Candidates) != 1 || rec.Candidates[0].Outcome != observationBudgetExpired {
+		t.Fatalf("candidate outcome = %+v, want budget_expired preserved", rec.Candidates)
+	}
+}
+
+// The manifest accounts for all candidates even when every identity lookup fails.
+func TestObserve_AllIdentityFailuresPreserved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	parent := filepath.Dir(w.repoPath)
+	addBrokerRepoNoIdentity(t, w.bh, parent, "broken1")
+	addBrokerRepoNoIdentity(t, w.bh, parent, "broken2")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := startedEvent("sess", "toolu_x", w.repoPath)
+	if err := handleToolStepStarted(ctx, "claude-code", ev, w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := LoadToolWindowObservation(receiptKeyFor("claude-code", ev))
+	if err != nil || rec == nil {
+		t.Fatalf("manifest not recorded for all-unresolved case: %+v %v", rec, err)
+	}
+	if len(rec.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want none (all unresolved)", rec.Candidates)
+	}
+	if rec.OmittedUnresolved != 2 || rec.TotalActive != 2 {
+		t.Fatalf("gap = unresolved:%d total:%d, want 2/2 (failures preserved)", rec.OmittedUnresolved, rec.TotalActive)
+	}
+}
+
+// Duplicate deliveries skip observation while another attempt holds the lock.
+func TestObserve_DuplicateBacksOffWhileAttemptActive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	_, otherSem, _ := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := startedEvent("sess", "toolu_x", w.repoPath)
+	ev.TurnID = "turn-1" // match the id handleToolStepStarted fills in from state
+	receiptKey := receiptKeyFor("claude-code", ev)
+
+	// Hold the lock to simulate an active attempt.
+	release, ok := acquireObservationAttempt(receiptKey)
+	if !ok {
+		t.Fatal("could not hold attempt lock")
+	}
+
+	// Make the duplicate's acquisition give up quickly.
+	origA, origD := observationLockAttempts, observationLockRetryDelay
+	observationLockAttempts, observationLockRetryDelay = 2, time.Millisecond
+	t.Cleanup(func() { observationLockAttempts, observationLockRetryDelay = origA, origD })
+
+	// The duplicate must not create a manifest or snapshot.
+	if err := handleToolStepStarted(ctx, "claude-code", ev, w.bh); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := LoadToolWindowObservation(receiptKey); rec != nil {
+		t.Fatalf("duplicate created/changed manifest while attempt active: %+v", rec)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 0 {
+		t.Fatalf("duplicate observed candidate while attempt active: %+v", wins)
+	}
+
+	// A later delivery proceeds after the lock is released.
+	release()
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := LoadToolWindowObservation(receiptKey)
+	if err != nil || rec == nil {
+		t.Fatalf("manifest after release: %+v %v", rec, err)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 1 || wins[0].Key.Mode != toolsnap.ToolModeObserve {
+		t.Fatalf("observe window not created after release: %+v", wins)
+	}
+}
+
+// Retries reconcile frozen candidates even after their repositories are deactivated.
+func TestObserve_RetryReconcilesAfterCandidateDeactivated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, _, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev := startedEvent("sess", "toolu_x", w.repoPath)
+	ev.TurnID = "turn-1"
+	receiptKey := receiptKeyFor("claude-code", ev)
+
+	// Record a pending candidate without a snapshot.
+	if _, err := CreateToolWindowObservation(receiptKey, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     w.repoPath,
+		PrimaryRepositoryID: w.repoID,
+		Candidates:          []ObservedCandidate{{RepoPath: otherPath, RepositoryID: otherID, Outcome: observationPending}},
+		TotalActive:         1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the candidate from the active repository set.
+	if err := broker.Deactivate(ctx, w.bh, otherPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reconcile the frozen candidate on retry.
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := LoadToolWindowObservation(receiptKey)
+	if err != nil || rec == nil {
+		t.Fatalf("manifest: %+v %v", rec, err)
+	}
+	if len(rec.Candidates) != 1 || rec.Candidates[0].Outcome == observationPending {
+		t.Fatalf("candidate left pending after retry: %+v", rec.Candidates)
+	}
+	// The missing snapshot remains a coverage gap.
+	if rec.Candidates[0].Outcome != observationSnapshotFailed {
+		t.Fatalf("candidate outcome = %q, want snapshot_failed", rec.Candidates[0].Outcome)
+	}
+}

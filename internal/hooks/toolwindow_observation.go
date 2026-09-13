@@ -53,7 +53,9 @@ type ToolWindowObservationRecord struct {
 	PrimaryRepositoryID string              `json:"primary_repository_id,omitempty"`
 	Candidates          []ObservedCandidate `json:"candidates"`
 	OmittedByCap        int                 `json:"omitted_by_cap"`
-	TotalActive         int                 `json:"total_active"`
+	// OmittedUnresolved counts candidates with unresolved lineage identities.
+	OmittedUnresolved int `json:"omitted_unresolved,omitempty"`
+	TotalActive       int `json:"total_active"`
 }
 
 func validObservationOutcome(o string) bool {
@@ -74,13 +76,15 @@ func validateObservationRecord(rec *ToolWindowObservationRecord) error {
 	if (rec.PrimaryRepoPath == "") != (rec.PrimaryRepositoryID == "") {
 		return errors.New("observation manifest: partially specified primary target")
 	}
-	if len(rec.Candidates) == 0 {
-		return errors.New("observation manifest: no candidates")
-	}
-	if rec.OmittedByCap < 0 || rec.TotalActive < 0 {
+	if rec.OmittedByCap < 0 || rec.OmittedUnresolved < 0 || rec.TotalActive < 0 {
 		return errors.New("observation manifest: negative omission or total count")
 	}
-	if len(rec.Candidates)+rec.OmittedByCap != rec.TotalActive {
+	// A manifest must contain candidates or coverage gaps.
+	if len(rec.Candidates) == 0 && rec.OmittedByCap == 0 && rec.OmittedUnresolved == 0 {
+		return errors.New("observation manifest: empty (no candidates or gaps)")
+	}
+	// Candidates and omissions must account for the eligible total.
+	if len(rec.Candidates)+rec.OmittedByCap+rec.OmittedUnresolved != rec.TotalActive {
 		return errors.New("observation manifest: inconsistent omission counts")
 	}
 	seen := make(map[string]bool, len(rec.Candidates))
@@ -190,14 +194,14 @@ func writeObservation(path string, rec *ToolWindowObservationRecord) error {
 	return nil
 }
 
-// CreateToolWindowObservation creates a manifest if absent, preserving an
-// existing valid record. Invalid existing records return an error.
-func CreateToolWindowObservation(key toolWindowReceiptKey, rec *ToolWindowObservationRecord) error {
+// CreateToolWindowObservation creates a missing manifest and reports whether it
+// was created. Existing valid records are preserved; invalid records return an error.
+func CreateToolWindowObservation(key toolWindowReceiptKey, rec *ToolWindowObservationRecord) (created bool, err error) {
 	if !key.valid() {
-		return errors.New("observation manifest: incomplete window identity")
+		return false, errors.New("observation manifest: incomplete window identity")
 	}
 	if rec == nil {
-		return errors.New("observation manifest: nil record")
+		return false, errors.New("observation manifest: nil record")
 	}
 	rec.Version = toolWindowObservationVersion
 	if rec.CreatedAt == 0 {
@@ -206,18 +210,18 @@ func CreateToolWindowObservation(key toolWindowReceiptKey, rec *ToolWindowObserv
 	rec.Provider, rec.SessionID = key.Provider, key.SessionID
 	rec.TurnID, rec.ToolUseID = key.TurnID, key.ToolUseID
 	if err := validateObservationRecord(rec); err != nil {
-		return err
+		return false, err
 	}
 	path, err := toolWindowObservationPath(key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("mkdir capture dir: %w", err)
+		return false, fmt.Errorf("mkdir capture dir: %w", err)
 	}
 	lockFile, ok := lockObservation(path)
 	if !ok {
-		return errors.New("observation manifest: lock unavailable")
+		return false, errors.New("observation manifest: lock unavailable")
 	}
 	defer func() {
 		_ = platform.UnlockFile(lockFile)
@@ -227,12 +231,48 @@ func CreateToolWindowObservation(key toolWindowReceiptKey, rec *ToolWindowObserv
 	// Read errors must not allow replacement of a frozen record.
 	existing, rerr := readObservation(path, key)
 	if rerr != nil {
-		return rerr
+		return false, rerr
 	}
 	if existing != nil {
-		return nil // valid manifest present: preserve frozen candidates and progress
+		return false, nil // valid manifest present: preserve frozen candidates and progress
 	}
-	return writeObservation(path, rec)
+	if err := writeObservation(path, rec); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// acquireObservationAttempt locks the full observation attempt using a separate
+// sidecar from manifest operations. It returns a release function on success,
+// or (nil, false) if the lock cannot be acquired within the retry limit.
+func acquireObservationAttempt(key toolWindowReceiptKey) (func(), bool) {
+	path, err := toolWindowObservationPath(key)
+	if err != nil {
+		return nil, false
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, false
+	}
+	f, err := os.OpenFile(path+".attempt.lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, false
+	}
+	for attempt := 0; attempt < observationLockAttempts; attempt++ {
+		locked, lerr := platform.TryLockFile(f)
+		if lerr != nil {
+			_ = f.Close()
+			return nil, false
+		}
+		if locked {
+			return func() {
+				_ = platform.UnlockFile(f)
+				_ = f.Close()
+			}, true
+		}
+		time.Sleep(observationLockRetryDelay)
+	}
+	_ = f.Close()
+	return nil, false
 }
 
 // CheckpointToolWindowObservation updates candidate outcomes under the window lock.

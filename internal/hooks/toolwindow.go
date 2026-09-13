@@ -257,7 +257,190 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	default:
 		bench.outcome = "registered"
 	}
+
+	// Open additional observation windows when enabled.
+	if bench.outcome == "registered" && util.ObservationRoutingEnabled(target.semDir) {
+		observeAdditionalCandidates(wctx, providerName, event, bh, target, toolWindowCWD(event, state), state.CWD)
+	}
 	return nil
+}
+
+// toolWindowObserveBudget is the shared timeout for candidate snapshots.
+var toolWindowObserveBudget = 2 * time.Second
+
+// observeAdditionalCandidates freezes the candidate set and opens observation-only
+// windows outside the primary repository. Failures are recorded as coverage gaps.
+func observeAdditionalCandidates(ctx context.Context, providerName string, event *Event, bh *broker.Handle, primary *toolWindowTarget, cmdCWD, sessionCWD string) {
+	receiptKey := receiptKeyFor(providerName, event)
+
+	// Serialize snapshot creation, checkpoints, and retry reconciliation per window.
+	release, ok := acquireObservationAttempt(receiptKey)
+	if !ok {
+		return
+	}
+	defer release()
+
+	// Reconcile frozen candidates even if repository registrations have changed.
+	existing, lerr := LoadToolWindowObservation(receiptKey)
+	if lerr != nil {
+		slog.Warn("tool window observe: load manifest", "err", lerr)
+		return
+	}
+	if existing != nil {
+		reconcileObservation(ctx, providerName, event, receiptKey, existing)
+		return
+	}
+
+	repos, err := broker.ListActiveRepos(ctx, bh)
+	if err != nil {
+		slog.Warn("tool window observe: list repos", "err", err)
+		return
+	}
+	primaryCanonical := ""
+	for _, r := range repos {
+		if primary != nil && r.Path == primary.repoPath {
+			primaryCanonical = r.CanonicalPath
+			break
+		}
+	}
+	eligible := make([]broker.RegisteredRepo, 0, len(repos))
+	for _, r := range repos {
+		if r.CanonicalPath == primaryCanonical {
+			continue // the primary publishes; it is not observed
+		}
+		eligible = append(eligible, r)
+	}
+	if len(eligible) == 0 {
+		return
+	}
+	set := selectToolWindowCandidates(eligible, cmdCWD, sessionCWD, defaultToolWindowCandidateCap)
+
+	// Count unresolved repository identities as coverage gaps.
+	type resolvedCandidate struct{ path, repoID string }
+	var resolved []resolvedCandidate
+	candidates := make([]ObservedCandidate, 0, len(set.Repos))
+	unresolved := 0
+	for _, r := range set.Repos {
+		repoID, rerr := broker.RepositoryIDForPath(ctx, r.Path)
+		if rerr != nil || repoID == "" {
+			unresolved++
+			slog.Warn("tool window observe: resolve candidate identity", "repo", r.Path, "err", rerr)
+			continue
+		}
+		candidates = append(candidates, ObservedCandidate{RepoPath: r.Path, RepositoryID: repoID, Outcome: observationPending})
+		resolved = append(resolved, resolvedCandidate{path: r.Path, repoID: repoID})
+	}
+
+	// Preserve coverage gaps even when no identities resolve.
+	manifest := &ToolWindowObservationRecord{
+		PrimaryRepoPath:     primary.repoPath,
+		PrimaryRepositoryID: primary.repositoryID,
+		Candidates:          candidates,
+		OmittedByCap:        set.OmittedByCap,
+		OmittedUnresolved:   unresolved,
+		TotalActive:         set.TotalActive,
+	}
+	created, err := CreateToolWindowObservation(receiptKey, manifest)
+	if err != nil {
+		slog.Warn("tool window observe: create manifest", "err", err)
+		return
+	}
+	if !created {
+		// Another creator's frozen set takes precedence over this selection.
+		if existing, lerr := LoadToolWindowObservation(receiptKey); lerr == nil && existing != nil {
+			reconcileObservation(ctx, providerName, event, receiptKey, existing)
+		}
+		return
+	}
+
+	// Share one snapshot budget and record unattempted candidates as budget-expired.
+	obsCtx, cancel := context.WithTimeout(ctx, toolWindowObserveBudget)
+	defer cancel()
+	for _, c := range resolved {
+		outcome := observationBudgetExpired
+		if obsCtx.Err() == nil {
+			outcome = observeOneCandidate(obsCtx, providerName, event, c.path, c.repoID)
+		}
+		if err := CheckpointToolWindowObservation(receiptKey, map[string]string{c.path: outcome}); err != nil {
+			slog.Warn("tool window observe: checkpoint outcome", "repo", c.path, "err", err)
+		}
+	}
+}
+
+// reconcileObservation resolves pending candidates from existing registrations.
+// It preserves terminal outcomes and never takes new snapshots.
+func reconcileObservation(ctx context.Context, providerName string, event *Event, receiptKey toolWindowReceiptKey, rec *ToolWindowObservationRecord) {
+	for _, c := range rec.Candidates {
+		if c.Outcome != observationPending {
+			continue // frozen terminal outcomes are never changed
+		}
+		outcome := observationSnapshotFailed // no snapshot exists and we must not take one now
+		if active, err := observeWindowActive(ctx, providerName, event, c.RepoPath, c.RepositoryID); err == nil && active {
+			outcome = observationObserved
+		}
+		if err := CheckpointToolWindowObservation(receiptKey, map[string]string{c.RepoPath: outcome}); err != nil {
+			slog.Warn("tool window observe: reconcile checkpoint", "repo", c.RepoPath, "err", err)
+		}
+	}
+}
+
+// observeWindowActive checks for an existing observation window without creating one.
+func observeWindowActive(_ context.Context, providerName string, event *Event, repoPath, repositoryID string) (bool, error) {
+	snap, err := toolsnap.InspectRegistry(filepath.Join(repoPath, ".semantica"))
+	if err != nil {
+		return false, err
+	}
+	key := toolsnap.ToolKey{
+		RepositoryID: repositoryID,
+		Provider:     strings.ReplaceAll(providerName, "-", "_"),
+		SessionID:    event.SessionID,
+		TurnID:       event.TurnID,
+		ToolUseID:    event.ToolUseID,
+		Mode:         toolsnap.ToolModeObserve,
+	}
+	for _, w := range snap.Windows {
+		if w.Key == key {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// observeOneCandidate opens an observation window and returns its capture outcome.
+func observeOneCandidate(ctx context.Context, providerName string, event *Event, repoPath, repositoryID string) string {
+	semDir := filepath.Join(repoPath, ".semantica")
+	rc, err := toolsnap.ResolveRepoContext(ctx, repoPath)
+	if err != nil {
+		slog.Warn("tool window observe: resolve repo", "repo", repoPath, "err", err)
+		return observationSnapshotFailed
+	}
+	store, err := toolsnap.OpenStore(ctx, rc, semDir)
+	if err != nil {
+		slog.Warn("tool window observe: open store", "repo", repoPath, "err", err)
+		return observationSnapshotFailed
+	}
+	reg, err := toolsnap.OpenRegistry(semDir)
+	if err != nil {
+		slog.Warn("tool window observe: open registry", "repo", repoPath, "err", err)
+		return observationSnapshotFailed
+	}
+	key := toolsnap.ToolKey{
+		RepositoryID: repositoryID,
+		Provider:     strings.ReplaceAll(providerName, "-", "_"),
+		SessionID:    event.SessionID,
+		TurnID:       event.TurnID,
+		ToolUseID:    event.ToolUseID,
+		Mode:         toolsnap.ToolModeObserve,
+	}
+	captureCtx := ctx
+	if toolWindowPreCapture != nil {
+		captureCtx = toolWindowPreCapture(ctx)
+	}
+	if _, err := reg.CaptureAndBegin(captureCtx, store, key, event.ToolName, event.Timestamp); err != nil {
+		slog.Warn("tool window observe: pre capture", "repo", repoPath, "err", err)
+		return observationSnapshotFailed
+	}
+	return observationObserved
 }
 
 // toolWindowDisposition is completeToolWindow's outcome for the caller.

@@ -31,7 +31,7 @@ func TestToolWindowObservation_CreateThenCheckpoint(t *testing.T) {
 	toolWindowNow = func() int64 { return 10_000_000 }
 
 	k := key("codex", "s1", "t1", "call1")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -59,19 +59,21 @@ func TestToolWindowObservation_CreateThenCheckpoint(t *testing.T) {
 func TestToolWindowObservation_CreateIsIdempotentAndPreservesProgress(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 	k := key("codex", "s1", "t1", "call1")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
-		t.Fatalf("create: %v", err)
+	created, err := CreateToolWindowObservation(k, pendingRecord())
+	if err != nil || !created {
+		t.Fatalf("first create: created=%v err=%v, want created", created, err)
 	}
 	if err := CheckpointToolWindowObservation(k, map[string]string{"/repos/cli": observationObserved}); err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	// A different candidate set cannot replace the existing manifest.
+	// A second creator preserves the frozen set and receives created=false.
 	clobber := pendingRecord()
 	clobber.Candidates = []ObservedCandidate{{RepoPath: "/repos/other", RepositoryID: "x", Outcome: observationPending}}
 	clobber.OmittedByCap = 0
 	clobber.TotalActive = 1
-	if err := CreateToolWindowObservation(k, clobber); err != nil {
-		t.Fatalf("second create: %v", err)
+	created, err = CreateToolWindowObservation(k, clobber)
+	if err != nil || created {
+		t.Fatalf("second create: created=%v err=%v, want not-created", created, err)
 	}
 	got, _ := LoadToolWindowObservation(k)
 	if got == nil || len(got.Candidates) != 2 || got.Candidates[0].Outcome != observationObserved {
@@ -83,7 +85,7 @@ func TestToolWindowObservation_CreateIsIdempotentAndPreservesProgress(t *testing
 func TestToolWindowObservation_CheckpointRejectsUnknownCandidate(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 	k := key("codex", "s1", "t1", "call1")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if err := CheckpointToolWindowObservation(k, map[string]string{"/repos/ghost": observationObserved}); err == nil {
@@ -167,7 +169,7 @@ func TestToolWindowObservation_CreateRefusesInvalidExisting(t *testing.T) {
 	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := CreateToolWindowObservation(k, pendingRecord()); err == nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err == nil {
 		t.Fatal("expected create to refuse a present-but-invalid manifest")
 	}
 	got, _ := os.ReadFile(path)
@@ -180,7 +182,7 @@ func TestToolWindowObservation_CreateRefusesInvalidExisting(t *testing.T) {
 func TestToolWindowObservation_CheckpointCannotReverseTerminal(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 	k := key("codex", "s1", "t1", "call1")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if err := CheckpointToolWindowObservation(k, map[string]string{"/repos/cli": observationObserved}); err != nil {
@@ -208,7 +210,7 @@ func TestToolWindowObservation_CheckpointCannotReverseTerminal(t *testing.T) {
 func TestToolWindowObservation_DeleteRetainsLockAndSerializes(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())
 	k := key("codex", "s1", "t1", "call1")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path, err := toolWindowObservationPath(k)
@@ -261,10 +263,10 @@ func TestSweepToolWindowObservations_RemovesStaleManifestRetainsLock(t *testing.
 
 	fresh := key("codex", "s-fresh", "t", "call")
 	stale := key("codex", "s-stale", "t", "call")
-	if err := CreateToolWindowObservation(fresh, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(fresh, pendingRecord()); err != nil {
 		t.Fatal(err)
 	}
-	if err := CreateToolWindowObservation(stale, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(stale, pendingRecord()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,7 +312,7 @@ func TestSweepToolWindowObservations_SkipsStaleManifestWhileLockHeld(t *testing.
 	toolWindowNow = func() int64 { return base }
 
 	k := key("codex", "s-stale", "t", "call")
-	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+	if _, err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
 		t.Fatal(err)
 	}
 	path, _ := toolWindowObservationPath(k)

@@ -91,25 +91,29 @@ type Settings struct {
 	AttributionV2 *bool
 	// WorkspaceFreeze controls an incomplete internal experiment. Nil disables it.
 	WorkspaceFreeze *bool
-	extra           map[string]json.RawMessage
+	// ObservationRouting enables multi-repository observation. Nil disables it.
+	ObservationRouting *bool
+	extra              map[string]json.RawMessage
 }
 
 // settingsKnown mirrors Settings' known fields for JSON decoding.
 type settingsKnown struct {
-	Enabled         bool         `json:"enabled"`
-	Version         int          `json:"version"`
-	Providers       []string     `json:"providers,omitempty"`
-	Trailers        *bool        `json:"trailers,omitempty"`
-	Automations     *Automations `json:"automations,omitempty"`
-	Connected       bool         `json:"connected"`
-	ConnectedRepoID string       `json:"connected_repo_id,omitempty"`
-	AttributionV2   *bool        `json:"attribution_v2,omitempty"`
-	WorkspaceFreeze *bool        `json:"workspace_freeze,omitempty"`
+	Enabled            bool         `json:"enabled"`
+	Version            int          `json:"version"`
+	Providers          []string     `json:"providers,omitempty"`
+	Trailers           *bool        `json:"trailers,omitempty"`
+	Automations        *Automations `json:"automations,omitempty"`
+	Connected          bool         `json:"connected"`
+	ConnectedRepoID    string       `json:"connected_repo_id,omitempty"`
+	AttributionV2      *bool        `json:"attribution_v2,omitempty"`
+	WorkspaceFreeze    *bool        `json:"workspace_freeze,omitempty"`
+	ObservationRouting *bool        `json:"observation_routing,omitempty"`
 }
 
 var settingsKnownKeys = []string{
 	"enabled", "version", "providers", "trailers", "automations",
 	"connected", "connected_repo_id", "attribution_v2", "workspace_freeze",
+	"observation_routing",
 }
 
 func (s *Settings) UnmarshalJSON(b []byte) error {
@@ -125,31 +129,33 @@ func (s *Settings) UnmarshalJSON(b []byte) error {
 		delete(raw, k)
 	}
 	*s = Settings{
-		Enabled:         known.Enabled,
-		Version:         known.Version,
-		Providers:       known.Providers,
-		Trailers:        known.Trailers,
-		Automations:     known.Automations,
-		Connected:       known.Connected,
-		ConnectedRepoID: known.ConnectedRepoID,
-		AttributionV2:   known.AttributionV2,
-		WorkspaceFreeze: known.WorkspaceFreeze,
-		extra:           raw,
+		Enabled:            known.Enabled,
+		Version:            known.Version,
+		Providers:          known.Providers,
+		Trailers:           known.Trailers,
+		Automations:        known.Automations,
+		Connected:          known.Connected,
+		ConnectedRepoID:    known.ConnectedRepoID,
+		AttributionV2:      known.AttributionV2,
+		WorkspaceFreeze:    known.WorkspaceFreeze,
+		ObservationRouting: known.ObservationRouting,
+		extra:              raw,
 	}
 	return nil
 }
 
 func (s Settings) MarshalJSON() ([]byte, error) {
 	kb, err := json.Marshal(settingsKnown{
-		Enabled:         s.Enabled,
-		Version:         s.Version,
-		Providers:       s.Providers,
-		Trailers:        s.Trailers,
-		Automations:     s.Automations,
-		Connected:       s.Connected,
-		ConnectedRepoID: s.ConnectedRepoID,
-		AttributionV2:   s.AttributionV2,
-		WorkspaceFreeze: s.WorkspaceFreeze,
+		Enabled:            s.Enabled,
+		Version:            s.Version,
+		Providers:          s.Providers,
+		Trailers:           s.Trailers,
+		Automations:        s.Automations,
+		Connected:          s.Connected,
+		ConnectedRepoID:    s.ConnectedRepoID,
+		AttributionV2:      s.AttributionV2,
+		WorkspaceFreeze:    s.WorkspaceFreeze,
+		ObservationRouting: s.ObservationRouting,
 	})
 	if err != nil {
 		return nil, err
@@ -288,6 +294,25 @@ func WorkspaceFreezeEnabled(semDir string) bool {
 		return false
 	}
 	return *s.WorkspaceFreeze
+}
+
+// ObservationRoutingEnabled reports whether multi-repository observation is enabled.
+// The environment overrides repository settings; the default is false.
+func ObservationRoutingEnabled(semDir string) bool {
+	switch os.Getenv("SEMANTICA_OBSERVE_ROUTING") {
+	case "1", "true":
+		return true
+	case "0", "false":
+		return false
+	}
+	s, err := ReadSettings(semDir)
+	if err != nil {
+		return false
+	}
+	if s.ObservationRouting == nil {
+		return false
+	}
+	return *s.ObservationRouting
 }
 
 // IsPlaybookEnabled returns true if the auto-playbook automation is enabled.
