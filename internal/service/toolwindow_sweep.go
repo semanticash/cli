@@ -82,4 +82,11 @@ func SweepToolWindows(ctx context.Context) {
 	} else if n > 0 {
 		wlog("worker: toolwindow sweep: reclaimed %d stale routing receipt(s)\n", n)
 	}
+
+	// Remove expired observation manifests while retaining lock files.
+	if n, err := hooks.SweepToolWindowObservations(); err != nil {
+		wlog("worker: toolwindow sweep: reclaim observation manifests: %v\n", err)
+	} else if n > 0 {
+		wlog("worker: toolwindow sweep: reclaimed %d stale observation manifest(s)\n", n)
+	}
 }

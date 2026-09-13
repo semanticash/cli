@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/semanticash/cli/internal/platform"
@@ -301,6 +302,79 @@ func LoadToolWindowObservation(key toolWindowReceiptKey) (*ToolWindowObservation
 		return nil, err
 	}
 	return readObservation(path, key)
+}
+
+// SweepToolWindowObservations removes expired or malformed manifests under
+// their window locks. Unavailable locks cause manifests to be skipped.
+//
+// Lock files are retained to preserve mutual exclusion. File age does not
+// establish whether another process is using a lock.
+func SweepToolWindowObservations() (int, error) {
+	dir, err := captureDir()
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read capture dir: %w", err)
+	}
+	removed := 0
+	var errs []error
+	cutoff := toolWindowNow() - toolWindowTargetTTL.Milliseconds()
+	for _, e := range entries {
+		name := e.Name()
+		// Skip lock files and temporary files.
+		if !e.Type().IsRegular() || !strings.HasPrefix(name, "obs-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+
+		// Avoid locking manifests that do not need cleanup.
+		if !observationFileStale(path, cutoff) {
+			continue
+		}
+		if n, err := sweepStaleObservation(path, cutoff); err != nil {
+			errs = append(errs, fmt.Errorf("sweep %s: %w", name, err))
+		} else {
+			removed += n
+		}
+	}
+	return removed, errors.Join(errs...)
+}
+
+// observationFileStale checks for invalid JSON, a zero timestamp, or expiry.
+// Missing or unreadable files return false.
+func observationFileStale(path string, cutoff int64) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var rec ToolWindowObservationRecord
+	return json.Unmarshal(data, &rec) != nil || rec.CreatedAt == 0 || rec.CreatedAt < cutoff
+}
+
+// sweepStaleObservation rechecks and removes a stale manifest under its lock.
+// An unavailable lock returns (0, nil). The lock file is retained.
+func sweepStaleObservation(path string, cutoff int64) (int, error) {
+	lockFile, ok := lockObservation(path)
+	if !ok {
+		return 0, nil // cannot coordinate; leave for a later sweep
+	}
+	defer func() {
+		_ = platform.UnlockFile(lockFile)
+		_ = lockFile.Close()
+	}()
+	// Recheck after locking to preserve any intervening refresh.
+	if !observationFileStale(path, cutoff) {
+		return 0, nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return 0, err
+	}
+	return 1, nil
 }
 
 // DeleteToolWindowObservation removes the manifest under its window lock.

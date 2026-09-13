@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/semanticash/cli/internal/platform"
 )
@@ -240,5 +241,132 @@ func TestToolWindowObservation_DeleteRetainsLockAndSerializes(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".lock"); err != nil {
 		t.Fatalf("lock sidecar must be retained: %v", err)
+	}
+}
+
+// stampIdentity sets manifest identity fields for direct persistence tests.
+func stampIdentity(rec *ToolWindowObservationRecord, k toolWindowReceiptKey) *ToolWindowObservationRecord {
+	rec.Version = toolWindowObservationVersion
+	rec.Provider, rec.SessionID, rec.TurnID, rec.ToolUseID = k.Provider, k.SessionID, k.TurnID, k.ToolUseID
+	return rec
+}
+
+// Cleanup removes stale manifests while retaining fresh manifests and lock files.
+func TestSweepToolWindowObservations_RemovesStaleManifestRetainsLock(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	orig := toolWindowNow
+	t.Cleanup(func() { toolWindowNow = orig })
+	base := int64(1_000_000_000_000)
+	toolWindowNow = func() int64 { return base }
+
+	fresh := key("codex", "s-fresh", "t", "call")
+	stale := key("codex", "s-stale", "t", "call")
+	if err := CreateToolWindowObservation(fresh, pendingRecord()); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateToolWindowObservation(stale, pendingRecord()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Expire both manifests, then refresh one.
+	toolWindowNow = func() int64 { return base + toolWindowTargetTTL.Milliseconds() + 1000 }
+	freshPath, _ := toolWindowObservationPath(fresh)
+	rec := pendingRecord()
+	rec.CreatedAt = toolWindowNow()
+	if err := writeObservation(freshPath, stampIdentity(rec, fresh)); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := SweepToolWindowObservations()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("removed = %d, want 1 (stale manifest only)", n)
+	}
+	stalePath, _ := toolWindowObservationPath(stale)
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("stale manifest not removed: %v", err)
+	}
+	// Manifest deletion preserves the lock file.
+	if _, err := os.Stat(stalePath + ".lock"); err != nil {
+		t.Fatalf("stale manifest's lock must be retained: %v", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Fatalf("fresh manifest removed: %v", err)
+	}
+}
+
+// A held lock prevents removal of its stale manifest.
+func TestSweepToolWindowObservations_SkipsStaleManifestWhileLockHeld(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	orig := toolWindowNow
+	origAttempts := observationLockAttempts
+	t.Cleanup(func() {
+		toolWindowNow = orig
+		observationLockAttempts = origAttempts
+	})
+	base := int64(1_000_000_000_000)
+	toolWindowNow = func() int64 { return base }
+
+	k := key("codex", "s-stale", "t", "call")
+	if err := CreateToolWindowObservation(k, pendingRecord()); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := toolWindowObservationPath(k)
+
+	// Hold the expired manifest's lock during cleanup.
+	toolWindowNow = func() int64 { return base + toolWindowTargetTTL.Milliseconds() + 1000 }
+	observationLockAttempts = 2
+	held, ok := lockObservation(path)
+	if !ok {
+		t.Fatal("could not acquire lock for test")
+	}
+	defer func() { _ = platform.UnlockFile(held); _ = held.Close() }()
+
+	n, err := SweepToolWindowObservations()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("removed = %d, want 0 (locked manifest must be skipped)", n)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("locked manifest must be retained: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Fatalf("held lock must be retained: %v", err)
+	}
+}
+
+// Orphaned lock files are retained regardless of age.
+func TestSweepToolWindowObservations_NeverReclaimsOrphanedLocks(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	dir, err := captureDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(dir, "obs-toolwindow-orphan.json.lock")
+	if err := os.WriteFile(orphan, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Lock age must not trigger deletion.
+	past := time.Now().Add(-2 * toolWindowTargetTTL)
+	if err := os.Chtimes(orphan, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := SweepToolWindowObservations()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("removed = %d, want 0 (locks are never reclaimed)", n)
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("orphaned lock must be retained: %v", err)
 	}
 }
