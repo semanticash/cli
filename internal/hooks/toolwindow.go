@@ -99,7 +99,7 @@ type toolWindowBench struct {
 	groupMembers  int
 }
 
-// emitToolWindowBench records a tool-window result and optional stage timings.
+// emitToolWindowBench records a tool-window result and optional operation timings.
 func emitToolWindowBench(target *toolWindowTarget, event *Event, phase string, start time.Time, bench *toolWindowBench, stages *toolsnap.StageTimes, scope *doctor.BenchScope) {
 	if target == nil || bench.outcome == "" {
 		return
@@ -530,6 +530,34 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 	return toolsnap.FinalizeResult{Done: true}, nil
 }
 
+// finalizeObserveGroup stores an observation delta without publishing events or
+// evidence links. It returns the closure identity and collects refs for cleanup.
+func finalizeObserveGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsnap.HeadAnchor, repoBlobs *blobs.Store, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error, cleanupRefs map[string]string, event *Event) (toolsnap.FinalizeResult, error) {
+	groupID := members[0].GroupID
+	earliest := members[0]
+
+	// Reuse the stored delta without recapturing the workspace.
+	if prior != nil && prior.DeltaHash != "" {
+		collectGroupRefs(cleanupRefs, store, members, groupID, prior.PostTreeHash)
+		return toolsnap.FinalizeResult{Done: true, Final: *prior}, nil
+	}
+
+	if err := recordIntent(); err != nil {
+		slog.Warn("tool window: observe finalization intent", "group", groupID, "err", err)
+	}
+
+	// Store the delta before closing the group and releasing refs.
+	d := captureGroupDelta(ctx, store, earliest, groupID, postAnchor, prior, retry, event.Timestamp)
+	ensureGroupPostRef(ctx, store, groupID, prior, &d)
+	deltaHash, err := storeGroupDelta(ctx, repoBlobs, members, d)
+	if err != nil {
+		return toolsnap.FinalizeResult{Final: finalIdentity(d.postTree, "", d.partialReason, d.capturedAt)}, err
+	}
+	collectGroupRefs(cleanupRefs, store, members, groupID, d.postTree)
+	// Partial observations also need a retrievable blob identity.
+	return toolsnap.FinalizeResult{Done: true, Final: observeFinal(d.postTree, deltaHash, d.partialReason, d.capturedAt)}, nil
+}
+
 // ensureGroupPostRef ensures the post-tree ref when d has a post tree and prior
 // finalization has none recorded. Failure marks d partial and clears file evidence.
 func ensureGroupPostRef(ctx context.Context, store *toolsnap.Store, groupID string, prior *toolsnap.GroupFinal, d *groupDelta) {
@@ -686,7 +714,7 @@ func existingRefTarget(ctx context.Context, store *toolsnap.Store, ref string) (
 	return tree, ok, nil
 }
 
-// toolWindowCaptureSeam records capture stages in tests.
+// toolWindowCaptureSeam records capture operations in tests.
 var toolWindowCaptureSeam func(stage string)
 
 func captureStage(stage string) {
@@ -715,6 +743,16 @@ func finalIdentity(postTree, deltaHash, partialReason string, capturedAt int64) 
 		return toolsnap.GroupFinal{PartialReason: partialReason, CapturedAt: capturedAt}
 	}
 	return toolsnap.GroupFinal{PostTreeHash: postTree, DeltaHash: deltaHash, CapturedAt: capturedAt}
+}
+
+// observeFinal preserves the blob identity for complete and partial observations.
+func observeFinal(postTree, deltaHash, partialReason string, capturedAt int64) toolsnap.GroupFinal {
+	return toolsnap.GroupFinal{
+		PostTreeHash:  postTree,
+		DeltaHash:     deltaHash,
+		PartialReason: partialReason,
+		CapturedAt:    capturedAt,
+	}
 }
 
 // assembleDelta builds the canonical delta for a closed group from

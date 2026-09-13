@@ -2,6 +2,8 @@ package toolsnap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -831,12 +833,20 @@ func TestReceiptShapeAndBindingEnforced(t *testing.T) {
 	r := testRegistry(t)
 	ctx := context.Background()
 
-	// Invalid shape rejected at write time.
+	// A done receipt requires a group ID.
 	if err := r.writeReceipt(context.Background(), completionReceipt{
 		Key: key("tu-bad"), Info: CompletionInfo{EventID: "e", At: 1},
-		GroupID: "g-x", Done: true, GroupFinal: &GroupFinal{PartialReason: "x"},
+		Done: true,
 	}); err == nil {
-		t.Error("done+final receipt shape accepted at write")
+		t.Error("done receipt without group id accepted at write")
+	}
+
+	// Done receipts may retain an observation's delta identity.
+	if err := r.writeReceipt(context.Background(), completionReceipt{
+		Key: key("tu-obs"), Info: CompletionInfo{EventID: "e", At: 1},
+		GroupID: "g-x", Done: true, GroupFinal: &GroupFinal{DeltaHash: "d"},
+	}); err != nil {
+		t.Errorf("delta-preserving done receipt rejected at write: %v", err)
 	}
 
 	// A group-bound receipt naming the wrong group fails closed.
@@ -1296,7 +1306,7 @@ func TestClosedKeyRecheckedUnderLock(t *testing.T) {
 	}()
 	// Close the key while the pre hook waits.
 	time.Sleep(150 * time.Millisecond)
-	if err := r.writeClosureMarker(key("tu-race"), "g-x", 100); err != nil {
+	if err := r.writeClosureMarker(key("tu-race"), "g-x", 100, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := platform.UnlockFile(holder); err != nil {
@@ -1329,5 +1339,101 @@ func TestStaleWindowsListed(t *testing.T) {
 	}
 	if len(stale) != 1 || stale[0].Key.ToolUseID != "tu-old" {
 		t.Fatalf("stale = %+v", stale)
+	}
+}
+
+// Overlapping windows group by mode within a repository.
+func TestJoinGroup_RolePureGrouping(t *testing.T) {
+	root := testRepo(t)
+	s := openTestStore(t, root)
+	reg, err := OpenRegistry(filepath.Join(root, ".semantica"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	observe := func(tool string) ToolKey {
+		k := key(tool)
+		k.Mode = ToolModeObserve
+		return k
+	}
+
+	pub1, err := reg.CaptureAndBegin(ctx, s, key("pub-1"), "Bash", 100)
+	if err != nil {
+		t.Fatalf("pub-1: %v", err)
+	}
+	obs1, err := reg.CaptureAndBegin(ctx, s, observe("obs-1"), "Bash", 101)
+	if err != nil {
+		t.Fatalf("obs-1: %v", err)
+	}
+	// Different modes remain in separate groups.
+	if pub1.GroupID == obs1.GroupID || pub1.GroupID == "" || obs1.GroupID == "" {
+		t.Fatalf("publish and observe must not share a group: pub=%s obs=%s", pub1.GroupID, obs1.GroupID)
+	}
+
+	// Same-mode windows reuse the open group.
+	pub2, err := reg.CaptureAndBegin(ctx, s, key("pub-2"), "Bash", 102)
+	if err != nil {
+		t.Fatalf("pub-2: %v", err)
+	}
+	if pub2.GroupID != pub1.GroupID {
+		t.Fatalf("same-mode windows must group: pub2=%s pub1=%s", pub2.GroupID, pub1.GroupID)
+	}
+	obs2, err := reg.CaptureAndBegin(ctx, s, observe("obs-2"), "Bash", 103)
+	if err != nil {
+		t.Fatalf("obs-2: %v", err)
+	}
+	if obs2.GroupID != obs1.GroupID {
+		t.Fatalf("same-mode observe windows must group: obs2=%s obs1=%s", obs2.GroupID, obs1.GroupID)
+	}
+}
+
+// Publishing hashes retain the legacy format; observe mode has a distinct hash.
+func TestToolKey_PublishHashMatchesLegacyFormula(t *testing.T) {
+	k := key("tu-hash")
+	legacy := sha256.Sum256([]byte(k.RepositoryID + "\x00" + k.Provider + "\x00" +
+		k.SessionID + "\x00" + k.TurnID + "\x00" + k.ToolUseID))
+	want := hex.EncodeToString(legacy[:16])
+	if got := k.hash(); got != want {
+		t.Fatalf("publish hash = %s, want legacy %s", got, want)
+	}
+	observe := k
+	observe.Mode = ToolModeObserve
+	if observe.hash() == want {
+		t.Fatalf("observe mode must produce a distinct hash")
+	}
+}
+
+// Mode distinguishes otherwise identical keys in sort order.
+func TestToolKey_LessOrdersByMode(t *testing.T) {
+	pub := key("tu-order")
+	obs := pub
+	obs.Mode = ToolModeObserve
+	// Empty publishing mode sorts before observe mode.
+	if !pub.less(obs) {
+		t.Fatalf("publish key must sort before observe key")
+	}
+	if obs.less(pub) {
+		t.Fatalf("observe key must not sort before publish key")
+	}
+}
+
+// Completed members are included when checking a group's mode.
+func TestValidate_RejectsMixedModeGroup(t *testing.T) {
+	pub := key("mixed-pub")
+	obs := key("mixed-obs")
+	obs.Mode = ToolModeObserve
+	state := &registryState{
+		Groups: map[string]GroupMeta{"g-mixed": {CreatedAt: 100, JoinUntil: 200}},
+		Windows: []PendingToolSnapshot{
+			// Mixed modes are invalid even when one member has completed.
+			{Key: pub, GroupID: "g-mixed", Status: "complete", EventID: "e1", CompletedAt: 150, TreeHash: "t", SnapshotRef: "r1"},
+			{Key: obs, GroupID: "g-mixed", Status: "active", TreeHash: "t", SnapshotRef: "r2"},
+		},
+		NextSeq: 2,
+	}
+	err := state.validate()
+	if err == nil || !strings.Contains(err.Error(), "mixed modes") {
+		t.Fatalf("validate() = %v, want a mixed-modes rejection", err)
 	}
 }

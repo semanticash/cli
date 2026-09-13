@@ -160,6 +160,17 @@ func sweepPendingPartials(ctx context.Context, reg *toolsnap.Registry, repoBlobs
 		return
 	}
 	for _, rec := range recs {
+		// Remove observation-only partial records without publishing links.
+		if rec.Key.Mode == toolsnap.ToolModeObserve {
+			if err := reg.RemovePendingPartial(rec.EventID); err != nil {
+				report.Errors++
+				slog.Warn("tool window sweep: remove observe partial", "event", rec.EventID, "err", err)
+				continue
+			}
+			util.AppendActivityLog(target.semDir,
+				"tool-window sweep discarded observation-only partial (%s): event=%s", rec.Reason, rec.EventID)
+			continue
+		}
 		delta := partialDeltaFromRecord(rec)
 		canonical, err := delta.CanonicalBytes()
 		if err != nil {
@@ -226,11 +237,57 @@ func sweepPendingFinalizations(ctx context.Context, reg *toolsnap.Registry, stor
 	}
 }
 
-// sweepFinalizeGroup persists evidence for a recovered complete group.
+// sweepFinalizeGroup recovers a complete group and publishes links only for publishing windows.
 func sweepFinalizeGroup(ctx context.Context, store *toolsnap.Store, repoBlobs *blobs.Store, target *toolWindowTarget, members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, cleanupRefs map[string]string, report *SweepReport) (toolsnap.FinalizeResult, bool, error) {
 	groupID := members[0].GroupID
 	earliest := members[0]
 	last := members[len(members)-1]
+
+	// All members share one mode. Recover observations from frozen state and
+	// retain their blob identity without publishing events or evidence links.
+	if members[0].Key.Mode == toolsnap.ToolModeObserve {
+		// Reuse the stored delta.
+		if prior != nil && prior.DeltaHash != "" {
+			collectGroupRefs(cleanupRefs, store, members, groupID, prior.PostTreeHash)
+			return toolsnap.FinalizeResult{Done: true, Final: *prior}, prior.PartialReason != "", nil
+		}
+		postTree := ""
+		capturedAt := last.CompletedAt
+		partialReason := ""
+		var files []toolsnap.FileDelta
+		var bytesRead int64
+		var truncated bool
+		switch {
+		case prior != nil && prior.PartialReason != "":
+			// A recorded terminal partial takes precedence over tree recovery.
+			partialReason = prior.PartialReason
+			capturedAt = prior.CapturedAt
+		case prior != nil && prior.PostTreeHash != "":
+			postTree = prior.PostTreeHash
+			capturedAt = prior.CapturedAt
+			files, bytesRead, truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, postTree, &partialReason)
+		default:
+			if tree, found, refErr := existingRefTarget(ctx, store, toolsnap.GroupPostRef(store.WorktreeID(), groupID)); refErr == nil && found {
+				postTree = tree
+				files, bytesRead, truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, postTree, &partialReason)
+			} else {
+				// Missing post state yields a partial without file evidence.
+				partialReason = toolsnap.ReasonPostSnapshotLost
+			}
+		}
+		delta := assembleDelta(members, files, bytesRead, truncated, partialReason, capturedAt)
+		canonical, cerr := delta.CanonicalBytes()
+		if cerr != nil {
+			return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, partialReason != "", cerr
+		}
+		deltaHash, _, perr := repoBlobs.Put(ctx, canonical)
+		if perr != nil {
+			return toolsnap.FinalizeResult{Final: finalIdentity(postTree, "", partialReason, capturedAt)}, partialReason != "", perr
+		}
+		collectGroupRefs(cleanupRefs, store, members, groupID, postTree)
+		// Partial observations also need a retrievable blob identity.
+		return toolsnap.FinalizeResult{Done: true, Final: observeFinal(postTree, deltaHash, partialReason, capturedAt)}, partialReason != "", nil
+	}
 
 	var files []toolsnap.FileDelta
 	var bytesRead int64

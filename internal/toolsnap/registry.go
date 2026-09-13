@@ -17,23 +17,33 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// ToolKey identifies a tool window. Only hook events enter the registry.
+// ToolModeObserve identifies windows that do not publish attribution evidence.
+const ToolModeObserve = "observe"
+
+// ToolKey identifies a tool window, including its publication mode.
 type ToolKey struct {
 	RepositoryID string `json:"repository_id"`
 	Provider     string `json:"provider"`
 	SessionID    string `json:"session_id"`
 	TurnID       string `json:"turn_id"`
 	ToolUseID    string `json:"tool_use_id"`
+	// Mode is empty for publishing windows or ToolModeObserve for observation only.
+	Mode string `json:"mode,omitempty"`
 }
 
 // hash returns the stable file-name identity for the key.
 func (k ToolKey) hash() string {
-	sum := sha256.Sum256([]byte(k.RepositoryID + "\x00" + k.Provider + "\x00" +
-		k.SessionID + "\x00" + k.TurnID + "\x00" + k.ToolUseID))
+	base := k.RepositoryID + "\x00" + k.Provider + "\x00" +
+		k.SessionID + "\x00" + k.TurnID + "\x00" + k.ToolUseID
+	// Omit empty mode to preserve existing publishing-window identities.
+	if k.Mode != "" {
+		base += "\x00" + k.Mode
+	}
+	sum := sha256.Sum256([]byte(base))
 	return hex.EncodeToString(sum[:16])
 }
 
-// validate requires every identity field and rejects the hash delimiter.
+// validate checks required identity fields, hash delimiters, and mode.
 func (k ToolKey) validate() error {
 	for _, f := range []string{k.RepositoryID, k.Provider, k.SessionID, k.TurnID, k.ToolUseID} {
 		if f == "" {
@@ -42,6 +52,9 @@ func (k ToolKey) validate() error {
 		if strings.ContainsRune(f, 0) {
 			return fmt.Errorf("toolsnap: strict key contains NUL")
 		}
+	}
+	if k.Mode != "" && k.Mode != ToolModeObserve {
+		return fmt.Errorf("toolsnap: invalid tool mode %q", k.Mode)
 	}
 	return nil
 }
@@ -60,7 +73,10 @@ func (k ToolKey) less(o ToolKey) bool {
 	if k.TurnID != o.TurnID {
 		return k.TurnID < o.TurnID
 	}
-	return k.ToolUseID < o.ToolUseID
+	if k.ToolUseID != o.ToolUseID {
+		return k.ToolUseID < o.ToolUseID
+	}
+	return k.Mode < o.Mode
 }
 
 // PendingToolSnapshot is one registered tool window.
@@ -262,6 +278,8 @@ func sealExpiredGroups(state *registryState, now int64) bool {
 func (s *registryState) validate() error {
 	keys := map[ToolKey]bool{}
 	activeGroups := map[string]bool{}
+	groupMode := map[string]string{}
+	groupModeSet := map[string]bool{}
 	repo := ""
 	for _, w := range s.Windows {
 		if err := w.Key.validate(); err != nil {
@@ -277,6 +295,15 @@ func (s *registryState) validate() error {
 		if w.GroupID == "" {
 			return fmt.Errorf("%w: window without group id", ErrRegistryCorrupt)
 		}
+		// All members, including completed windows, must share one mode.
+		if groupModeSet[w.GroupID] {
+			if groupMode[w.GroupID] != w.Key.Mode {
+				return fmt.Errorf("%w: group %s has mixed modes", ErrRegistryCorrupt, w.GroupID)
+			}
+		} else {
+			groupMode[w.GroupID] = w.Key.Mode
+			groupModeSet[w.GroupID] = true
+		}
 		if keys[w.Key] {
 			return fmt.Errorf("%w: duplicate strict key", ErrRegistryCorrupt)
 		}
@@ -290,15 +317,17 @@ func (s *registryState) validate() error {
 			activeGroups[w.GroupID] = true
 		}
 	}
-	// Only one group with active members may remain open for joins.
-	unsealed := 0
+	// Each mode may have at most one unsealed group with active members.
+	unsealedByMode := map[string]int{}
 	for gid := range activeGroups {
 		if !s.Groups[gid].Sealed {
-			unsealed++
+			unsealedByMode[groupMode[gid]]++
 		}
 	}
-	if unsealed > 1 {
-		return fmt.Errorf("%w: %d unsealed groups with active members", ErrRegistryCorrupt, unsealed)
+	for mode, n := range unsealedByMode {
+		if n > 1 {
+			return fmt.Errorf("%w: %d unsealed groups with active members for mode %q", ErrRegistryCorrupt, n, mode)
+		}
 	}
 	groupsSeen := map[string]bool{}
 	for _, w := range s.Windows {
@@ -417,7 +446,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		return false, err
 	}
 
-	// The callback records its own stages.
+	// The callback records its own operation timings.
 	persist, fnErr := fn(&state)
 	// Publish migrations and recovered receipts even on reads.
 	persist = persist || len(applied) > 0 || migrated
@@ -429,7 +458,7 @@ func (r *Registry) withLock(ctx context.Context, fn func(*registryState) (persis
 		return false, errors.Join(fnErr, err)
 	}
 
-	// Record the stage even when publication fails.
+	// Record publication timing even on failure.
 	if werr := func() error {
 		stopWrite := measureStage(ctx, "registry_write", stageLeaf)
 		defer stopWrite()
@@ -577,7 +606,7 @@ func (r *Registry) WithCoordinationLockReadOnly(ctx context.Context, fn func() e
 
 // loadState normalizes, reconciles, and validates registry state.
 // A non-nil publishMarker persists closure markers for completed receipts.
-func (r *Registry) loadState(publishMarker func(key ToolKey, groupID string, at int64) error) (state registryState, applied []string, migrated bool, _ error) {
+func (r *Registry) loadState(publishMarker func(key ToolKey, groupID string, at int64, deltaHash string) error) (state registryState, applied []string, migrated bool, _ error) {
 	raw, err := os.ReadFile(r.statePath())
 	switch {
 	case err == nil:
@@ -645,11 +674,13 @@ func (r *Registry) keySettled(key ToolKey) (bool, error) {
 	return r.HasTombstone(key)
 }
 
-// joinGroup joins an overlapping open group or creates a new one.
+// joinGroup joins an overlapping open group in the same repository and mode,
+// or creates a new group.
 func joinGroup(state *registryState, key ToolKey, startedAt int64) string {
 	sealExpiredGroups(state, startedAt)
 	for _, w := range state.Windows {
-		if w.Status == "active" && w.Key.RepositoryID == key.RepositoryID && !state.Groups[w.GroupID].Sealed {
+		if w.Status == "active" && w.Key.RepositoryID == key.RepositoryID &&
+			w.Key.Mode == key.Mode && !state.Groups[w.GroupID].Sealed {
 			return w.GroupID
 		}
 	}
@@ -941,6 +972,7 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 	memberPersisted := false
 	sealedHit := false
 	var finalDone bool
+	var finalDoneFinal GroupFinal
 	var finalIdentity *GroupFinal
 	finalGroupID := ""
 	published, err := r.withLock(ctx, func(state *registryState) (bool, error) {
@@ -1035,9 +1067,10 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 		finalGroupID = groupID
 		if ferr == nil && res.Done {
 			finalDone = true
+			finalDoneFinal = res.Final
 			// Mark members closed before removing the group.
 			for _, m := range members {
-				if err := r.writeClosureMarker(m.Key, groupID, info.At); err != nil {
+				if err := r.writeClosureMarker(m.Key, groupID, info.At, res.Final.DeltaHash); err != nil {
 					return true, err
 				}
 			}
@@ -1072,6 +1105,9 @@ func (r *Registry) Complete(ctx context.Context, key ToolKey, info CompletionInf
 		switch {
 		case finalDone:
 			rec = &completionReceipt{Key: key, Info: info, GroupID: finalGroupID, Done: true}
+			if !finalDoneFinal.isZero() {
+				rec.GroupFinal = &finalDoneFinal
+			}
 		case finalIdentity != nil && !published:
 			rec = &completionReceipt{Key: key, Info: info, GroupID: finalGroupID, GroupFinal: finalIdentity}
 		case sealedHit && memberPersisted && !published:
@@ -1151,10 +1187,20 @@ func (rec completionReceipt) validateShape() error {
 		return nil // member completion
 	case rec.GroupID != "" && rec.Done && rec.GroupFinal == nil:
 		return nil // group done
+	case rec.GroupID != "" && rec.Done && rec.GroupFinal != nil:
+		return nil // group done, preserving the delta identity (observation-only)
 	case rec.GroupID != "" && !rec.Done && rec.GroupFinal != nil:
 		return nil // group final identity
 	}
 	return fmt.Errorf("toolsnap: receipt has invalid shape")
+}
+
+// receiptDeltaHash returns the recorded delta hash, or an empty string.
+func receiptDeltaHash(rec completionReceipt) string {
+	if rec.GroupFinal != nil {
+		return rec.GroupFinal.DeltaHash
+	}
+	return ""
 }
 
 // closureMarker records that a member's group closed with durable
@@ -1163,11 +1209,14 @@ type closureMarker struct {
 	Key     ToolKey `json:"key"`
 	GroupID string  `json:"group_id"`
 	At      int64   `json:"at"`
+	// DeltaHash identifies the observation blob after group removal.
+	// Publishing closures use evidence links and leave this empty.
+	DeltaHash string `json:"delta_hash,omitempty"`
 }
 
-// writeClosureMarker persists a marker before its group is removed.
-func (r *Registry) writeClosureMarker(key ToolKey, groupID string, at int64) error {
-	payload, err := json.Marshal(closureMarker{Key: key, GroupID: groupID, At: at})
+// writeClosureMarker persists closure and optional delta identity before group removal.
+func (r *Registry) writeClosureMarker(key ToolKey, groupID string, at int64, deltaHash string) error {
+	payload, err := json.Marshal(closureMarker{Key: key, GroupID: groupID, At: at, DeltaHash: deltaHash})
 	if err != nil {
 		return fmt.Errorf("toolsnap: encode closure marker: %w", err)
 	}
@@ -1198,6 +1247,23 @@ func (r *Registry) hasClosureMarker(key ToolKey) (bool, error) {
 		return false, fmt.Errorf("%w: malformed closure marker for %s", ErrRegistryCorrupt, key.hash())
 	}
 	return true, nil
+}
+
+// ClosureDelta returns a window's recorded delta hash and whether it is closed.
+// Publishing closures may have an empty hash. A missing marker returns ("", false, nil).
+func (r *Registry) ClosureDelta(key ToolKey) (string, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(r.closuresDir(), key.hash()))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("toolsnap: read closure marker: %w", err)
+	}
+	var m closureMarker
+	if json.Unmarshal(raw, &m) != nil || m.Key != key || m.At <= 0 || m.GroupID == "" {
+		return "", false, fmt.Errorf("%w: malformed closure marker for %s", ErrRegistryCorrupt, key.hash())
+	}
+	return m.DeltaHash, true, nil
 }
 
 // recordIntentFor returns a finalize-scoped writer for the closing member.
@@ -1303,7 +1369,7 @@ func receiptRank(rec completionReceipt) int {
 
 // applyReceipts overlays recovery receipts on registry state. A non-nil
 // publishMarker records closures before completed groups are removed.
-func (r *Registry) applyReceipts(state *registryState, publishMarker func(key ToolKey, groupID string, at int64) error) ([]string, error) {
+func (r *Registry) applyReceipts(state *registryState, publishMarker func(key ToolKey, groupID string, at int64, deltaHash string) error) ([]string, error) {
 	entries, err := os.ReadDir(r.receiptsDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1395,7 +1461,7 @@ func (r *Registry) applyReceipts(state *registryState, publishMarker func(key To
 			if publishMarker != nil {
 				for _, w := range state.Windows {
 					if w.GroupID == rec.GroupID {
-						if err := publishMarker(w.Key, rec.GroupID, rec.Info.At); err != nil {
+						if err := publishMarker(w.Key, rec.GroupID, rec.Info.At, receiptDeltaHash(rec)); err != nil {
 							return nil, err
 						}
 					}
@@ -1490,6 +1556,7 @@ func (r *Registry) PendingFinalizations(ctx context.Context) ([]PendingFinalizat
 func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, finalize func(members []PendingToolSnapshot, prior *GroupFinal, retry bool, recordIntent func() error) (FinalizeResult, error)) (bool, error) {
 	removed := false
 	var finalDone bool
+	var finalDoneFinal GroupFinal
 	var finalIdentity *GroupFinal
 	var closingKey ToolKey
 	var closingInfo CompletionInfo
@@ -1528,9 +1595,10 @@ func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, final
 		res, ferr := finalize(members, prior, true, r.recordIntentFor(closingKey, closingInfo))
 		if ferr == nil && res.Done {
 			finalDone = true
+			finalDoneFinal = res.Final
 			// Markers precede removal, as in Complete.
 			for _, m := range members {
-				if err := r.writeClosureMarker(m.Key, groupID, last.CompletedAt); err != nil {
+				if err := r.writeClosureMarker(m.Key, groupID, last.CompletedAt, res.Final.DeltaHash); err != nil {
 					return true, err
 				}
 			}
@@ -1563,6 +1631,9 @@ func (r *Registry) ResumeFinalization(ctx context.Context, groupID string, final
 		switch {
 		case finalDone:
 			rec = &completionReceipt{Key: closingKey, Info: closingInfo, GroupID: groupID, Done: true}
+			if !finalDoneFinal.isZero() {
+				rec.GroupFinal = &finalDoneFinal
+			}
 		case finalIdentity != nil && !published:
 			rec = &completionReceipt{Key: closingKey, Info: closingInfo, GroupID: groupID, GroupFinal: finalIdentity}
 		}
