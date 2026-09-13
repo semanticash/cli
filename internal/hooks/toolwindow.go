@@ -484,16 +484,8 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 	earliest := members[0]
 	bench.groupMembers = len(members)
 
-	var files []toolsnap.FileDelta
-	var bytesRead int64
-	truncated := false
-	partialReason := ""
-	postTree := ""
-	capturedAt := event.Timestamp
-
-	switch {
-	case prior != nil && prior.DeltaHash != "":
-		// Resume with the durable delta instead of reading the workspace.
+	// Resume evidence publication from the stored delta without reading the workspace.
+	if prior != nil && prior.DeltaHash != "" {
 		stopLinks := toolsnap.MeasureStage(ctx, "persist_evidence_links")
 		err := persistEvidenceLinks(ctx, target, members, prior.DeltaHash, info.At)
 		stopLinks()
@@ -502,49 +494,11 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 		}
 		collectGroupRefs(cleanupRefs, store, members, groupID, prior.PostTreeHash)
 		return toolsnap.FinalizeResult{Done: true}, nil
-	case prior != nil && prior.PartialReason != "":
-		partialReason = prior.PartialReason
-		capturedAt = prior.CapturedAt
-	case prior != nil && prior.PostTreeHash != "":
-		postTree = prior.PostTreeHash
-		capturedAt = prior.CapturedAt
-		captureStage("delta_between")
-		files, bytesRead, truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, postTree, &partialReason)
-	default:
-		// A post ref preserves a capture whose registry update failed.
-		// Store errors degrade to partial evidence rather than recapture.
-		postRefName := toolsnap.GroupPostRef(store.WorktreeID(), groupID)
-		tree, found, refErr := existingRefTarget(ctx, store, postRefName)
-		if refErr != nil {
-			partialReason = toolsnap.ReasonStoreUnavailable
-			break
-		}
-		if found {
-			postTree = tree
-			captureStage("delta_between")
-			files, bytesRead, truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, postTree, &partialReason)
-			break
-		}
-		if retry {
-			// The original post state is gone; do not capture newer changes.
-			partialReason = toolsnap.ReasonPostSnapshotLost
-			break
-		}
-		captureStage("capture_after")
-		res, err := store.CaptureAfter(ctx, toolsnap.Snapshot{TreeHash: earliest.TreeHash, HeadHash: earliest.HeadHash}, postAnchor)
-		var pe *toolsnap.PartialError
-		switch {
-		case err == nil:
-			postTree = res.Post.TreeHash
-			files, bytesRead, truncated = res.Files, res.BytesRead, res.Truncated
-		case errors.As(err, &pe):
-			// Preserve the stable partial reason.
-			partialReason = pe.Reason
-		default:
-			// An unknown capture failure cannot be retried against new state.
-			partialReason = toolsnap.ReasonTimeout
-		}
 	}
+
+	d := captureGroupDelta(ctx, store, earliest, groupID, postAnchor, prior, retry, event.Timestamp)
+	files, bytesRead, truncated := d.files, d.bytesRead, d.truncated
+	partialReason, postTree, capturedAt := d.partialReason, d.postTree, d.capturedAt
 
 	// Record completion before other writes so a crash cannot strand the
 	// member as active. Failure is non-fatal because capture can continue.
@@ -591,6 +545,65 @@ func finalizeGroup(ctx context.Context, store *toolsnap.Store, postAnchor toolsn
 	}
 	collectGroupRefs(cleanupRefs, store, members, groupID, postTree)
 	return toolsnap.FinalizeResult{Done: true}, nil
+}
+
+// groupDelta is the file-change result for a tool-window group, produced
+// without any event or evidence-link publication.
+type groupDelta struct {
+	files         []toolsnap.FileDelta
+	bytesRead     int64
+	truncated     bool
+	partialReason string
+	postTree      string
+	capturedAt    int64
+}
+
+// captureGroupDelta computes or resumes a group delta without publishing events
+// or evidence links. The caller handles prior.DeltaHash before calling.
+func captureGroupDelta(ctx context.Context, store *toolsnap.Store, earliest toolsnap.PendingToolSnapshot, groupID string, postAnchor toolsnap.HeadAnchor, prior *toolsnap.GroupFinal, retry bool, defaultCapturedAt int64) groupDelta {
+	d := groupDelta{capturedAt: defaultCapturedAt}
+	switch {
+	case prior != nil && prior.PartialReason != "":
+		d.partialReason = prior.PartialReason
+		d.capturedAt = prior.CapturedAt
+	case prior != nil && prior.PostTreeHash != "":
+		d.postTree = prior.PostTreeHash
+		d.capturedAt = prior.CapturedAt
+		captureStage("delta_between")
+		d.files, d.bytesRead, d.truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, d.postTree, &d.partialReason)
+	default:
+		// A post ref preserves a capture whose registry update failed. Store
+		// errors degrade to partial evidence rather than recapture.
+		postRefName := toolsnap.GroupPostRef(store.WorktreeID(), groupID)
+		tree, found, refErr := existingRefTarget(ctx, store, postRefName)
+		switch {
+		case refErr != nil:
+			d.partialReason = toolsnap.ReasonStoreUnavailable
+		case found:
+			d.postTree = tree
+			captureStage("delta_between")
+			d.files, d.bytesRead, d.truncated, _ = deltaOrPartial(ctx, store, earliest.TreeHash, d.postTree, &d.partialReason)
+		case retry:
+			// The original post state is gone; do not capture newer changes.
+			d.partialReason = toolsnap.ReasonPostSnapshotLost
+		default:
+			captureStage("capture_after")
+			res, err := store.CaptureAfter(ctx, toolsnap.Snapshot{TreeHash: earliest.TreeHash, HeadHash: earliest.HeadHash}, postAnchor)
+			var pe *toolsnap.PartialError
+			switch {
+			case err == nil:
+				d.postTree = res.Post.TreeHash
+				d.files, d.bytesRead, d.truncated = res.Files, res.BytesRead, res.Truncated
+			case errors.As(err, &pe):
+				// Preserve the stable partial reason.
+				d.partialReason = pe.Reason
+			default:
+				// An unknown capture failure cannot be retried against new state.
+				d.partialReason = toolsnap.ReasonTimeout
+			}
+		}
+	}
+	return d
 }
 
 const evidenceKindToolDelta = "tool_delta"
