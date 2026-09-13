@@ -17,6 +17,7 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/toolsnap"
+	"github.com/semanticash/cli/internal/util"
 )
 
 // toolWindowWorld contains an enabled test repository and broker handle.
@@ -2007,5 +2008,293 @@ func TestObserve_DoubleRecordLossCanCaptureDrift(t *testing.T) {
 	}
 	if parsed.Status != "complete" || !leaked {
 		t.Fatalf("documented limitation changed (now safer?): status=%q files=%+v — update this test", parsed.Status, parsed.Files)
+	}
+}
+
+// findShadowEntry returns the first shadow record for a repo, or false.
+func findShadowEntry(entries []util.RoutingDecisionEntry, repo string) (util.RoutingDecisionEntry, bool) {
+	for _, e := range entries {
+		if e.Shadow && e.Repo == repo {
+			return e, true
+		}
+	}
+	return util.RoutingDecisionEntry{}, false
+}
+
+// Cross-repository observations emit diagnostics without changing publication.
+func TestObserve_ShadowRecordsCrossRepoDelta(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate the routing-decisions log
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	// The command edits both repositories.
+	if err := os.WriteFile(filepath.Join(w.repoPath, "gen.txt"), []byte("primary edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherPath, "cross.txt"), []byte("cross edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	post := postBashEvent("sess", "toolu_x", w.repoPath, "cross-repo generator")
+	events := []broker.RawEvent{bashRawEvent("evt-close", "toolu_x", "sess")}
+	if got := completeToolWindow(ctx, "claude-code", post, w.bh, nil, events); got != windowHandled {
+		t.Fatalf("primary completion = %v, want handled", got)
+	}
+
+	// Only the primary repository publishes a link.
+	if links := linksIn(t, w.semDir); len(links) != 1 || links[0].EventID != "evt-close" {
+		t.Fatalf("primary links = %+v, want one for evt-close", links)
+	}
+	if links := linksIn(t, otherSem); len(links) != 0 {
+		t.Fatalf("observation published links: %+v", links)
+	}
+
+	entries, err := util.ReadRoutingDecisionTail(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A handled window bypasses broker routing, so every record must be shadow.
+	for _, e := range entries {
+		if !e.Shadow {
+			t.Fatalf("unexpected real routing decision from handled window: %+v", e)
+		}
+	}
+	e, ok := findShadowEntry(entries, broker.CanonicalRepoPath(otherPath))
+	if !ok {
+		t.Fatalf("no shadow record for the observed repo; entries=%+v", entries)
+	}
+	if e.Signal != shadowSignalObservedDelta {
+		t.Fatalf("signal = %q, want observed_delta", e.Signal)
+	}
+	if e.Destination != broker.CanonicalRepoPath(w.repoPath) {
+		t.Fatalf("destination = %q, want the primary target", e.Destination)
+	}
+	if e.Evidence == "" || e.Scope != "tool" {
+		t.Fatalf("missing evidence/scope: %+v", e)
+	}
+	_ = otherID
+}
+
+// Shadow records require a handled window and a change or coverage gap.
+func TestEmitObservationShadow_ClassifiesAndSkips(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	target := &toolWindowTarget{repoPath: "/repos/primary"}
+	ev := &Event{ToolUseID: "t1"}
+	observed := []observedShadowResult{
+		{repoPath: "/repos/changed", changed: true, evidence: "sha-c", scope: "tool"},
+		{repoPath: "/repos/gapped", gap: true, evidence: "sha-g", scope: "concurrent_group"},
+		{repoPath: "/repos/empty"}, // No change or gap to emit.
+	}
+
+	// Unknown publication destinations produce no records.
+	emitObservationShadow("claude-code", ev, target, windowPassthrough, observed)
+	emitObservationShadow("claude-code", ev, nil, windowHandled, observed)
+	if entries, _ := util.ReadRoutingDecisionTail(100); len(entries) != 0 {
+		t.Fatalf("recorded shadow without a handled publish: %+v", entries)
+	}
+
+	// Record changes and gaps for handled windows.
+	emitObservationShadow("claude-code", ev, target, windowHandled, observed)
+	entries, err := util.ReadRoutingDecisionTail(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d shadow entries, want 2 (empty skipped): %+v", len(entries), entries)
+	}
+	changed, ok := findShadowEntry(entries, "/repos/changed")
+	if !ok || changed.Signal != shadowSignalObservedDelta || changed.Evidence != "sha-c" || changed.Scope != "tool" {
+		t.Fatalf("changed entry wrong: %+v", changed)
+	}
+	gap, ok := findShadowEntry(entries, "/repos/gapped")
+	if !ok || gap.Signal != shadowSignalObservedGap {
+		t.Fatalf("gap entry wrong: %+v", gap)
+	}
+	if _, ok := findShadowEntry(entries, "/repos/empty"); ok {
+		t.Fatal("empty complete delta must not be recorded")
+	}
+}
+
+// gapReason returns the first gap for a repository path.
+func gapReason(results []observedShadowResult, repoPath string) (observedShadowResult, bool) {
+	for _, r := range results {
+		if r.repoPath == repoPath && r.gap {
+			return r, true
+		}
+	}
+	return observedShadowResult{}, false
+}
+
+// Missing closure evidence produces an evidence_unavailable gap.
+func TestClassifyObservedDelta_UnavailableEvidenceIsGap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	ctx := context.Background()
+	reg, err := toolsnap.OpenRegistry(w.semDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoBlobs, err := blobs.NewStore(filepath.Join(w.semDir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A key with no recorded closure delta: evidence is unavailable.
+	key := toolsnap.ToolKey{
+		RepositoryID: w.repoID, Provider: "claude_code",
+		SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_missing", Mode: toolsnap.ToolModeObserve,
+	}
+	res := classifyObservedDelta(ctx, reg, repoBlobs, key, w.repoPath)
+	if !res.gap || res.changed {
+		t.Fatalf("missing evidence must be a gap, got %+v", res)
+	}
+	if res.reason != shadowGapEvidenceUnavailable {
+		t.Fatalf("reason = %q, want evidence_unavailable", res.reason)
+	}
+	if res.evidence != "" {
+		t.Fatalf("must not invent an evidence id, got %q", res.evidence)
+	}
+}
+
+// Failed snapshots, expired budgets, and selection omissions remain visible.
+func TestObserve_TerminalGapsAndOmissionsReported(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	parent := filepath.Dir(w.repoPath)
+	failPath, _, failID := addBrokerRepo(t, w.bh, parent, "failed")
+	budgetPath, _, budgetID := addBrokerRepo(t, w.bh, parent, "budgeted")
+
+	rk := receiptKeyFor("claude-code", &Event{SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x"})
+	if _, err := CreateToolWindowObservation(rk, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     w.repoPath,
+		PrimaryRepositoryID: w.repoID,
+		Candidates: []ObservedCandidate{
+			{RepoPath: failPath, RepositoryID: failID, Outcome: observationSnapshotFailed},
+			{RepoPath: budgetPath, RepositoryID: budgetID, Outcome: observationBudgetExpired},
+		},
+		OmittedByCap:      2,
+		OmittedUnresolved: 1,
+		TotalActive:       5, // 2 candidates + 2 cap + 1 unresolved
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	results := completeObservedCandidates(context.Background(), "claude-code", completionEvent())
+
+	if r, ok := gapReason(results, failPath); !ok || r.reason != shadowGapSnapshotFailed {
+		t.Fatalf("snapshot_failed candidate not reported as gap: %+v", results)
+	}
+	if r, ok := gapReason(results, budgetPath); !ok || r.reason != shadowGapBudgetExpired {
+		t.Fatalf("budget_expired candidate not reported as gap: %+v", results)
+	}
+	cap0, ok := gapReason(results, "")
+	_ = cap0
+	if !ok {
+		t.Fatalf("identity-less omissions not reported: %+v", results)
+	}
+	var sawCap, sawUnresolved bool
+	for _, r := range results {
+		if r.repoPath != "" || !r.gap {
+			continue
+		}
+		switch r.reason {
+		case shadowGapOmittedByCap:
+			sawCap = r.count == 2
+		case shadowGapOmittedUnresolved:
+			sawUnresolved = r.count == 1
+		}
+	}
+	if !sawCap || !sawUnresolved {
+		t.Fatalf("cap/unresolved omissions not accounted separately with counts: %+v", results)
+	}
+}
+
+// hasOmission matches an omission reason and count.
+func hasOmission(results []observedShadowResult, reason string, count int) bool {
+	for _, r := range results {
+		if r.repoPath == "" && r.gap && r.reason == reason && r.count == count {
+			return true
+		}
+	}
+	return false
+}
+
+// Setup failures retain an unresolved gap.
+func TestObserve_SetupFailureIsUnresolvedGap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	ctx := context.Background()
+
+	// A missing repository causes setup to fail.
+	missing := filepath.Join(filepath.Dir(w.repoPath), "does-not-exist")
+	rk := receiptKeyFor("claude-code", &Event{SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x"})
+	if _, err := CreateToolWindowObservation(rk, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     w.repoPath,
+		PrimaryRepositoryID: w.repoID,
+		Candidates:          []ObservedCandidate{{RepoPath: missing, RepositoryID: "bogus-id", Outcome: observationObserved}},
+		TotalActive:         1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	results := completeObservedCandidates(ctx, "claude-code", completionEvent())
+
+	r, ok := gapReason(results, missing)
+	if !ok || r.reason != shadowGapUnresolved {
+		t.Fatalf("setup failure not reported as unresolved gap: %+v", results)
+	}
+}
+
+// Lock contention preserves unresolved candidates and omission counts.
+func TestObserve_LockContentionReportsUnresolvedGaps(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, _, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	rk := receiptKeyFor("claude-code", &Event{SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x"})
+	if _, err := CreateToolWindowObservation(rk, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     w.repoPath,
+		PrimaryRepositoryID: w.repoID,
+		Candidates:          []ObservedCandidate{{RepoPath: otherPath, RepositoryID: otherID, Outcome: observationObserved}},
+		OmittedByCap:        1,
+		OmittedUnresolved:   2,
+		TotalActive:         4, // 1 candidate + 1 cap + 2 unresolved
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the attempt lock so completion cannot acquire it.
+	held, ok := acquireObservationAttempt(rk)
+	if !ok {
+		t.Fatal("could not hold attempt lock")
+	}
+	defer held()
+	origA, origD := observationLockAttempts, observationLockRetryDelay
+	observationLockAttempts, observationLockRetryDelay = 2, time.Millisecond
+	t.Cleanup(func() { observationLockAttempts, observationLockRetryDelay = origA, origD })
+
+	results := completeObservedCandidates(ctx, "claude-code", completionEvent())
+
+	if r, ok := gapReason(results, otherPath); !ok || r.reason != shadowGapUnresolved {
+		t.Fatalf("lock contention dropped the known candidate: %+v", results)
+	}
+	if !hasOmission(results, shadowGapOmittedByCap, 1) || !hasOmission(results, shadowGapOmittedUnresolved, 2) {
+		t.Fatalf("lock contention dropped omission counts: %+v", results)
 	}
 }

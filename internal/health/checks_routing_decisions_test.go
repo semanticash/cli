@@ -61,3 +61,32 @@ func TestSummarizeRoutingDecisions_SelectedNotPersistedExcludesUnresolved(t *tes
 		t.Fatalf("unresolved = %d, want 1", s.unresolved)
 	}
 }
+
+// Shadow records must not replace real decisions or affect totals.
+func TestSummarizeRoutingDecisions_ExcludesShadow(t *testing.T) {
+	entries := []util.RoutingDecisionEntry{
+		{EventID: "e1", Signal: "structured_path", Repo: "/repos/api", SessionRepo: "/repos/x", SignalDiff: true, Persisted: true},
+		// Include extra pairs and a collision with the persisted decision.
+		{EventID: "observe:t1", Signal: "observed_delta", Repo: "/repos/other", Destination: "/repos/api", Evidence: "sha1", Scope: "tool", Shadow: true},
+		{EventID: "observe:t1", Signal: "observed_gap", Repo: "/repos/gapped", Destination: "/repos/api", Shadow: true},
+		{EventID: "e1", Signal: "observed_delta", Repo: "/repos/api", Shadow: true, Persisted: false},
+	}
+
+	s := summarizeRoutingDecisions(entries)
+
+	if s.pairs != 1 {
+		t.Fatalf("pairs = %d, want 1 (only the real decision)", s.pairs)
+	}
+	if s.structuredPath != 1 || s.launchFallback != 0 || s.unresolved != 0 {
+		t.Fatalf("buckets = sp:%d lf:%d unresolved:%d, want 1/0/0", s.structuredPath, s.launchFallback, s.unresolved)
+	}
+	if s.selectedNotPersisted != 0 {
+		t.Fatalf("selectedNotPersisted = %d, want 0 (shadow unpersisted excluded)", s.selectedNotPersisted)
+	}
+	if len(s.byRepo) != 1 || s.byRepo["/repos/api"] == nil {
+		t.Fatalf("byRepo = %+v, want only /repos/api", s.byRepo)
+	}
+	if rc := s.byRepo["/repos/api"]; rc.pairs != 1 || rc.structuredPath != 1 {
+		t.Fatalf("api counts corrupted by shadow collision: %+v", rc)
+	}
+}

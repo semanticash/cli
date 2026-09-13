@@ -33,6 +33,9 @@ var (
 //
 // SignalDiff reports a difference from the session repository, not an
 // attribution error.
+//
+// Shadow records describe observations, not routing decisions or authorship.
+// Exclude them before deduplicating or aggregating routing decisions.
 type RoutingDecisionEntry struct {
 	Timestamp   string `json:"ts"`
 	EventID     string `json:"event_id"`
@@ -42,6 +45,19 @@ type RoutingDecisionEntry struct {
 	SessionRepo string `json:"session_repo,omitempty"`
 	SignalDiff  bool   `json:"signal_diff,omitempty"`
 	Persisted   bool   `json:"persisted"`
+	// Shadow identifies diagnostic observations; the fields below describe them.
+	Shadow bool `json:"shadow,omitempty"`
+	// Destination is the publish target recorded during execution.
+	Destination string `json:"destination,omitempty"`
+	// Evidence is the delta content hash, if known, linking to its member identities.
+	Evidence string `json:"evidence,omitempty"`
+	// Scope is "tool" or "concurrent_group". Group evidence does not establish
+	// which individual tool caused a change.
+	Scope string `json:"scope,omitempty"`
+	// Reason explains an observed_gap.
+	Reason string `json:"reason,omitempty"`
+	// Count is the number of omitted candidates without individual Repo entries.
+	Count int `json:"count,omitempty"`
 }
 
 var routingDecisionMu sync.Mutex

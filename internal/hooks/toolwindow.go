@@ -450,17 +450,42 @@ func observeOneCandidate(ctx context.Context, providerName string, event *Event,
 	return observationObserved
 }
 
-// completeObservedCandidates completes registered observations from the manifest,
-// regardless of the current gate. It removes the manifest once all candidates
-// resolve and never takes new before-snapshots.
-func completeObservedCandidates(ctx context.Context, providerName string, event *Event) {
+// Shadow gap reasons describe unknown observation coverage.
+const (
+	shadowGapEvidenceUnavailable = "evidence_unavailable" // delta hash missing or blob unreadable
+	shadowGapSnapshotFailed      = "snapshot_failed"      // no before-snapshot was captured
+	shadowGapBudgetExpired       = "budget_expired"       // no snapshot attempted within the budget
+	shadowGapUnresolved          = "unresolved"           // completion did not finish this delivery
+	shadowGapPartial             = "partial"              // partial delta with no explicit reason
+	shadowGapOmittedByCap        = "omitted_by_cap"       // candidate dropped by the selection cap
+	shadowGapOmittedUnresolved   = "omitted_unresolved"   // candidate had no resolvable repo identity
+)
+
+// observedShadowResult describes an observation for diagnostics only.
+// It does not determine routing or authorship.
+type observedShadowResult struct {
+	repoPath string // candidate path; empty for aggregate omissions
+	changed  bool   // complete, non-empty delta
+	gap      bool   // unknown coverage (see reason)
+	noChange bool   // complete, empty delta
+	reason   string // gap cause; empty for a change
+	evidence string // delta content hash, if available
+	scope    string // "tool" or "concurrent_group"
+	count    int    // number of omitted candidates
+}
+
+// completeObservedCandidates completes frozen observations regardless of the gate.
+// It returns changes and coverage gaps, removes resolved manifests, and never
+// takes new before-snapshots.
+func completeObservedCandidates(ctx context.Context, providerName string, event *Event) []observedShadowResult {
 	receiptKey := receiptKeyFor(providerName, event)
-	// Avoid locking when no observation manifest exists.
-	if rec, err := LoadToolWindowObservation(receiptKey); err != nil || rec == nil {
+	// Load before locking so early exits can report known coverage gaps.
+	rec0, err := LoadToolWindowObservation(receiptKey)
+	if err != nil || rec0 == nil {
 		if err != nil {
 			slog.Warn("tool window observe: load manifest for completion", "err", err)
 		}
-		return
+		return nil
 	}
 	// Record arrival before lock contention can interrupt completion.
 	firstArrival, aerr := recordCompletionArrival(receiptKey)
@@ -468,15 +493,18 @@ func completeObservedCandidates(ctx context.Context, providerName string, event 
 		slog.Warn("tool window observe: record completion arrival", "err", aerr)
 	}
 
-	// Serialize completion with pre-hook attempts; retain the manifest on contention.
+	// Serialize with pre-hook attempts. Contention retains the manifest and gaps.
 	release, ok := acquireObservationAttempt(receiptKey)
 	if !ok {
-		return
+		return defaultObservationGaps(rec0)
 	}
 	defer release()
 	rec, err := LoadToolWindowObservation(receiptKey)
-	if err != nil || rec == nil {
-		return
+	if err != nil {
+		return defaultObservationGaps(rec0) // Preserve known candidates on reload failure.
+	}
+	if rec == nil {
+		return nil // The manifest was removed while waiting.
 	}
 
 	// Recorded or uncertain arrivals must reuse frozen post-state or produce a partial.
@@ -491,59 +519,109 @@ func completeObservedCandidates(ctx context.Context, providerName string, event 
 		}
 	}
 
+	// Keep candidates unresolved until inspection establishes an outcome.
+	results := make(map[string]observedShadowResult, len(rec.Candidates))
+	for _, c := range rec.Candidates {
+		results[c.RepoPath] = observedShadowResult{repoPath: c.RepoPath, gap: true, reason: shadowGapUnresolved}
+	}
+
 	// Share one completion budget; retain unfinished candidates for recovery.
 	obsCtx, cancel := context.WithTimeout(ctx, toolWindowObserveBudget)
 	defer cancel()
 	allDone := true
 	for _, c := range rec.Candidates {
 		switch c.Outcome {
-		case observationSnapshotFailed, observationBudgetExpired:
-			continue // definitive gap: no window to complete
+		case observationSnapshotFailed: // Before-snapshot unavailable.
+			results[c.RepoPath] = observedShadowResult{repoPath: c.RepoPath, gap: true, reason: shadowGapSnapshotFailed}
+		case observationBudgetExpired: // Snapshot not attempted.
+			results[c.RepoPath] = observedShadowResult{repoPath: c.RepoPath, gap: true, reason: shadowGapBudgetExpired}
 		case observationObserved, observationPending:
 			if obsCtx.Err() != nil {
-				allDone = false // not attempted within the budget
+				allDone = false // Leave unattempted candidates unresolved.
 				continue
 			}
-			if !completeOneObservedCandidate(obsCtx, providerName, event, receiptKey, c, priorAttempt) {
+			res, done := completeOneObservedCandidate(obsCtx, providerName, event, receiptKey, c, priorAttempt)
+			if !done {
 				allDone = false
 			}
+			switch {
+			case res.changed || res.gap:
+				results[c.RepoPath] = res // Replace the unresolved default.
+			case res.noChange:
+				delete(results, c.RepoPath) // Omit confirmed empty deltas.
+			default:
+				// Setup failures remain unresolved.
+			}
 		default:
-			allDone = false
+			allDone = false // Unknown outcomes remain unresolved.
 		}
 	}
+
+	// Preserve candidate order, then append omission counts.
+	observed := make([]observedShadowResult, 0, len(results)+2)
+	for _, c := range rec.Candidates {
+		if r, ok := results[c.RepoPath]; ok {
+			observed = append(observed, r)
+		}
+	}
+	observed = append(observed, omissionGaps(rec)...)
+
 	// Keep the manifest until every candidate is resolved.
 	if allDone {
 		if derr := DeleteToolWindowObservation(receiptKey); derr != nil {
 			slog.Warn("tool window observe: delete manifest", "err", derr)
 		}
 	}
+	return observed
+}
+
+// defaultObservationGaps returns unresolved candidates and omission counts.
+func defaultObservationGaps(rec *ToolWindowObservationRecord) []observedShadowResult {
+	out := make([]observedShadowResult, 0, len(rec.Candidates)+2)
+	for _, c := range rec.Candidates {
+		out = append(out, observedShadowResult{repoPath: c.RepoPath, gap: true, reason: shadowGapUnresolved})
+	}
+	return append(out, omissionGaps(rec)...)
+}
+
+// omissionGaps returns counts for candidates omitted during selection.
+func omissionGaps(rec *ToolWindowObservationRecord) []observedShadowResult {
+	var out []observedShadowResult
+	if rec.OmittedByCap > 0 {
+		out = append(out, observedShadowResult{gap: true, reason: shadowGapOmittedByCap, count: rec.OmittedByCap})
+	}
+	if rec.OmittedUnresolved > 0 {
+		out = append(out, observedShadowResult{gap: true, reason: shadowGapOmittedUnresolved, count: rec.OmittedUnresolved})
+	}
+	return out
 }
 
 // completeOneObservedCandidate stores a registered observation without publishing
-// events or links. It returns whether the candidate is terminal. With priorAttempt
-// set, missing post-state produces a partial instead of a fresh workspace capture.
-func completeOneObservedCandidate(ctx context.Context, providerName string, event *Event, receiptKey toolWindowReceiptKey, c ObservedCandidate, priorAttempt bool) bool {
+// events or links. It returns the classified observation and whether the candidate
+// is terminal. With priorAttempt set, missing post-state produces a partial instead
+// of a fresh workspace capture.
+func completeOneObservedCandidate(ctx context.Context, providerName string, event *Event, receiptKey toolWindowReceiptKey, c ObservedCandidate, priorAttempt bool) (observedShadowResult, bool) {
 	repoPath, repositoryID := c.RepoPath, c.RepositoryID
 	semDir := filepath.Join(repoPath, ".semantica")
 	rc, err := toolsnap.ResolveRepoContext(ctx, repoPath)
 	if err != nil {
 		slog.Warn("tool window observe: resolve repo", "repo", repoPath, "err", err)
-		return false
+		return observedShadowResult{}, false
 	}
 	store, err := toolsnap.OpenStore(ctx, rc, semDir)
 	if err != nil {
 		slog.Warn("tool window observe: open store", "repo", repoPath, "err", err)
-		return false
+		return observedShadowResult{}, false
 	}
 	reg, err := toolsnap.OpenRegistry(semDir)
 	if err != nil {
 		slog.Warn("tool window observe: open registry", "repo", repoPath, "err", err)
-		return false
+		return observedShadowResult{}, false
 	}
 	repoBlobs, err := blobs.NewStore(filepath.Join(semDir, "objects"))
 	if err != nil {
 		slog.Warn("tool window observe: open blob store", "repo", repoPath, "err", err)
-		return false
+		return observedShadowResult{}, false
 	}
 	key := toolsnap.ToolKey{
 		RepositoryID: repositoryID,
@@ -572,9 +650,10 @@ func completeOneObservedCandidate(ctx context.Context, providerName string, even
 			}
 		}
 		releaseGroupRefs(ctx, reg, store, cleanupRefs)
-		return true
+		return classifyObservedDelta(ctx, reg, repoBlobs, key, repoPath), true
 	case err == nil && !closed:
-		return false // group has other active members; complete later
+		// Wait for the remaining active members.
+		return observedShadowResult{repoPath: repoPath, gap: true, reason: shadowGapUnresolved}, false
 	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
 		// Record the missing registration without taking a new before-snapshot.
 		if c.Outcome == observationPending {
@@ -582,14 +661,96 @@ func completeOneObservedCandidate(ctx context.Context, providerName string, even
 				slog.Warn("tool window observe: checkpoint gap", "repo", repoPath, "err", cerr)
 			}
 		}
-		return true
+		return observedShadowResult{repoPath: repoPath, gap: true, reason: shadowGapSnapshotFailed}, true
 	case errors.Is(err, toolsnap.ErrWindowSealed), errors.Is(err, toolsnap.ErrWindowTombstoned):
-		// Registry-terminal states; the sweep reclaims the window.
-		return true
+		// The sweep handles cleanup; coverage remains unknown.
+		return observedShadowResult{repoPath: repoPath, gap: true, reason: shadowGapUnresolved}, true
 	default:
 		slog.Warn("tool window observe: complete candidate", "repo", repoPath, "err", err)
-		return false
+		return observedShadowResult{repoPath: repoPath, gap: true, reason: shadowGapUnresolved}, false
 	}
+}
+
+// classifyObservedDelta distinguishes changes, empty deltas, and coverage gaps.
+// Missing or unreadable evidence is a gap; known delta hashes are retained.
+func classifyObservedDelta(ctx context.Context, reg *toolsnap.Registry, repoBlobs *blobs.Store, key toolsnap.ToolKey, repoPath string) observedShadowResult {
+	res := observedShadowResult{repoPath: repoPath}
+	deltaHash, found, err := reg.ClosureDelta(key)
+	if err != nil || !found || deltaHash == "" {
+		res.gap, res.reason = true, shadowGapEvidenceUnavailable
+		return res
+	}
+	res.evidence = deltaHash // Retain the hash even if the blob cannot be read.
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		res.gap, res.reason = true, shadowGapEvidenceUnavailable
+		return res
+	}
+	parsed, err := toolsnap.ParseDelta(raw)
+	if err != nil {
+		res.gap, res.reason = true, shadowGapEvidenceUnavailable
+		return res
+	}
+	res.scope = parsed.Scope
+	switch {
+	case parsed.Status == "complete" && len(parsed.Files) > 0:
+		res.changed = true
+	case parsed.Status == "complete":
+		res.noChange = true // Complete empty delta.
+	case parsed.Status == "partial":
+		res.gap = true
+		res.reason = parsed.Reason
+		if res.reason == "" {
+			res.reason = shadowGapPartial
+		}
+	}
+	return res
+}
+
+// Shadow signals describe observations, not routing decisions or authorship.
+const (
+	shadowSignalObservedDelta = "observed_delta" // complete non-empty observed change
+	shadowSignalObservedGap   = "observed_gap"   // partial/unavailable: unknown coverage
+)
+
+// emitObservationShadow logs changes and gaps outside a handled window's
+// publish destination. It excludes broker-routed destinations and does not
+// determine routing or authorship.
+func emitObservationShadow(providerName string, event *Event, target *toolWindowTarget, disp toolWindowDisposition, observed []observedShadowResult) {
+	if target == nil || disp != windowHandled || len(observed) == 0 {
+		return
+	}
+	dest := broker.CanonicalRepoPath(target.repoPath)
+	entries := make([]util.RoutingDecisionEntry, 0, len(observed))
+	for _, o := range observed {
+		if !o.changed && !o.gap {
+			continue // No change or gap to report.
+		}
+		repo := ""
+		if o.repoPath != "" {
+			repo = broker.CanonicalRepoPath(o.repoPath)
+			if repo == dest {
+				continue // Already matches the publish destination.
+			}
+		}
+		signal := shadowSignalObservedDelta
+		if o.gap {
+			signal = shadowSignalObservedGap
+		}
+		entries = append(entries, util.RoutingDecisionEntry{
+			EventID:     "observe:" + event.ToolUseID,
+			Provider:    providerName,
+			Signal:      signal,
+			Repo:        repo,
+			Destination: dest,
+			Evidence:    o.evidence,
+			Scope:       o.scope,
+			Reason:      o.reason,
+			Count:       o.count,
+			Shadow:      true,
+		})
+	}
+	util.AppendRoutingDecisions(entries)
 }
 
 // toolWindowDisposition is completeToolWindow's outcome for the caller.
@@ -606,7 +767,7 @@ const (
 
 // completeToolWindow finalizes a Bash window and tells the caller whether to
 // stop, continue, or suppress event routing.
-func completeToolWindow(ctx context.Context, providerName string, event *Event, bh *broker.Handle, globalBlobs *blobs.Store, events []broker.RawEvent) toolWindowDisposition {
+func completeToolWindow(ctx context.Context, providerName string, event *Event, bh *broker.Handle, globalBlobs *blobs.Store, events []broker.RawEvent) (disp toolWindowDisposition) {
 	// Command-directory providers suppress events when completion fails.
 	failDisp := windowPassthrough
 	if effectiveDirProvider(providerName) {
@@ -626,11 +787,14 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	if event.TurnID == "" {
 		event.TurnID = state.TurnID
 	}
-	// Complete frozen observations even if the gate changes or no primary resolves.
-	defer completeObservedCandidates(ctx, providerName, event)
+	// Complete frozen observations regardless of the gate or primary target.
+	// Defers run in reverse order: completion populates observed before emission.
+	var target *toolWindowTarget
+	var observed []observedShadowResult
+	defer func() { emitObservationShadow(providerName, event, target, disp, observed) }()
+	defer func() { observed = completeObservedCandidates(ctx, providerName, event) }()
 	// Command-directory providers complete the target selected by the pre hook.
 	// Missing or invalid targets suppress routing to the session repository.
-	var target *toolWindowTarget
 	if effectiveDirProvider(providerName) {
 		receiptKey := receiptKeyFor(providerName, event)
 		defer func() {

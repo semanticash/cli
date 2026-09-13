@@ -34,11 +34,15 @@ type routingDecisionSummary struct {
 }
 
 // summarizeRoutingDecisions totals the last entry for each (EventID, Repo)
-// globally and per repository. Entries must be in append order.
+// globally and per repository, excluding shadow records. Entries must be in
+// append order.
 func summarizeRoutingDecisions(entries []util.RoutingDecisionEntry) routingDecisionSummary {
 	type key struct{ event, repo string }
 	latest := make(map[key]util.RoutingDecisionEntry, len(entries))
 	for _, e := range entries {
+		if e.Shadow {
+			continue // Exclude observations before deduplication.
+		}
 		latest[key{e.EventID, e.Repo}] = e // append-order tail: last wins
 	}
 
