@@ -56,6 +56,8 @@ type ToolWindowObservationRecord struct {
 	// OmittedUnresolved counts candidates with unresolved lineage identities.
 	OmittedUnresolved int `json:"omitted_unresolved,omitempty"`
 	TotalActive       int `json:"total_active"`
+	// CompletionAttempted prevents later deliveries from taking fresh post-snapshots.
+	CompletionAttempted bool `json:"completion_attempted,omitempty"`
 }
 
 func validObservationOutcome(o string) bool {
@@ -334,6 +336,73 @@ func CheckpointToolWindowObservation(key toolWindowReceiptKey, outcomes map[stri
 	return writeObservation(path, rec)
 }
 
+// MarkObservationCompletionAttempted records completion arrival before processing
+// candidates. Once set, the marker is never cleared.
+func MarkObservationCompletionAttempted(key toolWindowReceiptKey) error {
+	if !key.valid() {
+		return errors.New("observation manifest: incomplete window identity")
+	}
+	path, err := toolWindowObservationPath(key)
+	if err != nil {
+		return err
+	}
+	lockFile, ok := lockObservation(path)
+	if !ok {
+		return errors.New("observation manifest: lock unavailable")
+	}
+	defer func() {
+		_ = platform.UnlockFile(lockFile)
+		_ = lockFile.Close()
+	}()
+	rec, err := readObservation(path, key)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return errors.New("observation manifest: not found for completion mark")
+	}
+	if rec.CompletionAttempted {
+		return nil
+	}
+	rec.CompletionAttempted = true
+	return writeObservation(path, rec)
+}
+
+// observeArrivalFault forces completion-arrival recording to fail. Tests only.
+var observeArrivalFault error
+
+// recordCompletionArrival exclusively creates an arrival sentinel without the
+// attempt lock. It returns true when created, false when present, or an error.
+// Creation does not prove first delivery if both earlier arrival records were lost;
+// see completeObservedCandidates for that limitation.
+func recordCompletionArrival(key toolWindowReceiptKey) (firstArrival bool, err error) {
+	if observeArrivalFault != nil {
+		return false, observeArrivalFault
+	}
+	path, perr := toolWindowObservationPath(key)
+	if perr != nil {
+		return false, perr
+	}
+	if merr := os.MkdirAll(filepath.Dir(path), 0o755); merr != nil {
+		return false, merr
+	}
+	f, cerr := os.OpenFile(path+".arrived", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if cerr == nil {
+		_ = f.Close()
+		return true, nil
+	}
+	if errors.Is(cerr, os.ErrExist) {
+		return false, nil // a prior delivery already arrived
+	}
+	return false, cerr // uncertain: the caller must fail closed
+}
+
+// removeCompletionArrival deletes the arrival sentinel for a resolved window.
+// Removal is best-effort; leftover sentinels prevent fresh capture for the same key.
+func removeCompletionArrival(manifestPath string) {
+	_ = os.Remove(manifestPath + ".arrived")
+}
+
 // LoadToolWindowObservation returns a validated manifest or (nil, nil) if absent.
 // Loading does not depend on whether observation is currently enabled.
 func LoadToolWindowObservation(key toolWindowReceiptKey) (*ToolWindowObservationRecord, error) {
@@ -414,6 +483,7 @@ func sweepStaleObservation(path string, cutoff int64) (int, error) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return 0, err
 	}
+	removeCompletionArrival(path)
 	return 1, nil
 }
 
@@ -435,5 +505,6 @@ func DeleteToolWindowObservation(key toolWindowReceiptKey) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove observation manifest: %w", err)
 	}
+	removeCompletionArrival(path)
 	return nil
 }

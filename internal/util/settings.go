@@ -315,6 +315,16 @@ func ObservationRoutingEnabled(semDir string) bool {
 	return *s.ObservationRouting
 }
 
+// ObservationRoutingGlobalDefault reads the environment gate when no repository
+// settings apply. The default is false.
+func ObservationRoutingGlobalDefault() bool {
+	switch os.Getenv("SEMANTICA_OBSERVE_ROUTING") {
+	case "1", "true":
+		return true
+	}
+	return false
+}
+
 // IsPlaybookEnabled returns true if the auto-playbook automation is enabled.
 func IsPlaybookEnabled(semDir string) bool {
 	s, err := ReadSettings(semDir)

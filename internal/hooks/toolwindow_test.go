@@ -1429,3 +1429,583 @@ func TestObserve_RetryReconcilesAfterCandidateDeactivated(t *testing.T) {
 		t.Fatalf("candidate outcome = %q, want snapshot_failed", rec.Candidates[0].Outcome)
 	}
 }
+
+// Pre/post hooks publish for the primary and preserve other repositories' observations.
+func TestObserve_EndToEndLifecycleAcrossRepos(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Pre: primary publish window + observe window in the other repo.
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+
+	// The command edits both repositories.
+	if err := os.WriteFile(filepath.Join(w.repoPath, "gen.txt"), []byte("primary edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherPath, "cross.txt"), []byte("cross-repo edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Post: primary publishes; the observe candidate completes.
+	post := postBashEvent("sess", "toolu_x", w.repoPath, "cross-repo generator")
+	events := []broker.RawEvent{bashRawEvent("evt-close", "toolu_x", "sess")}
+	if got := completeToolWindow(ctx, "claude-code", post, w.bh, nil, events); got != windowHandled {
+		t.Fatalf("primary completion = %v, want handled", got)
+	}
+
+	// Primary publishes exactly its own evidence link.
+	if links := linksIn(t, w.semDir); len(links) != 1 || links[0].EventID != "evt-close" {
+		t.Fatalf("primary links = %+v, want one for evt-close", links)
+	}
+
+	// The other repository is observed-only: no links, window closed.
+	if links := linksIn(t, otherSem); len(links) != 0 {
+		t.Fatalf("observation published links: %+v", links)
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 0 {
+		t.Fatalf("observe window not closed: %+v", wins)
+	}
+
+	// Retrieve the delta by window identity and verify the cross-repository edit.
+	obsKey := toolsnap.ToolKey{
+		RepositoryID: otherID, Provider: "claude_code",
+		SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve,
+	}
+	reg, err := toolsnap.OpenRegistry(otherSem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltaHash, found, err := reg.ClosureDelta(obsKey)
+	if err != nil || !found || deltaHash == "" {
+		t.Fatalf("observe delta not retrievable: hash=%q found=%v err=%v", deltaHash, found, err)
+	}
+	repoBlobs, err := blobs.NewStore(filepath.Join(otherSem, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		t.Fatalf("observe delta blob missing: %v", err)
+	}
+	parsed, err := toolsnap.ParseDelta(raw)
+	if err != nil {
+		t.Fatalf("parse observe delta: %v", err)
+	}
+	sawCross := false
+	for _, f := range parsed.Files {
+		if f.Path == "cross.txt" {
+			sawCross = true
+		}
+	}
+	if !sawCross {
+		t.Fatalf("observe delta did not capture cross.txt: %+v", parsed.Files)
+	}
+
+	// The manifest is removed after completion.
+	if rec, _ := LoadToolWindowObservation(receiptKeyFor("claude-code", post)); rec != nil {
+		t.Fatalf("manifest not deleted after completion: %+v", rec)
+	}
+}
+
+// registerObserveWindow registers a window with a pending manifest entry,
+// simulating interruption before checkpointing. It returns the observation key.
+func registerPendingObservation(t *testing.T, ctx context.Context, primary *toolWindowWorld, candPath, candSem, candID string) toolsnap.ToolKey {
+	t.Helper()
+	rc, err := toolsnap.ResolveRepoContext(ctx, candPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolsnap.OpenStore(ctx, rc, candSem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := toolsnap.OpenRegistry(candSem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsKey := toolsnap.ToolKey{
+		RepositoryID: candID, Provider: "claude_code",
+		SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve,
+	}
+	if _, err := reg.CaptureAndBegin(ctx, store, obsKey, "Bash", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	rk := receiptKeyFor("claude-code", &Event{SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x"})
+	if _, err := CreateToolWindowObservation(rk, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     primary.repoPath,
+		PrimaryRepositoryID: primary.repoID,
+		Candidates:          []ObservedCandidate{{RepoPath: candPath, RepositoryID: candID, Outcome: observationPending}},
+		TotalActive:         1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return obsKey
+}
+
+func completionEvent() *Event {
+	ev := postBashEvent("sess", "toolu_x", "", "observed generator")
+	ev.TurnID = "turn-1"
+	return ev
+}
+
+// Disabling the gate must not prevent existing observations from completing.
+func TestObserve_CompletionSurvivesGateOff(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: w.repoPath, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", w.repoPath), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherPath, "cross.txt"), []byte("cross edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable the gate between pre and post.
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "0")
+
+	post := postBashEvent("sess", "toolu_x", w.repoPath, "gen")
+	if completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-close", "toolu_x", "sess")}) != windowHandled {
+		t.Fatal("primary completion not handled")
+	}
+	if wins := windowsIn(t, otherSem); len(wins) != 0 {
+		t.Fatalf("observation stranded after gate off: %+v", wins)
+	}
+	if rec, _ := LoadToolWindowObservation(receiptKeyFor("claude-code", post)); rec != nil {
+		t.Fatalf("manifest not deleted after completion: %+v", rec)
+	}
+	reg, _ := toolsnap.OpenRegistry(otherSem)
+	obsKey := toolsnap.ToolKey{RepositoryID: otherID, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+	if h, found, _ := reg.ClosureDelta(obsKey); !found || h == "" {
+		t.Fatal("observation not completed after gate off")
+	}
+}
+
+// Pending registrations complete from their existing before-snapshots.
+func TestObserve_CompletesPendingWithoutFreshSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	registerPendingObservation(t, ctx, w, otherPath, otherSem, otherID)
+
+	// The command changes the candidate after its before-snapshot was taken.
+	if err := os.WriteFile(filepath.Join(otherPath, "cross.txt"), []byte("cross edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+
+	// Capturing cross.txt confirms the original before-snapshot was used.
+	reg, _ := toolsnap.OpenRegistry(otherSem)
+	obsKey := toolsnap.ToolKey{RepositoryID: otherID, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+	deltaHash, found, err := reg.ClosureDelta(obsKey)
+	if err != nil || !found || deltaHash == "" {
+		t.Fatalf("pending candidate not completed: %q %v %v", deltaHash, found, err)
+	}
+	repoBlobs, _ := blobs.NewStore(filepath.Join(otherSem, "objects"))
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := toolsnap.ParseDelta(raw)
+	saw := false
+	for _, f := range parsed.Files {
+		if f.Path == "cross.txt" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("delta missing cross.txt (fresh before-snapshot taken?): %+v", parsed.Files)
+	}
+	if rec, _ := LoadToolWindowObservation(receiptKeyFor("claude-code", completionEvent())); rec != nil {
+		t.Fatalf("manifest not deleted after completing pending: %+v", rec)
+	}
+}
+
+// Incomplete observations retain their manifest after budget exhaustion.
+func TestObserve_RetainsManifestWhenIncomplete(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	registerPendingObservation(t, ctx, w, otherPath, otherSem, otherID)
+
+	// Exhaust the completion budget immediately so no candidate is attempted.
+	origBudget := toolWindowObserveBudget
+	toolWindowObserveBudget = -1
+	t.Cleanup(func() { toolWindowObserveBudget = origBudget })
+
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+
+	// The manifest is retained (unfinished), and the window remains open.
+	rec, err := LoadToolWindowObservation(receiptKeyFor("claude-code", completionEvent()))
+	if err != nil || rec == nil {
+		t.Fatalf("manifest deleted despite incomplete work: %+v %v", rec, err)
+	}
+	_ = otherID
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("observe window changed while incomplete: %+v", wins)
+	}
+}
+
+// Commands outside registered repositories observe candidates without publishing.
+func TestObserve_NoPrimaryObservesAllRepos(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("SEMANTICA_OBSERVE_ROUTING", "1")
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	// The command runs in the parent directory, which no registered repo owns.
+	outside := filepath.Dir(w.repoPath)
+	if err := SaveCaptureState(&CaptureState{
+		SessionID: "sess", Provider: "claude-code", TurnID: "turn-1", CWD: outside, Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handleToolStepStarted(ctx, "claude-code", startedEvent("sess", "toolu_x", outside), w.bh); err != nil {
+		t.Fatal(err)
+	}
+	// The command changes both registered repositories.
+	if err := os.WriteFile(filepath.Join(w.repoPath, "a.txt"), []byte("edit a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherPath, "b.txt"), []byte("edit b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	post := postBashEvent("sess", "toolu_x", outside, "cross generator")
+	// No publish target, so completion is a passthrough for a non-dir provider.
+	completeToolWindow(ctx, "claude-code", post, w.bh, nil, []broker.RawEvent{bashRawEvent("evt-close", "toolu_x", "sess")})
+
+	// Neither repository published events or links, and both observe windows closed.
+	for _, sem := range []string{w.semDir, otherSem} {
+		if links := linksIn(t, sem); len(links) != 0 {
+			t.Fatalf("no-primary observation published links in %s: %+v", sem, links)
+		}
+		if wins := windowsIn(t, sem); len(wins) != 0 {
+			t.Fatalf("observe window not closed in %s: %+v", sem, wins)
+		}
+	}
+
+	// Both observation deltas are retrievable by window identity.
+	for _, c := range []struct{ sem, id string }{{w.semDir, w.repoID}, {otherSem, otherID}} {
+		reg, err := toolsnap.OpenRegistry(c.sem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obsKey := toolsnap.ToolKey{RepositoryID: c.id, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+		if h, found, _ := reg.ClosureDelta(obsKey); !found || h == "" {
+			t.Fatalf("no-primary observation not completed for %s", c.sem)
+		}
+	}
+
+	if rec, _ := LoadToolWindowObservation(receiptKeyFor("claude-code", post)); rec != nil {
+		t.Fatalf("manifest not deleted after no-primary completion: %+v", rec)
+	}
+}
+
+// registerObservedWindow registers a before-snapshot and marks its candidate observed.
+func registerObservedWindow(t *testing.T, ctx context.Context, primary *toolWindowWorld, candPath, candSem, candID string) {
+	t.Helper()
+	rc, err := toolsnap.ResolveRepoContext(ctx, candPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolsnap.OpenStore(ctx, rc, candSem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := toolsnap.OpenRegistry(candSem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsKey := toolsnap.ToolKey{
+		RepositoryID: candID, Provider: "claude_code",
+		SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve,
+	}
+	if _, err := reg.CaptureAndBegin(ctx, store, obsKey, "Bash", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	rk := receiptKeyFor("claude-code", &Event{SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x"})
+	if _, err := CreateToolWindowObservation(rk, &ToolWindowObservationRecord{
+		PrimaryRepoPath:     primary.repoPath,
+		PrimaryRepositoryID: primary.repoID,
+		Candidates:          []ObservedCandidate{{RepoPath: candPath, RepositoryID: candID, Outcome: observationObserved}},
+		TotalActive:         1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Retrying an exhausted completion must not capture later workspace edits.
+func TestObserve_RetryAfterBudgetDoesNotCaptureDrift(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+
+	registerObservedWindow(t, ctx, w, otherPath, otherSem, otherID)
+
+	// 1. The command creates original.txt within the observation window.
+	if err := os.WriteFile(filepath.Join(otherPath, "original.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. The first completion exhausts its budget before reaching the candidate.
+	origBudget := toolWindowObserveBudget
+	toolWindowObserveBudget = -1
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	// The window is untouched and the manifest retained (marker persisted).
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("window changed on budget-exhausted attempt: %+v", wins)
+	}
+	rec, _ := LoadToolWindowObservation(receiptKeyFor("claude-code", completionEvent()))
+	if rec == nil || !rec.CompletionAttempted {
+		t.Fatalf("completion-attempt marker not persisted: %+v", rec)
+	}
+
+	// 3. Later, unrelated work creates later.txt.
+	if err := os.WriteFile(filepath.Join(otherPath, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. The retried completion must record a partial, not a delta with later.txt.
+	toolWindowObserveBudget = origBudget
+	t.Cleanup(func() { toolWindowObserveBudget = origBudget })
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+
+	reg, _ := toolsnap.OpenRegistry(otherSem)
+	obsKey := toolsnap.ToolKey{RepositoryID: otherID, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+	deltaHash, found, err := reg.ClosureDelta(obsKey)
+	if err != nil || !found || deltaHash == "" {
+		t.Fatalf("retry did not finalize the window: %q %v %v", deltaHash, found, err)
+	}
+	repoBlobs, _ := blobs.NewStore(filepath.Join(otherSem, "objects"))
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := toolsnap.ParseDelta(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Status != "partial" || parsed.Reason != toolsnap.ReasonPostSnapshotLost {
+		t.Fatalf("retry captured drifted state instead of a partial: status=%q reason=%q files=%+v", parsed.Status, parsed.Reason, parsed.Files)
+	}
+	for _, f := range parsed.Files {
+		if f.Path == "later.txt" {
+			t.Fatalf("retry delta leaked post-command change later.txt: %+v", parsed.Files)
+		}
+	}
+}
+
+// assertObservePartialNoDrift checks for a post_snapshot_lost partial without later.txt.
+func assertObservePartialNoDrift(t *testing.T, ctx context.Context, sem, id string) {
+	t.Helper()
+	reg, err := toolsnap.OpenRegistry(sem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsKey := toolsnap.ToolKey{RepositoryID: id, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+	deltaHash, found, err := reg.ClosureDelta(obsKey)
+	if err != nil || !found || deltaHash == "" {
+		t.Fatalf("window not finalized: %q %v %v", deltaHash, found, err)
+	}
+	repoBlobs, err := blobs.NewStore(filepath.Join(sem, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := toolsnap.ParseDelta(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Status != "partial" || parsed.Reason != toolsnap.ReasonPostSnapshotLost {
+		t.Fatalf("expected post_snapshot_lost partial, got status=%q reason=%q files=%+v", parsed.Status, parsed.Reason, parsed.Files)
+	}
+	for _, f := range parsed.Files {
+		if f.Path == "later.txt" {
+			t.Fatalf("delta leaked post-command change later.txt: %+v", parsed.Files)
+		}
+	}
+}
+
+// A recorded arrival prevents fresh capture after attempt-lock contention.
+func TestObserve_RetryAfterLockContentionDoesNotCaptureDrift(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+	registerObservedWindow(t, ctx, w, otherPath, otherSem, otherID)
+
+	// 1. The command creates original.txt within the window.
+	if err := os.WriteFile(filepath.Join(otherPath, "original.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. The first completion delivery cannot take the contended attempt lock.
+	rk := receiptKeyFor("claude-code", completionEvent())
+	held, ok := acquireObservationAttempt(rk)
+	if !ok {
+		t.Fatal("could not hold attempt lock")
+	}
+	origA, origD := observationLockAttempts, observationLockRetryDelay
+	observationLockAttempts, observationLockRetryDelay = 2, time.Millisecond
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	held()
+	observationLockAttempts, observationLockRetryDelay = origA, origD
+
+	// The window is untouched, but arrival was recorded before the lock.
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("window changed on lock-contended attempt: %+v", wins)
+	}
+
+	// 3. Later, unrelated work creates later.txt.
+	if err := os.WriteFile(filepath.Join(otherPath, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. The retry must record a partial, not a complete delta with later.txt.
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	assertObservePartialNoDrift(t, ctx, otherSem, otherID)
+}
+
+// The manifest marker prevents fresh capture when arrival-sentinel creation fails.
+func TestObserve_RetryAfterArrivalFailureDoesNotCaptureDrift(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+	registerObservedWindow(t, ctx, w, otherPath, otherSem, otherID)
+
+	if err := os.WriteFile(filepath.Join(otherPath, "original.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fail sentinel creation and exhaust the budget before processing candidates.
+	origBudget := toolWindowObserveBudget
+	observeArrivalFault = errors.New("arrival persistence failed")
+	toolWindowObserveBudget = -1
+	t.Cleanup(func() { toolWindowObserveBudget = origBudget; observeArrivalFault = nil })
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	observeArrivalFault = nil
+	toolWindowObserveBudget = origBudget
+
+	// The window is retained for a later delivery.
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("window changed on arrival-failed attempt: %+v", wins)
+	}
+
+	// 2. Later work creates later.txt.
+	if err := os.WriteFile(filepath.Join(otherPath, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The manifest marker identifies the retry even though sentinel creation succeeds.
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	assertObservePartialNoDrift(t, ctx, otherSem, otherID)
+}
+
+// Losing both arrival records lets a retry capture later edits. This test
+// characterizes the known limitation, not desired behavior. Observations remain
+// shadow-only; update the assertion when reliable retry detection is available.
+func TestObserve_DoubleRecordLossCanCaptureDrift(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	w := newToolWindowWorld(t, home, "primary")
+	otherPath, otherSem, otherID := addBrokerRepo(t, w.bh, filepath.Dir(w.repoPath), "other")
+	ctx := context.Background()
+	registerObservedWindow(t, ctx, w, otherPath, otherSem, otherID)
+
+	if err := os.WriteFile(filepath.Join(otherPath, "original.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fail arrival recording and prevent the manifest marker from being written.
+	rk := receiptKeyFor("claude-code", completionEvent())
+	held, ok := acquireObservationAttempt(rk)
+	if !ok {
+		t.Fatal("could not hold attempt lock")
+	}
+	observeArrivalFault = errors.New("arrival persistence failed")
+	origA, origD := observationLockAttempts, observationLockRetryDelay
+	observationLockAttempts, observationLockRetryDelay = 2, time.Millisecond
+	t.Cleanup(func() {
+		observationLockAttempts, observationLockRetryDelay = origA, origD
+		observeArrivalFault = nil
+	})
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	held()
+	observeArrivalFault = nil
+	observationLockAttempts, observationLockRetryDelay = origA, origD
+
+	// The registration remains active without a completion marker.
+	if wins := windowsIn(t, otherSem); len(wins) != 1 {
+		t.Fatalf("window changed on double-loss attempt: %+v", wins)
+	}
+	if rec, _ := LoadToolWindowObservation(rk); rec == nil || rec.CompletionAttempted {
+		t.Fatalf("expected no surviving marker after double loss: %+v", rec)
+	}
+
+	// Later work adds later.txt.
+	if err := os.WriteFile(filepath.Join(otherPath, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Characterize the current defect: the retry captures later.txt as a complete delta.
+	completeObservedCandidates(ctx, "claude-code", completionEvent())
+	reg, _ := toolsnap.OpenRegistry(otherSem)
+	obsKey := toolsnap.ToolKey{RepositoryID: otherID, Provider: "claude_code", SessionID: "sess", TurnID: "turn-1", ToolUseID: "toolu_x", Mode: toolsnap.ToolModeObserve}
+	deltaHash, found, err := reg.ClosureDelta(obsKey)
+	if err != nil || !found || deltaHash == "" {
+		t.Fatalf("window not finalized: %q %v %v", deltaHash, found, err)
+	}
+	repoBlobs, _ := blobs.NewStore(filepath.Join(otherSem, "objects"))
+	raw, err := repoBlobs.Get(ctx, deltaHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := toolsnap.ParseDelta(raw)
+	leaked := false
+	for _, f := range parsed.Files {
+		if f.Path == "later.txt" {
+			leaked = true
+		}
+	}
+	if parsed.Status != "complete" || !leaked {
+		t.Fatalf("documented limitation changed (now safer?): status=%q files=%+v — update this test", parsed.Status, parsed.Files)
+	}
+}

@@ -165,9 +165,14 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 	}
 
 	target, err := resolveToolWindowTarget(wctx, bh, toolWindowCWD(event, state))
-	if err != nil || target == nil {
-		if err != nil {
-			slog.Warn("tool window: resolve target", "err", err)
+	if err != nil {
+		slog.Warn("tool window: resolve target", "err", err)
+		return nil
+	}
+	if target == nil {
+		// Without a primary repository, the environment controls observation.
+		if util.ObservationRoutingGlobalDefault() {
+			observeAdditionalCandidates(wctx, providerName, event, bh, nil, toolWindowCWD(event, state), state.CWD)
 		}
 		return nil
 	}
@@ -305,7 +310,7 @@ func observeAdditionalCandidates(ctx context.Context, providerName string, event
 	}
 	eligible := make([]broker.RegisteredRepo, 0, len(repos))
 	for _, r := range repos {
-		if r.CanonicalPath == primaryCanonical {
+		if primary != nil && r.CanonicalPath == primaryCanonical {
 			continue // the primary publishes; it is not observed
 		}
 		eligible = append(eligible, r)
@@ -333,12 +338,14 @@ func observeAdditionalCandidates(ctx context.Context, providerName string, event
 
 	// Preserve coverage gaps even when no identities resolve.
 	manifest := &ToolWindowObservationRecord{
-		PrimaryRepoPath:     primary.repoPath,
-		PrimaryRepositoryID: primary.repositoryID,
-		Candidates:          candidates,
-		OmittedByCap:        set.OmittedByCap,
-		OmittedUnresolved:   unresolved,
-		TotalActive:         set.TotalActive,
+		Candidates:        candidates,
+		OmittedByCap:      set.OmittedByCap,
+		OmittedUnresolved: unresolved,
+		TotalActive:       set.TotalActive,
+	}
+	if primary != nil {
+		manifest.PrimaryRepoPath = primary.repoPath
+		manifest.PrimaryRepositoryID = primary.repositoryID
 	}
 	created, err := CreateToolWindowObservation(receiptKey, manifest)
 	if err != nil {
@@ -443,6 +450,148 @@ func observeOneCandidate(ctx context.Context, providerName string, event *Event,
 	return observationObserved
 }
 
+// completeObservedCandidates completes registered observations from the manifest,
+// regardless of the current gate. It removes the manifest once all candidates
+// resolve and never takes new before-snapshots.
+func completeObservedCandidates(ctx context.Context, providerName string, event *Event) {
+	receiptKey := receiptKeyFor(providerName, event)
+	// Avoid locking when no observation manifest exists.
+	if rec, err := LoadToolWindowObservation(receiptKey); err != nil || rec == nil {
+		if err != nil {
+			slog.Warn("tool window observe: load manifest for completion", "err", err)
+		}
+		return
+	}
+	// Record arrival before lock contention can interrupt completion.
+	firstArrival, aerr := recordCompletionArrival(receiptKey)
+	if aerr != nil {
+		slog.Warn("tool window observe: record completion arrival", "err", aerr)
+	}
+
+	// Serialize completion with pre-hook attempts; retain the manifest on contention.
+	release, ok := acquireObservationAttempt(receiptKey)
+	if !ok {
+		return
+	}
+	defer release()
+	rec, err := LoadToolWindowObservation(receiptKey)
+	if err != nil || rec == nil {
+		return
+	}
+
+	// Recorded or uncertain arrivals must reuse frozen post-state or produce a partial.
+	// If both arrival records are lost, a retry can still capture later edits.
+	// These deltas are for shadow measurement only, never routing or authorship.
+	// See TestObserve_DoubleRecordLossCanCaptureDrift.
+	priorAttempt := !firstArrival || aerr != nil || rec.CompletionAttempted
+	// Keep a second arrival record in case the sentinel could not be created.
+	if !rec.CompletionAttempted {
+		if merr := MarkObservationCompletionAttempted(receiptKey); merr != nil {
+			slog.Warn("tool window observe: mark completion attempt", "err", merr)
+		}
+	}
+
+	// Share one completion budget; retain unfinished candidates for recovery.
+	obsCtx, cancel := context.WithTimeout(ctx, toolWindowObserveBudget)
+	defer cancel()
+	allDone := true
+	for _, c := range rec.Candidates {
+		switch c.Outcome {
+		case observationSnapshotFailed, observationBudgetExpired:
+			continue // definitive gap: no window to complete
+		case observationObserved, observationPending:
+			if obsCtx.Err() != nil {
+				allDone = false // not attempted within the budget
+				continue
+			}
+			if !completeOneObservedCandidate(obsCtx, providerName, event, receiptKey, c, priorAttempt) {
+				allDone = false
+			}
+		default:
+			allDone = false
+		}
+	}
+	// Keep the manifest until every candidate is resolved.
+	if allDone {
+		if derr := DeleteToolWindowObservation(receiptKey); derr != nil {
+			slog.Warn("tool window observe: delete manifest", "err", derr)
+		}
+	}
+}
+
+// completeOneObservedCandidate stores a registered observation without publishing
+// events or links. It returns whether the candidate is terminal. With priorAttempt
+// set, missing post-state produces a partial instead of a fresh workspace capture.
+func completeOneObservedCandidate(ctx context.Context, providerName string, event *Event, receiptKey toolWindowReceiptKey, c ObservedCandidate, priorAttempt bool) bool {
+	repoPath, repositoryID := c.RepoPath, c.RepositoryID
+	semDir := filepath.Join(repoPath, ".semantica")
+	rc, err := toolsnap.ResolveRepoContext(ctx, repoPath)
+	if err != nil {
+		slog.Warn("tool window observe: resolve repo", "repo", repoPath, "err", err)
+		return false
+	}
+	store, err := toolsnap.OpenStore(ctx, rc, semDir)
+	if err != nil {
+		slog.Warn("tool window observe: open store", "repo", repoPath, "err", err)
+		return false
+	}
+	reg, err := toolsnap.OpenRegistry(semDir)
+	if err != nil {
+		slog.Warn("tool window observe: open registry", "repo", repoPath, "err", err)
+		return false
+	}
+	repoBlobs, err := blobs.NewStore(filepath.Join(semDir, "objects"))
+	if err != nil {
+		slog.Warn("tool window observe: open blob store", "repo", repoPath, "err", err)
+		return false
+	}
+	key := toolsnap.ToolKey{
+		RepositoryID: repositoryID,
+		Provider:     strings.ReplaceAll(providerName, "-", "_"),
+		SessionID:    event.SessionID,
+		TurnID:       event.TurnID,
+		ToolUseID:    event.ToolUseID,
+		Mode:         toolsnap.ToolModeObserve,
+	}
+	// This synthetic identity is delta metadata, not a published event.
+	info := toolsnap.CompletionInfo{
+		At: event.Timestamp, EventID: "observe:" + event.ToolUseID,
+		CommandSummary: commandSummary(event.ToolInput),
+	}
+	cleanupRefs := map[string]string{}
+	closed, err := reg.Complete(ctx, key, info, nil,
+		func(members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
+			return finalizeObserveGroup(ctx, store, rc.HeadAnchor(), repoBlobs, members, prior, retry || priorAttempt, recordIntent, cleanupRefs, event)
+		})
+	switch {
+	case err == nil && closed:
+		// Confirm the pending candidate's registration.
+		if c.Outcome == observationPending {
+			if cerr := CheckpointToolWindowObservation(receiptKey, map[string]string{repoPath: observationObserved}); cerr != nil {
+				slog.Warn("tool window observe: checkpoint observed", "repo", repoPath, "err", cerr)
+			}
+		}
+		releaseGroupRefs(ctx, reg, store, cleanupRefs)
+		return true
+	case err == nil && !closed:
+		return false // group has other active members; complete later
+	case errors.Is(err, toolsnap.ErrNoPendingSnapshot):
+		// Record the missing registration without taking a new before-snapshot.
+		if c.Outcome == observationPending {
+			if cerr := CheckpointToolWindowObservation(receiptKey, map[string]string{repoPath: observationSnapshotFailed}); cerr != nil {
+				slog.Warn("tool window observe: checkpoint gap", "repo", repoPath, "err", cerr)
+			}
+		}
+		return true
+	case errors.Is(err, toolsnap.ErrWindowSealed), errors.Is(err, toolsnap.ErrWindowTombstoned):
+		// Registry-terminal states; the sweep reclaims the window.
+		return true
+	default:
+		slog.Warn("tool window observe: complete candidate", "repo", repoPath, "err", err)
+		return false
+	}
+}
+
 // toolWindowDisposition is completeToolWindow's outcome for the caller.
 type toolWindowDisposition int
 
@@ -477,6 +626,8 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	if event.TurnID == "" {
 		event.TurnID = state.TurnID
 	}
+	// Complete frozen observations even if the gate changes or no primary resolves.
+	defer completeObservedCandidates(ctx, providerName, event)
 	// Command-directory providers complete the target selected by the pre hook.
 	// Missing or invalid targets suppress routing to the session repository.
 	var target *toolWindowTarget
@@ -521,6 +672,7 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 	}
 	scope := doctor.BenchScopeFrom(wctx)
 	defer func() { emitToolWindowBench(target, event, "post", start, bench, stages, scope) }()
+
 	key := toolsnap.ToolKey{
 		RepositoryID: target.repositoryID,
 		Provider:     strings.ReplaceAll(providerName, "-", "_"),
