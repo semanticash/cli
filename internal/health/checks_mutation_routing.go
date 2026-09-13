@@ -13,12 +13,10 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 )
 
-// mutationRoutingWindow bounds the "recent" slice of the metric so the effect
-// of capture changes on fresh events reads separately from history.
+// mutationRoutingWindow defines the lookback for recent structured-path counts.
 const mutationRoutingWindow = 7 * 24 * time.Hour
 
-// mutationFileOps are the file operations that can change repository contents.
-// Read-only operations (file_op "read") never carry mutation ownership.
+// mutationFileOps lists operations that may change repository contents.
 var mutationFileOps = map[string]bool{
 	"write":  true,
 	"edit":   true,
@@ -26,28 +24,18 @@ var mutationFileOps = map[string]bool{
 	"exec":   true,
 }
 
-// mutationRoutingCounts buckets mutation-capable events by whether the captured
-// tool use carries a structured file path.
+// mutationRoutingCounts measures structured-path presence in stored events.
 //
-// Scope of this metric: it counts structured-path presence only. It does NOT
-// measure repository-routing outcomes. An event without a structured path is
-// not necessarily misrouted or launch-directory attributed — Bash tool windows,
-// for example, can capture such an event in the command's target repository via
-// observed changes. Actual routing outcomes (path match, tool-window target,
-// observed delta, or launch-directory fallback) are a separate, capture-time
-// measurement. Note also that stored tool_uses paths are relativized per target
-// repo on write (broker.relativizeToolPaths), so the absolute-vs-relative split
-// is not recoverable from storage either.
+// Pathless events may still have tool-window evidence. These counts do not
+// establish routing outcomes or attribution errors. Stored paths are relativized
+// on write, so their original absolute or relative form cannot be recovered.
 type mutationRoutingCounts struct {
 	total       int // mutation-capable events
 	withPath    int // carried a structured file_path
 	withoutPath int // no structured file_path (e.g. shell exec)
 }
 
-// checkMutationRouting reports how many mutation-capable events carry no
-// structured file path. It changes no routing behavior and asserts no
-// attribution fault; it only surfaces structured-path coverage so later capture
-// changes are measurable.
+// checkMutationRouting reports structured-path coverage without judging attribution.
 func checkMutationRouting(ctx context.Context, opts Options) []Check {
 	if opts.RepoPath == "" {
 		return nil

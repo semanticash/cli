@@ -97,15 +97,9 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 // sourceProjectPath should be the provider-specific project path that the
 // session was launched from (e.g., the decoded Claude project directory).
 //
-// Ownership invariant (adopted; full enforcement lands with effect-based
-// routing): the launch/cwd project path identifies SESSION ownership only. It
-// must not be treated as authoritative MUTATION ownership. A mutation event
-// with neither an observed change delta nor a resolvable absolute path has
-// UNRESOLVED mutation ownership; its association with the returned repo is
-// session context, not proof that file mutations happened there. A second
-// invariant governs the delta signal once added: an observed delta means "this
-// repo changed during the tool window", not "this tool exclusively authored
-// the change".
+// This association provides session context, not proof of mutation ownership.
+// Mutation ownership remains unresolved without path or change evidence.
+// An observed delta shows a change during a tool window, not exclusive authorship.
 func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectPath string) *RepoMatch {
 	if len(events) == 0 || sourceProjectPath == "" {
 		return nil

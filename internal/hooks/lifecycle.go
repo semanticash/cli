@@ -501,12 +501,12 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 	if err != nil {
 		return false, fmt.Errorf("list active repos: %w", err)
 	}
-	matches := computeEventRoutes(events, repos)
+	matches, decisions := computeEventRoutes(events, repos)
 	if scopeRepo != "" {
 		for _, m := range matches {
 			if !sameRepoPath(m.Repo.Path, scopeRepo) {
-				// Defer the whole session rather than split its events
-				// across repositories under one repository lock.
+				// Defer cross-repository writes while holding one repository lock.
+				// Record routing diagnostics only when writes are attempted.
 				state.ScopedDeferrals++
 				state.LastDeferredAt = time.Now().UnixMilli()
 				if serr := SaveCaptureState(state); serr != nil {
@@ -516,8 +516,10 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 			}
 		}
 	}
-	if err := writeRoutedEvents(ctx, matches, blobStore); err != nil {
-		return false, fmt.Errorf("route and write: %w", err)
+	outcomes, werr := writeRoutedEvents(ctx, matches, blobStore)
+	recordRoutingDecisions(decisions, outcomes)
+	if werr != nil {
+		return false, fmt.Errorf("route and write: %w", werr)
 	}
 
 	state.TranscriptOffset = newOffset
@@ -1098,34 +1100,42 @@ func routeAndWriteEvents(ctx context.Context, events []broker.RawEvent, bh *brok
 }
 
 func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, repos []broker.RegisteredRepo, blobStore *blobs.Store) error {
-	return writeRoutedEvents(ctx, computeEventRoutes(events, repos), blobStore)
+	matches, decisions := computeEventRoutes(events, repos)
+	outcomes, err := writeRoutedEvents(ctx, matches, blobStore)
+	recordRoutingDecisions(decisions, outcomes)
+	return err
 }
 
-// computeEventRoutes maps events to their target repositories,
-// including the no-file-path fallback via source project path.
-func computeEventRoutes(events []broker.RawEvent, repos []broker.RegisteredRepo) []broker.RepoMatch {
-	matches := broker.RouteEvents(events, repos)
+// computeEventRoutes returns repository matches and mutation routing decisions
+// without I/O. Callers record decisions after attempting writes.
+func computeEventRoutes(events []broker.RawEvent, repos []broker.RegisteredRepo) ([]broker.RepoMatch, []broker.RoutingDecision) {
+	return broker.RouteWithDecisions(events, repos)
+}
 
-	// Fallback: route events without file paths via source project path.
-	var noPathEvents []broker.RawEvent
-	var sourceProjectPath string
+// routeWriteOutcomes stores write results by canonical repository path and
+// event ID, keeping results independent across events and destinations.
+type routeWriteOutcomes map[string]map[string]bool
+
+func (o routeWriteOutcomes) record(repoCanon string, events []broker.RawEvent, persisted bool) {
+	m := o[repoCanon]
+	if m == nil {
+		m = make(map[string]bool, len(events))
+		o[repoCanon] = m
+	}
 	for _, ev := range events {
-		if len(ev.FilePaths) == 0 {
-			noPathEvents = append(noPathEvents, ev)
-			if sourceProjectPath == "" {
-				sourceProjectPath = ev.SourceProjectPath
-			}
-		}
+		m[ev.EventID] = persisted
 	}
-	if len(noPathEvents) > 0 {
-		if m := broker.RouteNoPathEvents(noPathEvents, repos, sourceProjectPath); m != nil {
-			matches = append(matches, *m)
-		}
-	}
-	return matches
 }
 
-func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStore *blobs.Store) error {
+func (o routeWriteOutcomes) persisted(repoCanon, eventID string) bool {
+	if m, ok := o[repoCanon]; ok {
+		return m[eventID]
+	}
+	return false
+}
+
+func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStore *blobs.Store) (routeWriteOutcomes, error) {
+	outcomes := make(routeWriteOutcomes, len(matches))
 	var writeFailed bool
 	for _, match := range matches {
 		if _, err := broker.WriteEventsToRepo(ctx, match.Repo.Path, match.Events, blobStore); err != nil {
@@ -1135,6 +1145,7 @@ func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStor
 			if errors.As(err, &stale) {
 				slog.Debug("broker: skipping stale repo",
 					"repo", match.Repo.Path, "reason", string(stale.Reason))
+				outcomes.record(match.Repo.CanonicalPath, match.Events, false)
 				continue
 			}
 			slog.Warn("write events to repo failed",
@@ -1148,14 +1159,47 @@ func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStor
 			util.AppendHookError(provider, "broker-write",
 				fmt.Sprintf("write events to repo %s failed (%d events): %v",
 					match.Repo.Path, len(match.Events), err))
+			outcomes.record(match.Repo.CanonicalPath, match.Events, false)
 			writeFailed = true
+			continue
 		}
+		outcomes.record(match.Repo.CanonicalPath, match.Events, true)
 	}
 
 	if writeFailed {
-		return fmt.Errorf("one or more repo writes failed")
+		return outcomes, fmt.Errorf("one or more repo writes failed")
 	}
-	return nil
+	return outcomes, nil
+}
+
+// recordRoutingDecisions logs each event/destination write outcome.
+// Unresolved decisions have no destination. Diagnostic failures are ignored.
+func recordRoutingDecisions(decisions []broker.RoutingDecision, outcomes routeWriteOutcomes) {
+	if len(decisions) == 0 {
+		return
+	}
+	entries := make([]util.RoutingDecisionEntry, 0, len(decisions))
+	for _, d := range decisions {
+		base := util.RoutingDecisionEntry{
+			EventID:     d.EventID,
+			Provider:    d.Provider,
+			Signal:      string(d.Signal),
+			SessionRepo: d.SessionRepo,
+		}
+		if len(d.Selected) == 0 {
+			entries = append(entries, base) // unresolved: empty Repo, Persisted=false
+			continue
+		}
+		for _, repoCanon := range d.Selected {
+			e := base
+			e.Repo = repoCanon
+			// Different session and destination repositories do not imply an error.
+			e.SignalDiff = d.SessionRepo != "" && repoCanon != d.SessionRepo
+			e.Persisted = outcomes.persisted(repoCanon, d.EventID)
+			entries = append(entries, e)
+		}
+	}
+	util.AppendRoutingDecisions(entries)
 }
 
 // deleteSubagentCaptureStates removes child state files except those

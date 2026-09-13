@@ -128,6 +128,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	checks = append(checks, checkUnownedCaptureStates(ctx)...)
 	checks = append(checks, checkToolWindows(ctx, opts)...)
 	checks = append(checks, checkMutationRouting(ctx, opts)...)
+	checks = append(checks, checkRoutingDecisions(ctx, opts)...)
 
 	return assemble(checks), nil
 }
