@@ -652,3 +652,38 @@ func keysOf2(m map[string]struct{}) []string {
 	}
 	return out
 }
+
+// Relative paths must resolve consistently in routing metadata and tool_uses.
+func TestBuildHookEvents_RelativeWritePathIsAbsolutizedForRouting(t *testing.T) {
+	input, _ := json.Marshal(map[string]string{"file_path": "sub/a.go", "content": "package main\n"})
+	event := &hooks.Event{
+		Type:          hooks.ToolStepCompleted,
+		SessionID:     "session-xyz",
+		TranscriptRef: fixtureTranscriptAlt,
+		Model:         "gpt-5.4",
+		Timestamp:     1700000000000,
+		CWD:           fixtureRepo,
+		TurnID:        "turn-abc",
+		ToolName:      "Write",
+		ToolInput:     input,
+		ToolResponse:  json.RawMessage(`{"output":"ok"}`),
+		ToolUseID:     "call_write",
+	}
+	bs := newMemBlobStore()
+
+	out, err := (&Provider{}).BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("BuildHookEvents: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d events, want 1", len(out))
+	}
+	ev := out[0]
+	want := repoAbs("sub", "a.go")
+	if len(ev.FilePaths) != 1 || ev.FilePaths[0] != want {
+		t.Fatalf("FilePaths = %v, want [%s] (relative path must be absolutized for routing)", ev.FilePaths, want)
+	}
+	if !strings.Contains(ev.ToolUsesJSON, want) {
+		t.Errorf("ToolUsesJSON should carry the absolute routed path %q: %q", want, ev.ToolUsesJSON)
+	}
+}

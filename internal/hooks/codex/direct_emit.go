@@ -354,17 +354,20 @@ func buildClaudeShapedStepEvent(ctx context.Context, event *hooks.Event, bs api.
 		fileOp = "write"
 	}
 
+	// Resolve relative paths against the hook cwd for repository routing.
+	routedPath := absolutizeForRouting(generic.FilePath, event.CWD)
+
 	ev := makeBaseRawEvent(event)
 	ev.Kind = "assistant"
 	ev.Role = "assistant"
 	ev.PayloadHash = payloadHash
 	ev.ProvenanceHash = provenanceHash
-	ev.ToolUsesJSON = serializeStepToolUses(event.ToolName, generic.FilePath, fileOp)
+	ev.ToolUsesJSON = serializeStepToolUses(event.ToolName, routedPath, fileOp)
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = event.ToolName
 	ev.EventSource = "hook"
-	ev.FilePaths = []string{generic.FilePath}
+	ev.FilePaths = []string{routedPath}
 	return []broker.RawEvent{ev}, nil
 }
 
