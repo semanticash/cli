@@ -157,7 +157,8 @@ If you run `semantica blame` without a ref in a terminal, Semantica shows an int
 
 When capture is incomplete, `blame` and `explain` label unmatched lines
 `Unattributed` and the percentage `AI matched`. See
-[capture readiness](docs/capture-readiness.md) for retry behavior and result fields.
+[the evidence contract](docs/evidence-contract.md#incomplete-capture) for result fields
+and [worker capture readiness](docs/architecture.md#capture-readiness) for retries.
 
 <p align="left">
   <img src="docs/images/semantica-blame-view-screen.png" alt="semantica blame output" width="600">

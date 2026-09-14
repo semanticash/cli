@@ -30,8 +30,21 @@ Explain's `files_unattributed` counts every file with unattributed lines. A mixe
 file can appear in both `files_with_ai` and `files_unattributed`; these counts are
 not mutually exclusive. `status` omits incomplete checkpoints from its AI trend.
 
-See [capture readiness](capture-readiness.md) for evidence boundaries, retries,
-and the treatment of legacy checkpoints.
+Explain's model context, skill output, and attribution uploads preserve this
+uncertainty. `total_lines - ai_lines` does not establish human authorship.
+
+Recorded gaps remain if evidence arrives later. Completed checkpoints are not
+automatically re-attributed; `blame` recomputes matches but retains the saved
+capture status. Audit readiness does not report incomplete capture as ready.
+
+Readiness covers registered tool windows, not every possible agent action.
+Legacy checkpoints are assessed from surviving state; an empty registry cannot
+establish historical completeness. Concurrent groups require valid evidence for
+their full membership, including members outside the checkpoint window. Settling
+a group does not establish exclusive authorship for any member.
+
+See [worker capture readiness](architecture.md#capture-readiness) for recovery
+and retry behavior.
 
 ## Evidence classes
 
@@ -73,8 +86,10 @@ repository.
 Raw events with unresolved mutation paths carry `mutation_routing: context_only`
 when stored alongside a tool-window observation. They cannot supply line, deletion,
 or file-touch attribution. Independently verified deltas remain eligible under the
-existing scoring rules. See [Unresolved mutation routing](unresolved-mutation-routing.md)
-for retention and export semantics.
+existing scoring rules. Provenance bundles preserve the context-only label and
+any independently linked delta. Consumers must not infer ownership from the
+bundle's repository or raw shell command. See [broker routing](architecture.md#broker)
+for retention and [capture limitations](limitations.md#capture-scope) for its limits.
 
 ## Per-file evidence: primary vs all
 

@@ -1,6 +1,7 @@
 dist/
 bin/
 .cache/
+.internal-notes/
 completions/
 
 # env file

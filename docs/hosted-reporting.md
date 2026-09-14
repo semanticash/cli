@@ -56,6 +56,7 @@ semantica workspace requests
 ## What stays local
 
 - Capture state and transcripts
+- Unresolved mutation records under `$SEMANTICA_HOME/unresolved-mutations/`
 - Lineage records, checkpoint manifests, and blob storage under `.semantica/`
 - Attribution and playbooks stored in `lineage.db`
 
