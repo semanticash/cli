@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/git"
 	"github.com/semanticash/cli/internal/hooks"
 	"github.com/semanticash/cli/internal/store/blobs"
@@ -231,6 +232,9 @@ func (s *WorkerService) Run(ctx context.Context, in WorkerInput) error {
 
 	// Reconcile only state protected by this repository lock.
 	reconcileActiveSessions(ctx, s.registry, in.RepoRoot)
+	if err := broker.DrainRetained(ctx, in.RepoRoot); err != nil {
+		return fmt.Errorf("retained capture delivery: %w", err)
+	}
 
 	if err := s.drainRepositoryQueue(ctx, in.RepoRoot); err != nil {
 		return err

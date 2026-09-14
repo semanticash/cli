@@ -43,6 +43,16 @@ func RepositoryIDForPath(ctx context.Context, repoPath string) (string, error) {
 //
 // Returns the session IDs that were created or updated in this repo.
 func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, srcBlobStore *blobs.Store) ([]string, error) {
+	return writeEventsToRepo(ctx, repoPath, events, srcBlobStore, false)
+}
+
+// PersistRoutedEvents acknowledges only complete event and evidence writes.
+// Retained events use exact event identities rather than heuristic step deduplication.
+func PersistRoutedEvents(ctx context.Context, repoPath string, events []RawEvent, srcBlobStore *blobs.Store) ([]string, error) {
+	return writeEventsToRepo(ctx, repoPath, events, srcBlobStore, true)
+}
+
+func writeEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, srcBlobStore *blobs.Store, strict bool) ([]string, error) {
 	if len(events) == 0 {
 		return nil, nil
 	}
@@ -59,7 +69,11 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		return nil, fmt.Errorf("check repo state %s: %w", repoPath, state.Err)
 	}
 
-	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	opts := sqlstore.DefaultOpenOptions()
+	if strict {
+		opts.Synchronous = "FULL"
+	}
+	h, err := sqlstore.Open(ctx, dbPath, opts)
 	if err != nil {
 		return nil, fmt.Errorf("open lineage db %s: %w", repoPath, err)
 	}
@@ -77,7 +91,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 
 	// Open target repo's blob store for copying payload blobs.
 	var targetBlobStore *blobs.Store
-	if srcBlobStore != nil {
+	if srcBlobStore != nil || strict {
 		objectsDir := filepath.Join(semDir, "objects")
 		targetBlobStore, err = blobs.NewStore(objectsDir)
 		if err != nil {
@@ -143,7 +157,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 	copiedBlobs := make(map[string]bool)
 	blobCount := 0
 	var blobBytes int64
-	if srcBlobStore != nil && targetBlobStore != nil {
+	if targetBlobStore != nil {
 		attempted := make(map[string]bool)
 		for _, ev := range events {
 			for _, hash := range []string{ev.PayloadHash, ev.ProvenanceHash} {
@@ -153,7 +167,11 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				attempted[hash] = true
 
 				alreadyPresent := targetBlobStore.Exists(hash)
-				if err := targetBlobStore.Propagate(ctx, hash, srcBlobStore); err != nil {
+				if strict {
+					if err := targetBlobStore.Retain(ctx, hash, srcBlobStore); err != nil {
+						return nil, fmt.Errorf("required blob %s: %w", hash, err)
+					}
+				} else if err := targetBlobStore.Propagate(ctx, hash, srcBlobStore); err != nil {
 					continue
 				}
 				copiedBlobs[hash] = true
@@ -161,7 +179,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 					continue
 				}
 				blobCount++
-				if size, err := srcBlobStore.StoredSize(hash); err == nil {
+				if size, err := targetBlobStore.StoredSize(hash); err == nil {
 					blobBytes += size
 				}
 			}
@@ -256,7 +274,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 
 			// Skip replayed step events when the same tool step was already
 			// recorded directly by the hook path.
-			if eventSource == "transcript" && ev.TurnID != "" && ev.ToolUseID != "" && ev.ToolName != "" {
+			if !strict && eventSource == "transcript" && ev.TurnID != "" && ev.ToolUseID != "" && ev.ToolName != "" {
 				exists, err := txq.StepEventExists(ctx, sqldb.StepEventExistsParams{
 					TurnID:    sqlstore.NullStr(ev.TurnID),
 					ToolUseID: sqlstore.NullStr(ev.ToolUseID),
@@ -270,7 +288,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 			// Dedup: skip the replayed transcript prompt when a direct hook
 			// prompt event already exists for the same turn. Keep tool_result
 			// user events; only plain user prompts are suppressed here.
-			if eventSource == "transcript" && ev.TurnID != "" && ev.Role == "user" && ev.Kind == "user" {
+			if !strict && eventSource == "transcript" && ev.TurnID != "" && ev.Role == "user" && ev.Kind == "user" {
 				exists, err := txq.PromptEventExists(ctx, sqlstore.NullStr(ev.TurnID))
 				if err == nil && exists {
 					continue
@@ -299,6 +317,11 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				ProvenanceHash:    sqlstore.NullStr(provenanceHash),
 			}); err != nil {
 				return sessionIDs, fmt.Errorf("insert event: %w", err)
+			}
+			if strict {
+				if err := verifyRetainedRow(ctx, tx, repo.RepositoryID, sessRow.SessionID, ev, toolUsesJSON, eventSource); err != nil {
+					return nil, err
+				}
 			}
 			rowsWritten++
 		}

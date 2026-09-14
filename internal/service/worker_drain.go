@@ -99,6 +99,11 @@ func drainOncePass(ctx context.Context, run MarkerRunner, skip map[string]bool) 
 	}
 	defer func() { _ = broker.Close(bh) }()
 
+	// Retry capture deliveries before taking any repository worker lock.
+	if err := broker.DrainRetained(ctx, ""); err != nil {
+		wlog("worker: retained capture delivery: %v\n", err)
+	}
+
 	repos, err := broker.ListActiveRepos(ctx, bh)
 	if err != nil {
 		return stats, fmt.Errorf("drain: list active repos: %w", err)

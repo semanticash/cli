@@ -95,7 +95,7 @@ func reconcileActiveSessions(ctx context.Context, registry *hooks.Registry, repo
 			continue
 		}
 		if !captured {
-			wlog("worker: reconcile %s/%s: events route outside this repository; deferred to an unscoped capture\n",
+			wlog("worker: reconcile %s/%s: capture remains pending\n",
 				state.Provider, state.SessionID)
 		}
 	}

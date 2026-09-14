@@ -147,7 +147,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 			if blobStore != nil {
 				bs = blobStore
 			}
-			events, err := emitter.BuildHookEvents(benchCtx, event, bs)
+			events, err := buildRetainableHookEvents(benchCtx, emitter, event, bs)
 			if err != nil {
 				slog.Warn("direct prompt event failed", "err", err)
 			} else if len(events) > 0 {
@@ -231,7 +231,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 				if blobStore != nil {
 					bs = blobStore
 				}
-				events, buildErr := emitter.BuildHookEvents(ctx, event, bs)
+				events, buildErr := buildRetainableHookEvents(ctx, emitter, event, bs)
 				if buildErr != nil {
 					slog.Warn("subagent direct event failed", "err", buildErr)
 				} else if len(events) > 0 {
@@ -349,7 +349,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		if blobStore != nil {
 			bs = blobStore
 		}
-		events, err := emitter.BuildHookEvents(benchCtx, event, bs)
+		events, err := buildRetainableHookEvents(benchCtx, emitter, event, bs)
 		if err != nil {
 			slog.Warn("direct step event failed", "tool", event.ToolName, "err", err)
 			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
@@ -403,7 +403,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		if blobStore != nil {
 			bs = blobStore
 		}
-		events, err := emitter.BuildHookEvents(benchCtx, event, bs)
+		events, err := buildRetainableHookEvents(benchCtx, emitter, event, bs)
 		if err != nil {
 			slog.Warn("subagent prompt direct event failed", "err", err)
 			emitHookBenchRecords(benchScope, event, time.Since(hookStart))
@@ -428,15 +428,15 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 	}
 }
 
-// CaptureAndRoute reads a transcript delta, routes the resulting events, and
-// advances the saved offset only after every repo write succeeds.
+// CaptureAndRoute captures a transcript delta and advances its offset.
+// With durable routing enabled, retention precedes the offset and delivery may retry.
 func CaptureAndRoute(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store) error {
 	_, err := captureAndRouteScoped(ctx, provider, event, bh, blobStore, "")
 	return err
 }
 
-// CaptureAndRouteForRepo routes only when every event belongs to repoRoot.
-// A cross-repository result leaves the offset unchanged and returns false.
+// CaptureAndRouteForRepo writes only to repoRoot. Durable routing retains other
+// destinations for worker delivery; legacy routing defers the entire segment.
 func CaptureAndRouteForRepo(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store, repoRoot string) (bool, error) {
 	return captureAndRouteScoped(ctx, provider, event, bh, blobStore, repoRoot)
 }
@@ -501,25 +501,34 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 	if err != nil {
 		return false, fmt.Errorf("list active repos: %w", err)
 	}
-	matches, decisions := computeEventRoutes(events, repos)
-	if scopeRepo != "" {
-		for _, m := range matches {
-			if !sameRepoPath(m.Repo.Path, scopeRepo) {
-				// Defer cross-repository writes while holding one repository lock.
-				// Record routing diagnostics only when writes are attempted.
-				state.ScopedDeferrals++
-				state.LastDeferredAt = time.Now().UnixMilli()
-				if serr := SaveCaptureState(state); serr != nil {
-					return false, fmt.Errorf("record scoped deferral: %w", serr)
+	var ids []string
+	if broker.DurableRoutingEnabled() {
+		matches, _ := computeEventRoutes(events, repos)
+		ids, err = broker.RetainEvents(ctx, events, matches, blobStore)
+		if err != nil {
+			return false, fmt.Errorf("retain capture: %w", err)
+		}
+	} else {
+		matches, decisions := computeEventRoutes(events, repos)
+		if scopeRepo != "" {
+			for _, m := range matches {
+				if !sameRepoPath(m.Repo.Path, scopeRepo) {
+					// Defer cross-repository writes while holding one repository lock.
+					// Record routing diagnostics only when writes are attempted.
+					state.ScopedDeferrals++
+					state.LastDeferredAt = time.Now().UnixMilli()
+					if serr := SaveCaptureState(state); serr != nil {
+						return false, fmt.Errorf("record scoped deferral: %w", serr)
+					}
+					return false, nil
 				}
-				return false, nil
 			}
 		}
-	}
-	outcomes, werr := writeRoutedEvents(ctx, matches, blobStore)
-	recordRoutingDecisions(decisions, outcomes)
-	if werr != nil {
-		return false, fmt.Errorf("route and write: %w", werr)
+		outcomes, werr := writeRoutedEvents(ctx, matches, blobStore)
+		recordRoutingDecisions(decisions, outcomes)
+		if werr != nil {
+			return false, fmt.Errorf("route and write: %w", werr)
+		}
 	}
 
 	state.TranscriptOffset = newOffset
@@ -531,6 +540,11 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 		return false, fmt.Errorf("save capture state: %w", err)
 	}
 
+	if len(ids) > 0 {
+		if err := broker.DeliverRetained(ctx, ids, scopeRepo); err != nil {
+			slog.Warn("capture retained; repository delivery pending", "err", err)
+		}
+	}
 	return true, nil
 }
 
@@ -653,7 +667,7 @@ func readReplayEvents(ctx context.Context, provider HookProvider, state *Capture
 		}
 	}
 
-	events, newOffset, err := provider.ReadFromOffset(ctx, state.TranscriptRef, state.TranscriptOffset, bs)
+	events, newOffset, err := readRetainableEvents(ctx, provider, state.TranscriptRef, state.TranscriptOffset, bs)
 	if err != nil {
 		return nil, state.TranscriptOffset, err
 	}
@@ -749,7 +763,7 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 }
 
 // captureOneSubagent reads one child transcript and advances its offset only
-// after all routed writes succeed. parentSessionID and parentTurnID are
+// after capture succeeds. parentSessionID and parentTurnID are
 // stamped onto child events that left those fields empty, so the lineage
 // join works without each provider deriving parent context itself.
 func captureOneSubagent(
@@ -797,7 +811,7 @@ func captureOneSubagent(
 	}
 
 	// Read from subagent's own offset.
-	events, newOffset, err := provider.ReadFromOffset(ctx, transcriptPath, state.TranscriptOffset, bs)
+	events, newOffset, err := readRetainableEvents(ctx, provider, transcriptPath, state.TranscriptOffset, bs)
 	if err != nil {
 		slog.Warn("subagent: read failed", "path", transcriptPath, "err", err)
 		return false
@@ -822,7 +836,7 @@ func captureOneSubagent(
 	}
 
 	if err := routeAndWriteEventsToRepos(ctx, events, repos, blobStore); err != nil {
-		slog.Warn("subagent: offset not advanced due to write failure", "key", stateKey)
+		slog.Warn("subagent: capture failed; offset unchanged", "key", stateKey)
 		return false
 	}
 
@@ -873,7 +887,7 @@ func captureDirectSubagent(ctx context.Context, provider HookProvider, event *Ev
 		bs = blobStore
 	}
 
-	events, newOffset, err := provider.ReadFromOffset(ctx, state.TranscriptRef, state.TranscriptOffset, bs)
+	events, newOffset, err := readRetainableEvents(ctx, provider, state.TranscriptRef, state.TranscriptOffset, bs)
 	if err != nil {
 		slog.Warn("direct subagent: read failed", "path", state.TranscriptRef, "err", err)
 		return
@@ -1100,10 +1114,21 @@ func routeAndWriteEvents(ctx context.Context, events []broker.RawEvent, bh *brok
 }
 
 func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, repos []broker.RegisteredRepo, blobStore *blobs.Store) error {
-	matches, decisions := computeEventRoutes(events, repos)
-	outcomes, err := writeRoutedEvents(ctx, matches, blobStore)
-	recordRoutingDecisions(decisions, outcomes)
-	return err
+	if !broker.DurableRoutingEnabled() {
+		matches, decisions := computeEventRoutes(events, repos)
+		outcomes, err := writeRoutedEvents(ctx, matches, blobStore)
+		recordRoutingDecisions(decisions, outcomes)
+		return err
+	}
+	matches, _ := computeEventRoutes(events, repos)
+	ids, err := broker.RetainEvents(ctx, events, matches, blobStore)
+	if err != nil {
+		return err
+	}
+	if err := broker.DeliverRetained(ctx, ids, ""); err != nil {
+		slog.Warn("capture retained; repository delivery pending", "err", err)
+	}
+	return nil
 }
 
 // computeEventRoutes returns repository matches and mutation routing decisions
