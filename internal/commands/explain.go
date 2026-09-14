@@ -76,7 +76,7 @@ func NewExplainCmd(rootOpts *RootOptions) *cobra.Command {
 				}
 				_, _ = fmt.Fprintf(out, "  %s: %s\n", header, strings.Join(providers, ", "))
 			}
-			_, _ = fmt.Fprintf(out, "  %.1f%% AI-Attributed (%d AI / %d human)\n", res.AIPercentage, res.AILines, res.HumanLines)
+			_, _ = fmt.Fprintf(out, "  %s\n", res.AttributionSummary())
 			_, _ = fmt.Fprintf(out, "  %d of %d files contain AI-produced lines\n", res.FilesWithAI, res.FilesChanged)
 			_, _ = fmt.Fprintln(out)
 
@@ -237,29 +237,35 @@ func spawnGenerateBackground(cmd *cobra.Command, repoPath string, res *service.E
 // buildExplainContext maps an ExplainResult to the LLM's ExplainContext.
 func buildExplainContext(res *service.ExplainResult) llm.ExplainContext {
 	ectx := llm.ExplainContext{
-		FilesChanged: res.FilesChanged,
-		LinesAdded:   res.LinesAdded,
-		LinesDeleted: res.LinesDeleted,
-		AIPercentage: res.AIPercentage,
-		AILines:      res.AILines,
-		HumanLines:   res.HumanLines,
-		SessionCount: res.SessionCount,
-		RootSessions: res.RootSessions,
-		Subagents:    res.Subagents,
+		FilesChanged:      res.FilesChanged,
+		LinesAdded:        res.LinesAdded,
+		LinesDeleted:      res.LinesDeleted,
+		AIPercentage:      res.AIPercentage,
+		AILines:           res.AILines,
+		HumanLines:        res.HumanLines,
+		UnattributedLines: res.UnattributedLines,
+		SessionCount:      res.SessionCount,
+		RootSessions:      res.RootSessions,
+		Subagents:         res.Subagents,
+	}
+	if res.Capture != nil {
+		ectx.Capture, _ = json.Marshal(res.Capture)
 	}
 	for _, f := range res.TopFiles {
 		ectx.TopFiles = append(ectx.TopFiles, struct {
-			Path       string  `json:"path"`
-			Added      int     `json:"added"`
-			Deleted    int     `json:"deleted"`
-			TotalLines int     `json:"total_lines"`
-			AILines    int     `json:"ai_lines"`
-			HumanLines int     `json:"human_lines"`
-			AIPercent  float64 `json:"ai_percentage"`
+			Path              string  `json:"path"`
+			Added             int     `json:"added"`
+			Deleted           int     `json:"deleted"`
+			TotalLines        int     `json:"total_lines"`
+			AILines           int     `json:"ai_lines"`
+			HumanLines        int     `json:"human_lines"`
+			UnattributedLines int     `json:"unattributed_lines,omitempty"`
+			AIPercent         float64 `json:"ai_percentage"`
 		}{
 			Path: f.Path, Added: f.Added, Deleted: f.Deleted,
 			TotalLines: f.TotalLines, AILines: f.AILines,
 			HumanLines: f.HumanLines, AIPercent: f.AIPercent,
+			UnattributedLines: f.UnattributedLines,
 		})
 	}
 	return ectx

@@ -154,6 +154,11 @@ semantica blame HEAD
 semantica blame HEAD --json      # per-file breakdown
 ```
 If you run `semantica blame` without a ref in a terminal, Semantica shows an interactive lineage record picker. In non-interactive use, pass a ref explicitly.
+
+When capture is incomplete, `blame` and `explain` label unmatched lines
+`Unattributed` and the percentage `AI matched`. See
+[capture readiness](docs/capture-readiness.md) for retry behavior and result fields.
+
 <p align="left">
   <img src="docs/images/semantica-blame-view-screen.png" alt="semantica blame output" width="600">
 </p>

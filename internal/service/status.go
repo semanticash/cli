@@ -207,6 +207,14 @@ func (s *StatusService) Status(ctx context.Context, in StatusInput) (*StatusResu
 		Limit:        5,
 	}); err == nil {
 		for _, r := range rows {
+			cp, err := h.Queries.GetCheckpointByID(ctx, r.CheckpointID)
+			if err != nil {
+				continue
+			}
+			capture, err := readCheckpointCapture(ctx, h, cp)
+			if err != nil || (capture != nil && capture.Result.Status != "complete") {
+				continue
+			}
 			result.AITrend = append(result.AITrend, AITrendPoint{
 				CommitHash:   r.CommitHash,
 				AIPercentage: r.AiPercentage,

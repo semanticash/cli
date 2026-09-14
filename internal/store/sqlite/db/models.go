@@ -84,6 +84,11 @@ type Checkpoint struct {
 	LeaseUntil         sql.NullInt64  `json:"lease_until"`
 }
 
+type CheckpointCapture struct {
+	CheckpointID string `json:"checkpoint_id"`
+	RecordJson   string `json:"record_json"`
+}
+
 type CheckpointStat struct {
 	CheckpointID          string         `json:"checkpoint_id"`
 	SessionCount          int64          `json:"session_count"`

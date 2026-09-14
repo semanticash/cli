@@ -237,6 +237,8 @@ func handleToolStepStarted(ctx context.Context, providerName string, event *Even
 		captureCtx = toolWindowPreCapture(wctx)
 	}
 	win, err := reg.CaptureAndBegin(captureCtx, store, key, event.ToolName, event.Timestamp)
+	traceToolLifecycle("tool window registration", "session", key.SessionID, "turn", key.TurnID,
+		"tool_use", key.ToolUseID, "group", win.GroupID, "error", err)
 	switch {
 	case err != nil:
 		var pe *toolsnap.PartialError
@@ -416,6 +418,8 @@ func completeToolWindow(ctx context.Context, providerName string, event *Event, 
 		func(members []toolsnap.PendingToolSnapshot, prior *toolsnap.GroupFinal, retry bool, recordIntent func() error) (toolsnap.FinalizeResult, error) {
 			return finalizeGroup(wctx, store, rc.HeadAnchor(), repoBlobs, target, key, info, event, events, globalBlobs, members, prior, retry, recordIntent, cleanupRefs, bench)
 		})
+	traceToolLifecycle("tool window completion", "session", key.SessionID, "turn", key.TurnID,
+		"tool_use", key.ToolUseID, "group_closed", closed, "error", err)
 	switch {
 	case err == nil:
 		if closed {

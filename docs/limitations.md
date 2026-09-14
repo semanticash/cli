@@ -23,7 +23,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - Commit manifests contain the linked commit's tracked Git tree; untracked and ignored files are excluded. Workspace manifests, including manual and baseline checkpoints, also include untracked, non-ignored files.
 - Nested repositories are treated as separate ownership scopes - events are routed to the deepest matching repo root.
 - Commit-linked processing is serialized per repository. Transient failures retry with bounded backoff. A terminally failed queue head blocks later records until it is repaired and retried; `semantica doctor` reports the blocking record.
-- Without the optional launcher, retries due after the current worker exits wait for the next commit or manual drain. Launcher installations add a 30-minute recovery interval.
+- Without the optional launcher, processing retries due after the worker exits wait for the next commit or manual drain. Short capture-readiness retries keep the standalone worker alive during the 30-second grace period. Launcher installations add a 30-minute recovery interval.
 
 ## Attribution fidelity
 
@@ -34,7 +34,7 @@ Known constraints and intentional scope boundaries. Feature-specific caveats are
 - **Tool-delta evidence is time-bounded, not exclusive.** A delta shows that changed lines appeared while an agent-issued tool was running. Concurrent saves, formatters, and file watchers can produce the same evidence.
 - **Capture and scoring are separate.** Semantica snapshots eligible Bash calls when capture state is active, even if `attribution_v2` is disabled. The flag controls scoring, not capture. Calls without capture state are ignored. On-demand or recomputed attribution can use earlier captures; enabling the flag alone does not update stored results.
 - Commit-message attribution remains on v1 to keep the synchronous hook bounded. Background enrichment, `semantica blame`, and hosted attribution use the repository's selected version.
-- Manual edits after direct AI generation may downgrade matches from "exact" to "modified." Tool-delta lines are attributed only when exact or whitespace-normalized content survives in the commit; unmatched later edits remain human.
+- Manual edits after direct AI generation may downgrade matches from "exact" to "modified." Tool-delta lines are attributed only when exact or whitespace-normalized content survives in the commit. With incomplete capture, unmatched lines are reported as `Unattributed`, not `Human`; see [capture readiness](capture-readiness.md).
 - Carry-forward is per-file. Current-window attribution remains authoritative when an eligible created file already has AI evidence.
 - Attribution is computed against the diff between commit lineage records. Squashed or rebased commits that collapse multiple records may produce less precise results.
 

@@ -20,6 +20,19 @@ Deleted non-blank lines are recorded per file but excluded from
 `total_added_lines`. Deletion-only edits and deleted files remain in changed-file
 totals.
 
+### Incomplete capture
+
+When `capture.status` is `incomplete`, unmatched lines have unknown authorship.
+Results report them in `unattributed_lines`, set `human_lines` to zero, and label
+the percentage `AI matched`. Per-file counts follow the same rule.
+
+Explain's `files_unattributed` counts every file with unattributed lines. A mixed
+file can appear in both `files_with_ai` and `files_unattributed`; these counts are
+not mutually exclusive. `status` omits incomplete checkpoints from its AI trend.
+
+See [capture readiness](capture-readiness.md) for evidence boundaries, retries,
+and the treatment of legacy checkpoints.
+
 ## Evidence classes
 
 Each file has one primary evidence class. The three line-level classes contribute

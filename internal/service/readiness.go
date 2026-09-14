@@ -87,6 +87,14 @@ func EvaluateAuditReadiness(ctx context.Context, h *sqlstore.Handle, semDir stri
 		ar.Attribution = ReadinessComponent{State: ReadinessUnknown, Reason: fmt.Sprintf("commit links unavailable: %v", linksErr)}
 	} else {
 		ar.Attribution = attributionReadiness(cp, commitLinked, hasStats, stats)
+		capture, captureErr := readCheckpointCapture(ctx, h, cp)
+		if captureErr != nil {
+			ar.Attribution = ReadinessComponent{State: ReadinessUnknown, Reason: "capture readiness unavailable"}
+		} else if capture != nil && capture.Result.Status == "pending" {
+			ar.Attribution = ReadinessComponent{State: ReadinessPending, Reason: "capture_not_settled"}
+		} else if capture != nil && capture.Result.Status == "incomplete" {
+			ar.Attribution = ReadinessComponent{State: ReadinessUnknown, Reason: "capture incomplete; unmatched lines are unattributed"}
+		}
 	}
 	ar.Provenance, ar.Sync = provenanceAndSyncReadiness(ctx, h, semDir, cp, hasStats, stats)
 

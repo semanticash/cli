@@ -87,6 +87,10 @@ func HookTimestampFromContext(ctx context.Context) int64 {
 
 // Dispatch routes a normalized hook event.
 func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store) error {
+	if event.Type == ToolStepStarted || event.Type == ToolStepCompleted {
+		traceToolLifecycle("tool lifecycle received", "provider", provider.Name(), "session", event.SessionID,
+			"turn", event.TurnID, "tool_use", event.ToolUseID, "event_type", event.Type)
+	}
 	switch event.Type {
 	case PromptSubmitted:
 		benchCtx, benchScope := doctor.WithBenchScope(ctx)
@@ -425,6 +429,13 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 
 	default:
 		return nil
+	}
+}
+
+// traceToolLifecycle emits identities only when capture tracing is enabled.
+func traceToolLifecycle(message string, args ...any) {
+	if os.Getenv("SEMANTICA_CAPTURE_TRACE") == "1" {
+		slog.Info(message, args...)
 	}
 }
 

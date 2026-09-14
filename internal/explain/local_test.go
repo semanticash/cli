@@ -23,6 +23,18 @@ import (
 
 // --- formatProvenance: pure-function rendering ---
 
+func TestFormatProvenance_PreservesCaptureUncertainty(t *testing.T) {
+	res := &service.ExplainResult{
+		CommitHash: "abcdef0123456789", LinesAdded: 996,
+		AIPercentage: 24.1, AILines: 240, UnattributedLines: 756,
+		Capture: &service.CaptureReadiness{Status: "incomplete"},
+	}
+	out := formatProvenance(res)
+	if !strings.Contains(out, "24.1% AI matched (240 AI / 756 unattributed; capture incomplete)") || strings.Contains(out, "human") {
+		t.Fatalf("capture uncertainty lost: %s", out)
+	}
+}
+
 func TestFormatProvenance_FullResultRendersAllSections(t *testing.T) {
 	res := &service.ExplainResult{
 		CommitHash:     "abcdef0123456789",
