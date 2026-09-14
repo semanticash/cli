@@ -1,10 +1,26 @@
 package commands
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/semanticash/cli/internal/service"
 )
+
+func TestAttributionCountsDoNotCallCaptureGapsHuman(t *testing.T) {
+	for _, status := range []string{"pending", "incomplete"} {
+		var out bytes.Buffer
+		writeAttributionCounts(&out, &service.AttributionResult{
+			Capture: &service.CaptureReadiness{Status: status}, UnattributedLines: 756,
+			AIExactLines: 240, AILines: 240, TotalLines: 996, AIPercentage: 24.1,
+		})
+		text := out.String()
+		if strings.Contains(text, "Human:") || strings.Contains(text, "AI %:") || !strings.Contains(text, "Unattributed: 756") || !strings.Contains(text, "AI matched:   24.1%") {
+			t.Fatalf("misleading incomplete capture output:\n%s", text)
+		}
+	}
+}
 
 func TestAttributionAgentLabels(t *testing.T) {
 	details := []service.ProviderAttribution{

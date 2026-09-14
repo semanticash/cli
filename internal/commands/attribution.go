@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/semanticash/cli/internal/service"
@@ -52,12 +53,8 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 			if res.CheckpointID != "" {
 				_, _ = fmt.Fprintf(out, "Checkpoint:   %s\n", util.ShortID(res.CheckpointID))
 			}
-			_, _ = fmt.Fprintf(out, "AI Exact:     %d lines\n", res.AIExactLines)
-			_, _ = fmt.Fprintf(out, "AI Formatted: %d lines\n", res.AIFormattedLines)
-			_, _ = fmt.Fprintf(out, "AI Modified:  %d lines\n", res.AIModifiedLines)
-			_, _ = fmt.Fprintf(out, "Human:        %d lines\n", res.HumanLines)
-			_, _ = fmt.Fprintf(out, "Total:        %d lines\n", res.TotalLines)
-			_, _ = fmt.Fprintf(out, "AI %%:         %.1f%%\n", res.AIPercentage)
+			incomplete := res.Capture != nil && res.Capture.Status != "complete"
+			writeAttributionCounts(out, res)
 			_, _ = fmt.Fprintf(out, "AI touched:   %d / %d files\n", res.FilesAITouched, res.FilesTotal)
 			if agents := attributionAgentLabels(res.ProviderDetails); len(agents) > 0 {
 				_, _ = fmt.Fprintf(out, "AI agent(s):  %s\n", strings.Join(agents, ", "))
@@ -96,6 +93,9 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 			// incomplete records fall back to the plain [ai] tag.
 			fileTag := func(f service.FileChange) string {
 				if !f.AI {
+					if incomplete {
+						return "unattributed"
+					}
 					return "human"
 				}
 				if len(f.Providers) > 0 {
@@ -133,6 +133,25 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output full result as JSON (includes per-file breakdown)")
 
 	return cmd
+}
+
+func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
+	_, _ = fmt.Fprintf(out, "AI Exact:     %d lines\n", res.AIExactLines)
+	_, _ = fmt.Fprintf(out, "AI Formatted: %d lines\n", res.AIFormattedLines)
+	_, _ = fmt.Fprintf(out, "AI Modified:  %d lines\n", res.AIModifiedLines)
+	incomplete := res.Capture != nil && res.Capture.Status != "complete"
+	if incomplete {
+		_, _ = fmt.Fprintf(out, "Unattributed: %d lines\n", res.UnattributedLines)
+		_, _ = fmt.Fprintf(out, "Capture:      %s\n", res.Capture.Status)
+	} else {
+		_, _ = fmt.Fprintf(out, "Human:        %d lines\n", res.HumanLines)
+	}
+	_, _ = fmt.Fprintf(out, "Total:        %d lines\n", res.TotalLines)
+	if incomplete {
+		_, _ = fmt.Fprintf(out, "AI matched:   %.1f%%\n", res.AIPercentage)
+	} else {
+		_, _ = fmt.Fprintf(out, "AI %%:         %.1f%%\n", res.AIPercentage)
+	}
 }
 
 func attributionAgentLabels(details []service.ProviderAttribution) []string {

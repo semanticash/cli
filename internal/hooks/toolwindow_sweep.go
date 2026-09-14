@@ -92,6 +92,16 @@ type SweepReport struct {
 // SweepToolWindows recovers pending evidence before running maintenance.
 // Item failures are counted and do not stop later recovery work.
 func SweepToolWindows(ctx context.Context, repoPath string) (SweepReport, error) {
+	return recoverToolWindows(ctx, repoPath, true)
+}
+
+// RecoverToolWindows publishes recoverable evidence without storage maintenance.
+// It uses recorded post state and never snapshots the current workspace.
+func RecoverToolWindows(ctx context.Context, repoPath string) (SweepReport, error) {
+	return recoverToolWindows(ctx, repoPath, false)
+}
+
+func recoverToolWindows(ctx context.Context, repoPath string, maintain bool) (SweepReport, error) {
 	var report SweepReport
 	semDir := filepath.Join(repoPath, ".semantica")
 	if !util.IsEnabled(semDir) {
@@ -122,6 +132,9 @@ func SweepToolWindows(ctx context.Context, repoPath string) (SweepReport, error)
 
 	sweepPendingPartials(ctx, reg, repoBlobs, target, &report)
 	sweepPendingFinalizations(ctx, reg, store, repoBlobs, target, &report)
+	if !maintain {
+		return report, nil
+	}
 
 	// Run maintenance after recovery.
 	m, err := store.Maintain(ctx, reg, 0)

@@ -77,6 +77,7 @@ type FileAttribution struct {
 	AIDeltaFormattedLines int      `json:"ai_delta_formatted_lines,omitempty"`
 	AILines               int      `json:"ai_lines,omitempty"` // exact + formatted + modified
 	HumanLines            int      `json:"human_lines"`
+	UnattributedLines     int      `json:"unattributed_lines,omitempty"`
 	TotalLines            int      `json:"total_lines"`
 	DeletedNonBlank       int      `json:"deleted_non_blank"`          // deleted non-blank lines (not attributed, display only)
 	AIPercent             float64  `json:"ai_percentage"`              // (exact + formatted + modified) / total * 100
@@ -134,6 +135,8 @@ type AttributionResult struct {
 	AIDeltaFormattedLines int                    `json:"ai_delta_formatted_lines,omitempty"`
 	AILines               int                    `json:"ai_lines"` // exact + formatted + modified (headline number)
 	HumanLines            int                    `json:"human_lines"`
+	UnattributedLines     int                    `json:"unattributed_lines,omitempty"`
+	Capture               *CaptureReadiness      `json:"capture,omitempty"`
 	TotalLines            int                    `json:"total_lines"`
 	AIPercentage          float64                `json:"ai_percentage"` // (exact + formatted + modified) / total * 100
 	FilesAITouched        int                    `json:"files_ai_touched"`
@@ -546,6 +549,11 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	if v2 {
 		result.AttrVersion = "v2"
 	}
+	capture, err := attributionCapture(ctx, h, bs, semDir, cp, win)
+	if err != nil {
+		return nil, fmt.Errorf("read capture readiness: %w", err)
+	}
+	applyCaptureReadiness(result, capture)
 
 	return result, nil
 }

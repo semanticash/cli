@@ -120,6 +120,12 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 	}
 	// Use the persisted anchor for attribution.
 	in.CommitHash = anchorCommit
+	windows := resolveWorkerWindows(ctx, h, cp)
+	if isCommit {
+		if err := settleCheckpointCapture(ctx, wctx, windows.attrWindow); err != nil {
+			return enrichResult{}, err
+		}
+	}
 
 	prevManifest := loadPreviousManifest(ctx, h, blobStore, cp.RepositoryID, cp.RepositorySequence)
 
@@ -157,9 +163,6 @@ func enrichCheckpoint(ctx context.Context, wctx *workerContext, in WorkerInput) 
 		fileCount = len(paths)
 		filesChanged = countChangedFiles(wsPrev, mr.Manifest.Files)
 	}
-
-	// Windows.
-	windows := resolveWorkerWindows(ctx, h, cp)
 
 	// Session linking.
 	seen := linkSessionsToCheckpoint(ctx, h, in.CheckpointID, cp, windows.sessionWindow)

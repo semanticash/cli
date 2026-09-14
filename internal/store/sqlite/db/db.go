@@ -72,6 +72,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getCheckpointByIDStmt, err = db.PrepareContext(ctx, getCheckpointByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCheckpointByID: %w", err)
 	}
+	if q.getCheckpointCaptureStmt, err = db.PrepareContext(ctx, getCheckpointCapture); err != nil {
+		return nil, fmt.Errorf("error preparing query GetCheckpointCapture: %w", err)
+	}
 	if q.getCheckpointStatsStmt, err = db.PrepareContext(ctx, getCheckpointStats); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCheckpointStats: %w", err)
 	}
@@ -288,6 +291,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.recoverStaleUploadingStmt, err = db.PrepareContext(ctx, recoverStaleUploading); err != nil {
 		return nil, fmt.Errorf("error preparing query RecoverStaleUploading: %w", err)
 	}
+	if q.releaseCheckpointForCaptureStmt, err = db.PrepareContext(ctx, releaseCheckpointForCapture); err != nil {
+		return nil, fmt.Errorf("error preparing query ReleaseCheckpointForCapture: %w", err)
+	}
 	if q.releaseCheckpointForRetryStmt, err = db.PrepareContext(ctx, releaseCheckpointForRetry); err != nil {
 		return nil, fmt.Errorf("error preparing query ReleaseCheckpointForRetry: %w", err)
 	}
@@ -308,6 +314,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.retryFailedCheckpointStmt, err = db.PrepareContext(ctx, retryFailedCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query RetryFailedCheckpoint: %w", err)
+	}
+	if q.saveCheckpointCaptureStmt, err = db.PrepareContext(ctx, saveCheckpointCapture); err != nil {
+		return nil, fmt.Errorf("error preparing query SaveCheckpointCapture: %w", err)
 	}
 	if q.saveCheckpointSummaryStmt, err = db.PrepareContext(ctx, saveCheckpointSummary); err != nil {
 		return nil, fmt.Errorf("error preparing query SaveCheckpointSummary: %w", err)
@@ -419,6 +428,11 @@ func (q *Queries) Close() error {
 	if q.getCheckpointByIDStmt != nil {
 		if cerr := q.getCheckpointByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getCheckpointByIDStmt: %w", cerr)
+		}
+	}
+	if q.getCheckpointCaptureStmt != nil {
+		if cerr := q.getCheckpointCaptureStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getCheckpointCaptureStmt: %w", cerr)
 		}
 	}
 	if q.getCheckpointStatsStmt != nil {
@@ -781,6 +795,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing recoverStaleUploadingStmt: %w", cerr)
 		}
 	}
+	if q.releaseCheckpointForCaptureStmt != nil {
+		if cerr := q.releaseCheckpointForCaptureStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing releaseCheckpointForCaptureStmt: %w", cerr)
+		}
+	}
 	if q.releaseCheckpointForRetryStmt != nil {
 		if cerr := q.releaseCheckpointForRetryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing releaseCheckpointForRetryStmt: %w", cerr)
@@ -814,6 +833,11 @@ func (q *Queries) Close() error {
 	if q.retryFailedCheckpointStmt != nil {
 		if cerr := q.retryFailedCheckpointStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing retryFailedCheckpointStmt: %w", cerr)
+		}
+	}
+	if q.saveCheckpointCaptureStmt != nil {
+		if cerr := q.saveCheckpointCaptureStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing saveCheckpointCaptureStmt: %w", cerr)
 		}
 	}
 	if q.saveCheckpointSummaryStmt != nil {
@@ -916,6 +940,7 @@ type Queries struct {
 	getAgentSessionByProviderIDStmt              *sql.Stmt
 	getAttributionBackfillStmt                   *sql.Stmt
 	getCheckpointByIDStmt                        *sql.Stmt
+	getCheckpointCaptureStmt                     *sql.Stmt
 	getCheckpointStatsStmt                       *sql.Stmt
 	getCheckpointSummaryStmt                     *sql.Stmt
 	getCommitLinkByCommitHashStmt                *sql.Stmt
@@ -988,6 +1013,7 @@ type Queries struct {
 	recordBackfillFailureStmt                    *sql.Stmt
 	recordCheckpointAttributionStmt              *sql.Stmt
 	recoverStaleUploadingStmt                    *sql.Stmt
+	releaseCheckpointForCaptureStmt              *sql.Stmt
 	releaseCheckpointForRetryStmt                *sql.Stmt
 	resetManifestForRetryStmt                    *sql.Stmt
 	resetManifestToPackagedStmt                  *sql.Stmt
@@ -995,6 +1021,7 @@ type Queries struct {
 	resolveCommitLinkByPrefixStmt                *sql.Stmt
 	resolveSessionByPrefixStmt                   *sql.Stmt
 	retryFailedCheckpointStmt                    *sql.Stmt
+	saveCheckpointCaptureStmt                    *sql.Stmt
 	saveCheckpointSummaryStmt                    *sql.Stmt
 	stepEventExistsStmt                          *sql.Stmt
 	turnEventExistsStmt                          *sql.Stmt
@@ -1026,6 +1053,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getAgentSessionByProviderIDStmt:              q.getAgentSessionByProviderIDStmt,
 		getAttributionBackfillStmt:                   q.getAttributionBackfillStmt,
 		getCheckpointByIDStmt:                        q.getCheckpointByIDStmt,
+		getCheckpointCaptureStmt:                     q.getCheckpointCaptureStmt,
 		getCheckpointStatsStmt:                       q.getCheckpointStatsStmt,
 		getCheckpointSummaryStmt:                     q.getCheckpointSummaryStmt,
 		getCommitLinkByCommitHashStmt:                q.getCommitLinkByCommitHashStmt,
@@ -1098,6 +1126,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		recordBackfillFailureStmt:                    q.recordBackfillFailureStmt,
 		recordCheckpointAttributionStmt:              q.recordCheckpointAttributionStmt,
 		recoverStaleUploadingStmt:                    q.recoverStaleUploadingStmt,
+		releaseCheckpointForCaptureStmt:              q.releaseCheckpointForCaptureStmt,
 		releaseCheckpointForRetryStmt:                q.releaseCheckpointForRetryStmt,
 		resetManifestForRetryStmt:                    q.resetManifestForRetryStmt,
 		resetManifestToPackagedStmt:                  q.resetManifestToPackagedStmt,
@@ -1105,6 +1134,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		resolveCommitLinkByPrefixStmt:                q.resolveCommitLinkByPrefixStmt,
 		resolveSessionByPrefixStmt:                   q.resolveSessionByPrefixStmt,
 		retryFailedCheckpointStmt:                    q.retryFailedCheckpointStmt,
+		saveCheckpointCaptureStmt:                    q.saveCheckpointCaptureStmt,
 		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
 		stepEventExistsStmt:                          q.stepEventExistsStmt,
 		turnEventExistsStmt:                          q.turnEventExistsStmt,

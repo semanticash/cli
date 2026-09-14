@@ -51,6 +51,9 @@ var dirtyProbes = map[int]func(ctx context.Context, db *sql.DB) (bool, error){
 	9: func(ctx context.Context, db *sql.DB) (bool, error) {
 		return schemaHasColumn(ctx, db, "provenance_manifests", "tokens_cache_create")
 	},
+	10: func(ctx context.Context, db *sql.DB) (bool, error) {
+		return schemaHasTable(ctx, db, "checkpoint_capture")
+	},
 }
 
 func schemaHasTable(ctx context.Context, db *sql.DB, table string) (bool, error) {

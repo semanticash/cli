@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -37,6 +38,9 @@ func NewCaptureCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			providerName := args[0]
 			hookName := args[1]
+			if os.Getenv("SEMANTICA_CAPTURE_TRACE") == "1" {
+				slog.Info("capture hook invoked", "provider", providerName, "hook", hookName)
+			}
 			ctx := hooks.WithHookStart(cmd.Context(), processStart)
 
 			// Broker-wide enabled check: any active repo in the registry?

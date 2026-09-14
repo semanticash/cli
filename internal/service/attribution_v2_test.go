@@ -214,8 +214,8 @@ func TestAttributionV2_FlagOff(t *testing.T) {
 		t.Errorf("v1 attributed delta evidence: AILines=%d delta=%d", result.AILines, result.AIDeltaExactLines)
 	}
 	gen := fileByPath(t, result.Files, "gen.go")
-	if gen.HumanLines != 2 || gen.AIExactLines != 0 {
-		t.Errorf("gen.go = %+v, want fully human under v1", gen)
+	if gen.HumanLines != 0 || gen.UnattributedLines != 2 || gen.AIExactLines != 0 {
+		t.Errorf("gen.go = %+v, want unmatched lines unattributed with truncated capture", gen)
 	}
 	d := result.Diagnostics
 	if d.DeltaGroupsEligible != 0 || d.DeltaExactMatches != 0 {
@@ -267,8 +267,8 @@ func TestAttributionV2_FlagOn(t *testing.T) {
 
 	// Unmatched claims do not attribute later content.
 	rewritten := fileByPath(t, result.Files, "rewritten.go")
-	if rewritten.HumanLines != 1 || rewritten.AIExactLines != 0 || rewritten.AIProviderOnlyLines != 0 {
-		t.Errorf("rewritten.go = %+v, want fully human", rewritten)
+	if rewritten.HumanLines != 0 || rewritten.UnattributedLines != 1 || rewritten.AIExactLines != 0 || rewritten.AIProviderOnlyLines != 0 {
+		t.Errorf("rewritten.go = %+v, want unmatched line unattributed with truncated capture", rewritten)
 	}
 	if rewritten.EvidenceClass != string(attrreporting.EvidenceNone) {
 		t.Errorf("rewritten.go evidence = %q, want none", rewritten.EvidenceClass)

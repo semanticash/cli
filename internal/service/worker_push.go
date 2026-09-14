@@ -46,6 +46,8 @@ type remotePushPayload struct {
 	AIProviderOnlyLines int                    `json:"ai_provider_only_lines,omitempty"`
 	AILines             int                    `json:"ai_lines"`
 	HumanLines          int                    `json:"human_lines"`
+	UnattributedLines   int                    `json:"unattributed_lines,omitempty"`
+	Capture             *CaptureReadiness      `json:"capture,omitempty"`
 	TotalLines          int                    `json:"total_lines"`
 	FilesTotal          int                    `json:"files_total"`
 	FilesAITouched      int                    `json:"files_ai_touched"`
@@ -130,6 +132,8 @@ func buildPushPayload(ctx context.Context, h *sqlstore.Handle, result *Attributi
 		AIProviderOnlyLines: result.AIProviderOnlyLines,
 		AILines:             result.AILines,
 		HumanLines:          result.HumanLines,
+		UnattributedLines:   result.UnattributedLines,
+		Capture:             result.Capture,
 		TotalLines:          result.TotalLines,
 		FilesTotal:          result.FilesTotal,
 		FilesAITouched:      result.FilesAITouched,

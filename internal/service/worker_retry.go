@@ -133,6 +133,21 @@ func (s *WorkerService) claimAndProcess(ctx context.Context, repoRoot string, it
 	if perr == nil {
 		return true, nil
 	}
+	var captureWait *captureNotSettled
+	if errors.As(perr, &captureWait) {
+		// Waiting for capture does not consume a processing attempt.
+		rows, err := h.Queries.ReleaseCheckpointForCapture(ctx, sqldb.ReleaseCheckpointForCaptureParams{
+			LastError: sqlstore.NullStr(perr.Error()), NextAttemptAt: captureWait.At.UnixMilli(),
+			CheckpointID: item.CheckpointID, LeaseOwner: sqlstore.NullStr(owner),
+		})
+		if err != nil {
+			return true, fmt.Errorf("schedule capture wait: %w", err)
+		}
+		if rows != 1 {
+			return true, fmt.Errorf("capture wait lost checkpoint lease: rows=%d", rows)
+		}
+		return true, &ErrRetryScheduled{CheckpointID: item.CheckpointID, At: captureWait.At, Cause: perr}
+	}
 
 	if isPermanentError(perr) || claimed.AttemptCount >= retryMaxAttempts {
 		reason := "permanent error"
