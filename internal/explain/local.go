@@ -42,9 +42,9 @@ func localProvenance(ctx context.Context, repoPath, commitHash string) string {
 	if err != nil {
 		return ""
 	}
-	// No linked sessions and no AI lines means local provenance
-	// has no useful record for this commit.
-	if res.SessionCount == 0 && res.AILines == 0 {
+	// Capture gaps remain useful even without linked sessions or AI matches.
+	hasCaptureGap := res.Capture != nil && res.Capture.Status != "complete"
+	if res.SessionCount == 0 && res.AILines == 0 && !hasCaptureGap {
 		return ""
 	}
 	return formatProvenance(res)
@@ -77,8 +77,7 @@ func formatProvenance(res *service.ExplainResult) string {
 	if providers := service.DistinctSessionProviders(res.Sessions); len(providers) > 0 {
 		fmt.Fprintf(&b, "  %s: %s\n", plural(len(providers), "Provider"), strings.Join(providers, ", "))
 	}
-	fmt.Fprintf(&b, "  %.1f%% AI-Attributed (%d AI / %d human)\n",
-		res.AIPercentage, res.AILines, res.HumanLines)
+	fmt.Fprintf(&b, "  %s\n", res.AttributionSummary())
 	if res.FilesChanged > 0 {
 		fmt.Fprintf(&b, "  %d of %d files contain AI-produced lines\n",
 			res.FilesWithAI, res.FilesChanged)

@@ -208,7 +208,29 @@ func TestCaptureReadinessMissingCompletionThroughDispatchAndWorker(t *testing.T)
 			if result.Capture == nil {
 				t.Fatal("capture status was not persisted")
 			}
+			explanation, err := NewExplainService().Explain(ctx, ExplainInput{RepoPath: w.dir, Ref: sha})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if explanation.Capture == nil || explanation.Capture.Status != result.Capture.Status || explanation.UnattributedLines != result.UnattributedLines {
+				t.Fatalf("Explain lost capture uncertainty: %+v", explanation)
+			}
+			if explanation.LinesAdded != explanation.AILines+explanation.HumanLines+explanation.UnattributedLines {
+				t.Fatalf("Explain lost unmatched lines: %+v", explanation)
+			}
+			for _, file := range explanation.TopFiles {
+				if file.TotalLines != file.AILines+file.HumanLines+file.UnattributedLines {
+					t.Fatalf("Explain file lost unmatched lines: %+v", file)
+				}
+			}
+			status, err := NewStatusService().Status(ctx, StatusInput{RepoPath: w.dir})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if missing {
+				if len(status.AITrend) != 0 || explanation.FilesHumanOnly != 0 || explanation.FilesUnattributed == 0 {
+					t.Fatalf("incomplete capture presented as ordinary attribution: trend=%v explain=%+v", status.AITrend, explanation)
+				}
 				if result.Capture.Status != "incomplete" || result.HumanLines != 0 || result.UnattributedLines == 0 {
 					t.Fatalf("missing capture became human attribution: %+v", result)
 				}
@@ -239,7 +261,7 @@ func TestCaptureReadinessMissingCompletionThroughDispatchAndWorker(t *testing.T)
 				if err != nil || again.Capture == nil || again.Capture.Status != "incomplete" || again.HumanLines != 0 {
 					t.Fatalf("late evidence erased capture gap: %+v, %v", again, err)
 				}
-			} else if result.Capture.Status != "complete" {
+			} else if result.Capture.Status != "complete" || len(status.AITrend) != 1 {
 				t.Fatalf("normal completion incorrectly degraded: %+v", result.Capture)
 			}
 		})

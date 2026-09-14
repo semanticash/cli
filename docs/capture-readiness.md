@@ -14,6 +14,11 @@ inspection, with retries every 5 seconds. These waits release the checkpoint lea
 and do not consume the processing-failure attempt budget. The existing repository
 queue remains ordered. Other repositories can continue independently.
 
+The standalone `worker run` process waits for these short retries, so capture
+settles without an external launcher or another commit. It releases repository
+locks while waiting and stops if its context is canceled. Ordinary processing
+failures retain their existing retry behavior.
+
 After the deadline, the worker records incomplete capture and completes the
 checkpoint with partial attribution. It does not forcibly close a command that
 might still be running. Normal tool-window recovery remains responsible for
@@ -21,11 +26,13 @@ reclaiming stale registrations and refs.
 
 ## Results
 
-When capture is incomplete, `blame` displays `Unattributed` instead of `Human`
+When capture is incomplete, `blame` and `explain` display `Unattributed` instead of `Human`
 for unmatched lines and labels the percentage `AI matched`. JSON results and
 attribution uploads include `capture` and `unattributed_lines`. Their human line
 counts are zero, and per-file results carry the same distinction. Consumers must
 honor these fields rather than infer human authorship from `total_lines - ai_lines`.
+Explain's model context and skill output retain the same uncertainty. `status`
+omits incomplete checkpoints from its AI trend.
 
 The gap remains attached to the checkpoint if evidence arrives later. Completed
 checkpoints are not automatically re-attributed. `blame` still recomputes matches
@@ -39,6 +46,9 @@ historical state cannot be reconstructed from an empty registry.
 
 Concurrent-group deltas remain subject to the existing attribution rules. Settling
 a group does not establish exclusive authorship for any one member.
+The checkpoint window selects relevant groups; full persisted group membership
+is validated separately. A member completed before the previous checkpoint does
+not become a capture gap merely because it is outside the current window.
 
 ## Diagnosing missing completion
 

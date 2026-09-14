@@ -1,10 +1,31 @@
 package commands
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/semanticash/cli/internal/service"
 )
+
+func TestExplainContextPreservesUnattributedLines(t *testing.T) {
+	r := &service.ExplainResult{
+		AILines: 240, UnattributedLines: 756, AIPercentage: 24.1,
+		Capture:  &service.CaptureReadiness{Status: "incomplete", Gaps: []service.CaptureGap{{Reason: "completion_missing"}}},
+		TopFiles: []service.FileDelta{{Path: "code.go", TotalLines: 996, AILines: 240, UnattributedLines: 756}},
+	}
+	context := buildExplainContext(r)
+	raw, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.UnattributedLines != 756 || context.TopFiles[0].UnattributedLines != 756 || !strings.Contains(string(raw), `"completion_missing"`) {
+		t.Fatalf("model context lost capture uncertainty: %s", raw)
+	}
+	if summary := r.AttributionSummary(); strings.Contains(summary, "human") || !strings.Contains(summary, "756 unattributed") || !strings.Contains(summary, "AI matched") {
+		t.Fatalf("misleading Explain output: %s", summary)
+	}
+}
 
 func TestSessionIdentity(t *testing.T) {
 	withModel := service.SessionSummary{Provider: "cursor", Model: "grok-4.6"}

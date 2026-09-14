@@ -58,7 +58,7 @@ func NewWorkerRunCmd(rootOpts *RootOptions) *cobra.Command {
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := service.NewWorkerService(providers.NewHookRegistry())
-			return svc.Run(cmd.Context(), service.WorkerInput{
+			return svc.RunStandalone(cmd.Context(), service.WorkerInput{
 				CheckpointID: checkpointID,
 				CommitHash:   commitHash,
 				RepoRoot:     repoRoot,

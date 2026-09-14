@@ -171,6 +171,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listBackfillReplayCandidatesStmt, err = db.PrepareContext(ctx, listBackfillReplayCandidates); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBackfillReplayCandidates: %w", err)
 	}
+	if q.listCaptureGroupLinksStmt, err = db.PrepareContext(ctx, listCaptureGroupLinks); err != nil {
+		return nil, fmt.Errorf("error preparing query ListCaptureGroupLinks: %w", err)
+	}
 	if q.listCheckpointsByRepositoryStmt, err = db.PrepareContext(ctx, listCheckpointsByRepository); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCheckpointsByRepository: %w", err)
 	}
@@ -595,6 +598,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listBackfillReplayCandidatesStmt: %w", cerr)
 		}
 	}
+	if q.listCaptureGroupLinksStmt != nil {
+		if cerr := q.listCaptureGroupLinksStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listCaptureGroupLinksStmt: %w", cerr)
+		}
+	}
 	if q.listCheckpointsByRepositoryStmt != nil {
 		if cerr := q.listCheckpointsByRepositoryStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listCheckpointsByRepositoryStmt: %w", cerr)
@@ -973,6 +981,7 @@ type Queries struct {
 	listAgentEventsBySessionPagedStmt            *sql.Stmt
 	listAgentSessionsByProviderSessionIDStmt     *sql.Stmt
 	listBackfillReplayCandidatesStmt             *sql.Stmt
+	listCaptureGroupLinksStmt                    *sql.Stmt
 	listCheckpointsByRepositoryStmt              *sql.Stmt
 	listCheckpointsWithCommitStmt                *sql.Stmt
 	listCommitLinksByRepositoryStmt              *sql.Stmt
@@ -1086,6 +1095,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listAgentEventsBySessionPagedStmt:            q.listAgentEventsBySessionPagedStmt,
 		listAgentSessionsByProviderSessionIDStmt:     q.listAgentSessionsByProviderSessionIDStmt,
 		listBackfillReplayCandidatesStmt:             q.listBackfillReplayCandidatesStmt,
+		listCaptureGroupLinksStmt:                    q.listCaptureGroupLinksStmt,
 		listCheckpointsByRepositoryStmt:              q.listCheckpointsByRepositoryStmt,
 		listCheckpointsWithCommitStmt:                q.listCheckpointsWithCommitStmt,
 		listCommitLinksByRepositoryStmt:              q.listCommitLinksByRepositoryStmt,

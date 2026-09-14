@@ -34,11 +34,14 @@ type ExplainResult struct {
 	LinesDeleted int         `json:"lines_deleted"`
 	TopFiles     []FileDelta `json:"top_files"`
 	// Attribution facts
-	AIPercentage   float64 `json:"ai_percentage"`
-	AILines        int     `json:"ai_lines"`
-	HumanLines     int     `json:"human_lines"`
-	FilesWithAI    int     `json:"files_with_ai"`
-	FilesHumanOnly int     `json:"files_human_only"`
+	AIPercentage      float64           `json:"ai_percentage"`
+	AILines           int               `json:"ai_lines"`
+	HumanLines        int               `json:"human_lines"`
+	UnattributedLines int               `json:"unattributed_lines,omitempty"`
+	Capture           *CaptureReadiness `json:"capture,omitempty"`
+	FilesUnattributed int               `json:"files_unattributed,omitempty"`
+	FilesWithAI       int               `json:"files_with_ai"`
+	FilesHumanOnly    int               `json:"files_human_only"`
 	// Session facts
 	SessionCount int              `json:"session_count"`
 	RootSessions int              `json:"root_sessions"`
@@ -50,6 +53,15 @@ type ExplainResult struct {
 	Summary *NarrativeResultJSON `json:"summary,omitempty"`
 }
 
+// AttributionSummary preserves capture uncertainty in text consumers.
+func (r *ExplainResult) AttributionSummary() string {
+	if r.Capture != nil && r.Capture.Status != "complete" {
+		return fmt.Sprintf("%.1f%% AI matched (%d AI / %d unattributed; capture %s)",
+			r.AIPercentage, r.AILines, r.UnattributedLines, r.Capture.Status)
+	}
+	return fmt.Sprintf("%.1f%% AI-Attributed (%d AI / %d human)", r.AIPercentage, r.AILines, r.HumanLines)
+}
+
 // TranscriptEventSummary is a lightweight event for the condensed transcript.
 type TranscriptEventSummary struct {
 	Role     string `json:"role"`
@@ -59,13 +71,14 @@ type TranscriptEventSummary struct {
 }
 
 type FileDelta struct {
-	Path       string  `json:"path"`
-	Added      int     `json:"added"`       // added non-blank lines (same basis as attribution)
-	Deleted    int     `json:"deleted"`     // deleted non-blank lines
-	TotalLines int     `json:"total_lines"` // equals Added (added non-blank lines)
-	AILines    int     `json:"ai_lines"`
-	HumanLines int     `json:"human_lines"`
-	AIPercent  float64 `json:"ai_percentage"`
+	Path              string  `json:"path"`
+	Added             int     `json:"added"`       // added non-blank lines (same basis as attribution)
+	Deleted           int     `json:"deleted"`     // deleted non-blank lines
+	TotalLines        int     `json:"total_lines"` // equals Added (added non-blank lines)
+	AILines           int     `json:"ai_lines"`
+	HumanLines        int     `json:"human_lines"`
+	UnattributedLines int     `json:"unattributed_lines,omitempty"`
+	AIPercent         float64 `json:"ai_percentage"`
 }
 
 type SessionSummary struct {
@@ -241,6 +254,11 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 	}
 	filesChanged := len(blame.Files)
 	filesHumanOnly := filesChanged - filesWithAI
+	filesUnattributed := 0
+	if blame.Capture != nil && blame.Capture.Status != "complete" {
+		filesUnattributed = filesHumanOnly
+		filesHumanOnly = 0
+	}
 
 	// Top files by total attribution-scoped lines (added non-blank), max 5.
 	blameFiles := make([]FileAttribution, len(blame.Files))
@@ -257,13 +275,14 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 		f := blameFiles[i]
 		aiLines := f.AIExactLines + f.AIFormattedLines + f.AIModifiedLines
 		topFiles[i] = FileDelta{
-			Path:       f.Path,
-			Added:      f.TotalLines,
-			Deleted:    f.DeletedNonBlank,
-			TotalLines: f.TotalLines,
-			AILines:    aiLines,
-			HumanLines: f.HumanLines,
-			AIPercent:  f.AIPercent,
+			Path:              f.Path,
+			Added:             f.TotalLines,
+			Deleted:           f.DeletedNonBlank,
+			TotalLines:        f.TotalLines,
+			AILines:           aiLines,
+			HumanLines:        f.HumanLines,
+			UnattributedLines: f.UnattributedLines,
+			AIPercent:         f.AIPercent,
 		}
 	}
 
@@ -295,24 +314,27 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 	}
 
 	return &ExplainResult{
-		CommitHash:     commitHash,
-		CheckpointID:   blame.CheckpointID,
-		CommitSubject:  subject,
-		FilesChanged:   filesChanged,
-		LinesAdded:     totalAdded,
-		LinesDeleted:   totalDeleted,
-		TopFiles:       topFiles,
-		AIPercentage:   blame.AIPercentage,
-		AILines:        blame.AILines,
-		HumanLines:     blame.HumanLines,
-		FilesWithAI:    filesWithAI,
-		FilesHumanOnly: filesHumanOnly,
-		SessionCount:   len(sessions),
-		RootSessions:   rootCount,
-		Subagents:      subCount,
-		Sessions:       sessions,
-		Transcript:     transcript,
-		Summary:        summary,
+		CommitHash:        commitHash,
+		CheckpointID:      blame.CheckpointID,
+		CommitSubject:     subject,
+		FilesChanged:      filesChanged,
+		LinesAdded:        totalAdded,
+		LinesDeleted:      totalDeleted,
+		TopFiles:          topFiles,
+		AIPercentage:      blame.AIPercentage,
+		AILines:           blame.AILines,
+		HumanLines:        blame.HumanLines,
+		UnattributedLines: blame.UnattributedLines,
+		Capture:           blame.Capture,
+		FilesUnattributed: filesUnattributed,
+		FilesWithAI:       filesWithAI,
+		FilesHumanOnly:    filesHumanOnly,
+		SessionCount:      len(sessions),
+		RootSessions:      rootCount,
+		Subagents:         subCount,
+		Sessions:          sessions,
+		Transcript:        transcript,
+		Summary:           summary,
 	}, nil
 }
 

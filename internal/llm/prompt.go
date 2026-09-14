@@ -65,23 +65,26 @@ type TranscriptEntry struct {
 
 // ExplainContext is the subset of explain stats needed for the prompt.
 type ExplainContext struct {
-	FilesChanged int     `json:"files_changed"`
-	LinesAdded   int     `json:"lines_added"`
-	LinesDeleted int     `json:"lines_deleted"`
-	AIPercentage float64 `json:"ai_percentage"`
-	AILines      int     `json:"ai_lines"`
-	HumanLines   int     `json:"human_lines"`
-	SessionCount int     `json:"session_count"`
-	RootSessions int     `json:"root_sessions"`
-	Subagents    int     `json:"subagents"`
-	TopFiles     []struct {
-		Path       string  `json:"path"`
-		Added      int     `json:"added"`
-		Deleted    int     `json:"deleted"`
-		TotalLines int     `json:"total_lines"`
-		AILines    int     `json:"ai_lines"`
-		HumanLines int     `json:"human_lines"`
-		AIPercent  float64 `json:"ai_percentage"`
+	FilesChanged      int             `json:"files_changed"`
+	LinesAdded        int             `json:"lines_added"`
+	LinesDeleted      int             `json:"lines_deleted"`
+	AIPercentage      float64         `json:"ai_percentage"`
+	AILines           int             `json:"ai_lines"`
+	HumanLines        int             `json:"human_lines"`
+	UnattributedLines int             `json:"unattributed_lines,omitempty"`
+	Capture           json.RawMessage `json:"capture,omitempty"`
+	SessionCount      int             `json:"session_count"`
+	RootSessions      int             `json:"root_sessions"`
+	Subagents         int             `json:"subagents"`
+	TopFiles          []struct {
+		Path              string  `json:"path"`
+		Added             int     `json:"added"`
+		Deleted           int     `json:"deleted"`
+		TotalLines        int     `json:"total_lines"`
+		AILines           int     `json:"ai_lines"`
+		HumanLines        int     `json:"human_lines"`
+		UnattributedLines int     `json:"unattributed_lines,omitempty"`
+		AIPercent         float64 `json:"ai_percentage"`
 	} `json:"top_files"`
 }
 

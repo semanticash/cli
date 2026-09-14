@@ -155,12 +155,21 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 	resolved := map[toolsnap.ToolKey]captureProof{}
 	var gaps []CaptureGap
 	seen := map[string]bool{}
-	linked := map[string]map[string]string{}
+	linked := map[string]map[string]sqldb.ListCaptureGroupLinksRow{}
+	selected := map[string]map[string]bool{}
 	for _, link := range links {
 		if linked[link.GroupID] == nil {
-			linked[link.GroupID] = map[string]string{}
+			members, err := h.Queries.ListCaptureGroupLinks(ctx, sqldb.ListCaptureGroupLinksParams{GroupID: link.GroupID, RepositoryID: cp.RepositoryID})
+			if err != nil {
+				return nil, nil, err
+			}
+			linked[link.GroupID] = map[string]sqldb.ListCaptureGroupLinksRow{}
+			selected[link.GroupID] = map[string]bool{}
+			for _, member := range members {
+				linked[link.GroupID][member.EventID] = member
+			}
 		}
-		linked[link.GroupID][link.EventID] = link.Provider
+		selected[link.GroupID][link.EventID] = true
 	}
 	for _, link := range links {
 		if err := ctx.Err(); err != nil {
@@ -204,21 +213,32 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 				reason = "evidence_truncated"
 			}
 		}
+		groupValid := len(linked[link.GroupID]) == len(d.ToolUses)
 		for _, use := range d.ToolUses {
-			a := d.Actors[use.Actor]
-			key := toolsnap.ToolKey{RepositoryID: cp.RepositoryID, Provider: a.Provider, SessionID: a.SessionID, TurnID: a.TurnID, ToolUseID: use.ToolUseID}
-			if linked[link.GroupID][use.EventID] != a.Provider {
-				gaps = append(gaps, CaptureGap{Key: &key, GroupID: link.GroupID, Reason: "evidence_member_not_linked"})
+			member, exists := linked[link.GroupID][use.EventID]
+			if !exists || member.Provider != d.Actors[use.Actor].Provider || member.EvidenceHash != link.EvidenceHash {
+				groupValid = false
+			}
+		}
+		if !groupValid {
+			gaps = append(gaps, CaptureGap{GroupID: link.GroupID, Reason: "evidence_member_not_linked"})
+			continue
+		}
+		for _, use := range d.ToolUses {
+			if !selected[link.GroupID][use.EventID] {
 				continue
 			}
+			a := d.Actors[use.Actor]
+			key := toolsnap.ToolKey{RepositoryID: cp.RepositoryID, Provider: a.Provider, SessionID: a.SessionID, TurnID: a.TurnID, ToolUseID: use.ToolUseID}
+			useReason := reason
 			if old, exists := resolved[key]; exists && old.GroupID != link.GroupID {
-				reason = "conflicting_capture_groups"
+				useReason = "conflicting_capture_groups"
 			}
-			if old, exists := resolved[key]; !exists || old.Reason == "" || reason == "conflicting_capture_groups" {
-				resolved[key] = captureProof{GroupID: link.GroupID, Reason: reason}
+			if old, exists := resolved[key]; !exists || old.Reason == "" || useReason == "conflicting_capture_groups" {
+				resolved[key] = captureProof{GroupID: link.GroupID, Reason: useReason}
 			}
-			if reason != "" {
-				gaps = append(gaps, CaptureGap{Key: &key, GroupID: link.GroupID, Reason: reason})
+			if useReason != "" {
+				gaps = append(gaps, CaptureGap{Key: &key, GroupID: link.GroupID, Reason: useReason})
 			}
 		}
 	}
