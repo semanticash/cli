@@ -153,6 +153,36 @@ Status derives audit readiness from checkpoint state, attribution completion,
 turn-bundle coverage, and hosted push markers. Each component reports an
 explicit state under a named local or hosted policy.
 
+### Capture readiness
+
+Before attribution, the worker saves the relevant tool windows, checkpoint
+boundary, retry deadline, and capture gaps in `checkpoint_capture` in `lineage.db`.
+Recovery uses stored deltas or frozen post trees, never a fresh workspace snapshot
+as a substitute for a missing completion.
+
+Unsettled capture receives a 30-second grace period from the first inspection,
+with retries every 5 seconds. Waiting releases repository locks and checkpoint
+leases without consuming processing attempts. The standalone `worker run` waits
+without a launcher or another commit; cancellation stops the wait. Checkpoints
+remain ordered per repository, while other repositories proceed independently.
+Processing failures retain their existing retry behavior.
+
+At the deadline, attribution proceeds with incomplete capture. Active commands
+are not forcibly closed; tool-window recovery reclaims stale registrations and
+refs. See [incomplete capture](evidence-contract.md#incomplete-capture) for result
+semantics.
+
+Registry windows have timestamps but no event cursors. Lower-boundary ties remain
+potentially relevant. A post-state captured in the checkpoint's millisecond
+produces `post_state_order_unknown`, so ties can cause conservative capture gaps.
+
+To diagnose missing completion, set `SEMANTICA_CAPTURE_TRACE=1` in the environment
+inherited by capture hooks and preserve the hook runner's stderr. Diagnostics
+include lifecycle receipts, registration, completion, and session/turn/tool-use
+identities, but no command text, prompts, or responses. Compare them with provider
+delivery logs: a missing completion alone does not identify the faulty layer, and
+process exit cannot replace trustworthy captured post-state.
+
 ### Processing pipeline
 
 1. **Session reconciliation** - Attempts to replay pending capture state owned by the repository. Sessions that route across repositories remain pending for a later unscoped capture; unowned and orphaned segments are reported by `semantica doctor`.
@@ -325,8 +355,27 @@ The broker is a cross-repo event routing layer used by the `capture` command. It
 When an AI provider hook fires (e.g., Claude Code's `user-prompt-submit`), the capture command:
 
 1. Reads the event payload from stdin
-2. Looks up which registered repo(s) contain the affected files (deepest-match rule)
-3. Routes the event to the matching repo database or databases
+2. Resolves structured mutation paths against active repositories (deepest-match rule)
+3. Retains events with unresolved mutation destinations and their required objects globally
+4. Writes resolved events to their matching repository databases; non-mutation context may follow its session directory
+
+Unresolved events are retained in `$SEMANTICA_HOME/unresolved-mutations/` as private
+JSON records containing the original event, session and turn identities, and
+referenced payload/provenance objects. Retention must succeed before transcript
+offsets advance. Redelivery preserves the first record; conflicting content under
+the same event ID is rejected. Each new record adds an atomic write and filesystem
+synchronization, without extra repository scans or a delivery worker.
+
+Known delegation boundaries (`Agent` and supported aliases) remain session context,
+including completions marked `exec`. Unknown tools remain conservative. Codex
+relative Write/Edit paths are normalized against the provider's working directory
+before routing.
+
+Raw events stored alongside tool-window observations remain context unless their
+mutation paths establish ownership. Verified deltas are separate evidence, as
+defined by the [evidence contract](evidence-contract.md#tool-window-routing).
+Known-destination writes keep their existing persistence behavior; unresolved
+retention does not provide a general delivery acknowledgement protocol.
 
 This allows Semantica to capture AI activity even when the provider's hook system doesn't know about the repo structure. In practice, a hook fired from one workspace can still route events into another Semantica-enabled repo if that repo owns the touched paths.
 

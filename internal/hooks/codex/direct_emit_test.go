@@ -11,8 +11,23 @@ import (
 	"testing"
 
 	"github.com/semanticash/cli/internal/attribution/events"
+	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/hooks"
 )
+
+func TestBuildHookEventsRelativeWriteRouting(t *testing.T) {
+	cwd := t.TempDir()
+	e := &hooks.Event{Type: hooks.ToolStepCompleted, SessionID: "session", TurnID: "turn", ToolUseID: "write", ToolName: "Write", CWD: cwd, ToolInput: []byte(`{"file_path":"sub/file.go","content":"package sub\n"}`)}
+	rows, err := New().BuildHookEvents(context.Background(), e, newMemBlobStore())
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
+	}
+	want := filepath.Join(cwd, "sub/file.go")
+	_, paths, missing := broker.MutationPaths(rows[0])
+	if missing || len(paths) != 1 || filepath.FromSlash(paths[0]) != want || filepath.FromSlash(rows[0].FilePaths[0]) != want {
+		t.Fatalf("relative Write did not normalize routing: %+v %v", rows, paths)
+	}
+}
 
 // memBlobStore stores test blobs by their production SHA-256 key.
 type memBlobStore struct {

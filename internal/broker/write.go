@@ -46,6 +46,25 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 	if len(events) == 0 {
 		return nil, nil
 	}
+	// Tool-window publishers need event rows before the final delta exists.
+	// Keep those rows as context unless structured paths establish ownership.
+	events = append([]RawEvent(nil), events...)
+	for i, ev := range events {
+		mutation, paths, missing := MutationPaths(ev)
+		if !mutation {
+			continue
+		}
+		belongs := false
+		for _, path := range paths {
+			if PathBelongsToRepo(path, repoPath) {
+				belongs = true
+				break
+			}
+		}
+		if missing || !belongs {
+			events[i] = ObservationContext(ev)
+		}
+	}
 
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
@@ -457,8 +476,9 @@ func relativizeToolPaths(toolUsesJSON, repoPath string) string {
 		FileOp   string `json:"file_op,omitempty"`
 	}
 	type payload struct {
-		ContentTypes []string `json:"content_types,omitempty"`
-		Tools        []tool   `json:"tools,omitempty"`
+		ContentTypes    []string `json:"content_types,omitempty"`
+		Tools           []tool   `json:"tools,omitempty"`
+		MutationRouting string   `json:"mutation_routing,omitempty"`
 	}
 
 	var p payload

@@ -359,12 +359,13 @@ func buildClaudeShapedStepEvent(ctx context.Context, event *hooks.Event, bs api.
 	ev.Role = "assistant"
 	ev.PayloadHash = payloadHash
 	ev.ProvenanceHash = provenanceHash
-	ev.ToolUsesJSON = serializeStepToolUses(event.ToolName, generic.FilePath, fileOp)
+	routedPath := absolutizeForRouting(generic.FilePath, event.CWD)
+	ev.ToolUsesJSON = serializeStepToolUses(event.ToolName, routedPath, fileOp)
 	ev.TurnID = event.TurnID
 	ev.ToolUseID = event.ToolUseID
 	ev.ToolName = event.ToolName
 	ev.EventSource = "hook"
-	ev.FilePaths = []string{generic.FilePath}
+	ev.FilePaths = []string{routedPath}
 	return []broker.RawEvent{ev}, nil
 }
 

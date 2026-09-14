@@ -7,6 +7,14 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
+// ContextOnly reports events retained for observation without mutation ownership.
+func ContextOnly(toolUses string) bool {
+	var p struct {
+		Routing string `json:"mutation_routing"`
+	}
+	return json.Unmarshal([]byte(toolUses), &p) == nil && p.Routing == "context_only"
+}
+
 // HasEditOrWrite returns true if the tool_uses JSON contains an Edit or Write
 // tool call. Used as a fast pre-filter before payload loading.
 func HasEditOrWrite(toolUses string) bool {

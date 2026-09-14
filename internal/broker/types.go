@@ -45,7 +45,7 @@ type RawEvent struct {
 	ParentSessionID   string // empty if no parent
 	SessionStartedAt  int64
 	SessionMetaJSON   string
-	SourceProjectPath string // decoded project path for no-path fallback routing
+	SourceProjectPath string // session context; not mutation ownership
 	Model             string // LLM model name (e.g. "opus 4.6", "gemini-2.5-pro")
 }
 

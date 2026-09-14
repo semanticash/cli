@@ -364,16 +364,24 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		// Bash completion may persist events while closing its tool window.
 		if event.ToolName == "Bash" {
+			repos, err := broker.ListActiveRepos(benchCtx, bh)
+			if err != nil {
+				return err
+			}
+			_, unresolved := broker.PlanRoutes(events, repos)
+			if err := broker.RetainUnresolvedMutations(benchCtx, unresolved, blobStore); err != nil {
+				return fmt.Errorf("retain unresolved tool event: %w", err)
+			}
 			switch completeToolWindow(benchCtx, provider.Name(), event, bh, blobStore, events) {
 			case windowHandled:
+				// Structured destinations can differ from the observed repository.
+				err := routeAndWriteEventsToRepos(benchCtx, events, repos, blobStore)
 				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
-				return nil
+				return err
 			case windowSuppressed:
-				// Do not route an unresolved command to the session repository.
-				slog.Warn("tool window: suppressed event after failed completion",
-					"provider", provider.Name(), "tool_use", event.ToolUseID)
+				err := routeAndWriteEventsToRepos(benchCtx, events, repos, blobStore)
 				emitHookBenchRecords(benchScope, event, time.Since(hookStart))
-				return nil
+				return err
 			}
 		}
 		err = routeAndWriteEvents(benchCtx, events, bh, blobStore)
@@ -512,7 +520,7 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 	if err != nil {
 		return false, fmt.Errorf("list active repos: %w", err)
 	}
-	matches := computeEventRoutes(events, repos)
+	matches, unresolved := broker.PlanRoutes(events, repos)
 	if scopeRepo != "" {
 		for _, m := range matches {
 			if !sameRepoPath(m.Repo.Path, scopeRepo) {
@@ -526,6 +534,9 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 				return false, nil
 			}
 		}
+	}
+	if err := broker.RetainUnresolvedMutations(ctx, unresolved, blobStore); err != nil {
+		return false, fmt.Errorf("retain unresolved events: %w", err)
 	}
 	if err := writeRoutedEvents(ctx, matches, blobStore); err != nil {
 		return false, fmt.Errorf("route and write: %w", err)
@@ -1109,31 +1120,11 @@ func routeAndWriteEvents(ctx context.Context, events []broker.RawEvent, bh *brok
 }
 
 func routeAndWriteEventsToRepos(ctx context.Context, events []broker.RawEvent, repos []broker.RegisteredRepo, blobStore *blobs.Store) error {
-	return writeRoutedEvents(ctx, computeEventRoutes(events, repos), blobStore)
-}
-
-// computeEventRoutes maps events to their target repositories,
-// including the no-file-path fallback via source project path.
-func computeEventRoutes(events []broker.RawEvent, repos []broker.RegisteredRepo) []broker.RepoMatch {
-	matches := broker.RouteEvents(events, repos)
-
-	// Fallback: route events without file paths via source project path.
-	var noPathEvents []broker.RawEvent
-	var sourceProjectPath string
-	for _, ev := range events {
-		if len(ev.FilePaths) == 0 {
-			noPathEvents = append(noPathEvents, ev)
-			if sourceProjectPath == "" {
-				sourceProjectPath = ev.SourceProjectPath
-			}
-		}
+	matches, unresolved := broker.PlanRoutes(events, repos)
+	if err := broker.RetainUnresolvedMutations(ctx, unresolved, blobStore); err != nil {
+		return err
 	}
-	if len(noPathEvents) > 0 {
-		if m := broker.RouteNoPathEvents(noPathEvents, repos, sourceProjectPath); m != nil {
-			matches = append(matches, *m)
-		}
-	}
-	return matches
+	return writeRoutedEvents(ctx, matches, blobStore)
 }
 
 func writeRoutedEvents(ctx context.Context, matches []broker.RepoMatch, blobStore *blobs.Store) error {

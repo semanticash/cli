@@ -29,6 +29,9 @@ func BuildCandidatesFromRows(rows []EventRow, repoRoot string, eligibleFiles map
 	}
 
 	for _, ev := range rows {
+		if ContextOnly(ev.ToolUses) {
+			continue
+		}
 		if ev.Model != "" {
 			c.ProviderModel[ev.Provider] = ev.Model
 		}
