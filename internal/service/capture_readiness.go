@@ -109,7 +109,7 @@ func freezeCheckpointCapture(cp sqldb.Checkpoint, win eventWindow, snap toolsnap
 		Result: CaptureReadiness{Status: "pending"},
 	}
 	if inspectErr != nil {
-		// An unreadable initial inventory cannot establish a frozen membership.
+		// Unreadable registry state cannot establish checkpoint membership.
 		r.FixedGaps = append(r.FixedGaps, CaptureGap{Reason: "registry_unavailable"})
 		return r
 	}
@@ -143,8 +143,8 @@ func freezeCheckpointCapture(cp sqldb.Checkpoint, win eventWindow, snap toolsnap
 	return r
 }
 
-// captureEvidence uses the same event bounds as attribution. A closed registry
-// entry alone does not prove that usable evidence reached the repository.
+// captureEvidence selects groups within attribution bounds and validates their
+// stored evidence. Registry closure alone does not prove evidence was persisted.
 func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, cp sqldb.Checkpoint, win eventWindow) (map[toolsnap.ToolKey]captureProof, []CaptureGap, error) {
 	links, err := h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
 		RepositoryID: cp.RepositoryID, UseCursor: win.cursorFlag(), AfterCursor: win.cursorAfter(),
@@ -207,7 +207,7 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 		case d.Window.CompletedAt > cp.CreatedAt:
 			reason = "post_state_after_checkpoint"
 		case d.Window.CompletedAt == cp.CreatedAt:
-			// The post-state has no cursor to establish ordering within this millisecond.
+			// Post-state timestamps cannot resolve checkpoint cursor ties.
 			reason = "post_state_order_unknown"
 		case d.Limits.Truncated:
 			reason = "evidence_truncated"
@@ -312,8 +312,8 @@ func uniqueCaptureGaps(gaps []CaptureGap) []CaptureGap {
 	return result
 }
 
-// settleCheckpointCapture runs under the repository worker lock. Membership and
-// the deadline are saved before recovery can remove registry entries.
+// settleCheckpointCapture requires the repository worker lock and saves
+// membership before recovery can remove registry entries.
 func settleCheckpointCapture(ctx context.Context, wctx *workerContext, win eventWindow) error {
 	r, err := readCheckpointCapture(ctx, wctx.h, wctx.cp)
 	if err != nil {
@@ -360,9 +360,8 @@ func settleCheckpointCapture(ctx context.Context, wctx *workerContext, win event
 	return nil
 }
 
-// attributionCapture retains terminal gaps even if evidence arrives later.
-// Legacy checkpoints receive a read-only assessment without claiming historical
-// capture was fully observed.
+// attributionCapture preserves recorded gaps. Legacy checkpoints are assessed
+// from surviving evidence without persisting a capture result.
 func attributionCapture(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, semDir string, cp sqldb.Checkpoint, win eventWindow) (*CaptureReadiness, error) {
 	r, err := readCheckpointCapture(ctx, h, cp)
 	if err != nil {

@@ -1,59 +1,53 @@
 # Capture readiness and attribution
 
-Before attributing a commit, the worker records the registered tool windows that
-can overlap its checkpoint. This record is stored in `checkpoint_capture` in the
-repository's `lineage.db`. It includes the frozen window identities, the checkpoint
-boundary, a retry deadline, and any capture gaps.
+Before attributing a commit, the worker saves the relevant registered tool windows,
+checkpoint boundary, retry deadline, and capture gaps in `checkpoint_capture` in
+the repository's `lineage.db`.
 
-The worker tries existing recovery before scoring. Recovery uses recorded deltas
-or frozen post trees. It never takes a new workspace snapshot to replace a missing
-command completion.
+Recovery uses stored deltas or frozen post trees. It never takes a new workspace
+snapshot to replace a missing command completion.
 
-Unsettled capture postpones attribution for up to 30 seconds from the first
-inspection, with retries every 5 seconds. These waits release the checkpoint lease
-and do not consume the processing-failure attempt budget. The existing repository
-queue remains ordered. Other repositories can continue independently.
+Unsettled capture receives a 30-second grace period from the first inspection,
+with retries every 5 seconds. Waits release repository locks and checkpoint leases
+without consuming processing attempts. Checkpoints remain ordered within each
+repository; other repositories can continue independently.
 
-The standalone `worker run` process waits for these short retries, so capture
-settles without an external launcher or another commit. It releases repository
-locks while waiting and stops if its context is canceled. Ordinary processing
-failures retain their existing retry behavior.
+The standalone `worker run` process waits for capture retries without a launcher
+or another commit. Cancellation stops the wait. Processing failures retain their
+existing retry behavior.
 
-After the deadline, the worker records incomplete capture and completes the
-checkpoint with partial attribution. It does not forcibly close a command that
-might still be running. Normal tool-window recovery remains responsible for
-reclaiming stale registrations and refs.
+If capture is still unsettled at the deadline, the worker records incomplete
+capture and proceeds with partial attribution. It does not forcibly close active
+commands. Tool-window recovery reclaims stale registrations and refs.
 
 ## Results
 
-When capture is incomplete, `blame` and `explain` display `Unattributed` instead of `Human`
-for unmatched lines and labels the percentage `AI matched`. JSON results and
-attribution uploads include `capture` and `unattributed_lines`. Their human line
-counts are zero, and per-file results carry the same distinction. Consumers must
-honor these fields rather than infer human authorship from `total_lines - ai_lines`.
-Explain's model context and skill output retain the same uncertainty. `status`
-omits incomplete checkpoints from its AI trend.
+When capture is incomplete, `blame` and `explain` label unmatched lines
+`Unattributed` and the percentage `AI matched`. JSON results and attribution uploads
+include `capture` and `unattributed_lines`, with zero human lines. Per-file results
+use the same distinction. `total_lines - ai_lines` does not establish human
+authorship.
 
-The gap remains attached to the checkpoint if evidence arrives later. Completed
-checkpoints are not automatically re-attributed. `blame` still recomputes matches
-from available evidence, but retains the saved capture qualification. Audit
-readiness does not report incomplete capture as ready.
+Explain's model context and skill output preserve this uncertainty. Mixed files
+count under both `files_with_ai` and `files_unattributed`. `status` omits incomplete
+checkpoints from its AI trend.
 
-This is a bounded check of known tool-window capture, not proof that every agent
-action was observed. Legacy checkpoints without a capture record receive a
-read-only assessment of remaining registrations and available evidence. Missing
-historical state cannot be reconstructed from an empty registry.
+Recorded gaps remain if evidence arrives later. Completed checkpoints are not
+automatically re-attributed. `blame` recomputes matches but retains the saved
+capture status. Audit readiness does not report incomplete capture as ready.
 
-Concurrent-group deltas remain subject to the existing attribution rules. Settling
-a group does not establish exclusive authorship for any one member.
-The checkpoint window selects relevant groups; full persisted group membership
-is validated separately. A member completed before the previous checkpoint does
-not become a capture gap merely because it is outside the current window.
+Capture readiness covers registered tool windows, not every possible agent action.
+Legacy checkpoints without a capture record are assessed from surviving state.
+An empty registry cannot establish historical capture completeness.
+
+The checkpoint window selects relevant groups; validation checks their full
+persisted membership. Older members outside the window still require valid links.
+Settling a concurrent group does not establish exclusive authorship for a member.
 
 Registry windows have timestamps but no event cursors. Lower-boundary timestamp
 ties remain potentially relevant. A post-state captured in the same millisecond
-as the checkpoint cannot establish ordering and produces `post_state_order_unknown`.
-These conservative gaps avoid claiming complete capture from ambiguous ordering.
+as the checkpoint produces `post_state_order_unknown`. Timestamp ties can therefore
+cause conservative capture gaps even when evidence was collected.
 
 ## Diagnosing missing completion
 

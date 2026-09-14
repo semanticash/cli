@@ -9,8 +9,8 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 )
 
-// RunStandalone honors short capture retries without an external launcher.
-// Each Run releases the repository lock and checkpoint lease before waiting.
+// RunStandalone waits for short capture retries without a launcher.
+// It releases the repository lock and checkpoint lease before waiting.
 func (s *WorkerService) RunStandalone(ctx context.Context, in WorkerInput) error {
 	for {
 		if err := ctx.Err(); err != nil {

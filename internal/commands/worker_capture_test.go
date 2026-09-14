@@ -71,8 +71,7 @@ func TestWorkerRunFinishesScheduledCaptureWithoutLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Start from a durable retry left by another invocation. This exercises
-	// errors without an in-memory captureNotSettled cause.
+	// A persisted retry has no in-memory captureNotSettled cause.
 	deadline := time.Now().Add(200 * time.Millisecond).UnixMilli()
 	record, err := json.Marshal(map[string]any{
 		"version": 1, "checkpoint_id": "cp", "repository_id": "repo", "after": 0, "through": now,

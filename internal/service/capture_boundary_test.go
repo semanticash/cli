@@ -68,8 +68,7 @@ func TestCaptureEvidenceGroupSpansCheckpointBoundary(t *testing.T) {
 	if r.Result.Status != "complete" {
 		t.Fatalf("relevant B not settled: %+v", r.Result)
 	}
-	// The older member is outside the search window, but its link is still
-	// required to establish the integrity of the selected group.
+	// Older members still require links to validate the full group.
 	if _, err := h.DB.ExecContext(ctx, "delete from agent_event_evidence_links where event_id = 'a'"); err != nil {
 		t.Fatal(err)
 	}
