@@ -39,6 +39,32 @@ func TestMutationPathsDistinguishesReadOnlyAndMissingToolMetadata(t *testing.T) 
 	}
 }
 
+func TestPlanRoutesKeepsOrchestrationContext(t *testing.T) {
+	for _, name := range []string{"Agent", "task", "Subagent", "invoke_agent"} {
+		for _, metadata := range []string{"", `{"content_types":["tool_use"]}`, `{"content_types":["tool_use"],"tools":[{"name":"` + name + `","file_op":"exec"}]}`} {
+			ev := RawEvent{EventID: "boundary", ToolName: name, ToolUsesJSON: metadata, SourceProjectPath: "/work/a", TurnID: "parent-turn", ParentSessionID: "parent-session"}
+			matches, unresolved := PlanRoutes([]RawEvent{ev}, []RegisteredRepo{makeRepo("/work/a")})
+			if len(unresolved) != 0 || len(matches) != 1 || len(matches[0].Events) != 1 {
+				t.Fatalf("%s %s: matches=%+v unresolved=%+v", name, metadata, matches, unresolved)
+			}
+			got := matches[0].Events[0]
+			if matches[0].Repo.CanonicalPath != "/work/a" || got.TurnID != ev.TurnID || got.ParentSessionID != ev.ParentSessionID || got.ToolUsesJSON != ev.ToolUsesJSON {
+				t.Fatalf("lost boundary context: %+v", got)
+			}
+		}
+	}
+	for _, metadata := range []string{
+		`{"content_types":["provider_file_edit"]}`,
+		`{"tools":[{"name":"Agent","file_op":"exec"},{"name":"Bash","file_op":"exec"}]}`,
+		`{"tools":[{"name":"FutureOrchestrator","file_op":"exec"}]}`,
+	} {
+		ev := RawEvent{EventID: "mixed", ToolName: "Agent", ToolUsesJSON: metadata, SourceProjectPath: "/work/a"}
+		if matches, unresolved := PlanRoutes([]RawEvent{ev}, []RegisteredRepo{makeRepo("/work/a")}); len(matches) != 0 || len(unresolved) != 1 {
+			t.Fatalf("unknown mutation bypassed: %+v %+v", matches, unresolved)
+		}
+	}
+}
+
 func TestPlanRoutesDoesNotAssignMutationsByCWD(t *testing.T) {
 	repos := []RegisteredRepo{makeRepo("/work/a"), makeRepo("/work/b"), makeRepo("/work/b/nested")}
 	for _, tc := range []struct {

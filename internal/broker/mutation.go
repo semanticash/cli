@@ -8,8 +8,21 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// mutationTool treats unknown tools conservatively. Read-only tools remain context.
+// orchestrationTool recognizes delegation boundaries, not the delegated edits.
+func orchestrationTool(name string) bool {
+	switch strings.ToLower(name) {
+	case "agent", "task", "subagent", "invoke_agent":
+		return true
+	default:
+		return false
+	}
+}
+
+// mutationTool keeps known context tools separate from possible mutations.
 func mutationTool(name, operation string) bool {
+	if orchestrationTool(name) {
+		return false
+	}
 	switch strings.ToLower(operation) {
 	case "write", "edit", "delete", "rename", "create", "exec":
 		return true
@@ -78,7 +91,7 @@ func MutationPaths(ev RawEvent) (mutation bool, paths []string, missing bool) {
 	if !mutation {
 		if len(p.Tools) == 0 {
 			for _, kind := range p.ContentTypes {
-				if kind == "tool_use" || strings.HasSuffix(kind, "file_edit") {
+				if (kind == "tool_use" && !orchestrationTool(ev.ToolName)) || strings.HasSuffix(kind, "file_edit") {
 					mutation, missing = true, true
 				}
 			}

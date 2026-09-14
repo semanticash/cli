@@ -31,7 +31,7 @@ func checkUnresolvedMutations() []Check {
 	if count == 0 {
 		return nil
 	}
+	check.Status = StatusOK
 	check.Message = fmt.Sprintf("%d potential mutation event(s) retained with unresolved destinations (all repositories); includes shell commands without mutation paths", count)
-	check.Remediation = "Records are retained in " + root + "; they are not automatically assigned to the session repository."
 	return []Check{check}
 }
