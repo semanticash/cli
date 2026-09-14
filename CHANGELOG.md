@@ -17,10 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `semantica explain` now shows session models and distinguishes unavailable
   token usage from measured zero. `semantica blame` shows the agents and models
   represented in its attribution evidence.
+- Events with unresolved mutation destinations and their referenced evidence
+  are retained locally before transcript offsets advance. `semantica doctor`
+  reports the global retained count, including shell commands without mutation
+  paths. Records are not automatically routed or deleted.
 
 ### Fixed
 
 - Claude Code turn usage now remains complete when cache-token counts are zero.
+- Mutation routing no longer uses the session directory as an ownership fallback.
+  Tool-window context copies cannot supply raw line, deletion, or file-touch
+  attribution; verified deltas remain separate evidence. Provenance bundles
+  preserve the context-only label. No additional repositories are scanned.
+- Codex relative Write/Edit paths are normalized against the provider's working
+  directory before routing.
 
 ## [0.7.1] - 2026-08-28
 

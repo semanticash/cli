@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	"github.com/semanticash/cli/internal/doctor"
 	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
@@ -217,6 +218,9 @@ func filterIgnoredSteps(ctx context.Context, repoPath string, steps []sqldb.List
 	stepPrimary := make([]string, len(steps))
 
 	for i, s := range steps {
+		if attrevents.ContextOnly(s.ToolUses.String) {
+			continue
+		}
 		if s.ToolUses.Valid && s.ToolUses.String != "" {
 			paths := extractRepoRelativeFilePaths(s.ToolUses.String, repoPath)
 			stepPaths[i] = paths
@@ -375,6 +379,9 @@ func buildProvenanceBundleFromFiltered(
 			EventID: s.EventID,
 			Ts:      s.Ts,
 		}
+		if attrevents.ContextOnly(s.ToolUses.String) {
+			step.MutationRouting = "context_only"
+		}
 		if s.ToolName.Valid {
 			step.ToolName = s.ToolName.String
 		}
@@ -481,12 +488,13 @@ type bundlePrompt struct {
 }
 
 type bundleStep struct {
-	EventID        string `json:"event_id"`
-	Ts             int64  `json:"ts"`
-	ToolName       string `json:"tool_name,omitempty"`
-	ToolUseID      string `json:"tool_use_id,omitempty"`
-	ProvenanceHash string `json:"provenance_hash,omitempty"`
-	PayloadHash    string `json:"payload_hash,omitempty"`
+	MutationRouting string `json:"mutation_routing,omitempty"`
+	EventID         string `json:"event_id"`
+	Ts              int64  `json:"ts"`
+	ToolName        string `json:"tool_name,omitempty"`
+	ToolUseID       string `json:"tool_use_id,omitempty"`
+	ProvenanceHash  string `json:"provenance_hash,omitempty"`
+	PayloadHash     string `json:"payload_hash,omitempty"`
 	// DeltaHash is the local CAS hash for an unambiguous tool delta. Sync replaces
 	// it with the redacted upload hash.
 	DeltaHash string   `json:"delta_hash,omitempty"`

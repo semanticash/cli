@@ -325,8 +325,14 @@ The broker is a cross-repo event routing layer used by the `capture` command. It
 When an AI provider hook fires (e.g., Claude Code's `user-prompt-submit`), the capture command:
 
 1. Reads the event payload from stdin
-2. Looks up which registered repo(s) contain the affected files (deepest-match rule)
-3. Routes the event to the matching repo database or databases
+2. Resolves structured mutation paths against active repositories (deepest-match rule)
+3. Retains events with unresolved mutation destinations and their required objects globally
+4. Writes resolved events to their matching repository databases; non-mutation context may follow its session directory
+
+Transcript offsets advance only after unresolved retention succeeds. Raw events stored
+alongside tool-window observations are marked as context when their mutation paths do
+not establish ownership. Verified deltas remain separate evidence. See
+[Unresolved mutation routing](unresolved-mutation-routing.md).
 
 This allows Semantica to capture AI activity even when the provider's hook system doesn't know about the repo structure. In practice, a hook fired from one workspace can still route events into another Semantica-enabled repo if that repo owns the touched paths.
 

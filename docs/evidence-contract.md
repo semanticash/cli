@@ -70,6 +70,12 @@ turn completion, each repository with recorded events receives its own turn
 bundle. Available prompt and response objects are propagated from the session
 repository.
 
+Raw events with unresolved mutation paths carry `mutation_routing: context_only`
+when stored alongside a tool-window observation. They cannot supply line, deletion,
+or file-touch attribution. Independently verified deltas remain eligible under the
+existing scoring rules. See [Unresolved mutation routing](unresolved-mutation-routing.md)
+for retention and export semantics.
+
 ## Per-file evidence: primary vs all
 
 Each file reports:

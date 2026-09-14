@@ -127,6 +127,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	checks = append(checks, checkCommitReceipts(opts)...)
 	checks = append(checks, checkUnownedCaptureStates(ctx)...)
 	checks = append(checks, checkToolWindows(ctx, opts)...)
+	checks = append(checks, checkUnresolvedMutations()...)
 
 	return assemble(checks), nil
 }

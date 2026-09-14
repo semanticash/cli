@@ -38,6 +38,9 @@ type eventEdits struct {
 func projectEvents(in DetectInput) []eventEdits {
 	out := make([]eventEdits, 0, len(in.Events))
 	for _, ev := range in.Events {
+		if events.ContextOnly(ev.ToolUses) {
+			continue
+		}
 		e := eventEdits{
 			ev:      ev,
 			edits:   make(map[string]*fileEdit),

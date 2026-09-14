@@ -8,22 +8,8 @@ import (
 	"github.com/semanticash/cli/internal/platform"
 )
 
-// RouteEvents matches raw events to registered repos by file path containment.
-//
-// Correctness rule: an event belongs to a repo if it touched one or more file
-// paths under that repo's canonical root.
-//
-// No-path fallback: events without file paths are not routed by this function.
-// The caller must handle the fallback (e.g., route to the source repo when the
-// provider session path matches a registered repo).
-//
-// Deepest-match rule: each file path routes to the deepest (longest canonical
-// path) matching repo. This prevents nested repos from leaking events to
-// parent repos. An event that touches files in multiple repos (at different
-// nesting levels) routes to each deepest match once.
-//
-// Disabled repo rule: only active repos in the input slice are considered.
-// The caller should pass ListActiveRepos output.
+// RouteEvents associates absolute paths with the deepest active repository.
+// Events spanning repositories are routed to each match once.
 func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 	if len(events) == 0 || len(repos) == 0 {
 		return nil
@@ -34,13 +20,16 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 		repo   RegisteredRepo
 		prefix string // canonical_path + "/"
 	}
-	entries := make([]repoEntry, len(repos))
-	for i, r := range repos {
+	var entries []repoEntry
+	for _, r := range repos {
+		if !r.Active {
+			continue
+		}
 		p := platform.NormalizePathForCompare(r.CanonicalPath)
 		if !strings.HasSuffix(p, "/") {
 			p += "/"
 		}
-		entries[i] = repoEntry{repo: r, prefix: p}
+		entries = append(entries, repoEntry{repo: r, prefix: p})
 	}
 
 	// Accumulate events per repo.
@@ -48,13 +37,16 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 
 	for _, ev := range events {
 		if len(ev.FilePaths) == 0 {
-			continue // no file paths - caller handles fallback
+			continue
 		}
 
 		// For each file path, find the deepest (longest prefix) matching repo.
 		// Collect unique repos per event to avoid duplicates.
 		repoSet := make(map[string]bool)
 		for _, fp := range ev.FilePaths {
+			if !platform.LooksAbsolutePath(fp) {
+				continue
+			}
 			cleaned := platform.NormalizePathForCompare(fp)
 			var bestCP string
 			var bestLen int
@@ -89,15 +81,20 @@ func RouteEvents(events []RawEvent, repos []RegisteredRepo) []RepoMatch {
 	return result
 }
 
-// RouteNoPathEvents handles events that have no file paths by matching them
-// to repos via the source's project path. This is a fallback heuristic for
-// non-file events (e.g., pure text conversations), not a strong cross-repo
-// routing rule.
-//
-// sourceProjectPath should be the provider-specific project path that the
-// session was launched from (e.g., the decoded Claude project directory).
+// RouteNoPathEvents associates non-mutation context with its session repository.
+// Mutation events require destination evidence and never use this fallback.
 func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectPath string) *RepoMatch {
 	if len(events) == 0 || sourceProjectPath == "" {
+		return nil
+	}
+	var contextEvents []RawEvent
+	for _, ev := range events {
+		mutation, _, _ := MutationPaths(ev)
+		if !mutation && len(ev.FilePaths) == 0 {
+			contextEvents = append(contextEvents, ev)
+		}
+	}
+	if len(contextEvents) == 0 {
 		return nil
 	}
 
@@ -109,6 +106,9 @@ func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectP
 	var bestRepo *RegisteredRepo
 	bestLen := 0
 	for i := range repos {
+		if !repos[i].Active {
+			continue
+		}
 		if PathBelongsToRepo(sourceProjectPath, repos[i].CanonicalPath) {
 			if len(repos[i].CanonicalPath) > bestLen {
 				bestRepo = &repos[i]
@@ -122,7 +122,7 @@ func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectP
 	}
 	return &RepoMatch{
 		Repo:   *bestRepo,
-		Events: events,
+		Events: contextEvents,
 	}
 }
 
