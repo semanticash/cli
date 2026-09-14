@@ -13,11 +13,20 @@ func checkUnresolvedMutations() []Check {
 	if err != nil {
 		return nil
 	}
-	entries, err := os.ReadDir(root)
+	info, err := os.Stat(root)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	check := Check{Category: "capture", ID: "unresolved_mutations", Status: StatusWarn}
+	if err != nil {
+		check.Message = "unresolved mutation archive inaccessible: " + err.Error()
+		return []Check{check}
+	}
+	if !info.IsDir() {
+		check.Message = "unresolved mutation archive is not a directory: " + root
+		return []Check{check}
+	}
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		check.Message = "unresolved mutation records unreadable: " + err.Error()
 		return []Check{check}

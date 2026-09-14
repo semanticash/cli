@@ -45,4 +45,22 @@ func TestUnresolvedMutationsUnreadableArchiveWarns(t *testing.T) {
 	if len(checks) != 1 || checks[0].Status != StatusWarn || assemble(checks).ExitCode() != 1 {
 		t.Fatalf("unreadable archive not reported: %+v", checks)
 	}
+	if !strings.Contains(checks[0].Message, "not a directory") {
+		t.Fatalf("archive type not diagnosed: %+v", checks)
+	}
+}
+
+func TestUnresolvedMutationsEmptyDirectoryIsHealthy(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	root, err := broker.UnresolvedMutationDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	checks := checkUnresolvedMutations()
+	if len(checks) != 0 || assemble(checks).ExitCode() != 0 {
+		t.Fatalf("empty archive is not healthy: %+v", checks)
+	}
 }
