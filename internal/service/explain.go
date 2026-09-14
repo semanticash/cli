@@ -245,18 +245,20 @@ func (s *ExplainService) Explain(ctx context.Context, in ExplainInput) (*Explain
 	// Derive header totals from attribution (non-blank lines only).
 	var totalAdded, totalDeleted int
 	filesWithAI := 0
+	filesUnattributed := 0
 	for _, f := range blame.Files {
 		totalAdded += f.TotalLines
 		totalDeleted += f.DeletedNonBlank
 		if f.AIExactLines+f.AIFormattedLines+f.AIModifiedLines > 0 {
 			filesWithAI++
 		}
+		if f.UnattributedLines > 0 {
+			filesUnattributed++
+		}
 	}
 	filesChanged := len(blame.Files)
 	filesHumanOnly := filesChanged - filesWithAI
-	filesUnattributed := 0
 	if blame.Capture != nil && blame.Capture.Status != "complete" {
-		filesUnattributed = filesHumanOnly
 		filesHumanOnly = 0
 	}
 

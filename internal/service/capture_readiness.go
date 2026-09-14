@@ -117,21 +117,22 @@ func freezeCheckpointCapture(cp sqldb.Checkpoint, win eventWindow, snap toolsnap
 		if w.Key.RepositoryID != cp.RepositoryID || w.StartedAt > r.Through {
 			continue
 		}
-		if w.Status == "complete" && w.CompletedAt <= r.After {
+		// Registry timestamps cannot resolve event-cursor ties.
+		if w.Status == "complete" && w.CompletedAt < r.After {
 			continue
 		}
 		r.Members = append(r.Members, captureMember{Key: w.Key, GroupID: w.GroupID})
 	}
-	// Tombstones lack a start timestamp. Records created after the lower
+	// Tombstones lack a start timestamp. Records created at or after the lower
 	// boundary conservatively remain gaps, including recovery after the commit.
 	for _, t := range snap.Tombstones {
-		if t.Key.RepositoryID == cp.RepositoryID && t.At > r.After {
+		if t.Key.RepositoryID == cp.RepositoryID && t.At >= r.After {
 			key := t.Key
 			r.FixedGaps = append(r.FixedGaps, CaptureGap{Key: &key, Reason: "completion_missing"})
 		}
 	}
 	for _, p := range snap.Partials {
-		if p.Key.RepositoryID == cp.RepositoryID && p.Timestamp > r.After && p.Timestamp <= r.Through {
+		if p.Key.RepositoryID == cp.RepositoryID && p.Timestamp >= r.After && p.Timestamp <= r.Through {
 			key := p.Key
 			r.FixedGaps = append(r.FixedGaps, CaptureGap{Key: &key, Reason: p.Reason})
 		}
@@ -205,6 +206,9 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 			reason = d.Reason
 		case d.Window.CompletedAt > cp.CreatedAt:
 			reason = "post_state_after_checkpoint"
+		case d.Window.CompletedAt == cp.CreatedAt:
+			// The post-state has no cursor to establish ordering within this millisecond.
+			reason = "post_state_order_unknown"
 		case d.Limits.Truncated:
 			reason = "evidence_truncated"
 		}

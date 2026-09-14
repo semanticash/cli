@@ -387,3 +387,43 @@ func TestExplain_NoCheckpoint(t *testing.T) {
 		t.Errorf("unexpected error: %v; expected 'not a known commit or checkpoint'", err)
 	}
 }
+
+func TestExplainCountsMixedUnattributedFiles(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	t.Setenv("SEMANTICA_ATTRIBUTION_V2", "1")
+	w := newCommitWorld(t)
+	ctx := context.Background()
+	var unchanged strings.Builder
+	for i := range 12 {
+		fmt.Fprintf(&unchanged, "unchanged context %d\n", i)
+	}
+	w.write(t, "mixed.txt", unchanged.String())
+	w.git("add", "mixed.txt")
+	w.git("commit", "-m", "base")
+	insertCommitCheckpoint(t, w.h, w.repoID, w.git("rev-parse", "HEAD"), 50)
+	// Separate hunks avoid promoting adjacent lines through group matching.
+	w.write(t, "mixed.txt", "matched agent content\n"+unchanged.String()+"unknown authorship\n")
+	w.git("add", "mixed.txt")
+	w.git("commit", "-m", "mixed evidence")
+	sha := w.git("rev-parse", "HEAD")
+	src := insertProviderSource(t, w.h, w.repoID, "/session", "codex")
+	session := insertSessionWithProvider(t, w.h, w.repoID, src, "session", "codex")
+	insertDirectWriteEvent(t, w.h, w.bs, w.repoID, w.dir, session, "mixed.txt", "matched agent content\n", 100)
+	cpID := insertCommitCheckpoint(t, w.h, w.repoID, sha, 200)
+	if err := saveCheckpointCapture(ctx, w.h, &checkpointCapture{
+		Version: 1, CheckpointID: cpID, RepositoryID: w.repoID, Through: 200, Deadline: 300,
+		Result: CaptureReadiness{Status: "incomplete", Gaps: []CaptureGap{{Reason: "completion_missing"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewExplainService().Explain(ctx, ExplainInput{RepoPath: w.dir, Ref: sha})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AILines != 1 || res.UnattributedLines != 1 || res.HumanLines != 0 {
+		t.Fatalf("fixture did not produce mixed attribution: %+v", res)
+	}
+	if res.FilesChanged != 1 || res.FilesWithAI != 1 || res.FilesUnattributed != 1 || res.FilesHumanOnly != 0 {
+		t.Fatalf("mixed file omitted from unattributed count: %+v", res)
+	}
+}

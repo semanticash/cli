@@ -37,6 +37,7 @@ Return a JSON object with this exact structure:
 Guidelines:
 - The title should be a concise, descriptive label - not a full sentence
 - Be concise but specific
+- When capture is incomplete, unattributed lines have unknown authorship; do not describe them as human-written or AI-written
 - If the transcript is empty, infer intent and outcome from the diff and stats alone
 - Friction should capture both blockers and minor annoyances
 - Open items are things intentionally deferred, not failures

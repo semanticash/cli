@@ -50,6 +50,11 @@ The checkpoint window selects relevant groups; full persisted group membership
 is validated separately. A member completed before the previous checkpoint does
 not become a capture gap merely because it is outside the current window.
 
+Registry windows have timestamps but no event cursors. Lower-boundary timestamp
+ties remain potentially relevant. A post-state captured in the same millisecond
+as the checkpoint cannot establish ordering and produces `post_state_order_unknown`.
+These conservative gaps avoid claiming complete capture from ambiguous ordering.
+
 ## Diagnosing missing completion
 
 Set `SEMANTICA_CAPTURE_TRACE=1` in the environment inherited by capture hooks.
