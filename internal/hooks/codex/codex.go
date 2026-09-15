@@ -78,16 +78,17 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 
 	// Lifecycle assigns the active Semantica turn.
 	event := &hooks.Event{
-		SessionID:     string(payload.SessionID),
-		TranscriptRef: string(payload.TranscriptPath),
-		Prompt:        string(payload.Prompt),
-		Model:         string(payload.Model),
-		Timestamp:     time.Now().UnixMilli(),
-		CWD:           payload.CWD,
-		ToolName:      payload.ToolName,
-		ToolInput:     payload.ToolInput,
-		ToolResponse:  payload.ToolResponse,
-		ToolUseID:     string(payload.ToolUseID),
+		SessionID:      string(payload.SessionID),
+		TranscriptRef:  string(payload.TranscriptPath),
+		Prompt:         string(payload.Prompt),
+		Model:          string(payload.Model),
+		Timestamp:      time.Now().UnixMilli(),
+		CWD:            payload.CWD,
+		ToolName:       payload.ToolName,
+		ToolInput:      payload.ToolInput,
+		ToolResponse:   payload.ToolResponse,
+		ToolUseID:      string(payload.ToolUseID),
+		ProviderTurnID: string(payload.TurnID),
 	}
 
 	switch hookName {
@@ -166,8 +167,7 @@ func stringField(data []byte, key string) (string, bool) {
 // string types tolerate scalar values where Codex varies its payload types.
 type codexHookPayload struct {
 	SessionID flexString `json:"session_id"`
-	// TurnID is accepted for compatibility but ignored; lifecycle uses the
-	// turn stored in capture state.
+	// Provider identity is retained separately from Semantica's turn ID.
 	TurnID               looseString     `json:"turn_id"`
 	TranscriptPath       pathString      `json:"transcript_path"`
 	CWD                  string          `json:"cwd"`

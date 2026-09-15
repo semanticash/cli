@@ -269,6 +269,46 @@ packaging and sync read prompts, responses, step payloads, deltas, and bundles
 from the same store. The CAS therefore remains part of the evidence pipeline
 independently of lineage restore functionality.
 
+### Local turn observations
+
+`SEMANTICA_TURN_CAPTURE=1` enables turn-boundary observation for Codex and Claude
+Code. It is off by default. The hook processes must inherit this environment
+variable. No additional per-tool snapshots are taken by this feature.
+
+At prompt submission, active registered repositories are frozen into one set.
+Their identities and baselines are captured in parallel, with at most eight
+concurrent repositories and a shared five-second hook budget. The hook waits
+for all baseline attempts before returning. Stop captures the same set, even
+when provider-tracked completion is unknown. Each repository reports `changed`,
+`unchanged`, or `unknown`; these describe supported state changes, not authorship.
+Commits reachable along a linear continuation of the starting HEAD are retained
+as intermediate boundaries. Rewrites and merges produce an explicit gap; commits
+made unreachable before observation and uncommitted edits restored to baseline
+cannot be recovered from these boundaries.
+
+Records and private snapshot stores live under
+`$SEMANTICA_HOME/turn-observations` (normally `~/.semantica/turn-observations`).
+The start record is written before capture. The first end attempt freezes its
+provider evidence and `tracked_completion_at_end`: `settled`, `unsettled`, or
+`unknown`. Missing terminal evidence does not imply completion. `settled` only
+describes known, provider-tracked execution scopes and says nothing about hidden
+detached descendants. Later delivered evidence is appended separately and never
+rewrites the end observation. Interrupted capture remains unknown on retry.
+
+Codex provider turn and execution IDs are retained separately from Semantica IDs.
+Claude has no hook turn ID; identical prompt/transcript positions reuse the same
+baseline conservatively. Its `backgroundTaskId` and Stop task inventory are
+retained, but CLI-stream `task_notification` is not ingested by the hook adapter.
+An empty task inventory does not establish a previously launched task's terminal
+state. Missing inventory or terminal evidence remains unknown.
+
+The records have no attribution, routing, worker, or upload consumers. Disabling
+the gate prevents new baselines; existing records can still receive their end.
+Storage is local and currently has no automatic retention or reclamation policy.
+Snapshot stores reuse source Git objects through alternates; the stored deltas
+retain changed-file evidence, but the private stores are not independent archives
+of entire repositories. Boundary capture is not an atomic filesystem snapshot.
+
 ### Tool snapshot store (`tool-snapshots.git`)
 
 `internal/toolsnap` can represent a worktree as an ephemeral Git tree without

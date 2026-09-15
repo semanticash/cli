@@ -62,10 +62,12 @@ type Event struct {
 	CWD    string // session/launch working directory from hook payload
 	// EffectiveCWD selects the tool-window repository when a provider supplies
 	// a command-specific working directory. An empty value uses CWD.
-	EffectiveCWD string
-	ToolName     string          // Write, Edit, Bash, Agent, etc.
-	ToolInput    json.RawMessage // raw tool_input from hook payload
-	ToolResponse json.RawMessage // raw tool_response from hook payload
+	EffectiveCWD    string
+	ToolName        string          // Write, Edit, Bash, Agent, etc.
+	ToolInput       json.RawMessage // raw tool_input from hook payload
+	ToolResponse    json.RawMessage // raw tool_response from hook payload
+	ProviderTurnID  string          // provider turn ID, separate from TurnID
+	BackgroundTasks json.RawMessage // provider Stop inventory; nil means unavailable
 
 	// Response is hook-provided final assistant text. Nil means absent; an empty
 	// string means the provider returned an empty response.

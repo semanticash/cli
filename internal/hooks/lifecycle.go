@@ -87,6 +87,7 @@ func HookTimestampFromContext(ctx context.Context) int64 {
 
 // Dispatch routes a normalized hook event.
 func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store) error {
+	observeTurnCapture(ctx, provider.Name(), event)
 	if event.Type == ToolStepStarted || event.Type == ToolStepCompleted {
 		traceToolLifecycle("tool lifecycle received", "provider", provider.Name(), "session", event.SessionID,
 			"turn", event.TurnID, "tool_use", event.ToolUseID, "event_type", event.Type)
@@ -144,6 +145,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		if err := SaveCaptureState(newState); err != nil {
 			return err
 		}
+		beginTurnCapture(benchCtx, provider.Name(), event, bh, offset)
 
 		// Emit direct prompt event if the provider supports it.
 		if emitter, ok := provider.(DirectHookEmitter); ok {

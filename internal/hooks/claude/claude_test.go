@@ -408,6 +408,19 @@ func TestParseHookEvent_Stop(t *testing.T) {
 	}
 }
 
+func TestParseHookEvent_StopPreservesBackgroundInventory(t *testing.T) {
+	for _, inventory := range []string{`[]`, `[{"id":"task-1","status":"running","type":"shell"}]`} {
+		input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl","background_tasks":` + inventory + `}`
+		event, err := (&Provider{}).ParseHookEvent(context.Background(), "stop", strings.NewReader(input))
+		if err != nil || event == nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if string(event.BackgroundTasks) != inventory {
+			t.Fatalf("inventory lost: %s", event.BackgroundTasks)
+		}
+	}
+}
+
 func TestParseHookEvent_SessionStart(t *testing.T) {
 	p := &Provider{}
 	input := `{"session_id":"sess-123","transcript_path":"/claude-cfg/projects/enc/transcript.jsonl"}`

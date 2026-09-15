@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Opt-in local turn observations for Codex and Claude Code, enabled with
+  `SEMANTICA_TURN_CAPTURE=1`. Parallel snapshots retain cross-repository state
+  changes and reachable intermediate commits. Provider-tracked completion is
+  recorded separately; observations do not affect attribution or uploads.
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
 - Packaged turn provenance now preserves available provider-reported token
