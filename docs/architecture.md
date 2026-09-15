@@ -272,8 +272,9 @@ independently of lineage restore functionality.
 ### Local turn observations
 
 Turn-boundary observation runs automatically for Codex, Claude Code, Gemini CLI,
-and Copilot CLI through their installed hooks. No environment gate or additional
-per-tool snapshots are required. Other providers do not use this capture path.
+Copilot CLI, and Cursor IDE through their installed hooks. No environment gate
+or additional per-tool snapshots are required. Other providers do not use this
+capture path.
 
 At prompt submission, active registered repositories are frozen into one set.
 Their identities and baselines are captured in parallel, with at most eight
@@ -298,7 +299,7 @@ must succeed before the session's current turn is cleared. Late completion
 evidence uses its execution owner; new activity cannot attach to a completed turn.
 Interrupted capture remains unknown on retry.
 
-Codex provider turn and execution IDs are retained separately from Semantica IDs.
+Codex turn IDs and Cursor generation IDs are retained separately from Semantica IDs.
 Claude has no hook turn ID; identical prompt/transcript positions reuse the same
 baseline conservatively. Completion evidence stores only kinds, execution/task
 IDs, statuses, and timestamps. Bash responses and raw task inventories are not
@@ -319,6 +320,12 @@ establish that all work has finished.
 Copilot CLI uses `userPromptSubmitted` and `agentStop` as turn boundaries. Its
 current adapter also lacks paired shell-start and terminal IDs, so tracked
 completion remains unknown without sufficient execution evidence.
+
+Cursor IDE uses `beforeSubmitPrompt` and `stop`, paired by `generation_id`.
+A prompt without that ID does not start an observation. Paired shell execution
+IDs can establish provider-tracked completion; `stop` alone cannot. Cursor IDE
+and CLI share an adapter, but CLI lifecycle coverage is not validated. Tool or
+session events do not substitute for a missing prompt boundary.
 
 The records have no attribution, routing, worker, or upload consumers. Snapshot
 failures produce unknown observations without interrupting the provider flow.

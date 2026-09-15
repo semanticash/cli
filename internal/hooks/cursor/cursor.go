@@ -272,12 +272,13 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	}
 
 	event := &hooks.Event{
-		SessionID:     payload.ConversationID,
-		TranscriptRef: transcriptRef,
-		Prompt:        payload.Prompt,
-		Model:         cursorModel(payload),
-		Timestamp:     time.Now().UnixMilli(),
-		CWD:           cwd,
+		SessionID:      payload.ConversationID,
+		ProviderTurnID: payload.GenerationID,
+		TranscriptRef:  transcriptRef,
+		Prompt:         payload.Prompt,
+		Model:          cursorModel(payload),
+		Timestamp:      time.Now().UnixMilli(),
+		CWD:            cwd,
 	}
 
 	switch hookName {

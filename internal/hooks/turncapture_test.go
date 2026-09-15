@@ -40,7 +40,7 @@ func observationRecords(t *testing.T, home string) []turncapture.Record {
 }
 
 func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot", "cursor"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -53,7 +53,7 @@ func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
 			defer func() { _ = broker.Close(b.bh) }()
 			prov := &fakeProvider{name: provider}
 			prompt := &Event{Type: PromptSubmitted, SessionID: "session", Prompt: "test", Timestamp: time.Now().UnixMilli(), CWD: a.repoPath}
-			if provider == "codex" {
+			if provider == "codex" || provider == "cursor" {
 				prompt.ProviderTurnID = "provider-turn"
 			}
 			if err := Dispatch(context.Background(), prov, prompt, b.bh, nil); err != nil {
@@ -112,7 +112,7 @@ func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
 }
 
 func TestTurnCaptureUnsupportedProviderDoesNotCreateStorage(t *testing.T) {
-	for _, provider := range []string{"cursor", "kiro-cli", "kiro-ide"} {
+	for _, provider := range []string{"kiro-cli", "kiro-ide"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -127,8 +127,43 @@ func TestTurnCaptureUnsupportedProviderDoesNotCreateStorage(t *testing.T) {
 	}
 }
 
+func TestCursorTurnCaptureRequiresPromptGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	world := newToolWindowWorld(t, home, "repo")
+	defer func() { _ = broker.Close(world.bh) }()
+	prov := &fakeProvider{name: "cursor"}
+	for _, event := range []*Event{
+		{Type: PromptSubmitted, SessionID: "s", Prompt: "missing generation", CWD: world.repoPath},
+		{Type: ToolStepStarted, SessionID: "s", ProviderTurnID: "unstarted", ToolUseID: "shell", ToolName: "Bash"},
+		{Type: ToolStepCompleted, SessionID: "s", ProviderTurnID: "unstarted", ToolUseID: "shell", ToolName: "Bash"},
+		{Type: AgentCompleted, SessionID: "s", ProviderTurnID: "unstarted"},
+	} {
+		if err := Dispatch(context.Background(), prov, event, world.bh, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "turn-observations")); !os.IsNotExist(err) {
+		t.Fatal("Cursor created turn storage without a prompt generation")
+	}
+}
+
+func TestCursorTurnEvidencePairsShellExecution(t *testing.T) {
+	start, _ := turnEvidence("cursor", &Event{Type: ToolStepStarted, ToolName: "Bash", ToolUseID: "shell"})
+	post, _ := turnEvidence("cursor", &Event{Type: ToolStepCompleted, ToolName: "Bash", ToolUseID: "shell"})
+	stop, _ := turnEvidence("cursor", &Event{Type: AgentCompleted})
+	if state, _ := turncapture.Completion(append(append(start, post...), stop...)); state != "settled" {
+		t.Fatalf("paired shell completion: %s", state)
+	}
+	if state, _ := turncapture.Completion(append(start, stop...)); state != "unknown" {
+		t.Fatalf("missing terminal evidence: %s", state)
+	}
+}
+
 func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot", "cursor"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -140,7 +175,7 @@ func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
 			gitIn(t, world.repoPath, "update-index", "--assume-unchanged", "a.txt")
 			p := &fakeProvider{name: provider}
 			for _, kind := range []EventType{PromptSubmitted, AgentCompleted} {
-				if err := Dispatch(context.Background(), p, &Event{Type: kind, SessionID: "s", CWD: world.repoPath}, world.bh, nil); err != nil {
+				if err := Dispatch(context.Background(), p, &Event{Type: kind, SessionID: "s", ProviderTurnID: "turn", CWD: world.repoPath}, world.bh, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -156,7 +191,7 @@ func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
 }
 
 func TestUnpairedShellCompletionRemainsUnknown(t *testing.T) {
-	for _, provider := range []string{"gemini-cli", "copilot"} {
+	for _, provider := range []string{"gemini-cli", "copilot", "cursor"} {
 		t.Run(provider, func(t *testing.T) {
 			evidence, stop := turnEvidence(provider, &Event{Type: ToolStepCompleted, ToolName: "Bash", ToolUseID: "step-1"})
 			if stop || len(evidence) != 1 || evidence[0].Kind != "execution_terminal" {
@@ -348,7 +383,7 @@ func assertNoTurnSecret(t *testing.T, root, secret string) {
 }
 
 func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot", "cursor"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -357,7 +392,7 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			world := newToolWindowWorld(t, home, "repo")
 			defer func() { _ = broker.Close(world.bh) }()
-			beginTurnCapture(context.Background(), provider, &Event{SessionID: "s", TurnID: "t", Prompt: "test"}, world.bh, 0)
+			beginTurnCapture(context.Background(), provider, &Event{SessionID: "s", TurnID: "t", ProviderTurnID: "t", Prompt: "test"}, world.bh, 0)
 			root := filepath.Join(home, "turn-observations")
 			secret := "FAKE_BASH_SECRET_MUST_NOT_PERSIST"
 			responses := []json.RawMessage{
@@ -384,7 +419,7 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 }
 
 func TestTurnCaptureOwnershipIgnoresRetiredGate(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot", "cursor"} {
 		for _, secondEnabled := range []string{"0", "1"} {
 			t.Run(provider+"/second_enabled_"+secondEnabled, func(t *testing.T) {
 				home := t.TempDir()
@@ -397,7 +432,7 @@ func TestTurnCaptureOwnershipIgnoresRetiredGate(t *testing.T) {
 				prov := &fakeProvider{name: provider}
 				runTurn := func(n int) {
 					prompt := &Event{Type: PromptSubmitted, SessionID: "s", Prompt: string(rune('0' + n)), CWD: world.repoPath}
-					if provider == "codex" {
+					if provider == "codex" || provider == "cursor" {
 						prompt.ProviderTurnID = prompt.Prompt
 					}
 					if err := Dispatch(context.Background(), prov, prompt, world.bh, nil); err != nil {

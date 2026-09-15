@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Automatic local turn observations for Codex, Claude Code, Gemini CLI, and
-  Copilot CLI through installed hooks. Parallel snapshots retain cross-repository
-  state changes and reachable intermediate commits. Provider-tracked completion is
+- Automatic local turn observations for Codex, Claude Code, Gemini CLI,
+  Copilot CLI, and Cursor IDE through installed hooks. Parallel snapshots retain
+  cross-repository state changes and reachable intermediate commits. Provider-tracked completion is
   recorded separately; observations do not affect attribution or uploads.
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Failed turn snapshot cleanup retains the session cursor for retry on completion
   events or the next prompt, including for Claude turns without provider turn IDs.
+- Cursor turn observations retain the provider generation ID to pair prompt and
+  stop boundaries. Prompts without a generation ID do not start an observation.
 - Claude Bash completion remains terminal when task metadata is missing or
   malformed. Metadata gaps remain separate from execution completion.
 - Turn completion evidence no longer stores raw Bash output. Finished turns
