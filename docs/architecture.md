@@ -293,9 +293,10 @@ provider evidence and `tracked_completion_at_end`: `settled`, `unsettled`, or
 `unknown`. Missing terminal evidence does not imply completion. `settled` only
 describes known, provider-tracked execution scopes and says nothing about hidden
 detached descendants. Later delivered evidence is appended separately and never
-rewrites the end observation. A saved, completed End clears the session's current
-turn. Late completion evidence uses its execution owner; new activity cannot
-attach to a completed turn. Interrupted capture remains unknown on retry.
+rewrites the end observation. After a completed End is saved, snapshot cleanup
+must succeed before the session's current turn is cleared. Late completion
+evidence uses its execution owner; new activity cannot attach to a completed turn.
+Interrupted capture remains unknown on retry.
 
 Codex provider turn and execution IDs are retained separately from Semantica IDs.
 Claude has no hook turn ID; identical prompt/transcript positions reuse the same
@@ -312,10 +313,11 @@ state. Missing inventory or terminal evidence remains unknown.
 The records have no attribution, routing, worker, or upload consumers. Snapshot
 failures produce unknown observations without interrupting the provider flow.
 After the complete End record is durably saved, temporary Git snapshot stores
-are deleted, including when tracked completion is unknown. An interrupted End
-save retains the stores. Durable records keep baseline identities, commit deltas,
-repository observations, and completion evidence; they have no automatic retention
-policy. Boundary capture is not an atomic filesystem snapshot.
+are deleted, including when tracked completion is unknown. Cleanup failures retain
+the current turn for retry. An interrupted End save retains the stores. Durable
+records keep baseline identities, commit deltas, repository observations, and
+completion evidence; they have no automatic retention policy. Boundary capture
+is not an atomic filesystem snapshot.
 
 ### Tool snapshot store (`tool-snapshots.git`)
 

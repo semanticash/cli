@@ -71,8 +71,9 @@ type session struct {
 }
 
 type Recorder struct {
-	Root     string
-	writeEnd func(string, Record) error
+	Root         string
+	writeEnd     func(string, Record) error
+	removeStores func(string) error
 }
 
 func identity(s string) string {
@@ -156,7 +157,7 @@ func (r Recorder) Begin(ctx context.Context, provider, sessionID, turnID, provid
 				return fmt.Errorf("turn record identity mismatch")
 			}
 			if old.End != nil {
-				return finishTurn(dir, key, s, old)
+				return r.finishTurn(dir, key, s, old)
 			}
 			// Restore the cursor if saving it was interrupted.
 			var current Record
@@ -223,10 +224,20 @@ func recordKey(s string) bool {
 	return err == nil && len(b) == sha256.Size
 }
 
-// finishTurn clears the active turn and deletes stores after End is durable.
-func finishTurn(dir, key string, s *session, rec Record) error {
+// finishTurn deletes stores after End is durable, then clears the active turn.
+func (r Recorder) finishTurn(dir, key string, s *session, rec Record) error {
 	if rec.End == nil || rec.End.FinishedAt.IsZero() {
 		return nil
+	}
+	remove := r.removeStores
+	if remove == nil {
+		remove = os.RemoveAll
+	}
+	if err := remove(filepath.Join(dir, key)); err != nil {
+		return err
+	}
+	if err := platform.SyncDir(dir); err != nil {
+		return err
 	}
 	if s.Current == key {
 		s.Current = ""
@@ -234,10 +245,7 @@ func finishTurn(dir, key string, s *session, rec Record) error {
 			return err
 		}
 	}
-	if err := os.RemoveAll(filepath.Join(dir, key)); err != nil {
-		return err
-	}
-	return platform.SyncDir(dir)
+	return nil
 }
 
 func completionEvidence(e Evidence) bool {
@@ -309,7 +317,7 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 			}
 			evidence = late
 			if len(evidence) == 0 {
-				return finishTurn(dir, key, s, rec)
+				return r.finishTurn(dir, key, s, rec)
 			}
 		}
 		for _, e := range evidence {
@@ -331,7 +339,7 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 			return err
 		}
 		if rec.End != nil {
-			return finishTurn(dir, key, s, rec)
+			return r.finishTurn(dir, key, s, rec)
 		}
 		if !stop {
 			return nil
@@ -402,7 +410,7 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		} else if err := save(path, rec); err != nil {
 			return err
 		}
-		return finishTurn(dir, key, s, rec)
+		return r.finishTurn(dir, key, s, rec)
 	})
 }
 

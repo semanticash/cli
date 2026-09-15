@@ -388,6 +388,72 @@ func TestFinishedTurnReleasesOwnershipAndStores(t *testing.T) {
 	}
 }
 
+func TestClaudeCleanupFailureRetainsCursorForRetry(t *testing.T) {
+	r, subjects := fixture(t)
+	ctx := context.Background()
+	if err := r.Begin(ctx, "claude-code", "session", "turn", "", "source:turn", subjects); err != nil {
+		t.Fatal(err)
+	}
+	write(t, subjects[1].Path, "changed\n")
+	dir := r.dir("claude-code", "session")
+	key := identity("source:turn")
+	path := filepath.Join(dir, key+".json")
+	stores := filepath.Join(dir, key)
+	failure := errors.New("snapshot cleanup failed")
+	r.removeStores = func(got string) error {
+		if got != stores {
+			t.Fatalf("cleanup path %q, want %q", got, stores)
+		}
+		var rec Record
+		if err := read(path, &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec.End == nil || rec.End.FinishedAt.IsZero() || rec.End.Repositories[1].State != "changed" {
+			t.Fatal("cleanup ran before the completed End was saved")
+		}
+		return failure
+	}
+	stop := []Evidence{{Kind: "stop", ReceivedAt: time.Now().UTC()}}
+	if err := r.Observe(ctx, "claude-code", "session", "", stop, true); !errors.Is(err, failure) {
+		t.Fatalf("got %v, want cleanup failure", err)
+	}
+	var s session
+	if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Current != key {
+		t.Fatal("cleanup failure lost the current turn")
+	}
+	if _, err := os.Stat(stores); err != nil {
+		t.Fatal("failed cleanup did not retain stores", err)
+	}
+	frozen, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claude retries through the saved cursor, without a provider turn ID.
+	r = Recorder{Root: r.Root}
+	if err := r.Observe(ctx, "claude-code", "session", "", stop, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stores); !os.IsNotExist(err) {
+		t.Fatalf("retry did not remove stores: %v", err)
+	}
+	if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Current != "" {
+		t.Fatal("successful cleanup retained the current turn")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(frozen) {
+		t.Fatal("cleanup retry changed the durable observation")
+	}
+}
+
 func TestFailedEndSaveRetainsSnapshotStores(t *testing.T) {
 	r, subjects := fixture(t)
 	start(t, r, subjects, "turn")
