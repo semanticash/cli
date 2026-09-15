@@ -314,7 +314,9 @@ The records have no attribution, routing, worker, or upload consumers. Snapshot
 failures produce unknown observations without interrupting the provider flow.
 After the complete End record is durably saved, temporary Git snapshot stores
 are deleted, including when tracked completion is unknown. Cleanup failures retain
-the current turn for retry. An interrupted End save retains the stores. Durable
+the current turn for retry. A new prompt retries cleanup of a completed current
+turn before replacing the cursor; cleanup failure leaves that cursor intact.
+An interrupted End save retains the stores. Durable
 records keep baseline identities, commit deltas, repository observations, and
 completion evidence; they have no automatic retention policy. Boundary capture
 is not an atomic filesystem snapshot.

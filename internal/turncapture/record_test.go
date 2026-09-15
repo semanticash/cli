@@ -454,6 +454,81 @@ func TestClaudeCleanupFailureRetainsCursorForRetry(t *testing.T) {
 	}
 }
 
+func TestClaudeNextPromptRetriesFinishedTurnCleanup(t *testing.T) {
+	r, subjects := fixture(t)
+	ctx := context.Background()
+	if err := r.Begin(ctx, "claude-code", "session", "turn-1", "", "source:1", subjects); err != nil {
+		t.Fatal(err)
+	}
+	dir := r.dir("claude-code", "session")
+	firstKey, nextKey := identity("source:1"), identity("source:2")
+	firstPath := filepath.Join(dir, firstKey+".json")
+	nextPath := filepath.Join(dir, nextKey+".json")
+	stores := filepath.Join(dir, firstKey)
+	failure := errors.New("snapshot cleanup failed")
+	attempts := 0
+	r.removeStores = func(path string) error {
+		attempts++
+		if path != stores {
+			t.Fatalf("cleanup path %q, want %q", path, stores)
+		}
+		return failure
+	}
+	if err := r.Observe(ctx, "claude-code", "session", "", []Evidence{{Kind: "stop", ReceivedAt: time.Now().UTC()}}, true); !errors.Is(err, failure) {
+		t.Fatalf("end: got %v, want cleanup failure", err)
+	}
+	frozen, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Begin(ctx, "claude-code", "session", "turn-2", "", "source:2", subjects); !errors.Is(err, failure) {
+		t.Fatalf("next prompt: got %v, want cleanup failure", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("cleanup attempts %d, want 2", attempts)
+	}
+	var s session
+	if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Current != firstKey {
+		t.Fatal("next prompt replaced the cursor before cleanup succeeded")
+	}
+	if _, err := os.Stat(nextPath); !os.IsNotExist(err) {
+		t.Fatalf("next prompt created a turn before cleanup succeeded: %v", err)
+	}
+	if _, err := os.Stat(stores); err != nil {
+		t.Fatal("failed cleanup did not retain stores", err)
+	}
+	r = Recorder{Root: r.Root}
+	if err := r.Begin(ctx, "claude-code", "session", "turn-2", "", "source:2", subjects); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stores); !os.IsNotExist(err) {
+		t.Fatalf("next prompt did not remove old stores: %v", err)
+	}
+	if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Current != nextKey {
+		t.Fatal("successful cleanup did not allow the next turn")
+	}
+	var next Record
+	if err := read(nextPath, &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.BaselineFinishedAt.IsZero() || next.End != nil {
+		t.Fatal("next turn did not capture its baseline")
+	}
+	after, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(frozen) {
+		t.Fatal("next prompt changed the completed turn")
+	}
+}
+
 func TestFailedEndSaveRetainsSnapshotStores(t *testing.T) {
 	r, subjects := fixture(t)
 	start(t, r, subjects, "turn")

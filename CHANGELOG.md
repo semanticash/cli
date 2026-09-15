@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Failed turn snapshot cleanup retains the session cursor so a later completion
-  event can retry, including for Claude turns without provider turn IDs.
+- Failed turn snapshot cleanup retains the session cursor for retry on completion
+  events or the next prompt, including for Claude turns without provider turn IDs.
 - Claude Bash completion remains terminal when task metadata is missing or
   malformed. Metadata gaps remain separate from execution completion.
 - Turn completion evidence no longer stores raw Bash output. Finished turns

@@ -150,6 +150,20 @@ func (r Recorder) Begin(ctx context.Context, provider, sessionID, turnID, provid
 	}
 	return r.locked(ctx, provider, sessionID, func(dir string, s *session) error {
 		key := identity(boundaryKey)
+		if s.Current != "" && s.Current != key {
+			var current Record
+			if err := read(filepath.Join(dir, s.Current+".json"), &current); err != nil {
+				return err
+			}
+			if current.Version != 1 || current.Provider != provider || current.SessionID != sessionID || identity(current.BoundaryKey) != s.Current {
+				return fmt.Errorf("turn record identity mismatch")
+			}
+			if current.End != nil && !current.End.FinishedAt.IsZero() {
+				if err := r.finishTurn(dir, s.Current, s, current); err != nil {
+					return err
+				}
+			}
+		}
 		path := filepath.Join(dir, key+".json")
 		var old Record
 		if err := read(path, &old); err == nil {
