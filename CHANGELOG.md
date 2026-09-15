@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Existing databases now receive the missing evidence-group index, speeding up
+  capture validation in `semantica blame` for historical checkpoints.
 - Claude Code turn usage now remains complete when cache-token counts are zero.
 - Mutation routing no longer uses the session directory as an ownership fallback.
   Known agent delegation boundaries remain session context, including completions
