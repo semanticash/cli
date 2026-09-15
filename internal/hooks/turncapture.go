@@ -21,9 +21,9 @@ func turnRecorder() (turncapture.Recorder, error) {
 	return turncapture.Recorder{Root: filepath.Join(base, "turn-observations")}, err
 }
 
-// beginTurnCapture captures repository baselines for Codex and Claude turns.
+// beginTurnCapture captures repository baselines for supported providers.
 func beginTurnCapture(ctx context.Context, provider string, event *Event, bh *broker.Handle, offset int) {
-	if provider != "codex" && provider != "claude-code" {
+	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -78,7 +78,7 @@ func startTurnCapture(ctx context.Context, r turncapture.Recorder, provider stri
 }
 
 func observeTurnCapture(ctx context.Context, provider string, event *Event) {
-	if provider != "codex" && provider != "claude-code" {
+	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" {
 		return
 	}
 	evidence, stop := turnEvidence(provider, event)
