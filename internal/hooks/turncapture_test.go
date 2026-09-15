@@ -40,7 +40,7 @@ func observationRecords(t *testing.T, home string) []turncapture.Record {
 }
 
 func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -112,7 +112,7 @@ func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
 }
 
 func TestTurnCaptureUnsupportedProviderDoesNotCreateStorage(t *testing.T) {
-	for _, provider := range []string{"cursor", "kiro-cli", "copilot"} {
+	for _, provider := range []string{"cursor", "kiro-cli", "kiro-ide"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -128,7 +128,7 @@ func TestTurnCaptureUnsupportedProviderDoesNotCreateStorage(t *testing.T) {
 }
 
 func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -155,20 +155,24 @@ func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
 	}
 }
 
-func TestGeminiUnpairedShellCompletionRemainsUnknown(t *testing.T) {
-	evidence, stop := turnEvidence("gemini-cli", &Event{Type: ToolStepCompleted, ToolName: "Bash", ToolUseID: "gemini-step-1"})
-	if stop || len(evidence) != 1 || evidence[0].Kind != "execution_terminal" {
-		t.Fatalf("unexpected shell evidence: %+v, stop=%v", evidence, stop)
-	}
-	end, stop := turnEvidence("gemini-cli", &Event{Type: AgentCompleted})
-	if !stop {
-		t.Fatal("AfterAgent did not trigger end capture")
-	}
-	if state, _ := turncapture.Completion(append(evidence, end...)); state != "unknown" {
-		t.Fatalf("unpaired terminal evidence produced %q", state)
-	}
-	if state, _ := turncapture.Completion(end); state != "unknown" {
-		t.Fatalf("AfterAgent alone produced %q", state)
+func TestUnpairedShellCompletionRemainsUnknown(t *testing.T) {
+	for _, provider := range []string{"gemini-cli", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			evidence, stop := turnEvidence(provider, &Event{Type: ToolStepCompleted, ToolName: "Bash", ToolUseID: "step-1"})
+			if stop || len(evidence) != 1 || evidence[0].Kind != "execution_terminal" {
+				t.Fatalf("unexpected shell evidence: %+v, stop=%v", evidence, stop)
+			}
+			end, stop := turnEvidence(provider, &Event{Type: AgentCompleted})
+			if !stop {
+				t.Fatal("agent completion did not trigger end capture")
+			}
+			if state, _ := turncapture.Completion(append(evidence, end...)); state != "unknown" {
+				t.Fatalf("unpaired terminal evidence produced %q", state)
+			}
+			if state, _ := turncapture.Completion(end); state != "unknown" {
+				t.Fatalf("agent completion alone produced %q", state)
+			}
+		})
 	}
 }
 
@@ -344,7 +348,7 @@ func assertNoTurnSecret(t *testing.T, root, secret string) {
 }
 
 func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
@@ -380,7 +384,7 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 }
 
 func TestTurnCaptureOwnershipIgnoresRetiredGate(t *testing.T) {
-	for _, provider := range []string{"codex", "claude-code", "gemini-cli"} {
+	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot"} {
 		for _, secondEnabled := range []string{"0", "1"} {
 			t.Run(provider+"/second_enabled_"+secondEnabled, func(t *testing.T) {
 				home := t.TempDir()

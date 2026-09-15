@@ -271,9 +271,9 @@ independently of lineage restore functionality.
 
 ### Local turn observations
 
-Turn-boundary observation runs automatically for Codex, Claude Code, and Gemini
-CLI through their installed hooks. No environment gate or additional per-tool
-snapshots are required. Other providers do not use this capture path.
+Turn-boundary observation runs automatically for Codex, Claude Code, Gemini CLI,
+and Copilot CLI through their installed hooks. No environment gate or additional
+per-tool snapshots are required. Other providers do not use this capture path.
 
 At prompt submission, active registered repositories are frozen into one set.
 Their identities and baselines are captured in parallel, with at most eight
@@ -315,6 +315,10 @@ must be trusted for Gemini to load project hooks. Its current
 adapter does not supply paired shell-start and terminal IDs, so shell completion
 remains unknown. End snapshots are still captured; `AfterAgent` alone does not
 establish that all work has finished.
+
+Copilot CLI uses `userPromptSubmitted` and `agentStop` as turn boundaries. Its
+current adapter also lacks paired shell-start and terminal IDs, so tracked
+completion remains unknown without sufficient execution evidence.
 
 The records have no attribution, routing, worker, or upload consumers. Snapshot
 failures produce unknown observations without interrupting the provider flow.

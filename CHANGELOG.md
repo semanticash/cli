@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Automatic local turn observations for Codex, Claude Code, and Gemini CLI through
-  installed hooks. Parallel snapshots retain cross-repository state
-  changes and reachable intermediate commits. Provider-tracked completion is
+- Automatic local turn observations for Codex, Claude Code, Gemini CLI, and
+  Copilot CLI through installed hooks. Parallel snapshots retain cross-repository
+  state changes and reachable intermediate commits. Provider-tracked completion is
   recorded separately; observations do not affect attribution or uploads.
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
