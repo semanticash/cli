@@ -29,15 +29,14 @@ type RepoObservation struct {
 	Gap      string                `json:"gap,omitempty"`
 }
 
-// Evidence records a signal received by the hook adapter.
+// Evidence stores completion metadata without command output.
 type Evidence struct {
-	Kind        string          `json:"kind"`
-	ExecutionID string          `json:"execution_id,omitempty"`
-	TaskID      string          `json:"task_id,omitempty"`
-	Status      string          `json:"status,omitempty"`
-	ReceivedAt  time.Time       `json:"received_at"`
-	ProviderAt  int64           `json:"provider_at,omitempty"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
+	Kind        string    `json:"kind"`
+	ExecutionID string    `json:"execution_id,omitempty"`
+	TaskID      string    `json:"task_id,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	ReceivedAt  time.Time `json:"received_at"`
+	ProviderAt  int64     `json:"provider_at,omitempty"`
 }
 
 // End records observations and completion evidence at the first end boundary.
@@ -70,7 +69,10 @@ type session struct {
 	TerminalAt map[string]time.Time `json:"terminal_at"`
 }
 
-type Recorder struct{ Root string }
+type Recorder struct {
+	Root     string
+	writeEnd func(string, Record) error
+}
 
 func identity(s string) string {
 	h := sha256.Sum256([]byte(s))
@@ -144,6 +146,9 @@ func (r Recorder) Begin(ctx context.Context, provider, sessionID, turnID, provid
 			if old.Version != 1 || old.Provider != provider || old.SessionID != sessionID || old.BoundaryKey != boundaryKey {
 				return fmt.Errorf("turn record identity mismatch")
 			}
+			if old.End != nil {
+				return finishTurn(dir, key, s, old)
+			}
 			// Restore the cursor if saving it was interrupted.
 			var current Record
 			if s.Current != "" {
@@ -209,6 +214,27 @@ func recordKey(s string) bool {
 	return err == nil && len(b) == sha256.Size
 }
 
+// finishTurn clears the active turn and deletes stores after End is durable.
+func finishTurn(dir, key string, s *session, rec Record) error {
+	if rec.End == nil || rec.End.FinishedAt.IsZero() {
+		return nil
+	}
+	if s.Current == key {
+		s.Current = ""
+		if err := save(filepath.Join(dir, "session.json"), s); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, key)); err != nil {
+		return err
+	}
+	return platform.SyncDir(dir)
+}
+
+func completionEvidence(e Evidence) bool {
+	return e.Kind == "execution_terminal" || e.Kind == "managed_task" || e.Kind == "gap"
+}
+
 func parallel(count int, fn func(int)) {
 	var wg sync.WaitGroup
 	workers := min(count, 8)
@@ -235,7 +261,7 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		if providerTurnID != "" {
 			key = identity("provider:" + providerTurnID)
 		}
-		if len(evidence) == 1 && evidence[0].ExecutionID != "" {
+		if len(evidence) == 1 && evidence[0].ExecutionID != "" && completionEvidence(evidence[0]) {
 			if owner := s.Owners[evidence[0].ExecutionID]; owner != "" {
 				key = owner
 			}
@@ -250,6 +276,18 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		}
 		if rec.Version != 1 || rec.Provider != provider || rec.SessionID != sessionID || identity(rec.BoundaryKey) != key {
 			return fmt.Errorf("turn record identity mismatch")
+		}
+		if rec.End != nil {
+			late := make([]Evidence, 0, len(evidence))
+			for _, e := range evidence {
+				if completionEvidence(e) && e.ExecutionID != "" && s.Owners[e.ExecutionID] == key {
+					late = append(late, e)
+				}
+			}
+			evidence = late
+			if len(evidence) == 0 {
+				return finishTurn(dir, key, s, rec)
+			}
 		}
 		for _, e := range evidence {
 			rec.Evidence = append(rec.Evidence, e)
@@ -266,7 +304,10 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		if err := save(filepath.Join(dir, "session.json"), s); err != nil {
 			return err
 		}
-		if !stop || rec.End != nil {
+		if rec.End != nil {
+			return finishTurn(dir, key, s, rec)
+		}
+		if !stop {
 			return nil
 		}
 		boundary := time.Now().UTC()
@@ -323,7 +364,14 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 			rec.End.Repositories[i] = toolsnap.ObserveTurnEnd(ctx, storePath(dir, key, i), v.Baseline)
 		})
 		rec.End.FinishedAt = time.Now().UTC()
-		return save(path, rec)
+		if r.writeEnd != nil {
+			if err := r.writeEnd(path, rec); err != nil {
+				return err
+			}
+		} else if err := save(path, rec); err != nil {
+			return err
+		}
+		return finishTurn(dir, key, s, rec)
 	})
 }
 

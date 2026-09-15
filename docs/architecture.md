@@ -293,21 +293,26 @@ provider evidence and `tracked_completion_at_end`: `settled`, `unsettled`, or
 `unknown`. Missing terminal evidence does not imply completion. `settled` only
 describes known, provider-tracked execution scopes and says nothing about hidden
 detached descendants. Later delivered evidence is appended separately and never
-rewrites the end observation. Interrupted capture remains unknown on retry.
+rewrites the end observation. A saved, completed End clears the session's current
+turn. Late completion evidence uses its execution owner; new activity cannot
+attach to a completed turn. Interrupted capture remains unknown on retry.
 
 Codex provider turn and execution IDs are retained separately from Semantica IDs.
 Claude has no hook turn ID; identical prompt/transcript positions reuse the same
-baseline conservatively. Its `backgroundTaskId` and Stop task inventory are
-retained, but CLI-stream `task_notification` is not ingested by the hook adapter.
+baseline conservatively. Completion evidence stores only kinds, execution/task
+IDs, statuses, and timestamps. Bash responses and raw task inventories are not
+retained. Claude's `backgroundTaskId` is parsed in memory; CLI-stream
+`task_notification` is not ingested by the hook adapter.
 An empty task inventory does not establish a previously launched task's terminal
 state. Missing inventory or terminal evidence remains unknown.
 
 The records have no attribution, routing, worker, or upload consumers. Disabling
 the gate prevents new baselines; existing records can still receive their end.
-Storage is local and currently has no automatic retention or reclamation policy.
-Snapshot stores reuse source Git objects through alternates; the stored deltas
-retain changed-file evidence, but the private stores are not independent archives
-of entire repositories. Boundary capture is not an atomic filesystem snapshot.
+After the complete End record is durably saved, temporary Git snapshot stores
+are deleted, including when tracked completion is unknown. An interrupted End
+save retains the stores. Durable records keep baseline identities, commit deltas,
+repository observations, and completion evidence; they have no automatic retention
+policy. Boundary capture is not an atomic filesystem snapshot.
 
 ### Tool snapshot store (`tool-snapshots.git`)
 

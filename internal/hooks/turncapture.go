@@ -116,7 +116,7 @@ func turnEvidence(provider string, event *Event) ([]turncapture.Evidence, bool) 
 		if event.ToolName != "Bash" {
 			return nil, false
 		}
-		base.Kind, base.Raw = "execution_terminal", event.ToolResponse
+		base.Kind = "execution_terminal"
 		if provider == "claude-code" {
 			var response struct {
 				BackgroundTaskID string `json:"backgroundTaskId"`
@@ -128,12 +128,9 @@ func turnEvidence(provider string, event *Event) ([]turncapture.Evidence, bool) 
 				base.Kind, base.TaskID = "managed_task", response.BackgroundTaskID
 			}
 		}
-		if len(base.Raw) > 64*1024 {
-			base.Raw = nil
-		}
 		return []turncapture.Evidence{base}, false
 	case AgentCompleted:
-		base.Kind, base.Raw = "stop", event.BackgroundTasks
+		base.Kind = "stop"
 		result := []turncapture.Evidence{base}
 		if provider == "claude-code" {
 			var tasks []struct {

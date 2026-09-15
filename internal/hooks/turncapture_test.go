@@ -1,8 +1,10 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -134,7 +136,123 @@ func TestClaudeTurnEvidenceUsesDeliveredTaskSignals(t *testing.T) {
 	if got, _ := turncapture.Completion(append(append(start, post...), empty...)); got != "unknown" {
 		t.Fatal("empty inventory invented completion")
 	}
-	if post[0].TaskID != "task-1" || len(post[0].Raw) == 0 {
-		t.Fatal("managed identity/evidence lost")
+	if post[0].TaskID != "task-1" {
+		t.Fatal("managed identity lost")
+	}
+}
+
+func assertNoTurnSecret(t *testing.T, root, secret string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(data, []byte(secret)) {
+			t.Errorf("Bash secret persisted in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
+	for _, provider := range []string{"codex", "claude-code"} {
+		t.Run(provider, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("SEMANTICA_HOME", home)
+			t.Setenv("SEMANTICA_TURN_CAPTURE", "1")
+			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			world := newToolWindowWorld(t, home, "repo")
+			defer func() { _ = broker.Close(world.bh) }()
+			beginTurnCapture(context.Background(), provider, &Event{SessionID: "s", TurnID: "t", Prompt: "test"}, world.bh, 0)
+			root := filepath.Join(home, "turn-observations")
+			secret := "FAKE_BASH_SECRET_MUST_NOT_PERSIST"
+			responses := []json.RawMessage{
+				json.RawMessage(`{"stdout":"` + secret + `","stderr":"` + secret + `","backgroundTaskId":"task"}`),
+				json.RawMessage(`"` + secret + `"`),
+			}
+			for i, response := range responses {
+				id := string(rune('a' + i))
+				observeTurnCapture(context.Background(), provider, &Event{Type: ToolStepStarted, SessionID: "s", ToolUseID: id, ToolName: "Bash"})
+				observeTurnCapture(context.Background(), provider, &Event{Type: ToolStepCompleted, SessionID: "s", ToolUseID: id, ToolName: "Bash", ToolResponse: response})
+				assertNoTurnSecret(t, root, secret)
+			}
+			observeTurnCapture(context.Background(), provider, &Event{Type: AgentCompleted, SessionID: "s", BackgroundTasks: json.RawMessage(`[{"id":"task","status":"running","command":"` + secret + `"}]`)})
+			assertNoTurnSecret(t, root, secret)
+			recs := observationRecords(t, home)
+			if len(recs) != 1 || recs[0].End == nil || len(recs[0].Evidence) < 5 {
+				t.Fatal("completion evidence missing")
+			}
+			if provider == "claude-code" && recs[0].Evidence[1].TaskID != "task" {
+				t.Fatal("backgroundTaskId lost")
+			}
+		})
+	}
+}
+
+func TestTurnCaptureOwnershipAcrossConfigurationChanges(t *testing.T) {
+	for _, provider := range []string{"codex", "claude-code"} {
+		for _, secondEnabled := range []string{"0", "1"} {
+			t.Run(provider+"/second_enabled_"+secondEnabled, func(t *testing.T) {
+				home := t.TempDir()
+				t.Setenv("SEMANTICA_HOME", home)
+				t.Setenv("SEMANTICA_TURN_CAPTURE", "1")
+				t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+				t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+				world := newToolWindowWorld(t, home, "repo")
+				defer func() { _ = broker.Close(world.bh) }()
+				prov := &fakeProvider{name: provider}
+				runTurn := func(n int) {
+					prompt := &Event{Type: PromptSubmitted, SessionID: "s", Prompt: string(rune('0' + n)), CWD: world.repoPath}
+					if provider == "codex" {
+						prompt.ProviderTurnID = prompt.Prompt
+					}
+					if err := Dispatch(context.Background(), prov, prompt, world.bh, nil); err != nil {
+						t.Fatal(err)
+					}
+					observeTurnCapture(context.Background(), provider, &Event{Type: ToolStepStarted, SessionID: "s", ProviderTurnID: prompt.ProviderTurnID, ToolUseID: prompt.Prompt, ToolName: "Bash"})
+					if err := Dispatch(context.Background(), prov, &Event{Type: AgentCompleted, SessionID: "s", ProviderTurnID: prompt.ProviderTurnID, BackgroundTasks: json.RawMessage(`[]`)}, world.bh, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runTurn(1)
+				first := observationRecords(t, home)[0]
+				t.Setenv("SEMANTICA_TURN_CAPTURE", secondEnabled)
+				runTurn(2)
+				recs := observationRecords(t, home)
+				want := 1
+				if secondEnabled == "1" {
+					want = 2
+				}
+				if len(recs) != want {
+					t.Fatalf("records %d want %d", len(recs), want)
+				}
+				for _, rec := range recs {
+					if rec.TurnID == first.TurnID && !reflect.DeepEqual(rec, first) {
+						t.Fatal("Turn 2 modified Turn 1")
+					}
+					if rec.TurnID != first.TurnID && (rec.End == nil || rec.Evidence[0].ExecutionID != "2") {
+						t.Fatal("Turn 2 evidence missing")
+					}
+				}
+				// Execution ownership must preserve late evidence for Turn 1.
+				observeTurnCapture(context.Background(), provider, &Event{Type: ToolStepCompleted, SessionID: "s", ToolUseID: "1", ToolName: "Bash", ToolResponse: json.RawMessage(`{}`)})
+				for _, rec := range observationRecords(t, home) {
+					if rec.TurnID == first.TurnID && (len(rec.Evidence) != len(first.Evidence)+1 || !reflect.DeepEqual(rec.End, first.End)) {
+						t.Fatal("late evidence changed frozen end or lost owner")
+					}
+				}
+			})
+		}
 	}
 }

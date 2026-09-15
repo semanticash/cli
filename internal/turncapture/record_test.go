@@ -2,7 +2,7 @@ package turncapture
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -205,7 +205,7 @@ func TestCompletionContract(t *testing.T) {
 		{"foreground", []Evidence{{Kind: "execution_started", ExecutionID: "e"}, {Kind: "execution_terminal", ExecutionID: "e"}}, "settled"},
 		{"missing pre", []Evidence{{Kind: "execution_terminal", ExecutionID: "e"}}, "unknown"},
 		{"running", []Evidence{{Kind: "inventory_running", TaskID: "t"}}, "unsettled"},
-		{"empty list does not finish task", []Evidence{{Kind: "execution_started", ExecutionID: "e"}, {Kind: "managed_task", ExecutionID: "e", TaskID: "t"}, {Kind: "stop", Raw: json.RawMessage(`[]`)}}, "unknown"},
+		{"empty list does not finish task", []Evidence{{Kind: "execution_started", ExecutionID: "e"}, {Kind: "managed_task", ExecutionID: "e", TaskID: "t"}, {Kind: "stop"}}, "unknown"},
 		{"missing inventory", []Evidence{{Kind: "execution_started", ExecutionID: "e"}, {Kind: "execution_terminal", ExecutionID: "e"}, {Kind: "gap"}}, "unknown"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -300,5 +300,147 @@ func TestMissingEarlierEvidenceDoesNotPreventEndSnapshot(t *testing.T) {
 	end := load(t, r, "new").End
 	if end == nil || end.TrackedCompletion != "unknown" || end.Repositories[1].State != "changed" {
 		t.Fatalf("completion gap blocked observation: %+v", end)
+	}
+}
+
+func TestFinishedTurnReleasesOwnershipAndStores(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		changed, terminal bool
+	}{
+		{"changed", true, true},
+		{"unchanged", false, true},
+		{"unknown_completion", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, subjects := fixture(t)
+			start(t, r, subjects, "turn")
+			dir := r.dir("codex", "session")
+			key := identity("provider:turn")
+			stores := filepath.Join(dir, key)
+			if _, err := os.Stat(stores); err != nil {
+				t.Fatal(err)
+			}
+			send(t, r, "turn", "execution_started", "exec", false)
+			if tc.changed {
+				write(t, subjects[1].Path, "committed\n")
+				runGit(t, subjects[1].Path, "commit", "-am", "in turn")
+				write(t, subjects[1].Path, "dirty\n")
+			}
+			if tc.terminal {
+				send(t, r, "turn", "execution_terminal", "exec", false)
+			}
+			var durable Record
+			r.writeEnd = func(path string, rec Record) error {
+				if _, err := os.Stat(stores); err != nil {
+					t.Fatal("stores removed before End save")
+				}
+				if err := save(path, rec); err != nil {
+					return err
+				}
+				if err := read(path, &durable); err != nil {
+					return err
+				}
+				if _, err := os.Stat(stores); err != nil {
+					t.Fatal("stores removed during End save")
+				}
+				return nil
+			}
+			send(t, r, "turn", "stop", "", true)
+			if _, err := os.Stat(stores); !os.IsNotExist(err) {
+				t.Fatalf("stores remain: %v", err)
+			}
+			got := load(t, r, "turn")
+			if !reflect.DeepEqual(got, durable) {
+				t.Fatal("cleanup changed durable observation")
+			}
+			want := "settled"
+			if !tc.terminal {
+				want = "unknown"
+			}
+			if got.End.TrackedCompletion != want {
+				t.Fatal(got.End.TrackedCompletion)
+			}
+			if tc.changed && (got.End.Repositories[1].State != "changed" || len(got.End.Repositories[1].Changes) != 2) {
+				t.Fatal("commit or dirty evidence lost")
+			}
+			var s session
+			if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+				t.Fatal(err)
+			}
+			if s.Current != "" || s.Owners["exec"] != key {
+				t.Fatalf("ownership after end: %+v", s)
+			}
+			// Retries and stale IDs must not reopen a finished turn.
+			start(t, r, subjects, "turn")
+			send(t, r, "turn", "execution_started", "new-exec", false)
+			send(t, r, "", "execution_started", "new-exec", false)
+			if !reflect.DeepEqual(got, load(t, r, "turn")) {
+				t.Fatal("new activity modified completed turn")
+			}
+			if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+				t.Fatal(err)
+			}
+			if s.Current != "" {
+				t.Fatal("duplicate start reactivated completed turn")
+			}
+		})
+	}
+}
+
+func TestFailedEndSaveRetainsSnapshotStores(t *testing.T) {
+	r, subjects := fixture(t)
+	start(t, r, subjects, "turn")
+	write(t, subjects[1].Path, "changed\n")
+	stores := filepath.Join(r.dir("codex", "session"), identity("provider:turn"))
+	failure := errors.New("end save failed")
+	r.writeEnd = func(_ string, rec Record) error {
+		if rec.End.FinishedAt.IsZero() || rec.End.Repositories[1].State != "changed" {
+			t.Fatal("failure did not reach completed reconciliation")
+		}
+		return failure
+	}
+	err := r.Observe(context.Background(), "codex", "session", "turn", []Evidence{{Kind: "stop", ReceivedAt: time.Now().UTC()}}, true)
+	if !errors.Is(err, failure) {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(stores); err != nil {
+		t.Fatal("failed save removed stores", err)
+	}
+	interrupted := load(t, r, "turn")
+	if interrupted.End == nil || !interrupted.End.FinishedAt.IsZero() {
+		t.Fatal("failed save marked end complete")
+	}
+	// A fresh recorder must retain stores for an interrupted End.
+	r = Recorder{Root: r.Root}
+	send(t, r, "turn", "stop", "", true)
+	if _, err := os.Stat(stores); err != nil {
+		t.Fatal("retry removed interrupted stores", err)
+	}
+	if !reflect.DeepEqual(interrupted, load(t, r, "turn")) {
+		t.Fatal("retry changed interrupted observation")
+	}
+}
+
+func TestStaleFinishedCursorCannotAcceptNewActivity(t *testing.T) {
+	r, subjects := fixture(t)
+	start(t, r, subjects, "turn")
+	send(t, r, "turn", "stop", "", true)
+	frozen := load(t, r, "turn")
+	dir := r.dir("codex", "session")
+	// Simulate a crash between saving End and clearing session.Current.
+	if err := save(filepath.Join(dir, "session.json"), session{Current: identity("provider:turn")}); err != nil {
+		t.Fatal(err)
+	}
+	send(t, r, "", "execution_started", "later", false)
+	if !reflect.DeepEqual(frozen, load(t, r, "turn")) {
+		t.Fatal("stale cursor accepted new activity")
+	}
+	var s session
+	if err := read(filepath.Join(dir, "session.json"), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Current != "" {
+		t.Fatal("stale cursor not cleared")
 	}
 }

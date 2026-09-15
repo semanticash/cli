@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Turn completion evidence no longer stores raw Bash output. Finished turns
+  release session ownership while retaining execution owners for late evidence.
+  Temporary turn snapshot stores are removed only after a durable End is saved.
 - Existing databases now receive the missing evidence-group index, speeding up
   capture validation in `semantica blame` for historical checkpoints.
 - Claude Code turn usage now remains complete when cache-token counts are zero.
