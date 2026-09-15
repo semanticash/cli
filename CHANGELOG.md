@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Claude Bash completion remains terminal when task metadata is missing or
+  malformed. Metadata gaps remain separate from execution completion.
 - Turn completion evidence no longer stores raw Bash output. Finished turns
   release session ownership while retaining execution owners for late evidence.
   Temporary turn snapshot stores are removed only after a durable End is saved.

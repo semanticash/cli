@@ -117,18 +117,20 @@ func turnEvidence(provider string, event *Event) ([]turncapture.Evidence, bool) 
 			return nil, false
 		}
 		base.Kind = "execution_terminal"
+		result := []turncapture.Evidence{base}
 		if provider == "claude-code" {
-			var response struct {
+			var response *struct {
 				BackgroundTaskID string `json:"backgroundTaskId"`
 			}
-			if err := json.Unmarshal(event.ToolResponse, &response); err != nil {
-				base.Kind = "gap"
-			}
-			if response.BackgroundTaskID != "" {
+			if err := json.Unmarshal(event.ToolResponse, &response); err != nil || response == nil {
+				base.Kind, base.Status = "gap", "task_metadata_unavailable"
+				result = append(result, base)
+			} else if response.BackgroundTaskID != "" {
 				base.Kind, base.TaskID = "managed_task", response.BackgroundTaskID
+				result = append(result, base)
 			}
 		}
-		return []turncapture.Evidence{base}, false
+		return result, false
 	case AgentCompleted:
 		base.Kind = "stop"
 		result := []turncapture.Evidence{base}

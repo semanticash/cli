@@ -64,9 +64,10 @@ type Record struct {
 }
 
 type session struct {
-	Current    string               `json:"current"`
-	Owners     map[string]string    `json:"execution_owners"`
-	TerminalAt map[string]time.Time `json:"terminal_at"`
+	Current      string               `json:"current"`
+	Owners       map[string]string    `json:"execution_owners"`
+	TerminalAt   map[string]time.Time `json:"terminal_at"`
+	ManagedTasks map[string]string    `json:"managed_task_owners,omitempty"`
 }
 
 type Recorder struct {
@@ -121,12 +122,20 @@ func (r Recorder) locked(ctx context.Context, provider, sessionID string, fn fun
 		if s.TerminalAt == nil {
 			s.TerminalAt = make(map[string]time.Time)
 		}
+		if s.ManagedTasks == nil {
+			s.ManagedTasks = make(map[string]string)
+		}
 		if s.Current != "" && !recordKey(s.Current) {
 			return fmt.Errorf("invalid current turn key")
 		}
 		for _, key := range s.Owners {
 			if !recordKey(key) {
 				return fmt.Errorf("invalid execution owner")
+			}
+		}
+		for _, key := range s.ManagedTasks {
+			if !recordKey(key) {
+				return fmt.Errorf("invalid managed task owner")
 			}
 		}
 		return fn(dir, &s)
@@ -235,6 +244,20 @@ func completionEvidence(e Evidence) bool {
 	return e.Kind == "execution_terminal" || e.Kind == "managed_task" || e.Kind == "gap"
 }
 
+// completionExecution pairs terminal evidence and metadata for one invocation.
+func completionExecution(evidence []Evidence) string {
+	if len(evidence) == 0 {
+		return ""
+	}
+	id := evidence[0].ExecutionID
+	for _, e := range evidence {
+		if e.ExecutionID != id || !completionEvidence(e) {
+			return ""
+		}
+	}
+	return id
+}
+
 func parallel(count int, fn func(int)) {
 	var wg sync.WaitGroup
 	workers := min(count, 8)
@@ -261,8 +284,8 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		if providerTurnID != "" {
 			key = identity("provider:" + providerTurnID)
 		}
-		if len(evidence) == 1 && evidence[0].ExecutionID != "" && completionEvidence(evidence[0]) {
-			if owner := s.Owners[evidence[0].ExecutionID]; owner != "" {
+		if id := completionExecution(evidence); id != "" {
+			if owner := s.Owners[id]; owner != "" {
 				key = owner
 			}
 		}
@@ -297,6 +320,9 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 			if e.Kind == "execution_terminal" && e.ExecutionID != "" {
 				s.TerminalAt[e.ExecutionID] = e.ReceivedAt
 			}
+			if e.Kind == "managed_task" && e.TaskID != "" {
+				s.ManagedTasks[e.TaskID] = key
+			}
 		}
 		if err := save(path, rec); err != nil {
 			return err
@@ -325,6 +351,11 @@ func (r Recorder) Observe(ctx context.Context, provider, sessionID, providerTurn
 		}
 		// Include unfinished work from earlier turns.
 		owners := make(map[string]bool)
+		for _, owner := range s.ManagedTasks {
+			if owner != key {
+				owners[owner] = true
+			}
+		}
 		for id, owner := range s.Owners {
 			terminal := s.TerminalAt[id]
 			if owner != key && (terminal.IsZero() || terminal.After(boundary)) {

@@ -136,8 +136,139 @@ func TestClaudeTurnEvidenceUsesDeliveredTaskSignals(t *testing.T) {
 	if got, _ := turncapture.Completion(append(append(start, post...), empty...)); got != "unknown" {
 		t.Fatal("empty inventory invented completion")
 	}
-	if post[0].TaskID != "task-1" {
+	if len(post) != 2 || post[0].Kind != "execution_terminal" || post[1].TaskID != "task-1" {
 		t.Fatal("managed identity lost")
+	}
+}
+
+func TestClaudeBashTerminalSurvivesUnusableTaskMetadata(t *testing.T) {
+	for _, response := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"missing", nil},
+		{"null", json.RawMessage(`null`)},
+		{"scalar", json.RawMessage(`"output"`)},
+		{"malformed", json.RawMessage(`{"stdout":`)},
+		{"array", json.RawMessage(`[]`)},
+		{"invalid_task_id", json.RawMessage(`{"backgroundTaskId":42}`)},
+	} {
+		for _, late := range []bool{false, true} {
+			name := response.name + "/in_turn"
+			if late {
+				name = response.name + "/late"
+			}
+			t.Run(name, func(t *testing.T) {
+				home := t.TempDir()
+				r := turncapture.Recorder{Root: filepath.Join(home, "turn-observations")}
+				begin := func(id string) {
+					if err := r.Begin(context.Background(), "claude-code", "s", id, "", id, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				observe := func(event *Event) []turncapture.Evidence {
+					evidence, stop := turnEvidence("claude-code", event)
+					if err := r.Observe(context.Background(), "claude-code", "s", "", evidence, stop); err != nil {
+						t.Fatal(err)
+					}
+					return evidence
+				}
+				stop := func() { observe(&Event{Type: AgentCompleted, BackgroundTasks: json.RawMessage(`[]`)}) }
+				loadTurn := func(id string) turncapture.Record {
+					for _, rec := range observationRecords(t, home) {
+						if rec.TurnID == id {
+							return rec
+						}
+					}
+					t.Fatalf("turn %s missing", id)
+					return turncapture.Record{}
+				}
+				post := func() {
+					evidence := observe(&Event{Type: ToolStepCompleted, ToolUseID: "old", ToolName: "Bash", ToolResponse: response.raw})
+					if len(evidence) != 2 || evidence[0].Kind != "execution_terminal" || evidence[1].Kind != "gap" {
+						t.Fatalf("terminal/gap: %+v", evidence)
+					}
+					if evidence[0].ExecutionID != "old" || evidence[1].ExecutionID != "old" || evidence[0].ReceivedAt != evidence[1].ReceivedAt {
+						t.Fatal("metadata separated from invocation")
+					}
+				}
+				begin("1")
+				observe(&Event{Type: ToolStepStarted, ToolUseID: "old", ToolName: "Bash"})
+				if !late {
+					post()
+				}
+				stop()
+				first := loadTurn("1")
+				if first.End.TrackedCompletion != "unknown" {
+					t.Fatal("uncertain task metadata settled Turn 1")
+				}
+				begin("2")
+				observe(&Event{Type: ToolStepStarted, ToolUseID: "new", ToolName: "Bash"})
+				if late {
+					post()
+				}
+				observe(&Event{Type: ToolStepCompleted, ToolUseID: "new", ToolName: "Bash", ToolResponse: json.RawMessage(`{}`)})
+				stop()
+				second := loadTurn("2")
+				if second.End.TrackedCompletion != "settled" {
+					t.Fatalf("old metadata poisoned next turn: %+v", second.End)
+				}
+				for _, e := range second.Evidence {
+					if e.ExecutionID == "old" {
+						t.Fatal("late evidence attached to new turn")
+					}
+				}
+				if !reflect.DeepEqual(first.End, loadTurn("1").End) {
+					t.Fatal("late metadata rewrote frozen End")
+				}
+				paths, err := filepath.Glob(filepath.Join(r.Root, "*", "session.json"))
+				if err != nil || len(paths) != 1 {
+					t.Fatalf("session paths: %v %v", paths, err)
+				}
+				data, err := os.ReadFile(paths[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				var s struct {
+					TerminalAt map[string]time.Time `json:"terminal_at"`
+				}
+				if err := json.Unmarshal(data, &s); err != nil {
+					t.Fatal(err)
+				}
+				if s.TerminalAt["old"].IsZero() {
+					t.Fatal("terminal timestamp missing")
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeManagedTaskOutlivesTerminalBashScope(t *testing.T) {
+	home := t.TempDir()
+	r := turncapture.Recorder{Root: filepath.Join(home, "turn-observations")}
+	for _, id := range []string{"1", "2"} {
+		if err := r.Begin(context.Background(), "claude-code", "s", id, "", id, nil); err != nil {
+			t.Fatal(err)
+		}
+		response := json.RawMessage(`{}`)
+		if id == "1" {
+			response = json.RawMessage(`{"backgroundTaskId":"task"}`)
+		}
+		for _, event := range []*Event{
+			{Type: ToolStepStarted, ToolUseID: id, ToolName: "Bash"},
+			{Type: ToolStepCompleted, ToolUseID: id, ToolName: "Bash", ToolResponse: response},
+			{Type: AgentCompleted, BackgroundTasks: json.RawMessage(`[]`)},
+		} {
+			evidence, stop := turnEvidence("claude-code", event)
+			if err := r.Observe(context.Background(), "claude-code", "s", "", evidence, stop); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, rec := range observationRecords(t, home) {
+		if rec.End.TrackedCompletion != "unknown" || rec.End.CompletionReason != "managed_task_terminal_source_unavailable" {
+			t.Fatalf("managed task lost after Bash terminal: %+v", rec.End)
+		}
 	}
 }
 
@@ -193,7 +324,7 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 			if len(recs) != 1 || recs[0].End == nil || len(recs[0].Evidence) < 5 {
 				t.Fatal("completion evidence missing")
 			}
-			if provider == "claude-code" && recs[0].Evidence[1].TaskID != "task" {
+			if provider == "claude-code" && recs[0].Evidence[2].TaskID != "task" {
 				t.Fatal("backgroundTaskId lost")
 			}
 		})

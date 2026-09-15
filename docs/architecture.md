@@ -303,6 +303,9 @@ baseline conservatively. Completion evidence stores only kinds, execution/task
 IDs, statuses, and timestamps. Bash responses and raw task inventories are not
 retained. Claude's `backgroundTaskId` is parsed in memory; CLI-stream
 `task_notification` is not ingested by the hook adapter.
+Each Bash completion records a terminal execution. Missing or malformed task
+metadata adds a separate gap; a reported managed task retains its own outstanding
+state after the Bash invocation terminates.
 An empty task inventory does not establish a previously launched task's terminal
 state. Missing inventory or terminal evidence remains unknown.
 
