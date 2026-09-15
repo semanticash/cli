@@ -21,9 +21,9 @@ func turnRecorder() (turncapture.Recorder, error) {
 	return turncapture.Recorder{Root: filepath.Join(base, "turn-observations")}, err
 }
 
-// beginTurnCapture requires opt-in. Disabling it does not prevent end capture.
+// beginTurnCapture captures repository baselines for Codex and Claude turns.
 func beginTurnCapture(ctx context.Context, provider string, event *Event, bh *broker.Handle, offset int) {
-	if os.Getenv("SEMANTICA_TURN_CAPTURE") != "1" || (provider != "codex" && provider != "claude-code") {
+	if provider != "codex" && provider != "claude-code" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -70,7 +70,7 @@ func startTurnCapture(ctx context.Context, r turncapture.Recorder, provider stri
 	wg.Wait()
 	key := "provider:" + event.ProviderTurnID
 	if event.ProviderTurnID == "" {
-		// Claude has no hook turn ID; identical prompts and positions reuse a baseline.
+		// Without a provider turn ID, use the transcript position and prompt as identity.
 		sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%s", event.TranscriptRef, offset, event.Prompt))
 		key = fmt.Sprintf("source:%x", sum)
 	}
@@ -89,7 +89,6 @@ func observeTurnCapture(ctx context.Context, provider string, event *Event) {
 	if err != nil {
 		return
 	}
-	// Skip when no turn capture storage exists.
 	if _, err := os.Stat(r.Root); err != nil {
 		return
 	}

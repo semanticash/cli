@@ -271,9 +271,9 @@ independently of lineage restore functionality.
 
 ### Local turn observations
 
-`SEMANTICA_TURN_CAPTURE=1` enables turn-boundary observation for Codex and Claude
-Code. It is off by default. The hook processes must inherit this environment
-variable. No additional per-tool snapshots are taken by this feature.
+Turn-boundary observation runs automatically for Codex and Claude Code through
+their installed hooks. No environment gate or additional per-tool snapshots are
+required. Other providers do not use this capture path.
 
 At prompt submission, active registered repositories are frozen into one set.
 Their identities and baselines are captured in parallel, with at most eight
@@ -309,8 +309,8 @@ state after the Bash invocation terminates.
 An empty task inventory does not establish a previously launched task's terminal
 state. Missing inventory or terminal evidence remains unknown.
 
-The records have no attribution, routing, worker, or upload consumers. Disabling
-the gate prevents new baselines; existing records can still receive their end.
+The records have no attribution, routing, worker, or upload consumers. Snapshot
+failures produce unknown observations without interrupting the provider flow.
 After the complete End record is durably saved, temporary Git snapshot stores
 are deleted, including when tracked completion is unknown. An interrupted End
 save retains the stores. Durable records keep baseline identities, commit deltas,

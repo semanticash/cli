@@ -39,12 +39,12 @@ func observationRecords(t *testing.T, home string) []turncapture.Record {
 	return records
 }
 
-func TestDispatchTurnCaptureCrossRepoAndGateFlip(t *testing.T) {
+func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
 	for _, provider := range []string{"codex", "claude-code"} {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
-			t.Setenv("SEMANTICA_TURN_CAPTURE", "1")
+			t.Setenv("SEMANTICA_TURN_CAPTURE", "")
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			a := newToolWindowWorld(t, home, "A")
@@ -68,7 +68,7 @@ func TestDispatchTurnCaptureCrossRepoAndGateFlip(t *testing.T) {
 					t.Fatal(v.Gap)
 				}
 			}
-			// Disabling capture must still allow this turn to finish.
+			// SEMANTICA_TURN_CAPTURE does not control turn capture.
 			t.Setenv("SEMANTICA_TURN_CAPTURE", "0")
 			if err := os.WriteFile(filepath.Join(b.repoPath, "a.txt"), []byte("cross repo\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -97,7 +97,7 @@ func TestDispatchTurnCaptureCrossRepoAndGateFlip(t *testing.T) {
 					t.Fatalf("%s: %+v", subject.Subject.Path, rec.End.Repositories[i])
 				}
 			}
-			// Duplicate Stop must preserve the end after CaptureState is deleted.
+			// Duplicate Stop preserves the frozen End after CaptureState cleanup.
 			if err := Dispatch(context.Background(), prov, stop, b.bh, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -111,16 +111,47 @@ func TestDispatchTurnCaptureCrossRepoAndGateFlip(t *testing.T) {
 	}
 }
 
-func TestTurnCaptureDisabledDoesNotCreateStorage(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SEMANTICA_HOME", home)
-	t.Setenv("SEMANTICA_TURN_CAPTURE", "0")
-	p := &fakeProvider{name: "codex"}
-	if err := Dispatch(context.Background(), p, &Event{Type: PromptSubmitted, SessionID: "s", Prompt: "test"}, nil, nil); err != nil {
-		t.Fatal(err)
+func TestTurnCaptureUnsupportedProviderDoesNotCreateStorage(t *testing.T) {
+	for _, provider := range []string{"cursor", "gemini", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("SEMANTICA_HOME", home)
+			p := &fakeProvider{name: provider}
+			if err := Dispatch(context.Background(), p, &Event{Type: PromptSubmitted, SessionID: "s", Prompt: "test"}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(home, "turn-observations")); !os.IsNotExist(err) {
+				t.Fatal("unsupported provider created storage")
+			}
+		})
 	}
-	if _, err := os.Stat(filepath.Join(home, "turn-observations")); !os.IsNotExist(err) {
-		t.Fatal("disabled capture created storage")
+}
+
+func TestDefaultTurnCaptureSnapshotFailureDoesNotFailDispatch(t *testing.T) {
+	for _, provider := range []string{"codex", "claude-code"} {
+		t.Run(provider, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("SEMANTICA_HOME", home)
+			t.Setenv("SEMANTICA_TURN_CAPTURE", "")
+			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			world := newToolWindowWorld(t, home, "repo")
+			defer func() { _ = broker.Close(world.bh) }()
+			gitIn(t, world.repoPath, "update-index", "--assume-unchanged", "a.txt")
+			p := &fakeProvider{name: provider}
+			for _, kind := range []EventType{PromptSubmitted, AgentCompleted} {
+				if err := Dispatch(context.Background(), p, &Event{Type: kind, SessionID: "s", CWD: world.repoPath}, world.bh, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recs := observationRecords(t, home)
+			if len(recs) != 1 || recs[0].End == nil || len(recs[0].End.Repositories) != 1 {
+				t.Fatal("observation missing")
+			}
+			if got := recs[0].End.Repositories[0]; got.State != "unknown" || got.Reason != "unsupported_index_state" {
+				t.Fatalf("snapshot failure: %+v", got)
+			}
+		})
 	}
 }
 
@@ -300,7 +331,7 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 		t.Run(provider, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SEMANTICA_HOME", home)
-			t.Setenv("SEMANTICA_TURN_CAPTURE", "1")
+			t.Setenv("SEMANTICA_TURN_CAPTURE", "")
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			world := newToolWindowWorld(t, home, "repo")
@@ -331,13 +362,13 @@ func TestTurnEvidenceNeverPersistsBashOutput(t *testing.T) {
 	}
 }
 
-func TestTurnCaptureOwnershipAcrossConfigurationChanges(t *testing.T) {
+func TestTurnCaptureOwnershipIgnoresRetiredGate(t *testing.T) {
 	for _, provider := range []string{"codex", "claude-code"} {
 		for _, secondEnabled := range []string{"0", "1"} {
 			t.Run(provider+"/second_enabled_"+secondEnabled, func(t *testing.T) {
 				home := t.TempDir()
 				t.Setenv("SEMANTICA_HOME", home)
-				t.Setenv("SEMANTICA_TURN_CAPTURE", "1")
+				t.Setenv("SEMANTICA_TURN_CAPTURE", "")
 				t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 				t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 				world := newToolWindowWorld(t, home, "repo")
@@ -361,10 +392,7 @@ func TestTurnCaptureOwnershipAcrossConfigurationChanges(t *testing.T) {
 				t.Setenv("SEMANTICA_TURN_CAPTURE", secondEnabled)
 				runTurn(2)
 				recs := observationRecords(t, home)
-				want := 1
-				if secondEnabled == "1" {
-					want = 2
-				}
+				want := 2
 				if len(recs) != want {
 					t.Fatalf("records %d want %d", len(recs), want)
 				}
@@ -376,7 +404,7 @@ func TestTurnCaptureOwnershipAcrossConfigurationChanges(t *testing.T) {
 						t.Fatal("Turn 2 evidence missing")
 					}
 				}
-				// Execution ownership must preserve late evidence for Turn 1.
+				// Late evidence stays with its execution's original turn.
 				observeTurnCapture(context.Background(), provider, &Event{Type: ToolStepCompleted, SessionID: "s", ToolUseID: "1", ToolName: "Bash", ToolResponse: json.RawMessage(`{}`)})
 				for _, rec := range observationRecords(t, home) {
 					if rec.TurnID == first.TurnID && (len(rec.Evidence) != len(first.Evidence)+1 || !reflect.DeepEqual(rec.End, first.End)) {
