@@ -2124,6 +2124,24 @@ func (q *Queries) TurnEventExists(ctx context.Context, arg TurnEventExistsParams
 	return exists_flag, err
 }
 
+const turnObservationExists = `-- name: TurnObservationExists :one
+select count(*) > 0 as exists_flag from agent_events
+where session_id = ? and turn_id = ?
+  and event_source = 'turn_observation' and kind = 'context'
+`
+
+type TurnObservationExistsParams struct {
+	SessionID string         `json:"session_id"`
+	TurnID    sql.NullString `json:"turn_id"`
+}
+
+func (q *Queries) TurnObservationExists(ctx context.Context, arg TurnObservationExistsParams) (bool, error) {
+	row := q.queryRow(ctx, q.turnObservationExistsStmt, turnObservationExists, arg.SessionID, arg.TurnID)
+	var exists_flag bool
+	err := row.Scan(&exists_flag)
+	return exists_flag, err
+}
+
 const upsertAgentSession = `-- name: UpsertAgentSession :one
 insert into agent_sessions (
     session_id, provider_session_id, parent_session_id,

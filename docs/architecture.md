@@ -341,8 +341,17 @@ contains only that repository's observation and the completion evidence frozen
 at the end boundary. Unknown completion remains unknown.
 
 The context event lets turn packaging include the original prompt and available
-final response in the destination repository. Observations remain local and do not
-enter tool-delta line scoring or change AI attribution percentages.
+final response in the destination repository. Publication and packaging use the
+same lineage session identity, which may differ from the recorder's native session
+identity for Kiro or come from the transcript for Gemini.
+
+Bundles attached through an observation include
+`repository_association: {"basis":"turn_observation","authorship":"unknown"}`.
+This qualifier survives upload preparation, including when the bundle has no tool
+steps. It means the repository changed during the turn, not that the agent caused
+the change or that the prompt applies to it. Consumers must preserve that
+distinction; tool evidence, when present, is assessed separately. Observation
+snapshots remain local and do not change AI attribution percentages.
 
 Publication is idempotent. Failures retain capture state for a repeated completion
 hook; there is no publication worker or automatic backfill. Completed checkpoints,

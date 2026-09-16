@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Cross-repository turn publication now uses the same lineage session identity as
+  packaging, including Kiro and transcript-derived Gemini sessions.
+- Packaged provenance preserves unknown authorship for repositories associated
+  through turn observations, including after upload preparation.
 - Failed turn snapshot cleanup retains the session cursor for retry on completion
   events or the next prompt, including for Claude turns without provider turn IDs.
 - Cursor turn observations retain the provider generation ID to pair prompt and

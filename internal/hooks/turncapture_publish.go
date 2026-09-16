@@ -14,10 +14,12 @@ import (
 )
 
 // publishTurnObservation stores observed changes as repository context without authorship.
-func publishTurnObservation(ctx context.Context, provider string, event *Event, state *CaptureState, bh *broker.Handle) error {
+func publishTurnObservation(ctx context.Context, adapter HookProvider, event *Event, state *CaptureState, bh *broker.Handle) error {
 	if state.TurnObservationKey == "" || bh == nil {
 		return nil
 	}
+	provider := adapter.Name()
+	lineageSession := lineageProviderSessionID(adapter, event, state)
 	r, err := turnRecorder()
 	if err != nil {
 		return err
@@ -88,7 +90,7 @@ func publishTurnObservation(ctx context.Context, provider string, event *Event, 
 		key := fmt.Sprintf("turn-observation:%x", sha256.Sum256([]byte(provider+"\x00"+rec.SessionID+"\x00"+rec.BoundaryKey+"\x00"+subject.RepositoryID)))
 		ev := broker.ObservationContext(broker.RawEvent{
 			EventID: key, SourceKey: "turn-observation:" + rec.SessionID,
-			Provider: provider, ProviderSessionID: rec.SessionID, TurnID: rec.TurnID,
+			Provider: provider, ProviderSessionID: lineageSession, TurnID: rec.TurnID,
 			Timestamp: rec.End.BoundaryAt.UnixMilli(), SessionStartedAt: rec.StartedAt.UnixMilli(),
 			Kind: "context", Role: "system", EventSource: "turn_observation",
 			Summary:           "Repository changes observed during the turn; authorship not established.",

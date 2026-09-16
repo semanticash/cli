@@ -644,6 +644,11 @@ limit 1;
 select count(*) > 0 as exists_flag from agent_events
 where session_id = ? and turn_id = ?;
 
+-- name: TurnObservationExists :one
+select count(*) > 0 as exists_flag from agent_events
+where session_id = ? and turn_id = ?
+  and event_source = 'turn_observation' and kind = 'context';
+
 -- name: ListStepEventsForTurn :many
 -- Returns step events for provenance bundle packaging.
 -- Includes both hook-captured and transcript-sourced events

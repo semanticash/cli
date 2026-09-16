@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/semanticash/cli/internal/broker"
+	"github.com/semanticash/cli/internal/provenance"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -17,10 +18,17 @@ import (
 )
 
 func TestTurnObservationPublishesContextWithoutAuthorship(t *testing.T) {
-	for _, provider := range []string{"cursor", "claude-code"} {
+	for _, provider := range []string{"cursor", "claude-code", "kiro-cli", "gemini-cli"} {
 		t.Run(provider, func(t *testing.T) { testTurnObservationContext(t, provider) })
 	}
 }
+
+type publicationProvider struct {
+	*fakeProvider
+	lineageSession string
+}
+
+func (p *publicationProvider) DeriveProviderSessionID(string) string { return p.lineageSession }
 
 func testTurnObservationContext(t *testing.T, provider string) {
 	ctx := context.Background()
@@ -32,8 +40,13 @@ func testTurnObservationContext(t *testing.T, provider string) {
 	defer func() { _ = broker.Close(a.bh) }()
 	b := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "B"))
 	c := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "C"))
-	p := &fakeProvider{name: provider}
-	prompt := &Event{Type: PromptSubmitted, SessionID: "session", ProviderTurnID: "generation", Prompt: "Change B", CWD: a.repoPath, Timestamp: time.Now().UnixMilli()}
+	p := &publicationProvider{fakeProvider: &fakeProvider{name: provider}}
+	lineageSession := "workspace-session"
+	if provider == "gemini-cli" {
+		lineageSession = "transcript-session"
+		p.lineageSession = lineageSession
+	}
+	prompt := &Event{Type: PromptSubmitted, SessionID: "workspace-session", ProviderSessionID: "native-session", ProviderTurnID: "generation", Prompt: "Change B", CWD: a.repoPath, Timestamp: time.Now().UnixMilli()}
 	if err := Dispatch(ctx, p, prompt, a.bh, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +63,7 @@ func testTurnObservationContext(t *testing.T, provider string) {
 		t.Fatal(err)
 	}
 	_, err = broker.WriteEventsToRepo(ctx, a.repoPath, []broker.RawEvent{{
-		EventID: "prompt", SourceKey: "source", Provider: provider, ProviderSessionID: prompt.SessionID,
+		EventID: "prompt", SourceKey: "source", Provider: provider, ProviderSessionID: lineageSession,
 		TurnID: state.TurnID, Kind: "user", Role: "user", PayloadHash: promptHash, EventSource: "hook",
 		Timestamp: prompt.Timestamp, SourceProjectPath: a.repoPath,
 	}}, source)
@@ -73,6 +86,14 @@ func testTurnObservationContext(t *testing.T, provider string) {
 		}
 		sourceEvents++
 	}
+	if provider == "kiro-cli" || provider == "gemini-cli" {
+		response := provenance.RedactAndStoreResponse(ctx, source, "response", "Changed B.", prompt.Timestamp+1)
+		state.ResponseStatus, state.ResponseHash = response.Status, response.Hash
+		state.ResponseCompletedAt = response.CompletedAt
+		if err := SaveCaptureState(state); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(b.repoPath, "inner.txt"), []byte("committed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -84,11 +105,14 @@ func testTurnObservationContext(t *testing.T, provider string) {
 	if err := os.WriteFile(filepath.Join(c.repoPath, "inner.txt"), []byte("human edit\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stop := &Event{Type: AgentCompleted, SessionID: prompt.SessionID, ProviderTurnID: prompt.ProviderTurnID, CWD: a.repoPath, Timestamp: time.Now().UnixMilli()}
+	stop := &Event{Type: AgentCompleted, SessionID: prompt.SessionID, ProviderSessionID: prompt.ProviderSessionID, ProviderTurnID: prompt.ProviderTurnID, CWD: a.repoPath, Timestamp: time.Now().UnixMilli()}
 	if err := Dispatch(ctx, p, stop, a.bh, source); err != nil {
 		t.Fatal(err)
 	}
 	for _, w := range []*toolWindowWorld{b, c} {
+		if found, err := provenance.TurnRecorded(ctx, w.repoPath, provider, lineageSession, state.TurnID); err != nil || !found {
+			t.Fatalf("packaging cannot discover destination turn: %v", err)
+		}
 		h, err := sqlstore.Open(ctx, filepath.Join(w.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
 		if err != nil {
 			t.Fatal(err)
@@ -117,6 +141,9 @@ func testTurnObservationContext(t *testing.T, provider string) {
 		if len(projected.Repositories) != 1 || projected.Repositories[0].Subject.RepositoryID != w.repoID || projected.End.TrackedCompletion != "unknown" {
 			t.Fatalf("projection lost identity or uncertainty: %+v", projected)
 		}
+		if provider == "kiro-cli" && projected.SessionID != prompt.ProviderSessionID {
+			t.Fatal("recorder lost native session identity")
+		}
 		if w == b && len(projected.End.Repositories[0].Changes) != 2 {
 			t.Fatal("commit or remaining dirty change missing")
 		}
@@ -135,7 +162,19 @@ func testTurnObservationContext(t *testing.T, provider string) {
 		if err != nil || !strings.Contains(string(bundle), promptHash) {
 			t.Fatalf("destination lacks original prompt: %s %v", bundle, err)
 		}
-		if provider == "claude-code" {
+		var packaged struct {
+			Association struct {
+				Basis      string `json:"basis"`
+				Authorship string `json:"authorship"`
+			} `json:"repository_association"`
+		}
+		if err := json.Unmarshal(bundle, &packaged); err != nil {
+			t.Fatal(err)
+		}
+		if packaged.Association.Basis != "turn_observation" || packaged.Association.Authorship != "unknown" {
+			t.Error("bundle lost observation-only association")
+		}
+		if provider != "cursor" {
 			var status, responseHash string
 			if err := h.DB.QueryRow(`select response_status, coalesce(response_hash, '') from provenance_manifests where turn_id=? and kind='turn_bundle'`, state.TurnID).Scan(&status, &responseHash); err != nil {
 				t.Fatal(err)
@@ -148,7 +187,7 @@ func testTurnObservationContext(t *testing.T, provider string) {
 				t.Fatalf("response object unavailable: %v", err)
 			}
 		}
-		if err := publishTurnObservation(ctx, provider, stop, state, a.bh); err != nil {
+		if err := publishTurnObservation(ctx, p, stop, state, a.bh); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.DB.QueryRow(`select count(*) from agent_event_evidence_links where evidence_kind='turn_observation'`).Scan(&count); err != nil || count != 1 {
@@ -160,7 +199,7 @@ func testTurnObservationContext(t *testing.T, provider string) {
 	}
 	wrong := *state
 	wrong.TurnID = "another-turn"
-	if err := publishTurnObservation(ctx, provider, stop, &wrong, a.bh); err == nil {
+	if err := publishTurnObservation(ctx, p, stop, &wrong, a.bh); err == nil {
 		t.Fatal("accepted mismatched turn identity")
 	}
 }

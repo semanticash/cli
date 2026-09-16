@@ -32,7 +32,8 @@ type TurnContext struct {
 	TokenUsage    *TurnTokenUsage
 
 	// Empty status means no hook-provided response.
-	ResponseCandidate ResponseCandidate
+	ResponseCandidate  ResponseCandidate
+	repositoryObserved bool
 }
 
 // PromptCandidate identifies a prompt object available during packaging.
@@ -82,6 +83,15 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	promptEvent := findPromptEvent(ctx, h, sess.SessionID, tc.TurnID)
 	if promptEvent == nil {
 		promptEvent = ensurePromptCandidate(ctx, bs, sourceBlobs, tc.Prompt)
+	}
+	// Preserve the observation qualifier even when the turn has no tool steps.
+	tc.repositoryObserved, err = h.Queries.TurnObservationExists(ctx, sqldb.TurnObservationExistsParams{
+		SessionID: sess.SessionID,
+		TurnID:    sqlstore.NullStr(tc.TurnID),
+	})
+	if err != nil {
+		slog.Warn("provenance: inspect repository association failed", "err", err)
+		return
 	}
 
 	// Load direct tool events for this turn.
@@ -349,6 +359,11 @@ func buildProvenanceBundleFromFiltered(
 		CompletedAt:       tc.CompletedAt,
 		Steps:             make([]bundleStep, 0, len(steps)),
 	}
+	if tc.repositoryObserved {
+		bundle.RepositoryAssociation = &bundleRepositoryAssociation{
+			Basis: "turn_observation", Authorship: "unknown",
+		}
+	}
 
 	// Response metadata upgrades the bundle format. The redacted body remains a
 	// separate content-addressed object.
@@ -460,18 +475,25 @@ func selectStepDeltaHash(links []sqldb.AgentEventEvidenceLink) (string, bool) {
 
 // provenanceBundle is the JSON shape written for a packaged turn.
 type provenanceBundle struct {
-	Version           int             `json:"version"`
-	Provider          string          `json:"provider"`
-	SessionID         string          `json:"session_id"`
-	ProviderSessionID string          `json:"provider_session_id"`
-	ParentSessionID   *string         `json:"parent_session_id"`
-	TurnID            string          `json:"turn_id"`
-	CWD               string          `json:"cwd,omitempty"`
-	StartedAt         int64           `json:"started_at"`
-	CompletedAt       int64           `json:"completed_at,omitempty"`
-	Prompt            *bundlePrompt   `json:"prompt,omitempty"`
-	Steps             []bundleStep    `json:"steps"`
-	Response          *bundleResponse `json:"response,omitempty"`
+	Version               int                          `json:"version"`
+	Provider              string                       `json:"provider"`
+	SessionID             string                       `json:"session_id"`
+	ProviderSessionID     string                       `json:"provider_session_id"`
+	ParentSessionID       *string                      `json:"parent_session_id"`
+	TurnID                string                       `json:"turn_id"`
+	CWD                   string                       `json:"cwd,omitempty"`
+	StartedAt             int64                        `json:"started_at"`
+	CompletedAt           int64                        `json:"completed_at,omitempty"`
+	Prompt                *bundlePrompt                `json:"prompt,omitempty"`
+	Steps                 []bundleStep                 `json:"steps"`
+	Response              *bundleResponse              `json:"response,omitempty"`
+	RepositoryAssociation *bundleRepositoryAssociation `json:"repository_association,omitempty"`
+}
+
+// bundleRepositoryAssociation records an observed association, not proof of authorship.
+type bundleRepositoryAssociation struct {
+	Basis      string `json:"basis"`
+	Authorship string `json:"authorship"`
 }
 
 // bundleResponse describes the final response referenced by a bundle.
