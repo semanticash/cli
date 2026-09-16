@@ -132,14 +132,15 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 	_, _ = fmt.Fprintf(out, "AI Modified:  %d lines\n", res.AIModifiedLines)
 	incomplete := res.Capture != nil && res.Capture.Status != "complete"
 	if incomplete {
-		_, _ = fmt.Fprintf(out, "Unattributed: %d lines\n", res.UnattributedLines)
-		if res.UnattributedLines > 0 {
-			impact := fmt.Sprintf("%d lines have unknown authorship", res.UnattributedLines)
-			if res.UnattributedLines == 1 {
-				impact = "1 line has unknown authorship"
-			}
-			_, _ = fmt.Fprintf(out, "Capture:      %s (%s)\n", res.Capture.Status, impact)
+		unit := "lines"
+		if res.UnattributedLines == 1 {
+			unit = "line"
 		}
+		_, _ = fmt.Fprintf(out, "Unattributed: %d %s", res.UnattributedLines, unit)
+		if res.UnattributedLines > 0 {
+			_, _ = fmt.Fprint(out, " (authorship unknown)")
+		}
+		_, _ = fmt.Fprintln(out)
 	} else {
 		_, _ = fmt.Fprintf(out, "Human:        %d lines\n", res.HumanLines)
 	}
@@ -151,24 +152,14 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 	}
 }
 
-// writeAttributionNotes explains capture gaps without changing JSON diagnostics.
+// writeAttributionNotes leaves capture diagnostics in JSON output.
 func writeAttributionNotes(out io.Writer, res *service.AttributionResult) {
 	const captureNote = "Capture is incomplete. Unmatched lines are unattributed, not confirmed human changes."
-	notes := make([]string, 0, len(res.Diagnostics.Notes)+1)
+	notes := make([]string, 0, len(res.Diagnostics.Notes))
 	for _, note := range res.Diagnostics.Notes {
 		if note != captureNote {
 			notes = append(notes, note)
 		}
-	}
-	if res.Capture != nil && res.Capture.Status != "complete" {
-		note := "Some command capture evidence is unavailable."
-		if res.Capture.Status == "pending" {
-			note = "Some command capture evidence is still pending."
-		}
-		if res.TotalLines > 0 && res.AILines == res.TotalLines && res.UnattributedLines == 0 {
-			note += fmt.Sprintf(" All %d changed lines matched AI evidence; no lines were left unattributed.", res.TotalLines)
-		}
-		notes = append(notes, note)
 	}
 	if len(notes) > 0 {
 		_, _ = fmt.Fprintln(out, "Notes:")

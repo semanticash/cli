@@ -31,9 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- `semantica blame` now explains capture gaps in terms of unattributed lines.
-  Fully matched results keep capture uncertainty in a secondary note; JSON
-  diagnostics are unchanged.
+- `semantica blame` shows unknown authorship through the unattributed line count.
+  Capture status and technical capture notes remain in JSON diagnostics.
 - Cross-repository turn publication now uses the same lineage session identity as
   packaging, including Kiro and transcript-derived Gemini sessions.
 - Packaged provenance preserves unknown authorship for repositories associated

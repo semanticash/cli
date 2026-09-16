@@ -30,11 +30,11 @@ func TestCapturePresentationReflectsUnattributedLines(t *testing.T) {
 		total, ai, unattributed int
 		want, absent            string
 	}{
-		{"fully_matched", "incomplete", 244, 244, 0, "All 244 changed lines matched AI evidence; no lines were left unattributed.", "Capture:"},
-		{"partial", "incomplete", 100, 20, 80, "Capture:      incomplete (80 lines have unknown authorship)", "All 100"},
-		{"rounded_percentage", "incomplete", 100000, 99999, 1, "Capture:      incomplete (1 line has unknown authorship)", "All 100000"},
-		{"pending", "pending", 244, 244, 0, "Some command capture evidence is still pending.", "is unavailable"},
-		{"no_lines", "incomplete", 0, 0, 0, "Some command capture evidence is unavailable.", "All 0"},
+		{"fully_matched", "incomplete", 244, 244, 0, "Unattributed: 0 lines\n", "authorship unknown"},
+		{"partial", "incomplete", 100, 20, 80, "Unattributed: 80 lines (authorship unknown)", "Human:"},
+		{"rounded_percentage", "incomplete", 100000, 99999, 1, "Unattributed: 1 line (authorship unknown)", "All 100000"},
+		{"pending", "pending", 244, 244, 0, "Unattributed: 0 lines\n", "pending"},
+		{"no_lines", "incomplete", 0, 0, 0, "Unattributed: 0 lines\n", "authorship unknown"},
 		{"complete", "complete", 100, 100, 0, "Human:        0 lines", "command capture evidence"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestCapturePresentationReflectsUnattributedLines(t *testing.T) {
 			writeAttributionCounts(&out, res)
 			writeAttributionNotes(&out, res)
 			text := out.String()
-			if !strings.Contains(text, tc.want) || strings.Contains(text, tc.absent) || strings.Contains(text, "Capture is incomplete.") || !strings.Contains(text, "Existing evidence note.") {
+			if !strings.Contains(text, tc.want) || strings.Contains(text, tc.absent) || strings.Contains(strings.ToLower(text), "capture") || !strings.Contains(text, "Existing evidence note.") {
 				t.Fatalf("unexpected presentation:\n%s", text)
 			}
 			after, err := json.Marshal(res)
