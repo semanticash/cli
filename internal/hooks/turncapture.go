@@ -21,13 +21,24 @@ func turnRecorder() (turncapture.Recorder, error) {
 	return turncapture.Recorder{Root: filepath.Join(base, "turn-observations")}, err
 }
 
+func turnCaptureSession(provider string, event *Event) string {
+	if provider == "kiro-cli" {
+		// A workspace key cannot distinguish Kiro conversations.
+		return event.ProviderSessionID
+	}
+	return event.SessionID
+}
+
 // beginTurnCapture captures repository baselines for supported providers.
 func beginTurnCapture(ctx context.Context, provider string, event *Event, bh *broker.Handle, offset int) {
-	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" && provider != "copilot" && provider != "cursor" {
+	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" && provider != "copilot" && provider != "cursor" && provider != "kiro-cli" {
 		return
 	}
 	// Cursor baselines require a generation ID from the prompt boundary.
 	if provider == "cursor" && event.ProviderTurnID == "" {
+		return
+	}
+	if turnCaptureSession(provider, event) == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -78,11 +89,14 @@ func startTurnCapture(ctx context.Context, r turncapture.Recorder, provider stri
 		sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%s", event.TranscriptRef, offset, event.Prompt))
 		key = fmt.Sprintf("source:%x", sum)
 	}
-	return r.Begin(ctx, provider, event.SessionID, event.TurnID, event.ProviderTurnID, key, subjects)
+	return r.Begin(ctx, provider, turnCaptureSession(provider, event), event.TurnID, event.ProviderTurnID, key, subjects)
 }
 
 func observeTurnCapture(ctx context.Context, provider string, event *Event) {
-	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" && provider != "copilot" && provider != "cursor" {
+	if provider != "codex" && provider != "claude-code" && provider != "gemini-cli" && provider != "copilot" && provider != "cursor" && provider != "kiro-cli" {
+		return
+	}
+	if turnCaptureSession(provider, event) == "" {
 		return
 	}
 	evidence, stop := turnEvidence(provider, event)
@@ -98,7 +112,7 @@ func observeTurnCapture(ctx context.Context, provider string, event *Event) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := r.Observe(ctx, provider, event.SessionID, event.ProviderTurnID, evidence, stop); err != nil {
+	if err := r.Observe(ctx, provider, turnCaptureSession(provider, event), event.ProviderTurnID, evidence, stop); err != nil {
 		slog.Warn("turn observation evidence failed", "err", err)
 	}
 }

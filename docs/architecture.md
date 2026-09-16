@@ -272,7 +272,7 @@ independently of lineage restore functionality.
 ### Local turn observations
 
 Turn-boundary observation runs automatically for Codex, Claude Code, Gemini CLI,
-Copilot CLI, and Cursor IDE through their installed hooks. No environment gate
+Copilot CLI, Cursor IDE, and Kiro CLI through their installed hooks. No environment gate
 or additional per-tool snapshots are required. Other providers do not use this
 capture path.
 
@@ -326,6 +326,14 @@ A prompt without that ID does not start an observation. Paired shell execution
 IDs can establish provider-tracked completion; `stop` alone cannot. Cursor IDE
 and CLI share an adapter, but CLI lifecycle coverage is not validated. Tool or
 session events do not substitute for a missing prompt boundary.
+
+Kiro CLI v2 uses `userPromptSubmit` and `stop` from the installed Semantica agent
+profile (`kiro-cli chat --agent-engine v2 --agent semantica`). Turn observations
+require its native `session_id`; the workspace-based
+capture-state key remains separate. Missing session IDs do not create or close
+observations. The tested legacy v1 engine omits this identity and does not support
+turn observations. The adapter does not supply paired shell execution IDs, so shell
+completion remains unknown. Kiro IDE is not enabled for turn observations.
 
 The records have no attribution, routing, worker, or upload consumers. Snapshot
 failures produce unknown observations without interrupting the provider flow.

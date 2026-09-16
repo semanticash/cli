@@ -35,8 +35,7 @@ type Provider struct {
 	sessionsDir string
 }
 
-// New returns the Kiro CLI hook provider for explicit registration
-// via providers.NewHookRegistry().
+// New returns the Kiro CLI hook provider.
 func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string        { return providerName }
@@ -59,10 +58,7 @@ const (
 	agentDescription = "Semantica capture wrapper. Mirrors default-agent behavior and emits attribution events."
 )
 
-// agentToolsWildcard is the value used for the "tools" field. The
-// wildcard makes the wrapper agent usable for any task without
-// enumerating every built-in tool, which would drift as the host CLI
-// adds new tools.
+// agentToolsWildcard includes all tools without maintaining a fixed list.
 var agentToolsWildcard = []string{"*"}
 
 // hookEntries returns the canonical Kiro CLI hooks. File and shell
@@ -168,9 +164,7 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		return 0, err
 	}
 
-	// Print a one-line activation hint. Hooks fire only for sessions
-	// that select this agent, so the user has to opt in explicitly
-	// the first time.
+	// Hooks run only in sessions that select the Semantica agent.
 	fmt.Fprintln(os.Stderr, "Kiro CLI hooks installed. To activate capture, run: kiro-cli agent set-default semantica")
 
 	return count, nil
@@ -306,13 +300,14 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	wsKey := workspaceKey(cwd)
 
 	event := &hooks.Event{
-		SessionID:    wsKey,
-		Prompt:       payload.Prompt,
-		Timestamp:    time.Now().UnixMilli(),
-		CWD:          cwd,
-		ToolName:     payload.ToolName,
-		ToolInput:    payload.ToolInput,
-		ToolResponse: payload.ToolResponse,
+		SessionID:         wsKey,
+		ProviderSessionID: strings.TrimSpace(payload.SessionID),
+		Prompt:            payload.Prompt,
+		Timestamp:         time.Now().UnixMilli(),
+		CWD:               cwd,
+		ToolName:          payload.ToolName,
+		ToolInput:         payload.ToolInput,
+		ToolResponse:      payload.ToolResponse,
 	}
 
 	switch hookName {
@@ -351,7 +346,7 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		return nil, nil
 	}
 
-	// Reuse the pinned conversation reference when it is available.
+	// Reuse the pinned conversation reference when available.
 	if event.Type == hooks.AgentCompleted {
 		if state, err := hooks.LoadCaptureStateByKey(wsKey); err == nil {
 			event.TranscriptRef = state.TranscriptRef
@@ -359,9 +354,8 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		}
 	}
 
-	// Conversation lookup is best-effort. Direct postToolUse hooks
-	// own capture, so prompt events must still save capture state
-	// even when the local conversation store is unavailable.
+	// Direct postToolUse hooks handle capture, so conversation lookup failure
+	// must not prevent saving prompt capture state.
 	resolve := p.resolveConversation
 	if resolve == nil {
 		resolve = resolveLatestConversation
@@ -420,8 +414,7 @@ func normalizeKiroToolName(toolName string, toolInput json.RawMessage) string {
 	}
 }
 
-// loadTurnIDFromCaptureState returns the active turn id, if one has
-// already been saved for the workspace.
+// loadTurnIDFromCaptureState returns the workspace's saved turn ID, if present.
 func loadTurnIDFromCaptureState(wsKey string) string {
 	state, err := hooks.LoadCaptureStateByKey(wsKey)
 	if err != nil {
@@ -438,11 +431,8 @@ func syntheticToolUseID(wsKey string, ts int64, toolName string, toolInput json.
 	return "kiro-step-" + hex.EncodeToString(hh.Sum(nil))[:16]
 }
 
-// syntheticSubagentToolUseID derives the shared pre/post id for a
-// subagent dispatch. Kiro hook payloads do not expose a provider tool
-// id, so the hash uses the Kiro session, Semantica turn, tool name,
-// and tool input. Omitting timestamp lets pre/post pair; including
-// turn id keeps identical dispatches in later prompts distinct.
+// syntheticSubagentToolUseID pairs subagent pre/post hooks without a provider tool ID.
+// The hash excludes time to preserve pairing and includes the turn to separate prompts.
 func syntheticSubagentToolUseID(sessionID, turnID, toolName string, toolInput json.RawMessage) string {
 	hh := sha256.New()
 	hh.Write([]byte(sessionID))
@@ -469,11 +459,8 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	return len(extractToolCalls(conv)), nil
 }
 
-// ReadFromOffset branches by transcript-ref shape. SQLite composite refs
-// (parent) stay a no-op because direct postToolUse hooks own parent capture
-// and replay would duplicate. JSONL refs (subagent children supplied by the
-// discoverer) are replayed since no direct-hook surface exists for inner
-// stage edits.
+// ReadFromOffset replays subagent JSONL transcripts, which lack direct edit hooks.
+// It skips parent SQLite references to avoid duplicating postToolUse capture.
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	if looksLikeKiroChildJSONLRef(transcriptRef) {
 		return readChildJSONL(ctx, transcriptRef, offset, bs)
