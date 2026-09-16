@@ -20,10 +20,7 @@ const (
 	AgentResponseCaptured   // final visible assistant response delivered by a hook
 )
 
-// HookPhase returns a short stable string for the event's lifecycle point.
-// Used by providers to disambiguate event IDs when the same tool_use_id
-// appears in both a pre and post hook (e.g., PreToolUse[Agent] and
-// PostToolUse[Agent] share a tool_use_id but are different events).
+// HookPhase distinguishes lifecycle events that share a tool_use_id.
 func (t EventType) HookPhase() string {
 	switch t {
 	case PromptSubmitted:
@@ -43,8 +40,7 @@ func (t EventType) HookPhase() string {
 	}
 }
 
-// Event is the provider-agnostic representation of an agent lifecycle event.
-// Produced by HookProvider.ParseHookEvent from provider-specific stdin JSON.
+// Event is an agent lifecycle event normalized by HookProvider.ParseHookEvent.
 type Event struct {
 	Type          EventType
 	SessionID     string
@@ -62,10 +58,13 @@ type Event struct {
 	CWD    string // session/launch working directory from hook payload
 	// EffectiveCWD selects the tool-window repository when a provider supplies
 	// a command-specific working directory. An empty value uses CWD.
-	EffectiveCWD string
-	ToolName     string          // Write, Edit, Bash, Agent, etc.
-	ToolInput    json.RawMessage // raw tool_input from hook payload
-	ToolResponse json.RawMessage // raw tool_response from hook payload
+	EffectiveCWD      string
+	ToolName          string          // Write, Edit, Bash, Agent, etc.
+	ToolInput         json.RawMessage // raw tool_input from hook payload
+	ToolResponse      json.RawMessage // raw tool_response from hook payload
+	ProviderTurnID    string          // provider turn ID, separate from TurnID
+	ProviderSessionID string          // native session ID; SessionID may be a workspace key
+	BackgroundTasks   json.RawMessage // provider Stop inventory; nil means unavailable
 
 	// Response is hook-provided final assistant text. Nil means absent; an empty
 	// string means the provider returned an empty response.

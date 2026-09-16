@@ -87,6 +87,7 @@ func HookTimestampFromContext(ctx context.Context) int64 {
 
 // Dispatch routes a normalized hook event.
 func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *broker.Handle, blobStore *blobs.Store) error {
+	observeTurnCapture(ctx, provider.Name(), event)
 	if event.Type == ToolStepStarted || event.Type == ToolStepCompleted {
 		traceToolLifecycle("tool lifecycle received", "provider", provider.Name(), "session", event.SessionID,
 			"turn", event.TurnID, "tool_use", event.ToolUseID, "event_type", event.Type)
@@ -104,15 +105,16 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		event.TurnID = turnID
 
 		newState := &CaptureState{
-			SessionID:         event.SessionID,
-			Provider:          provider.Name(),
-			TranscriptRef:     event.TranscriptRef,
-			TranscriptOffset:  offset,
-			Timestamp:         event.Timestamp,
-			TurnID:            turnID,
-			PromptSubmittedAt: event.Timestamp,
-			CWD:               event.CWD,
-			TurnStartOffset:   offset,
+			SessionID:          event.SessionID,
+			Provider:           provider.Name(),
+			TranscriptRef:      event.TranscriptRef,
+			TranscriptOffset:   offset,
+			Timestamp:          event.Timestamp,
+			TurnID:             turnID,
+			TurnObservationKey: turnObservationKey(event, offset),
+			PromptSubmittedAt:  event.Timestamp,
+			CWD:                event.CWD,
+			TurnStartOffset:    offset,
 		}
 		// Keep unresolved transcript data behind the current EOF.
 		if prev, perr := LoadCaptureState(event.SessionID); perr == nil {
@@ -144,6 +146,7 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		if err := SaveCaptureState(newState); err != nil {
 			return err
 		}
+		beginTurnCapture(benchCtx, provider.Name(), event, bh, offset)
 
 		// Emit direct prompt event if the provider supports it.
 		if emitter, ok := provider.(DirectHookEmitter); ok {
@@ -209,6 +212,11 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		finalSubagentSweepAndCleanup(benchCtx, provider, event, bh, blobStore)
 		captureDuration := time.Since(captureStart)
+		if preState != nil && preState.Provider == provider.Name() {
+			if err := publishTurnObservation(benchCtx, provider, event, preState, bh); err != nil {
+				return fmt.Errorf("publish turn observation: %w", err)
+			}
+		}
 
 		// Package the turn artifacts after capture succeeds.
 		// This must happen before DeleteCaptureState because packaging
@@ -967,16 +975,7 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	}
 
 	tc := buildTurnContext(preState, event, provider.Name())
-	// For providers that derive the session ID from the transcript path
-	// (e.g., Gemini CLI uses the filename stem), resolve the provider session
-	// ID using the same ReadFromOffset path so the DB lookup matches.
-	if emitter, ok := provider.(interface {
-		DeriveProviderSessionID(transcriptRef string) string
-	}); ok {
-		if derived := emitter.DeriveProviderSessionID(preState.TranscriptRef); derived != "" {
-			tc.SessionID = derived
-		}
-	}
+	tc.SessionID = lineageProviderSessionID(provider, event, preState)
 	prompt, promptErr := provenance.LoadTurnPrompt(ctx, repoPath, tc.Provider, tc.SessionID, tc.TurnID)
 	if promptErr != nil {
 		slog.Debug("provenance: load turn prompt failed", "repo", repoPath, "err", promptErr)
@@ -1017,9 +1016,13 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 			targets = append(targets, repo.Path)
 		}
 	}
-	provenance.PackageTurn(ctx, repoPath, tc, blobStore)
+	response := provenance.PackageTurn(ctx, repoPath, tc, blobStore)
 	if len(targets) == 1 {
 		return
+	}
+	// Reuse the final response resolved in the source repository.
+	if response.Status == "complete" || response.Status == "empty" {
+		tc.ResponseCandidate = response
 	}
 	packageSource := blobStore
 	if originStore, oerr := blobs.NewStore(filepath.Join(repoPath, ".semantica", "objects")); oerr == nil {
@@ -1028,6 +1031,16 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 	for _, target := range targets[1:] {
 		provenance.PackageTurn(ctx, target, tc, packageSource)
 	}
+}
+
+// lineageProviderSessionID resolves the lineage session, which may differ from the recorder session.
+func lineageProviderSessionID(provider HookProvider, event *Event, state *CaptureState) string {
+	if derived, ok := provider.(interface{ DeriveProviderSessionID(string) string }); ok {
+		if id := derived.DeriveProviderSessionID(state.TranscriptRef); id != "" {
+			return id
+		}
+	}
+	return event.SessionID
 }
 
 // freezeTurnTokenUsage keeps the first valid usage report for the active turn.

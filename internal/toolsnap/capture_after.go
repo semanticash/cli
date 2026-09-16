@@ -6,12 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/semanticash/cli/internal/platform"
 )
 
 // CaptureResult contains a post-tool snapshot and its bounded delta.
@@ -191,10 +187,10 @@ func (s *Store) batchReadBlobs(ctx context.Context, hashes []string) (map[string
 	if len(hashes) == 0 {
 		return nil, 0, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "--git-dir", s.Dir, "cat-file", "--batch")
-	cmd.Dir = filepath.Dir(s.Dir)
-	cmd.Env = storeGitEnv(nil)
-	platform.HideWindow(cmd)
+	cmd, err := s.gitCommand(ctx, nil, "cat-file", "--batch")
+	if err != nil {
+		return nil, 0, err
+	}
 	cmd.Stdin = strings.NewReader(strings.Join(hashes, "\n") + "\n")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

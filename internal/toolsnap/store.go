@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/semanticash/cli/internal/platform"
 )
 
 // storeDirName is the bare snapshot store location under .semantica.
@@ -314,13 +317,12 @@ func (s *Store) sanitizeConfig(ctx context.Context) error {
 }
 
 func (s *Store) initialize(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.Dir), 0o755); err != nil {
-		return fmt.Errorf("toolsnap: create store parent: %w", err)
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return fmt.Errorf("toolsnap: create store directory: %w", err)
 	}
 	// Matching object formats let snapshot trees reference repository blobs.
 	// Config isolation also prevents inherited templates from modifying the store.
-	_, err := gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil),
-		"init", "--bare", "--object-format="+s.repo.ObjectFormat, s.Dir)
+	_, err := s.git(ctx, "init", "--bare", "--object-format="+s.repo.ObjectFormat)
 	if err != nil {
 		return fmt.Errorf("toolsnap: init store: %w", err)
 	}
@@ -371,6 +373,18 @@ func (s *Store) ensureAlternate() error {
 // git runs a git command against the bare store, isolated from the
 // user's environment discovery.
 func (s *Store) git(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"--git-dir", s.Dir}, args...)
-	return gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil), full...)
+	return s.gitStdin(ctx, nil, nil, args...)
+}
+
+func (s *Store) gitCommand(ctx context.Context, env []string, args ...string) (*exec.Cmd, error) {
+	cwd, gitDir, err := storeGitLocation(s.Dir)
+	if err != nil {
+		return nil, err
+	}
+	full := append([]string{"-c", "core.longpaths=true", "--bare", "--git-dir", gitDir}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Dir = cwd
+	cmd.Env = storeLocationEnv(gitDir, env)
+	platform.HideWindow(cmd)
+	return cmd, nil
 }

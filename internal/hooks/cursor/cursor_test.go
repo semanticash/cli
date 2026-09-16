@@ -320,6 +320,31 @@ func TestParseHookEvent_BeforeSubmitPrompt(t *testing.T) {
 	}
 }
 
+func TestParseHookEvent_PreservesGenerationAcrossTurn(t *testing.T) {
+	p := &Provider{}
+	for _, hook := range []string{"before-submit-prompt", "pre-tool-use", "post-tool-use", "stop"} {
+		t.Run(hook, func(t *testing.T) {
+			input := `{"conversation_id":"conversation","generation_id":"generation","tool_name":"Shell","tool_use_id":"shell","tool_input":{"command":"true"}}`
+			event, err := p.ParseHookEvent(context.Background(), hook, strings.NewReader(input))
+			if err != nil || event == nil {
+				t.Fatalf("parse %s: event=%+v err=%v", hook, event, err)
+			}
+			if event.SessionID != "conversation" || event.ProviderTurnID != "generation" || event.TurnID != "" {
+				t.Fatalf("provider identity lost or replaced Semantica identity: %+v", event)
+			}
+			if hook == "pre-tool-use" || hook == "post-tool-use" {
+				if event.ToolName != "Bash" || event.ToolUseID != "shell" {
+					t.Fatalf("shell identity lost: %+v", event)
+				}
+			}
+		})
+	}
+	event, err := p.ParseHookEvent(context.Background(), "before-submit-prompt", strings.NewReader(`{"conversation_id":"conversation","prompt":"no generation"}`))
+	if err != nil || event == nil || event.ProviderTurnID != "" {
+		t.Fatalf("missing generation was fabricated: event=%+v err=%v", event, err)
+	}
+}
+
 func TestParseHookEvent_BeforeSubmitPrompt_DerivesTranscriptPath(t *testing.T) {
 	p := &Provider{}
 	input := `{"conversation_id":"conv-123","prompt":"create a file","workspace_roots":["/tmp/demo-project"]}`

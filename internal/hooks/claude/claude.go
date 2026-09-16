@@ -327,15 +327,16 @@ func (p *Provider) SubagentStateKey(subagentTranscriptRef string) string {
 
 // stdinPayload is the JSON structure sent by Claude Code hooks on stdin.
 type stdinPayload struct {
-	SessionID      string          `json:"session_id"`
-	TranscriptPath string          `json:"transcript_path"`
-	CWD            string          `json:"cwd,omitempty"`
-	Prompt         string          `json:"prompt,omitempty"`
-	Model          string          `json:"model,omitempty"`
-	ToolUseID      string          `json:"tool_use_id,omitempty"`
-	ToolName       string          `json:"tool_name,omitempty"`
-	ToolInput      json.RawMessage `json:"tool_input,omitempty"`
-	ToolResponse   json.RawMessage `json:"tool_response,omitempty"`
+	SessionID       string          `json:"session_id"`
+	TranscriptPath  string          `json:"transcript_path"`
+	CWD             string          `json:"cwd,omitempty"`
+	Prompt          string          `json:"prompt,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
+	ToolName        string          `json:"tool_name,omitempty"`
+	ToolInput       json.RawMessage `json:"tool_input,omitempty"`
+	ToolResponse    json.RawMessage `json:"tool_response,omitempty"`
+	BackgroundTasks json.RawMessage `json:"background_tasks"`
 	// Claude docs also use tool_result - accept it as an alias.
 	ToolResult json.RawMessage `json:"tool_result,omitempty"`
 }
@@ -401,16 +402,17 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	}
 
 	event := &hooks.Event{
-		SessionID:     payload.SessionID,
-		TranscriptRef: payload.TranscriptPath,
-		Prompt:        payload.Prompt,
-		Model:         payload.Model,
-		Timestamp:     time.Now().UnixMilli(),
-		CWD:           payload.CWD,
-		ToolName:      payload.ToolName,
-		ToolInput:     payload.ToolInput,
-		ToolResponse:  toolResponse,
-		ToolUseID:     payload.ToolUseID,
+		SessionID:       payload.SessionID,
+		TranscriptRef:   payload.TranscriptPath,
+		Prompt:          payload.Prompt,
+		Model:           payload.Model,
+		Timestamp:       time.Now().UnixMilli(),
+		CWD:             payload.CWD,
+		ToolName:        payload.ToolName,
+		ToolInput:       payload.ToolInput,
+		ToolResponse:    toolResponse,
+		ToolUseID:       payload.ToolUseID,
+		BackgroundTasks: payload.BackgroundTasks,
 	}
 
 	switch hookName {

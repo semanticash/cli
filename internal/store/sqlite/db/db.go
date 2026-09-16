@@ -330,6 +330,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.turnEventExistsStmt, err = db.PrepareContext(ctx, turnEventExists); err != nil {
 		return nil, fmt.Errorf("error preparing query TurnEventExists: %w", err)
 	}
+	if q.turnObservationExistsStmt, err = db.PrepareContext(ctx, turnObservationExists); err != nil {
+		return nil, fmt.Errorf("error preparing query TurnObservationExists: %w", err)
+	}
 	if q.updateRepositoryEnabledAtStmt, err = db.PrepareContext(ctx, updateRepositoryEnabledAt); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateRepositoryEnabledAt: %w", err)
 	}
@@ -863,6 +866,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing turnEventExistsStmt: %w", cerr)
 		}
 	}
+	if q.turnObservationExistsStmt != nil {
+		if cerr := q.turnObservationExistsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing turnObservationExistsStmt: %w", cerr)
+		}
+	}
 	if q.updateRepositoryEnabledAtStmt != nil {
 		if cerr := q.updateRepositoryEnabledAtStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateRepositoryEnabledAtStmt: %w", cerr)
@@ -1034,6 +1042,7 @@ type Queries struct {
 	saveCheckpointSummaryStmt                    *sql.Stmt
 	stepEventExistsStmt                          *sql.Stmt
 	turnEventExistsStmt                          *sql.Stmt
+	turnObservationExistsStmt                    *sql.Stmt
 	updateRepositoryEnabledAtStmt                *sql.Stmt
 	upsertAgentSessionStmt                       *sql.Stmt
 	upsertAgentSourceStmt                        *sql.Stmt
@@ -1148,6 +1157,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		saveCheckpointSummaryStmt:                    q.saveCheckpointSummaryStmt,
 		stepEventExistsStmt:                          q.stepEventExistsStmt,
 		turnEventExistsStmt:                          q.turnEventExistsStmt,
+		turnObservationExistsStmt:                    q.turnObservationExistsStmt,
 		updateRepositoryEnabledAtStmt:                q.updateRepositoryEnabledAtStmt,
 		upsertAgentSessionStmt:                       q.upsertAgentSessionStmt,
 		upsertAgentSourceStmt:                        q.upsertAgentSourceStmt,

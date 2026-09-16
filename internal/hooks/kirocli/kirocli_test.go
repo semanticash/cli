@@ -386,6 +386,27 @@ func TestParseHookEvent_UserPromptSubmit(t *testing.T) {
 	}
 }
 
+func TestParseHookEvent_PreservesNativeSessionForTurnCapture(t *testing.T) {
+	t.Setenv("SEMANTICA_HOME", t.TempDir())
+	p := &Provider{resolveConversation: func(string) (string, string, error) {
+		return "", "", fmt.Errorf("store unavailable")
+	}}
+	for _, hook := range []string{"user-prompt-submit", "post-tool-use", "stop", "agent-spawn"} {
+		input := `{"cwd":"/workspace","session_id":"native-session","prompt":"test","tool_name":"execute_bash","tool_input":{"command":"true"}}`
+		event, err := p.ParseHookEvent(context.Background(), hook, strings.NewReader(input))
+		if err != nil || event == nil {
+			t.Fatalf("%s: event=%+v err=%v", hook, event, err)
+		}
+		if event.ProviderSessionID != "native-session" || event.SessionID != workspaceKey("/workspace") {
+			t.Fatalf("%s: session identities conflated: %+v", hook, event)
+		}
+	}
+	event, err := p.ParseHookEvent(context.Background(), "stop", strings.NewReader(`{"cwd":"/workspace"}`))
+	if err != nil || event == nil || event.ProviderSessionID != "" {
+		t.Fatalf("missing native session was fabricated: event=%+v err=%v", event, err)
+	}
+}
+
 // Resolver failures must not block prompt capture state.
 func TestParseHookEvent_UserPromptSubmit_ResolverFailureIsBestEffort(t *testing.T) {
 	t.Setenv("SEMANTICA_HOME", t.TempDir())

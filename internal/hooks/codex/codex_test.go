@@ -931,8 +931,8 @@ func TestProvider_RegistersUnderCanonicalName(t *testing.T) {
 	}
 }
 
-// Parsing drops the provider turn ID and preserves the tool-use ID.
-func TestParseHookEvent_PostToolUseDropsProviderTurnID(t *testing.T) {
+// Parsing preserves provider IDs without assigning Semantica's turn ID.
+func TestParseHookEvent_PostToolUseKeepsProviderTurnSeparate(t *testing.T) {
 	cases := []struct {
 		toolName string
 		// Direct emission may later split one invocation by file.
@@ -968,7 +968,10 @@ func TestParseHookEvent_PostToolUseDropsProviderTurnID(t *testing.T) {
 				t.Errorf("type: got %v, want ToolStepCompleted", event.Type)
 			}
 			if event.TurnID != "" {
-				t.Errorf("TurnID: got %q, want empty (provider turn id must be dropped)", event.TurnID)
+				t.Errorf("TurnID: got %q, want empty (assigned by Semantica)", event.TurnID)
+			}
+			if event.ProviderTurnID != "provider-turn" {
+				t.Fatal("provider turn identity lost")
 			}
 			if event.ToolUseID != tc.toolUseID {
 				t.Errorf("ToolUseID: got %q, want %q (supplied id must round-trip)", event.ToolUseID, tc.toolUseID)

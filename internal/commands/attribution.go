@@ -78,16 +78,7 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 					res.Diagnostics.ExactMatches, res.Diagnostics.NormalizedMatches, res.Diagnostics.ModifiedMatches)
 			}
 
-			// Notes bundle - pipeline-state message (if present) followed
-			// by factual notes (fallback, carry-forward, deletion). The
-			// attribution service assembles the slice once so CLI output
-			// and serialized results use the same ordering.
-			if len(res.Diagnostics.Notes) > 0 {
-				_, _ = fmt.Fprintln(out, "Notes:")
-				for _, n := range res.Diagnostics.Notes {
-					_, _ = fmt.Fprintf(out, "  %s\n", n)
-				}
-			}
+			writeAttributionNotes(out, res)
 
 			// AI files include the provider when known. Older or
 			// incomplete records fall back to the plain [ai] tag.
@@ -141,8 +132,15 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 	_, _ = fmt.Fprintf(out, "AI Modified:  %d lines\n", res.AIModifiedLines)
 	incomplete := res.Capture != nil && res.Capture.Status != "complete"
 	if incomplete {
-		_, _ = fmt.Fprintf(out, "Unattributed: %d lines\n", res.UnattributedLines)
-		_, _ = fmt.Fprintf(out, "Capture:      %s\n", res.Capture.Status)
+		unit := "lines"
+		if res.UnattributedLines == 1 {
+			unit = "line"
+		}
+		_, _ = fmt.Fprintf(out, "Unattributed: %d %s", res.UnattributedLines, unit)
+		if res.UnattributedLines > 0 {
+			_, _ = fmt.Fprint(out, " (authorship unknown)")
+		}
+		_, _ = fmt.Fprintln(out)
 	} else {
 		_, _ = fmt.Fprintf(out, "Human:        %d lines\n", res.HumanLines)
 	}
@@ -151,6 +149,23 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 		_, _ = fmt.Fprintf(out, "AI matched:   %.1f%%\n", res.AIPercentage)
 	} else {
 		_, _ = fmt.Fprintf(out, "AI %%:         %.1f%%\n", res.AIPercentage)
+	}
+}
+
+// writeAttributionNotes leaves capture diagnostics in JSON output.
+func writeAttributionNotes(out io.Writer, res *service.AttributionResult) {
+	const captureNote = "Capture is incomplete. Unmatched lines are unattributed, not confirmed human changes."
+	notes := make([]string, 0, len(res.Diagnostics.Notes))
+	for _, note := range res.Diagnostics.Notes {
+		if note != captureNote {
+			notes = append(notes, note)
+		}
+	}
+	if len(notes) > 0 {
+		_, _ = fmt.Fprintln(out, "Notes:")
+		for _, note := range notes {
+			_, _ = fmt.Fprintf(out, "  %s\n", note)
+		}
 	}
 }
 

@@ -54,6 +54,13 @@ var dirtyProbes = map[int]func(ctx context.Context, db *sql.DB) (bool, error){
 	10: func(ctx context.Context, db *sql.DB) (bool, error) {
 		return schemaHasTable(ctx, db, "checkpoint_capture")
 	},
+	11: func(ctx context.Context, db *sql.DB) (bool, error) {
+		var n int
+		err := db.QueryRowContext(ctx,
+			"select count(*) from sqlite_master where type = 'index' and name = 'idx_event_evidence_links_group'",
+		).Scan(&n)
+		return n > 0, err
+	},
 }
 
 func schemaHasTable(ctx context.Context, db *sql.DB, table string) (bool, error) {

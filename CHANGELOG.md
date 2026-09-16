@@ -5,10 +5,16 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.7.2] - Unreleased
+## [0.7.2] - 2026-09-16
 
 ### Added
 
+- Automatic local turn observations for Codex, Claude Code, Gemini CLI,
+  Copilot CLI, Cursor IDE, interactive Cursor CLI, and Kiro CLI v2. Parallel
+  snapshots retain cross-repository changes and reachable intermediate commits
+  without claiming authorship.
+- Changed repositories receive local turn-observation evidence, the original
+  prompt, and the available final response. AI attribution scores are unchanged.
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
 - Packaged turn provenance now preserves available provider-reported token
@@ -25,6 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Snapshot Git commands preserve Windows short paths for the Git directory and
+  common directory, including initialization. Unusable paths remain explicit
+  capture gaps.
+- `semantica blame` shows unknown authorship through the unattributed line count.
+  Capture status and technical capture notes remain in JSON diagnostics.
+- Cross-repository turn publication now uses the same lineage session identity as
+  packaging, including Kiro and transcript-derived Gemini sessions.
+- Packaged provenance preserves unknown authorship for repositories associated
+  through turn observations, including after upload preparation.
+- Failed turn snapshot cleanup retains the session cursor for retry on completion
+  events or the next prompt, including for Claude turns without provider turn IDs.
+- Cursor turn observations retain the provider generation ID to pair prompt and
+  stop boundaries. Prompts without a generation ID do not start an observation.
+- Kiro CLI turn observations use the native provider session ID, keeping separate
+  conversations in the same workspace independent.
+- Claude Bash completion remains terminal when task metadata is missing or
+  malformed. Metadata gaps remain separate from execution completion.
+- Turn completion evidence no longer stores raw Bash output. Finished turns
+  release session ownership while retaining execution owners for late evidence.
+  Temporary turn snapshot stores are removed only after a durable End is saved.
+- Existing databases now receive the missing evidence-group index, speeding up
+  capture validation in `semantica blame` for historical checkpoints.
 - Claude Code turn usage now remains complete when cache-token counts are zero.
 - Mutation routing no longer uses the session directory as an ownership fallback.
   Known agent delegation boundaries remain session context, including completions

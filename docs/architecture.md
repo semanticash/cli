@@ -269,6 +269,104 @@ packaging and sync read prompts, responses, step payloads, deltas, and bundles
 from the same store. The CAS therefore remains part of the evidence pipeline
 independently of lineage restore functionality.
 
+### Local turn observations
+
+Turn observations run automatically through installed hooks for Codex, Claude Code,
+Gemini CLI, Copilot CLI, Cursor IDE, interactive Cursor CLI, and Kiro CLI v2.
+They require no opt-in or additional per-tool snapshots.
+
+At prompt submission, active registered repositories are frozen into one set.
+Their identities and baselines are captured in parallel, with at most eight
+concurrent repositories and a shared five-second hook budget. The hook waits
+for all baseline attempts before returning. Stop captures the same set, even
+when provider-tracked completion is unknown. Each repository reports `changed`,
+`unchanged`, or `unknown`; these describe supported state changes, not authorship.
+Commits reachable along a linear continuation of the starting HEAD are retained
+as intermediate boundaries. Rewrites and merges produce an explicit gap; commits
+made unreachable before observation and uncommitted edits restored to baseline
+cannot be recovered from these boundaries.
+
+Records and private snapshot stores live under
+`$SEMANTICA_HOME/turn-observations` (normally `~/.semantica/turn-observations`).
+The start record is written before capture. The first end attempt freezes its
+provider evidence and `tracked_completion_at_end`: `settled`, `unsettled`, or
+`unknown`. Missing terminal evidence does not imply completion. `settled` only
+describes known, provider-tracked execution scopes and says nothing about hidden
+detached descendants. Later delivered evidence is appended separately and never
+rewrites the end observation. Late completion evidence attaches to its execution's
+original turn; new activity cannot attach to a completed turn.
+Interrupted capture remains unknown on retry.
+
+Codex turn IDs and Cursor generation IDs are retained separately from Semantica IDs.
+Claude has no hook turn ID; identical prompt/transcript positions reuse the same
+baseline conservatively. Completion evidence stores only kinds, execution/task
+IDs, statuses, and timestamps. Bash responses and raw task inventories are not
+retained. Claude's `backgroundTaskId` is parsed in memory; CLI-stream
+`task_notification` is not ingested by the hook adapter.
+Each Bash completion records a terminal execution. Missing or malformed task
+metadata adds a separate gap; a reported managed task retains its own outstanding
+state after the Bash invocation terminates.
+An empty task inventory does not establish a previously launched task's terminal
+state. Missing inventory or terminal evidence remains unknown.
+
+Gemini CLI uses `BeforeAgent` and `AfterAgent` as turn boundaries. The workspace
+must be trusted for Gemini to load project hooks. Its current
+adapter does not supply paired shell-start and terminal IDs, so shell completion
+remains unknown. End snapshots are still captured; `AfterAgent` alone does not
+establish that all work has finished.
+
+Copilot CLI uses `userPromptSubmitted` and `agentStop` as turn boundaries. Its
+current adapter also lacks paired shell-start and terminal IDs, so tracked
+completion remains unknown without sufficient execution evidence.
+
+Cursor IDE uses `beforeSubmitPrompt` and `stop`, paired by `generation_id`.
+A prompt without that ID does not start an observation. Paired shell execution
+IDs can establish provider-tracked completion; `stop` alone cannot. Interactive
+Cursor CLI uses the same boundaries. In CLI version `2026.08.11-e8db854`, the tested
+`--print` runs omitted prompt and stop hooks. Tool or session events do not
+substitute for a missing turn boundary.
+
+Kiro CLI v2 uses `userPromptSubmit` and `stop` from the installed Semantica agent
+profile (`kiro-cli chat --agent-engine v2 --agent semantica`). Turn observations
+require its native `session_id`; the workspace-based
+capture-state key remains separate. Missing session IDs do not create or close
+observations. The tested legacy v1 engine omits this identity and does not support
+turn observations. The adapter does not supply paired shell execution IDs, so shell
+completion remains unknown. Kiro IDE is not enabled for turn observations.
+
+At turn completion, each changed, still-enabled repository receives a local
+observation blob and a context event linked by `turn_observation`. Publication
+validates the saved registration, repository, and worktree identities. Each blob
+contains only that repository's observation and the completion evidence frozen
+at the end boundary. Unknown completion remains unknown.
+
+The context event lets turn packaging include the original prompt and available
+final response in the destination repository. Publication and packaging use the
+same lineage session identity, which may differ from the recorder's native session
+identity for Kiro or come from the transcript for Gemini.
+
+Bundles attached through an observation include
+`repository_association: {"basis":"turn_observation","authorship":"unknown"}`.
+This qualifier survives upload preparation, including when the bundle has no tool
+steps. It means the repository changed during the turn, not that the agent caused
+the change or that the prompt applies to it. Consumers must preserve that
+distinction; tool evidence, when present, is assessed separately. Observation
+snapshots remain local and do not change AI attribution percentages.
+
+Publication is idempotent. Failures retain capture state for a repeated completion
+hook; there is no publication worker or automatic backfill. Completed checkpoints,
+including commits made during the turn, are not recomputed.
+
+Snapshot failures produce `unknown` without blocking the provider. Temporary
+snapshot stores are deleted only after the end record is durably saved, even when
+tracked completion is unknown. Interrupted saves retain the stores. Cleanup failure
+retains the session cursor for retry on completion or the next prompt. The cursor
+cannot advance until cleanup succeeds.
+
+Durable records retain baseline identities, commit deltas, observations, and
+completion evidence without automatic expiry. Boundary capture is not an atomic
+filesystem snapshot.
+
 ### Tool snapshot store (`tool-snapshots.git`)
 
 `internal/toolsnap` can represent a worktree as an ephemeral Git tree without
