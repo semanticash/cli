@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/semanticash/cli/internal/platform"
 )
 
 // Snapshot identifies a captured workspace tree and its repository state.
@@ -361,15 +359,13 @@ func hashLen(format string) int {
 // gitStdin runs a git command against the bare store with optional
 // extra environment and stdin.
 func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin []byte, args ...string) (string, error) {
-	// Keep stdin-based commands consistent with gitOutputEnv on Windows.
-	full := append([]string{"-c", "core.longpaths=true", "--git-dir", "."}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Dir = s.Dir
-	cmd.Env = storeGitEnv(extraEnv)
+	cmd, err := s.gitCommand(ctx, extraEnv, args...)
+	if err != nil {
+		return "", err
+	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	platform.HideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
