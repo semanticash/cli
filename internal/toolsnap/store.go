@@ -320,7 +320,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	// Matching object formats let snapshot trees reference repository blobs.
 	// Config isolation also prevents inherited templates from modifying the store.
 	_, err := gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil),
-		"init", "--bare", "--object-format="+s.repo.ObjectFormat, s.Dir)
+		"init", "--bare", "--object-format="+s.repo.ObjectFormat, filepath.Base(s.Dir))
 	if err != nil {
 		return fmt.Errorf("toolsnap: init store: %w", err)
 	}
@@ -371,6 +371,7 @@ func (s *Store) ensureAlternate() error {
 // git runs a git command against the bare store, isolated from the
 // user's environment discovery.
 func (s *Store) git(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"--git-dir", s.Dir}, args...)
-	return gitOutputEnv(ctx, filepath.Dir(s.Dir), storeGitEnv(nil), full...)
+	// A relative Git directory avoids Git's Windows argument-length limit.
+	full := append([]string{"--git-dir", "."}, args...)
+	return gitOutputEnv(ctx, s.Dir, storeGitEnv(nil), full...)
 }

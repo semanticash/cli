@@ -167,7 +167,10 @@ func TestTerminalReceivedAfterStopCannotSettleBoundary(t *testing.T) {
 	start(t, r, subjects, "turn")
 	send(t, r, "turn", "execution_started", "exec", false)
 	stop := Evidence{Kind: "stop", ReceivedAt: time.Now().UTC()}
-	send(t, r, "turn", "execution_terminal", "exec", false)
+	terminal := Evidence{Kind: "execution_terminal", ExecutionID: "exec", ReceivedAt: stop.ReceivedAt.Add(time.Second)}
+	if err := r.Observe(context.Background(), "codex", "session", "turn", []Evidence{terminal}, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.Observe(context.Background(), "codex", "session", "turn", []Evidence{stop}, true); err != nil {
 		t.Fatal(err)
 	}

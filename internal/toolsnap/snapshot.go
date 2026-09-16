@@ -296,10 +296,10 @@ func (s *Store) hashWorktreePaths(ctx context.Context, paths []string) ([]string
 	if len(batch) > 0 {
 		var in bytes.Buffer
 		for _, rf := range batch {
-			in.WriteString(rf.path)
+			in.WriteString(filepath.ToSlash(filepath.Join(s.repo.WorktreeRoot, filepath.FromSlash(rf.path))))
 			in.WriteByte('\n')
 		}
-		out, err := s.gitStdinDir(ctx, s.repo.WorktreeRoot, nil, in.Bytes(),
+		out, err := s.gitStdin(ctx, nil, in.Bytes(),
 			"hash-object", "-w", "-t", "blob", "--no-filters", "--stdin-paths")
 		if err != nil {
 			return nil, nil, fmt.Errorf("toolsnap: hash worktree blobs: %w", err)
@@ -361,14 +361,10 @@ func hashLen(format string) int {
 // gitStdin runs a git command against the bare store with optional
 // extra environment and stdin.
 func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin []byte, args ...string) (string, error) {
-	return s.gitStdinDir(ctx, filepath.Dir(s.Dir), extraEnv, stdin, args...)
-}
-
-func (s *Store) gitStdinDir(ctx context.Context, dir string, extraEnv []string, stdin []byte, args ...string) (string, error) {
 	// Keep stdin-based commands consistent with gitOutputEnv on Windows.
-	full := append([]string{"-c", "core.longpaths=true", "--git-dir", s.Dir}, args...)
+	full := append([]string{"-c", "core.longpaths=true", "--git-dir", "."}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Dir = dir
+	cmd.Dir = s.Dir
 	cmd.Env = storeGitEnv(extraEnv)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)

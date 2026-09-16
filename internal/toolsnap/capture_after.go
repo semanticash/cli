@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -191,8 +190,8 @@ func (s *Store) batchReadBlobs(ctx context.Context, hashes []string) (map[string
 	if len(hashes) == 0 {
 		return nil, 0, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "--git-dir", s.Dir, "cat-file", "--batch")
-	cmd.Dir = filepath.Dir(s.Dir)
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "--git-dir", ".", "cat-file", "--batch")
+	cmd.Dir = s.Dir
 	cmd.Env = storeGitEnv(nil)
 	platform.HideWindow(cmd)
 	cmd.Stdin = strings.NewReader(strings.Join(hashes, "\n") + "\n")

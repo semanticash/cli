@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Snapshot Git commands support long Windows turn-storage paths.
 - `semantica blame` shows unknown authorship through the unattributed line count.
   Capture status and technical capture notes remain in JSON diagnostics.
 - Cross-repository turn publication now uses the same lineage session identity as
