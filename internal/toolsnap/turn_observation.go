@@ -192,7 +192,7 @@ func turnCommitBoundaries(ctx context.Context, before string, rc RepoContext) ([
 	var result []TurnChange
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 3 && !(previous == "" && len(f) == 2) {
+		if len(f) != 3 && (previous != "" || len(f) != 2) {
 			return nil, fmt.Errorf("commit_history_discontinuous")
 		}
 		if len(f) == 3 && f[2] != previous {
