@@ -5,7 +5,7 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.7.2] - Unreleased
+## [0.7.2] - 2026-09-16
 
 ### Added
 
@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `semantica blame` now explains capture gaps in terms of unattributed lines.
+  Fully matched results keep capture uncertainty in a secondary note; JSON
+  diagnostics are unchanged.
 - Cross-repository turn publication now uses the same lineage session identity as
   packaging, including Kiro and transcript-derived Gemini sessions.
 - Packaged provenance preserves unknown authorship for repositories associated

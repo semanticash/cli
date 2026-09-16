@@ -78,16 +78,7 @@ func NewBlameCmd(rootOpts *RootOptions) *cobra.Command {
 					res.Diagnostics.ExactMatches, res.Diagnostics.NormalizedMatches, res.Diagnostics.ModifiedMatches)
 			}
 
-			// Notes bundle - pipeline-state message (if present) followed
-			// by factual notes (fallback, carry-forward, deletion). The
-			// attribution service assembles the slice once so CLI output
-			// and serialized results use the same ordering.
-			if len(res.Diagnostics.Notes) > 0 {
-				_, _ = fmt.Fprintln(out, "Notes:")
-				for _, n := range res.Diagnostics.Notes {
-					_, _ = fmt.Fprintf(out, "  %s\n", n)
-				}
-			}
+			writeAttributionNotes(out, res)
 
 			// AI files include the provider when known. Older or
 			// incomplete records fall back to the plain [ai] tag.
@@ -142,7 +133,13 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 	incomplete := res.Capture != nil && res.Capture.Status != "complete"
 	if incomplete {
 		_, _ = fmt.Fprintf(out, "Unattributed: %d lines\n", res.UnattributedLines)
-		_, _ = fmt.Fprintf(out, "Capture:      %s\n", res.Capture.Status)
+		if res.UnattributedLines > 0 {
+			impact := fmt.Sprintf("%d lines have unknown authorship", res.UnattributedLines)
+			if res.UnattributedLines == 1 {
+				impact = "1 line has unknown authorship"
+			}
+			_, _ = fmt.Fprintf(out, "Capture:      %s (%s)\n", res.Capture.Status, impact)
+		}
 	} else {
 		_, _ = fmt.Fprintf(out, "Human:        %d lines\n", res.HumanLines)
 	}
@@ -151,6 +148,33 @@ func writeAttributionCounts(out io.Writer, res *service.AttributionResult) {
 		_, _ = fmt.Fprintf(out, "AI matched:   %.1f%%\n", res.AIPercentage)
 	} else {
 		_, _ = fmt.Fprintf(out, "AI %%:         %.1f%%\n", res.AIPercentage)
+	}
+}
+
+// writeAttributionNotes explains capture gaps without changing JSON diagnostics.
+func writeAttributionNotes(out io.Writer, res *service.AttributionResult) {
+	const captureNote = "Capture is incomplete. Unmatched lines are unattributed, not confirmed human changes."
+	notes := make([]string, 0, len(res.Diagnostics.Notes)+1)
+	for _, note := range res.Diagnostics.Notes {
+		if note != captureNote {
+			notes = append(notes, note)
+		}
+	}
+	if res.Capture != nil && res.Capture.Status != "complete" {
+		note := "Some command capture evidence is unavailable."
+		if res.Capture.Status == "pending" {
+			note = "Some command capture evidence is still pending."
+		}
+		if res.TotalLines > 0 && res.AILines == res.TotalLines && res.UnattributedLines == 0 {
+			note += fmt.Sprintf(" All %d changed lines matched AI evidence; no lines were left unattributed.", res.TotalLines)
+		}
+		notes = append(notes, note)
+	}
+	if len(notes) > 0 {
+		_, _ = fmt.Fprintln(out, "Notes:")
+		for _, note := range notes {
+			_, _ = fmt.Fprintf(out, "  %s\n", note)
+		}
 	}
 }
 
