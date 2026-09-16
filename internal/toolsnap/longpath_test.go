@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestStoreWithExplicitCommonDirectoryRemainsBare(t *testing.T) {
+	store := openTestStore(t, testRepo(t))
+	cmd, err := store.gitCommand(context.Background(), nil, "rev-parse", "--is-bare-repository")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, "GIT_COMMON_DIR="+store.Dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		t.Fatalf("common directory changed bare-store semantics: %s, %v", out, err)
+	}
+}
+
 func TestTurnSnapshotsWithLongStorePath(t *testing.T) {
 	for _, changed := range []bool{false, true} {
 		name := "unchanged"

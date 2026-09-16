@@ -8,6 +8,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func storeLocationEnv(gitDir string, extra []string) []string {
+	// Git expands GIT_DIR during init before long-path configuration is loaded.
+	// Keep config and object paths on the same short alias throughout setup.
+	return append(storeGitEnv(extra), "GIT_COMMON_DIR="+gitDir)
+}
+
 // storeGitLocation keeps both the process directory and Git directory short.
 func storeGitLocation(dir string) (cwd, gitDir string, err error) {
 	abs, err := filepath.Abs(dir)

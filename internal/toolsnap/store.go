@@ -373,12 +373,7 @@ func (s *Store) ensureAlternate() error {
 // git runs a git command against the bare store, isolated from the
 // user's environment discovery.
 func (s *Store) git(ctx context.Context, args ...string) (string, error) {
-	cwd, gitDir, err := storeGitLocation(s.Dir)
-	if err != nil {
-		return "", err
-	}
-	full := append([]string{"--git-dir", gitDir}, args...)
-	return gitOutputEnv(ctx, cwd, storeGitEnv(nil), full...)
+	return s.gitStdin(ctx, nil, nil, args...)
 }
 
 func (s *Store) gitCommand(ctx context.Context, env []string, args ...string) (*exec.Cmd, error) {
@@ -386,10 +381,10 @@ func (s *Store) gitCommand(ctx context.Context, env []string, args ...string) (*
 	if err != nil {
 		return nil, err
 	}
-	full := append([]string{"-c", "core.longpaths=true", "--git-dir", gitDir}, args...)
+	full := append([]string{"-c", "core.longpaths=true", "--bare", "--git-dir", gitDir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = cwd
-	cmd.Env = storeGitEnv(env)
+	cmd.Env = storeLocationEnv(gitDir, env)
 	platform.HideWindow(cmd)
 	return cmd, nil
 }

@@ -31,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Snapshot Git commands use Windows short paths to avoid Git and process
-  working-directory limits. Unusable paths remain explicit capture gaps.
+- Snapshot Git commands preserve Windows short paths for the Git directory and
+  common directory, including initialization. Unusable paths remain explicit
+  capture gaps.
 - `semantica blame` shows unknown authorship through the unattributed line count.
   Capture status and technical capture notes remain in JSON diagnostics.
 - Cross-repository turn publication now uses the same lineage session identity as
