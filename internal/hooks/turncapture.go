@@ -83,13 +83,18 @@ func startTurnCapture(ctx context.Context, r turncapture.Recorder, provider stri
 		})
 	}
 	wg.Wait()
+	key := turnObservationKey(event, offset)
+	return r.Begin(ctx, provider, turnCaptureSession(provider, event), event.TurnID, event.ProviderTurnID, key, subjects)
+}
+
+func turnObservationKey(event *Event, offset int) string {
 	key := "provider:" + event.ProviderTurnID
 	if event.ProviderTurnID == "" {
 		// Without a provider turn ID, use the transcript position and prompt as identity.
 		sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%s", event.TranscriptRef, offset, event.Prompt))
 		key = fmt.Sprintf("source:%x", sum)
 	}
-	return r.Begin(ctx, provider, turnCaptureSession(provider, event), event.TurnID, event.ProviderTurnID, key, subjects)
+	return key
 }
 
 func observeTurnCapture(ctx context.Context, provider string, event *Event) {

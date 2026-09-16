@@ -105,15 +105,16 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		event.TurnID = turnID
 
 		newState := &CaptureState{
-			SessionID:         event.SessionID,
-			Provider:          provider.Name(),
-			TranscriptRef:     event.TranscriptRef,
-			TranscriptOffset:  offset,
-			Timestamp:         event.Timestamp,
-			TurnID:            turnID,
-			PromptSubmittedAt: event.Timestamp,
-			CWD:               event.CWD,
-			TurnStartOffset:   offset,
+			SessionID:          event.SessionID,
+			Provider:           provider.Name(),
+			TranscriptRef:      event.TranscriptRef,
+			TranscriptOffset:   offset,
+			Timestamp:          event.Timestamp,
+			TurnID:             turnID,
+			TurnObservationKey: turnObservationKey(event, offset),
+			PromptSubmittedAt:  event.Timestamp,
+			CWD:                event.CWD,
+			TurnStartOffset:    offset,
 		}
 		// Keep unresolved transcript data behind the current EOF.
 		if prev, perr := LoadCaptureState(event.SessionID); perr == nil {
@@ -211,6 +212,11 @@ func Dispatch(ctx context.Context, provider HookProvider, event *Event, bh *brok
 		}
 		finalSubagentSweepAndCleanup(benchCtx, provider, event, bh, blobStore)
 		captureDuration := time.Since(captureStart)
+		if preState != nil && preState.Provider == provider.Name() {
+			if err := publishTurnObservation(benchCtx, provider.Name(), event, preState, bh); err != nil {
+				return fmt.Errorf("publish turn observation: %w", err)
+			}
+		}
 
 		// Package the turn artifacts after capture succeeds.
 		// This must happen before DeleteCaptureState because packaging
@@ -1019,9 +1025,13 @@ func packageTurnFromState(ctx context.Context, provider HookProvider, event *Eve
 			targets = append(targets, repo.Path)
 		}
 	}
-	provenance.PackageTurn(ctx, repoPath, tc, blobStore)
+	response := provenance.PackageTurn(ctx, repoPath, tc, blobStore)
 	if len(targets) == 1 {
 		return
+	}
+	// Reuse the final response resolved in the source repository.
+	if response.Status == "complete" || response.Status == "empty" {
+		tc.ResponseCandidate = response
 	}
 	packageSource := blobStore
 	if originStore, oerr := blobs.NewStore(filepath.Join(repoPath, ".semantica", "objects")); oerr == nil {

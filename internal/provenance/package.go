@@ -41,9 +41,9 @@ type PromptCandidate struct {
 	Hash    string
 }
 
-// PackageTurn builds a turn bundle and persists its manifest. Hook-provided
-// objects are copied from sourceBlobs into the repository store.
-func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlobs *blobs.Store) {
+// PackageTurn persists a turn bundle and returns its resolved response.
+// Missing prompt and response objects are copied from sourceBlobs.
+func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlobs *blobs.Store) (resolved ResponseCandidate) {
 	semDir := filepath.Join(repoPath, ".semantica")
 	dbPath := filepath.Join(semDir, "lineage.db")
 
@@ -198,6 +198,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 		"steps", len(filteredSteps),
 		"bundle", bundleHash != "",
 	)
+	return response
 }
 
 // filteredStep carries a step row alongside its pre-filtered file_paths.

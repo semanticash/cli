@@ -26,9 +26,10 @@ type CaptureState struct {
 	TranscriptOffset int    `json:"transcript_offset"`
 	Timestamp        int64  `json:"timestamp"`
 
-	TurnID            string `json:"turn_id,omitempty"`
-	PromptSubmittedAt int64  `json:"prompt_submitted_at,omitempty"`
-	CWD               string `json:"cwd,omitempty"` // working directory from hook payload
+	TurnID             string `json:"turn_id,omitempty"`
+	TurnObservationKey string `json:"turn_observation_key,omitempty"`
+	PromptSubmittedAt  int64  `json:"prompt_submitted_at,omitempty"`
+	CWD                string `json:"cwd,omitempty"` // working directory from hook payload
 
 	// TurnStartOffset is the transcript EOF at prompt submission.
 	TurnStartOffset int `json:"turn_start_offset,omitempty"`

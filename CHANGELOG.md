@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Automatic local turn observations for Codex, Claude Code, Gemini CLI,
-  Copilot CLI, Cursor IDE, and Kiro CLI v2 through installed hooks. Parallel snapshots retain
-  cross-repository state changes and reachable intermediate commits. Provider-tracked completion is
-  recorded separately; observations do not affect attribution or uploads.
+  Copilot CLI, Cursor IDE, interactive Cursor CLI, and Kiro CLI v2. Parallel
+  snapshots retain cross-repository changes and reachable intermediate commits
+  without claiming authorship.
+- Changed repositories receive local turn-observation evidence, the original
+  prompt, and the available final response. AI attribution scores are unchanged.
 - Cursor hook capture now records the selected model and parent-turn input,
   output, and cache token usage when Cursor provides it.
 - Packaged turn provenance now preserves available provider-reported token

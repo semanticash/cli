@@ -36,6 +36,12 @@ type TurnObservation struct {
 	FinishedAt time.Time    `json:"finished_at"`
 }
 
+// ValidateTurnSubject checks worktree identity without taking another snapshot.
+func ValidateTurnSubject(ctx context.Context, baseline TurnBaseline) error {
+	_, err := baseline.check(ctx)
+	return err
+}
+
 // FreezeTurnSubject resolves identity without capturing worktree content.
 func FreezeTurnSubject(ctx context.Context, path string) (TurnBaseline, error) {
 	b := TurnBaseline{StartedAt: time.Now().UTC()}
