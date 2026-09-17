@@ -137,7 +137,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 
 	// Build the provenance bundle.
 	blobStart := time.Now()
-	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, bs, tc, sess, promptEvent, filteredSteps, deltaRefs, response)
+	bundleHash, bundleBytes, bundleErr := buildProvenanceBundleFromFiltered(ctx, repoPath, bs, tc, sess, promptEvent, filteredSteps, deltaRefs, response)
 	blobDuration := time.Since(blobStart)
 	blobsWritten := 0
 	if bundleHash != "" {
@@ -340,6 +340,7 @@ func filterVisiblePaths(paths []string, ignored map[string]bool) []string {
 // and file_paths from filterIgnoredSteps.
 func buildProvenanceBundleFromFiltered(
 	ctx context.Context,
+	repoPath string,
 	bs *blobs.Store,
 	tc TurnContext,
 	sess sqldb.AgentSession,
@@ -362,6 +363,16 @@ func buildProvenanceBundleFromFiltered(
 	if tc.repositoryObserved {
 		bundle.RepositoryAssociation = &bundleRepositoryAssociation{
 			Basis: "turn_observation", Authorship: "unknown",
+		}
+	}
+
+	// Include observed-input evidence when collection succeeds.
+	if ev, hash, err := CollectObservedInput(ctx, repoPath, tc.Provider, sess.SessionID, tc.TurnID); err != nil {
+		slog.Warn("observed-input evidence unresolved for bundle", "turn", tc.TurnID, "err", err)
+	} else if ev != nil {
+		bundle.ObservedInput = &bundleObservedInput{
+			Version: ev.Version, EvidenceHash: hash,
+			Requests: len(ev.Requests), Observations: len(ev.Observations), Gaps: len(ev.Gaps),
 		}
 	}
 
@@ -488,12 +499,22 @@ type provenanceBundle struct {
 	Steps                 []bundleStep                 `json:"steps"`
 	Response              *bundleResponse              `json:"response,omitempty"`
 	RepositoryAssociation *bundleRepositoryAssociation `json:"repository_association,omitempty"`
+	ObservedInput         *bundleObservedInput         `json:"observed_input,omitempty"`
 }
 
 // bundleRepositoryAssociation records an observed association, not proof of authorship.
 type bundleRepositoryAssociation struct {
 	Basis      string `json:"basis"`
 	Authorship string `json:"authorship"`
+}
+
+// bundleObservedInput references a turn's evidence document and summarizes its records.
+type bundleObservedInput struct {
+	Version      int    `json:"version"`
+	EvidenceHash string `json:"evidence_hash"`
+	Requests     int    `json:"requests"`
+	Observations int    `json:"observations"`
+	Gaps         int    `json:"gaps,omitempty"`
 }
 
 // bundleResponse describes the final response referenced by a bundle.

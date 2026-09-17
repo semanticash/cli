@@ -1,0 +1,2 @@
+{"type":"user","uuid":"req-null","parentUuid":null,"sessionId":"synthetic","message":{"role":"user","content":"Review the attached file."}}
+{"type":"attachment","uuid":"att-null","parentUuid":"req-null","sessionId":"synthetic","attachment":{"type":"file","filename":"/work/missing.txt","content":null}}
