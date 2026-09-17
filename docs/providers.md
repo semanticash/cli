@@ -40,7 +40,7 @@ Semantica registers five Codex hooks:
 - **`SessionStart`** - Records lifecycle metadata.
 - **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
 - **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for shell-tool evidence.
-- **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
+- **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps, including Bash commands that exit with a non-zero status.
 - **`Stop`** - Marks the turn complete and packages captured events.
 
 Before parsing a payload or opening storage, Semantica verifies that its `cwd` belongs to an enabled repository. Other sessions exit without recording data.
@@ -78,6 +78,7 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 - **`UserPromptSubmit`** - Saves the current transcript offset and records the prompt.
 - **`PostToolUse[Write]`**, **`PostToolUse[Edit]`**, **`PostToolUse[Bash]`** - Capture direct file and shell provenance from hook payloads.
 - **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for pending shell-tool evidence.
+- **`PostToolUseFailure[Bash]`** - Closes failed shell windows and captures changes made before failure.
 - **`PreToolUse[Agent]`** - Captures the delegated subagent prompt.
 - **`PostToolUse[Agent]`** - Captures the delegated subagent boundary.
 - **`Stop`** - Replays the transcript from the saved offset and packages the completed turn.
@@ -117,8 +118,9 @@ under `~/.cursor/`, which is shared across the supported desktop platforms.
 For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 
 - **`beforeSubmitPrompt`** - Saves the current transcript boundary and records the prompt.
-- **`preToolUse`** - Captures subagent prompt boundaries.
+- **`preToolUse`** - Captures subagent prompt boundaries and opens shell-tool windows.
 - **`postToolUse`** - Captures shell provenance.
+- **`postToolUseFailure`** - Closes failed shell windows, including errors, timeouts, and denied commands.
 - **`afterFileEdit`** - Captures direct file edit and file write provenance.
 - **`afterAgentResponse`** - Captures the final assistant response.
 - **`stop`** - Replays the transcript, records available model and parent-turn
@@ -292,6 +294,7 @@ Semantica installs the following hooks in `.github/hooks/semantica.json`:
 - **`userPromptSubmitted`** - Saves the current transcript offset and records the prompt.
 - **`preToolUse`** - Captures subagent prompt boundaries before `task` delegation.
 - **`postToolUse`** - Captures direct file and shell provenance for `create`, `edit`, and `bash`.
+- **`postToolUseFailure`** - Records failed shell completion without treating failed file-edit inputs as changes.
 - **`agentStop`** - Replays the transcript from the saved offset and packages the completed turn.
 - **`sessionStart`** / **`sessionEnd`** - Lifecycle tracking and final flush.
 - **`subagentStop`** - Captures the canonical subagent completion boundary.

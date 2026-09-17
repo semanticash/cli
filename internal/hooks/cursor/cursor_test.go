@@ -21,8 +21,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 10 {
-		t.Errorf("count: got %d, want 10", count)
+	if count != 11 {
+		t.Errorf("count: got %d, want 11", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".cursor", "hooks.json"))
@@ -45,6 +45,7 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		"beforeSubmitPrompt",
 		"preToolUse",
 		"postToolUse",
+		"postToolUseFailure",
 		"afterFileEdit",
 		"afterAgentResponse",
 		"stop",

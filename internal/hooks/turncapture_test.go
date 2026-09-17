@@ -39,6 +39,24 @@ func observationRecords(t *testing.T, home string) []turncapture.Record {
 	return records
 }
 
+func TestTurnEvidenceShellFailureRemainsTerminal(t *testing.T) {
+	for _, provider := range []string{"claude-code", "cursor", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			evidence, stop := turnEvidence(provider, &Event{
+				Type: ToolStepCompleted, ToolName: "Bash", ToolUseID: "failed-call",
+				ToolFailed: true, Timestamp: 123,
+			})
+			if stop || len(evidence) == 0 || evidence[0].Kind != "execution_terminal" ||
+				evidence[0].ExecutionID != "failed-call" || evidence[0].Status != "failed" {
+				t.Fatalf("failure left execution unfinished: %+v", evidence)
+			}
+			if provider == "claude-code" && (len(evidence) != 2 || evidence[1].Kind != "gap") {
+				t.Fatalf("missing task metadata must remain a separate gap: %+v", evidence)
+			}
+		})
+	}
+}
+
 func TestDispatchTurnCaptureCrossRepoByDefault(t *testing.T) {
 	for _, provider := range []string{"codex", "claude-code", "gemini-cli", "copilot", "cursor", "kiro-cli"} {
 		t.Run(provider, func(t *testing.T) {

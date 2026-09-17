@@ -20,8 +20,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 7 {
-		t.Errorf("count: got %d, want 7", count)
+	if count != 8 {
+		t.Errorf("count: got %d, want 8", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".github", "hooks", "semantica.json"))
@@ -39,7 +39,7 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	}
 
 	// Verify all hook points.
-	for _, hp := range []string{"userPromptSubmitted", "preToolUse", "postToolUse", "agentStop", "sessionStart", "sessionEnd", "subagentStop"} {
+	for _, hp := range []string{"userPromptSubmitted", "preToolUse", "postToolUse", "postToolUseFailure", "agentStop", "sessionStart", "sessionEnd", "subagentStop"} {
 		defs, ok := cfg.Hooks[hp]
 		if !ok {
 			t.Errorf("missing hook point %q", hp)
