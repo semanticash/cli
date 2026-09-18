@@ -106,6 +106,10 @@ func MutationPaths(ev RawEvent) (mutation bool, paths []string, missing bool) {
 // PlanRoutes separates destination evidence from session context.
 func PlanRoutes(events []RawEvent, repos []RegisteredRepo) (matches []RepoMatch, unresolved []RawEvent) {
 	for _, ev := range events {
+		// Preserve the registered launch repository for evidence retrieval.
+		if r := DeepestActiveRepo(ev.SourceProjectPath, repos); r != nil {
+			ev.ResolvedRepoRoot = r.Path
+		}
 		mutation, paths, missing := MutationPaths(ev)
 		if mutation {
 			routed := ev

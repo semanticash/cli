@@ -85,7 +85,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	if promptEvent == nil {
 		promptEvent = ensurePromptCandidate(ctx, bs, sourceBlobs, tc.Prompt)
 	}
-	// Preserve the observation qualifier even when the turn has no tool steps.
+	// Preserve the observation qualifier even when the turn has no tool events.
 	tc.repositoryObserved, err = h.Queries.TurnObservationExists(ctx, sqldb.TurnObservationExistsParams{
 		SessionID: sess.SessionID,
 		TurnID:    sqlstore.NullStr(tc.TurnID),
@@ -212,18 +212,18 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 	return response
 }
 
-// filteredStep carries a step row alongside its pre-filtered file_paths.
+// filteredStep carries a tool event with pre-filtered file_paths.
 // filterIgnoredSteps produces these; buildProvenanceBundleFromFiltered consumes them.
 type filteredStep struct {
 	Row       sqldb.ListStepEventsForTurnRow
 	FilePaths []string // repo-relative, gitignored entries removed
 }
 
-// filterIgnoredSteps removes steps whose files are all gitignored, and
-// filters file_paths on steps with mixed visibility. Steps without file
+// filterIgnoredSteps removes tool events whose files are all gitignored, and
+// filters file_paths on events with mixed visibility. Events without file
 // paths (Bash, Agent) pass through unchanged.
 func filterIgnoredSteps(ctx context.Context, repoPath string, steps []sqldb.ListStepEventsForTurnRow, bs *blobs.Store) []filteredStep {
-	// Collect all repo-relative file paths across all steps, including
+	// Collect all repo-relative file paths across all tool events, including
 	// primary files from provenance blobs (which may not appear in tool_uses).
 	allPaths := make(map[string]bool)
 	stepPaths := make([][]string, len(steps))
@@ -241,7 +241,7 @@ func filterIgnoredSteps(ctx context.Context, repoPath string, steps []sqldb.List
 			}
 		}
 		// Extract primary file from provenance blob. Missing or
-		// unreadable blobs weaken gitignore filtering and step-to-file
+		// unreadable blobs weaken gitignore filtering and event-to-file
 		// association; surface the failure instead of dropping through
 		// silently.
 		if s.ProvenanceHash.Valid && s.ProvenanceHash.String != "" {
@@ -284,32 +284,32 @@ func filterIgnoredSteps(ctx context.Context, repoPath string, steps []sqldb.List
 		}
 
 		// If we have a primary file but no tool_uses paths, check the primary
-		// file directly. This covers steps where tool_uses is empty but the
+		// file directly. This covers events where tool_uses is empty but the
 		// provenance blob has tool_input.file_path.
 		if len(paths) == 0 && primaryFile != "" {
 			if ignored[primaryFile] {
-				continue // Primary file gitignored: drop step.
+				continue // Primary file is ignored.
 			}
 			result = append(result, filteredStep{Row: s})
 			continue
 		}
 
 		if primaryFile != "" {
-			// Primary file is gitignored: drop the entire step.
+			// Omit events whose primary file is ignored.
 			if ignored[primaryFile] {
 				continue
 			}
-			// Primary file is visible: keep step, filter file_paths.
+			// Keep the visible primary file and filter file_paths.
 			visible := filterVisiblePaths(paths, ignored)
 			result = append(result, filteredStep{Row: s, FilePaths: visible})
 		} else {
 			// No primary file determinable.
 			visible := filterVisiblePaths(paths, ignored)
 			if len(visible) == 0 {
-				// All file_paths gitignored: drop step.
+				// Omit events with no visible files.
 				continue
 			}
-			// Mixed visible/ignored: keep step with filtered paths, clear provenance.
+			// Keep visible paths and clear provenance containing ignored files.
 			if len(visible) < len(paths) {
 				row := s
 				row.ProvenanceHash.Valid = false
@@ -337,7 +337,7 @@ func filterVisiblePaths(paths []string, ignored map[string]bool) []string {
 	return visible
 }
 
-// buildProvenanceBundleFromFiltered builds the bundle using pre-filtered steps
+// buildProvenanceBundleFromFiltered builds the bundle using pre-filtered events
 // and file_paths from filterIgnoredSteps.
 func buildProvenanceBundleFromFiltered(
 	ctx context.Context,
@@ -368,11 +368,21 @@ func buildProvenanceBundleFromFiltered(
 	}
 
 	// Distinguish unavailable observed-input evidence from absent evidence.
-	if res, err := CollectObservedInput(ctx, repoPath, tc.Provider, sess.SessionID, tc.TurnID); err != nil {
-		slog.Warn("observed-input evidence unresolved for bundle", "turn", tc.TurnID, "err", err)
-	} else if res.Unavailable {
+	res, oerr := CollectObservedInput(ctx, repoPath, tc.Provider, sess.SessionID, tc.TurnID)
+	// Retrieve cross-repo evidence from the origin recorded during capture.
+	if oerr == nil && res.Evidence == nil && !res.Unavailable &&
+		sess.SourceRepoPath.Valid && sess.SourceRepoPath.String != "" &&
+		!sameRepoPath(sess.SourceRepoPath.String, repoPath) {
+		res, oerr = PropagateObservedInput(ctx, bs, sess.SourceRepoPath.String, tc.Provider, sess.ProviderSessionID, sess.SessionID, tc.TurnID)
+	}
+	switch {
+	case oerr != nil:
+		// Retain an explicit gap when evidence cannot be read.
+		slog.Warn("observed-input evidence unresolved for bundle", "turn", tc.TurnID, "err", oerr)
 		bundle.ObservedInput = &bundleObservedInput{Version: observedinput.EvidenceVersion, Unavailable: true}
-	} else if res.Evidence != nil {
+	case res.Unavailable:
+		bundle.ObservedInput = &bundleObservedInput{Version: observedinput.EvidenceVersion, Unavailable: true}
+	case res.Evidence != nil:
 		ev := res.Evidence
 		bundle.ObservedInput = &bundleObservedInput{
 			Version: ev.Version, EvidenceHash: res.Hash,
@@ -599,30 +609,12 @@ var copilotMutationCanonical = map[string]string{
 	"copilot_file_edit": "file_edit",
 }
 
-// filterCopilotDuplicateSteps removes transcript-sourced step events that
-// duplicate hook-backed steps in Copilot sessions. For non-Copilot providers
-// the input is returned unchanged.
+// filterCopilotDuplicateSteps removes transcript events that duplicate Copilot hooks.
+// Other providers are unchanged.
 //
-// Matching is per-step: a transcript step is only suppressed when a specific
-// hook step can be identified as its twin via a unique identity key.
-//
-// Two identity signals are used depending on tool type:
-//
-//   - File-mutation tools (Edit, Write, create, copilot_file_edit): matched
-//     by file_path in tool_uses JSON. Both the hook path (direct_emit.go
-//     serializeStepToolUses) and transcript path (extract.go) include
-//     file_path; relativizeToolPaths normalizes both to repo-relative.
-//
-//   - Bash: matched by command string extracted from provenance blobs.
-//     After enrichment, both hook and transcript Bash provenance contain
-//     tool_input.command (redacted identically via redact.String), so the
-//     strings are directly comparable. Steps without a provenance blob
-//     (enrichment failed or no companion) are never suppressed.
-//
-// A match is only made when the identity key is unique on both sides for
-// the same canonical tool class. When the same file or command appears
-// multiple times in a turn, the correspondence is ambiguous and the
-// transcript step is kept.
+// File mutations match by repository-relative path; Bash calls match by redacted
+// command from provenance blobs. A match must be unique within each tool class
+// on both sides. Missing evidence or ambiguous matches preserve the event.
 func filterCopilotDuplicateSteps(ctx context.Context, bs *blobs.Store, provider string, steps []sqldb.ListStepEventsForTurnRow) []sqldb.ListStepEventsForTurnRow {
 	if provider != "copilot" {
 		return steps
@@ -754,10 +746,7 @@ func filterCopilotDuplicateSteps(ctx context.Context, bs *blobs.Store, provider 
 		}
 	}
 
-	// matchedPaths tracks file paths whose transcript create/edit/write
-	// entry was successfully matched to a hook twin. A copilot_file_edit
-	// entry for the same path is the completion half of that same logical
-	// step and should also be suppressed.
+	// Suppress completion records for file mutations already matched to hooks.
 	matchedPaths := make(map[string]bool)
 
 	filtered := make([]sqldb.ListStepEventsForTurnRow, 0, len(steps))

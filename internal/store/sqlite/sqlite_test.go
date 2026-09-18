@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,28 @@ import (
 	"github.com/google/uuid"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 )
+
+// Opening an existing database must not create a missing file.
+func TestOpenExistingDoesNotCreateDatabase(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+
+	if _, err := OpenExisting(ctx, dbPath, DefaultOpenOptions()); err == nil {
+		t.Fatal("expected error opening a missing database")
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("OpenExisting created the database file: %v", err)
+	}
+
+	if err := MigratePath(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	h, err := OpenExisting(ctx, dbPath, DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("OpenExisting on an existing database failed: %v", err)
+	}
+	_ = Close(h)
+}
 
 // openTestDB creates a temp SQLite database with migrations applied.
 func openTestDB(t *testing.T) *Handle {

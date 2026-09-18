@@ -67,6 +67,50 @@ func newObservedRepo(t *testing.T) observedRepo {
 	return observedRepo{path: dir, repoID: repoID, sessionID: sess.SessionID, providerSession: "psess"}
 }
 
+// newDestRepo creates a destination session with no local request evidence.
+func newDestRepo(t *testing.T, sourceRepoPath string) observedRepo {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	sem := filepath.Join(dir, ".semantica")
+	if err := os.MkdirAll(sem, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sem, "enabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.MigratePath(ctx, filepath.Join(sem, "lineage.db")); err != nil {
+		t.Fatal(err)
+	}
+	h, err := sqlstore.Open(ctx, filepath.Join(sem, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	repoID := uuid.NewString()
+	if err := h.Queries.InsertRepository(ctx, sqldb.InsertRepositoryParams{
+		RepositoryID: repoID, RootPath: dir, CreatedAt: 1, EnabledAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := h.Queries.UpsertAgentSource(ctx, sqldb.UpsertAgentSourceParams{
+		SourceID: uuid.NewString(), RepositoryID: repoID, Provider: "claude_code",
+		SourceKey: "observed-input:sess", LastSeenAt: 1, CreatedAt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.Queries.UpsertAgentSession(ctx, sqldb.UpsertAgentSessionParams{
+		SessionID: uuid.NewString(), ProviderSessionID: "psess", RepositoryID: repoID,
+		SourceID: src.SourceID, Provider: "claude_code", StartedAt: 1, LastSeenAt: 1,
+		SourceRepoPath: sql.NullString{String: sourceRepoPath, Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return observedRepo{path: dir, repoID: repoID, sessionID: sess.SessionID, providerSession: "psess"}
+}
+
 // insertPrompt records a request and returns its production turn ID.
 func (r observedRepo) insertPrompt(t *testing.T, providerEventID string) string {
 	t.Helper()
@@ -704,5 +748,176 @@ func TestObservedInput_NonRequestAncestorDoesNotAnchor(t *testing.T) {
 	other, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, "some-other-turn")
 	if other.Evidence != nil {
 		t.Fatalf("ownership terminated at the non-request ancestor's turn: %+v", other.Evidence)
+	}
+}
+
+// Propagation copies retained evidence and its referenced content to the destination.
+func TestObservedInput_CrossRepoPropagation(t *testing.T) {
+	ctx := context.Background()
+	// Launch repo A holds the request and the retained evidence.
+	a := newObservedRepo(t)
+	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
+	turnID := a.insertPrompt(t, requestUUID(n))
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatalf("persist in launch repo: %v", err)
+	}
+
+	// Destination repo B shares the provider session but has no local evidence.
+	b := newObservedRepo(t)
+	if empty, _ := CollectObservedInput(ctx, b.path, "claude_code", b.sessionID, turnID); empty.Evidence != nil {
+		t.Fatal("destination unexpectedly already had evidence")
+	}
+
+	bBlobs, err := blobs.NewStore(repoObjects(b.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := PropagateObservedInput(ctx, bBlobs, a.path, "claude_code", a.providerSession, b.sessionID, turnID)
+	if err != nil || res.Evidence == nil {
+		t.Fatalf("propagate: %+v err=%v", res, err)
+	}
+	if res.Evidence.SessionID != b.sessionID || res.Evidence.TurnID != turnID {
+		t.Fatalf("mirrored evidence not re-keyed to destination: %+v", res.Evidence)
+	}
+	if len(res.Evidence.Requests) != len(n.Turns[0].Requests) && len(res.Evidence.Requests) == 0 {
+		t.Fatalf("mirrored evidence lost its requests: %+v", res.Evidence)
+	}
+	// The content closure must resolve in the destination store.
+	if !closureResolves(ctx, bBlobs, *res.Evidence) {
+		t.Fatal("mirrored evidence closure does not resolve in the destination repo")
+	}
+	if err := observedinput.Validate(*res.Evidence); err != nil {
+		t.Fatalf("mirrored evidence invalid: %v", err)
+	}
+}
+
+// Packaging uses the recorded origin despite a nearer database on disk.
+func TestObservedInput_CrossRepoPackageUsesRecordedRoot(t *testing.T) {
+	ctx := context.Background()
+	a := newObservedRepo(t)
+	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
+	t1 := a.insertPrompt(t, requestUUID(n))
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatalf("persist in launch repo: %v", err)
+	}
+
+	// The nested database must not override the recorded origin.
+	nestedSem := filepath.Join(a.path, "nested", ".semantica")
+	if err := os.MkdirAll(nestedSem, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlstore.MigratePath(ctx, filepath.Join(nestedSem, "lineage.db")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Destination B records A as its origin.
+	b := newDestRepo(t, a.path)
+	bs, err := blobs.NewStore(filepath.Join(b.path, ".semantica", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	PackageTurn(ctx, b.path, TurnContext{Provider: "claude_code", SessionID: b.providerSession, TurnID: t1, StartedAt: 1, CompletedAt: 3000}, bs)
+
+	var bundle struct {
+		ObservedInput *bundleObservedInput `json:"observed_input"`
+	}
+	if err := json.Unmarshal(packagedBundle(t, b, t1, bs), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ObservedInput == nil || bundle.ObservedInput.Unavailable || bundle.ObservedInput.EvidenceHash == "" {
+		t.Fatalf("packaging dropped mirrored observed_input from recorded root: %+v", bundle.ObservedInput)
+	}
+	if _, err := bs.Get(ctx, bundle.ObservedInput.EvidenceHash); err != nil {
+		t.Fatalf("mirrored evidence document unresolved in destination: %v", err)
+	}
+}
+
+// A deleted origin is unavailable and must not be recreated.
+func TestObservedInput_DeletedOriginIsUnavailableAndNotRecreated(t *testing.T) {
+	ctx := context.Background()
+	a := newObservedRepo(t)
+	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
+	t1 := a.insertPrompt(t, requestUUID(n))
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatalf("persist in launch repo: %v", err)
+	}
+	b := newDestRepo(t, a.path)
+
+	dbPath := filepath.Join(a.path, ".semantica", "lineage.db")
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+
+	bs, err := blobs.NewStore(filepath.Join(b.path, ".semantica", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	PackageTurn(ctx, b.path, TurnContext{Provider: "claude_code", SessionID: b.providerSession, TurnID: t1, StartedAt: 1, CompletedAt: 3000}, bs)
+
+	var bundle struct {
+		ObservedInput *bundleObservedInput `json:"observed_input"`
+	}
+	if err := json.Unmarshal(packagedBundle(t, b, t1, bs), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ObservedInput == nil || !bundle.ObservedInput.Unavailable {
+		t.Fatalf("deleted origin must surface as unavailable, got %+v", bundle.ObservedInput)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("origin database was recreated during packaging: %v", err)
+	}
+}
+
+// A missing session in a valid origin means no evidence was recorded there.
+func TestObservedInput_MissingSessionInValidOriginIsAbsent(t *testing.T) {
+	ctx := context.Background()
+	a := newObservedRepo(t) // valid origin DB and repository row, but no matching session
+	b := newDestRepo(t, a.path)
+	bs, err := blobs.NewStore(filepath.Join(b.path, ".semantica", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := PropagateObservedInput(ctx, bs, a.path, "claude_code", "no-such-provider-session", b.sessionID, "some-turn")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Unavailable {
+		t.Fatal("missing session in a valid origin must be absence, not unavailable")
+	}
+	if res.Evidence != nil {
+		t.Fatalf("expected no evidence for an absent session, got %+v", res.Evidence)
+	}
+}
+
+// Origin storage failures produce unavailable evidence.
+func TestObservedInput_CrossRepoOriginFailureIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	a := newObservedRepo(t)
+	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
+	t1 := a.insertPrompt(t, requestUUID(n))
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatalf("persist in launch repo: %v", err)
+	}
+	b := newDestRepo(t, a.path)
+
+	// Corrupt the origin after retention to test lookup failure.
+	if err := os.WriteFile(filepath.Join(a.path, ".semantica", "lineage.db"), []byte("not a database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bs, err := blobs.NewStore(filepath.Join(b.path, ".semantica", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	PackageTurn(ctx, b.path, TurnContext{Provider: "claude_code", SessionID: b.providerSession, TurnID: t1, StartedAt: 1, CompletedAt: 3000}, bs)
+
+	var bundle struct {
+		ObservedInput *bundleObservedInput `json:"observed_input"`
+	}
+	if err := json.Unmarshal(packagedBundle(t, b, t1, bs), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ObservedInput == nil || !bundle.ObservedInput.Unavailable {
+		t.Fatalf("origin failure must surface as unavailable, got %+v", bundle.ObservedInput)
 	}
 }

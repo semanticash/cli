@@ -3,6 +3,7 @@ package provenance
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/observedinput"
+	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
@@ -475,6 +477,99 @@ func CollectObservedInput(ctx context.Context, repoPath, provider, sessionID, tu
 		return ObservedInputResult{}, err
 	}
 	return ObservedInputResult{Evidence: &ev, Hash: stored}, nil
+}
+
+// PropagateObservedInput copies retained evidence and referenced content from
+// originRepoPath to the destination store, using the destination session identity.
+//
+// originRepoPath must be a resolved repository root. Missing sessions or evidence
+// return an empty result; unreadable origin evidence returns Unavailable.
+func PropagateObservedInput(ctx context.Context, destBlobs *blobs.Store, originRepoPath, provider, providerSessionID, destSessionID, turnID string) (ObservedInputResult, error) {
+	originSessionID, err := resolveSessionID(ctx, originRepoPath, provider, providerSessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ObservedInputResult{}, nil // No matching session in a valid origin.
+		}
+		return ObservedInputResult{Unavailable: true}, nil // lookup/storage failure
+	}
+	res, err := CollectObservedInput(ctx, originRepoPath, provider, originSessionID, turnID)
+	if err != nil {
+		return ObservedInputResult{Unavailable: true}, nil // origin storage failure
+	}
+	if res.Evidence == nil {
+		return res, nil // confirmed absence, or already-unavailable evidence
+	}
+	originBlobs, err := blobs.NewStore(repoObjects(originRepoPath))
+	if err != nil {
+		return ObservedInputResult{Unavailable: true}, nil
+	}
+	// Copy the content closure into the destination store so its references resolve.
+	for _, ref := range closureRefs(res.Evidence) {
+		if ref == "" || destBlobs.Exists(ref) {
+			continue
+		}
+		body, gerr := originBlobs.Get(ctx, ref)
+		if gerr != nil {
+			return ObservedInputResult{Unavailable: true}, nil
+		}
+		if _, _, perr := destBlobs.Put(ctx, body); perr != nil {
+			return ObservedInputResult{}, perr
+		}
+	}
+	mapped := remapIdentities(*res.Evidence, destSessionID, turnID)
+	if !closureResolves(ctx, destBlobs, mapped) {
+		return ObservedInputResult{Unavailable: true}, nil
+	}
+	doc, err := json.Marshal(mapped)
+	if err != nil {
+		return ObservedInputResult{}, err
+	}
+	stored, _, err := destBlobs.Put(ctx, doc)
+	if err != nil {
+		return ObservedInputResult{}, err
+	}
+	return ObservedInputResult{Evidence: &mapped, Hash: stored}, nil
+}
+
+// sameRepoPath reports whether two repository paths are equal under normalization.
+func sameRepoPath(a, b string) bool {
+	return platform.NormalizePathForCompare(a) == platform.NormalizePathForCompare(b)
+}
+
+// closureRefs returns the content references an evidence document depends on.
+func closureRefs(ev *observedinput.Evidence) []string {
+	refs := make([]string, 0, len(ev.Requests)+2*len(ev.Observations))
+	for _, r := range ev.Requests {
+		refs = append(refs, r.InstructionRef)
+	}
+	for _, o := range ev.Observations {
+		refs = append(refs, o.Representation.ContentRef, o.Representation.SourceContentRef)
+	}
+	return refs
+}
+
+// errOriginUnavailable indicates unreadable origin storage or repository identity.
+var errOriginUnavailable = errors.New("observed-input: origin unavailable")
+
+// resolveSessionID resolves a repo's internal session ID for a provider session.
+// Only a missing session in a valid repository returns sql.ErrNoRows.
+func resolveSessionID(ctx context.Context, repoPath, provider, providerSessionID string) (string, error) {
+	h, err := sqlstore.OpenExisting(ctx, repoLineageDB(repoPath), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		return "", errOriginUnavailable
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
+	if err != nil {
+		return "", errOriginUnavailable // missing/unreadable repository identity
+	}
+	sess, err := h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
+		RepositoryID: repo.RepositoryID, Provider: normalizeProvider(provider), ProviderSessionID: providerSessionID,
+	})
+	if err != nil {
+		return "", err // sql.ErrNoRows here means the session is absent in a valid origin
+	}
+	return sess.SessionID, nil
 }
 
 // resolveIdentities resolves the internal session and maps request IDs to turns.

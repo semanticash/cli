@@ -126,13 +126,14 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 		key := ev.Provider + "|" + ev.SourceKey + "|" + ev.ProviderSessionID
 		g, ok := groups[key]
 		if !ok {
-			// Record provenance: if the session originated from a different
-			// repo, store the source path so cross-repo routing is visible.
-			// A session launched from a subdirectory inside this repo (e.g.,
-			// /repo/subdir) is same-repo - not cross-repo provenance.
+			// Prefer the resolved launch root when recording a cross-repo origin.
+			origin := ev.ResolvedRepoRoot
+			if origin == "" {
+				origin = ev.SourceProjectPath
+			}
 			var sourceRepoPath string
-			if ev.SourceProjectPath != "" && !PathBelongsToRepo(ev.SourceProjectPath, repoPath) {
-				sourceRepoPath = ev.SourceProjectPath
+			if origin != "" && !PathBelongsToRepo(origin, repoPath) {
+				sourceRepoPath = origin
 			}
 
 			g = &sourceGroup{
@@ -273,7 +274,7 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 				eventSource = "transcript"
 			}
 
-			// Skip replayed step events when the same tool step was already
+			// Skip replayed tool events when the same invocation was already
 			// recorded directly by the hook path.
 			if eventSource == "transcript" && ev.TurnID != "" && ev.ToolUseID != "" && ev.ToolName != "" {
 				exists, err := txq.StepEventExists(ctx, sqldb.StepEventExistsParams{
@@ -290,8 +291,21 @@ func WriteEventsToRepo(ctx context.Context, repoPath string, events []RawEvent, 
 			// prompt event already exists for the same turn. Keep tool_result
 			// user events; only plain user prompts are suppressed here.
 			if eventSource == "transcript" && ev.TurnID != "" && ev.Role == "user" && ev.Kind == "user" {
-				exists, err := txq.PromptEventExists(ctx, sqlstore.NullStr(ev.TurnID))
+				exists, err := txq.PromptEventExists(ctx, sqldb.PromptEventExistsParams{
+					SessionID: sessRow.SessionID,
+					TurnID:    sqlstore.NullStr(ev.TurnID),
+				})
 				if err == nil && exists {
+					// Preserve the request UUID used to resolve input ownership.
+					if ev.ProviderEventID != "" {
+						if uerr := txq.BackfillPromptProviderEventID(ctx, sqldb.BackfillPromptProviderEventIDParams{
+							ProviderEventID: sqlstore.NullStr(ev.ProviderEventID),
+							SessionID:       sessRow.SessionID,
+							TurnID:          sqlstore.NullStr(ev.TurnID),
+						}); uerr != nil {
+							return sessionIDs, fmt.Errorf("backfill prompt provider_event_id: %w", uerr)
+						}
+					}
 					continue
 				}
 			}

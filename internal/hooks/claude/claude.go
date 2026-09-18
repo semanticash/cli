@@ -342,7 +342,7 @@ type stdinPayload struct {
 	ToolResult json.RawMessage `json:"tool_result,omitempty"`
 }
 
-// stateAlteringTools are the tool names captured as direct step events.
+// stateAlteringTools lists tools captured directly from hooks.
 var stateAlteringTools = map[string]bool{
 	"Write": true,
 	"Edit":  true,
@@ -483,6 +483,56 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 // invalid position. This matches the ContextCompacted "accept a gap" policy.
 // OffsetReadsAuthoritative reports whether offset-based reads are exact.
 func (p *Provider) OffsetReadsAuthoritative() bool { return true }
+
+// CaptureObservedInputs normalizes records in [startOffset, endOffset) at capture time.
+func (p *Provider) CaptureObservedInputs(ctx context.Context, transcriptRef string, startOffset, endOffset int) (hooks.ObservedInputBatch, error) {
+	// Read failures must preserve the offset for retry.
+	f, err := os.Open(transcriptRef)
+	if err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	// Transcript compaction can reset the end offset below the start.
+	if endOffset <= startOffset {
+		return hooks.ObservedInputBatch{}, nil
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	records := make([]json.RawMessage, 0, endOffset-startOffset)
+	i := 0
+	// Stop exactly at endOffset so a later oversized record cannot fail this batch.
+	for ; i < endOffset && scanner.Scan(); i++ {
+		if i < startOffset {
+			continue
+		}
+		// Keep every line in range, including blanks, so positions are preserved.
+		line := scanner.Bytes()
+		records = append(records, append(json.RawMessage(nil), line...))
+	}
+	if err := scanner.Err(); err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	if i < endOffset {
+		return hooks.ObservedInputBatch{}, fmt.Errorf("observed-input read incomplete: got %d lines, want through %d", i, endOffset)
+	}
+	n, err := agentclaude.NormalizeObservedInputs(agentclaude.NormalizeInput{
+		Provider: providerName, Locator: transcriptRef, StartOffset: int64(startOffset), Records: records,
+	})
+	if err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	return hooks.ObservedInputBatch{Turns: n.Turns, Contents: n.Contents, CallOwners: n.CallOwners, Ancestry: n.Ancestry}, nil
+}
+
+// ProviderSessionForTranscript derives the same session identity as ReadFromOffset.
+func (p *Provider) ProviderSessionForTranscript(transcriptRef string) string {
+	if id := agentclaude.ExtractSessionIDFromPath(transcriptRef); id != "" {
+		return id
+	}
+	return agentclaude.ExtractBasename(transcriptRef)
+}
 
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	f, err := os.Open(transcriptRef)

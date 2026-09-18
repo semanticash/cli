@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -125,8 +126,11 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 	parentByUUID := map[string]string{}
 	var malformedGaps []observedinput.Gap
 	for idx, raw := range in.Records {
-		// Malformed records still count toward source positions.
+		// Blank and malformed records still count toward source positions.
 		pos := in.StartOffset + int64(idx) + 1
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue // blank line: preserves position, not a record or a gap
+		}
 		var rec claudeRecord
 		if json.Unmarshal(raw, &rec) != nil {
 			malformedGaps = append(malformedGaps, observedinput.Gap{Reason: observedinput.GapMalformed, Detail: fmt.Sprintf("unparseable record at position %d", pos)})
