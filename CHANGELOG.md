@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Local Claude Code input evidence preserves captured requests, attachments, and tool results. Provider links distinguish request inputs from later context; unresolved or unsupported content retains explicit gaps. This evidence is excluded from hosted bundles and does not affect attribution.
+
 ### Changed
 
 ### Fixed
 
+- Claude observed inputs now share the transcript session, keeping the request, attached inputs, and final response together in local provenance bundles.
 - Failed shell commands now reach capture completion through Claude Code,
   Cursor, and Copilot failure hooks. Claude Code and Cursor failures no longer
   leave tool windows open and block evidence from later commands.

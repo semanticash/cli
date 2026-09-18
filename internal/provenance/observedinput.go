@@ -43,8 +43,10 @@ func observedInputTurnEventID(provider, sessionID, turnID string) string {
 	return fmt.Sprintf("observed-input:%x", sum)
 }
 
-func repoObjects(repoPath string) string  { return filepath.Join(repoPath, ".semantica", "objects") }
-func repoLineageDB(repoPath string) string { return filepath.Join(repoPath, ".semantica", "lineage.db") }
+func repoObjects(repoPath string) string { return filepath.Join(repoPath, ".semantica", "objects") }
+func repoLineageDB(repoPath string) string {
+	return filepath.Join(repoPath, ".semantica", "lineage.db")
+}
 
 // evidenceItem is an immutable request, observation with links, or set of gaps.
 type evidenceItem struct {
@@ -217,7 +219,7 @@ func (p *oiWriter) ensureEvent(turnID string) error {
 	}
 	record := broker.ObservationContext(broker.RawEvent{
 		EventID: observedInputTurnEventID(p.provider, p.sessionID, turnID), SourceKey: "observed-input:" + p.sessionID,
-		Provider: p.provider, ProviderSessionID: p.providerSession, TurnID: turnID,
+		Provider: normalizeProvider(p.provider), ProviderSessionID: p.providerSession, TurnID: turnID,
 		Timestamp: p.capturedAt, Kind: "context", Role: "system", EventSource: observedInputEvidenceKind,
 		Summary: "Observed inputs supplied with the request.",
 	})

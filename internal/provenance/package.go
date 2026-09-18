@@ -65,9 +65,7 @@ func PackageTurn(ctx context.Context, repoPath string, tc TurnContext, sourceBlo
 		return
 	}
 
-	// Resolve internal session ID.
-	// Try the provider name as-is first (matches most providers), then
-	// fall back to underscore normalization for legacy sessions.
+	// Prefer the canonical provider session, with a fallback for hook-only sessions.
 	sess, err := resolveProviderSession(ctx, h, repo.RepositoryID, tc.Provider, tc.SessionID)
 	if err != nil {
 		slog.Debug("provenance: resolve session failed", "err", err)

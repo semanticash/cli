@@ -69,7 +69,7 @@ When capture state is active, Semantica snapshots eligible Bash calls even if `a
 
 **Hook config**: `.claude/settings.local.json`
 
-Claude Code stores conversation transcripts as JSONL files in project-specific directories under `~/.claude/projects/`. Each line is a typed event (`system`, `human`, `assistant`, `result`).
+Claude Code stores JSONL transcripts under `~/.claude/projects/`, including user, assistant, attachment, and lifecycle records.
 
 ### Hooks
 
@@ -85,6 +85,17 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 - **`SessionStart`** / **`SessionEnd`** - Lifecycle tracking and final flush.
 
 Claude Code combines direct hook events with transcript replay for session flow, token usage, and events not emitted by hooks.
+
+### Observed inputs
+
+Semantica retains provider-recorded requests, attachments, and tool results in local content-addressed storage during capture. Per-turn bundles use that retained evidence; packaging does not reread source documents or refetch URLs.
+
+- Attachments join a request only through provider-recorded structural links.
+- Later Read and WebFetch results remain observed context, even when the prompt mentions the file or URL. WebFetch capture preserves the returned text, not a reconstructed copy of the webpage.
+- Original PDF bytes are retained when present in the provider record. A PDF attachment parented to another attachment can remain unresolved; a separate Read result is still retained as context.
+- Missing, unsupported, or truncated representations retain explicit gaps.
+
+This input evidence is local-only. It does not change line attribution or feed hosted Review Basis. Other providers do not yet produce this bundle section.
 
 ### Attribution
 

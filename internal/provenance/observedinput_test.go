@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	claudeagent "github.com/semanticash/cli/internal/agents/claude"
+	"github.com/semanticash/cli/internal/broker"
 	"github.com/semanticash/cli/internal/observedinput"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -133,6 +135,11 @@ func (r observedRepo) insertPrompt(t *testing.T, providerEventID string) string 
 
 func normalizeFixtureForRepo(t *testing.T, name string) claudeagent.Normalized {
 	t.Helper()
+	return normalizeFixtureWithProvider(t, name, "claude_code")
+}
+
+func normalizeFixtureWithProvider(t *testing.T, name, provider string) claudeagent.Normalized {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "agents", "claude", "testdata", "observedinput", name))
 	if err != nil {
 		t.Fatal(err)
@@ -144,12 +151,90 @@ func normalizeFixtureForRepo(t *testing.T, name string) claudeagent.Normalized {
 		}
 	}
 	n, err := claudeagent.NormalizeObservedInputs(claudeagent.NormalizeInput{
-		Provider: "claude_code", SessionID: "sess", Locator: name, Records: recs,
+		Provider: provider, SessionID: "sess", Locator: name, Records: recs,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestObservedInput_ClaudeHookAliasPreservesPackagedTurn(t *testing.T) {
+	for _, existingAlias := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing_alias=%t", existingAlias), func(t *testing.T) {
+			ctx := context.Background()
+			r := newObservedRepo(t)
+			n := normalizeFixtureWithProvider(t, "captured_text_attachment.jsonl", "claude-code")
+			turnID := r.insertPrompt(t, requestUUID(n))
+			bs, err := blobs.NewStore(repoObjects(r.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			promptHash, _, err := bs.Put(ctx, []byte(`{"type":"user","message":{"role":"user","content":"Read the supplied specification."}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseHash, _, err := bs.Put(ctx, []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The badge values are amber and violet."}]}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, err := sqlstore.Open(ctx, repoLineageDB(r.path), sqlstore.DefaultOpenOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sqlstore.Close(h) }()
+			if _, err := h.DB.ExecContext(ctx, "update agent_events set payload_hash=?, event_source='hook' where session_id=? and turn_id=?", promptHash, r.sessionID, turnID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := broker.WriteEventsToRepo(ctx, r.path, []broker.RawEvent{{
+				EventID: "response", SourceKey: "transcript", Provider: "claude_code", ProviderSessionID: r.providerSession,
+				TurnID: turnID, Kind: "assistant", Role: "assistant", EventSource: "transcript", Timestamp: 2, PayloadHash: responseHash,
+			}}, bs); err != nil {
+				t.Fatal(err)
+			}
+			if existingAlias {
+				// Reproduce an evidence event written under the hook alias.
+				if _, err := broker.WriteEventsToRepo(ctx, r.path, []broker.RawEvent{{
+					EventID: observedInputTurnEventID("claude-code", r.sessionID, turnID), SourceKey: "observed-input:" + r.sessionID,
+					Provider: "claude-code", ProviderSessionID: r.providerSession, TurnID: turnID,
+					Kind: "context", Role: "system", EventSource: observedInputEvidenceKind, Timestamp: 3,
+				}}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 4, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+				t.Fatal(err)
+			}
+			PackageTurn(ctx, r.path, TurnContext{Provider: "claude-code", SessionID: r.providerSession, TurnID: turnID, StartedAt: 1, CompletedAt: 5}, bs)
+			var bundle provenanceBundle
+			if err := json.Unmarshal(packagedBundle(t, r, turnID, bs), &bundle); err != nil {
+				t.Fatal(err)
+			}
+			if bundle.SessionID != r.sessionID || bundle.Prompt == nil || bundle.Prompt.BlobHash != promptHash {
+				t.Fatalf("packaging lost the canonical session or prompt: %+v", bundle)
+			}
+			if bundle.Response.Status != responseComplete || bundle.Response.Hash == "" {
+				t.Fatalf("packaging lost the response: %+v", bundle.Response)
+			}
+			if bundle.ObservedInput == nil || bundle.ObservedInput.Unavailable || bundle.ObservedInput.Requests != 1 || bundle.ObservedInput.Observations == 0 {
+				t.Fatalf("packaging lost observed inputs: %+v", bundle.ObservedInput)
+			}
+			raw, err := bs.Get(ctx, bundle.ObservedInput.EvidenceHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var evidence observedinput.Evidence
+			if err := json.Unmarshal(raw, &evidence); err != nil || !closureResolves(ctx, bs, evidence) {
+				t.Fatalf("invalid evidence closure: %v", err)
+			}
+			if !existingAlias {
+				var count int
+				if err := h.DB.QueryRowContext(ctx, "select count(*) from agent_sessions where provider_session_id=?", r.providerSession).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("retention split the session: count=%d err=%v", count, err)
+				}
+			}
+		})
+	}
 }
 
 // requestUUID returns the first resolved request's provider event ID.
@@ -555,7 +640,6 @@ func TestObservedInput_SplitCallAndResult(t *testing.T) {
 		t.Fatalf("cross-batch tool result not attributed to its turn: %+v", res.Evidence.Observations)
 	}
 }
-
 
 // Rejected deliveries must not appear in collected evidence.
 func TestObservedInput_RejectedConflictNotPublished(t *testing.T) {
