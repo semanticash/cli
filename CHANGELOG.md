@@ -5,6 +5,17 @@ All significant changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] - Unreleased
+
+### Added
+
+- Local Claude Code input evidence preserves captured requests, attachments, and tool results. Provider links distinguish request inputs from later context; unresolved or unsupported content retains explicit gaps. This evidence is excluded from hosted bundles and does not affect attribution.
+
+### Fixed
+
+- Claude observed inputs now share the transcript session, keeping the request, attached inputs, and final response together in local provenance bundles.
+- Claude input evidence retains recorded file paths, URLs, transformations, coverage, and source byte counts. Transcript readers accept encoded 8 MiB inputs; oversized bodies retain explicit size-limit gaps.
+
 ## [0.7.2] - 2026-09-16
 
 ### Added

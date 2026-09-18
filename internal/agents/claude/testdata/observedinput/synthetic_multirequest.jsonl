@@ -1,0 +1,3 @@
+{"type":"user","uuid":"req-1","parentUuid":null,"sessionId":"synthetic","message":{"role":"user","content":"First request: implement A."}}
+{"type":"user","uuid":"req-2","parentUuid":"req-1","sessionId":"synthetic","message":{"role":"user","content":"Second request: also do B."}}
+{"type":"attachment","uuid":"att-late","parentUuid":"req-1","sessionId":"synthetic","attachment":{"type":"file","filename":"/work/a.txt","content":{"type":"text","file":{"filePath":"/work/a.txt","content":"payload for the first request\n","startLine":1,"numLines":1,"totalLines":1}}}}

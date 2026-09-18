@@ -126,6 +126,23 @@ func TestPlanRoutesKeepsEachContextAndPartialMutation(t *testing.T) {
 	}
 }
 
+// Disabled nested repositories must not determine the launch origin.
+func TestPlanRoutesRecordsActiveLaunchRepoRoot(t *testing.T) {
+	nested := makeRepo("/work/a/nested")
+	nested.Active = false
+	repos := []RegisteredRepo{makeRepo("/work/a"), nested, makeRepo("/work/b")}
+
+	// Session launched inside the disabled nested dir edits a file in /work/b.
+	ev := mutationEvent("edit", "Write", "/work/b/file", "/work/a/nested")
+	m, _ := PlanRoutes([]RawEvent{ev}, repos)
+	if len(m) != 1 || m[0].Repo.CanonicalPath != "/work/b" {
+		t.Fatalf("edit did not route to /work/b: %+v", m)
+	}
+	if got := m[0].Events[0].ResolvedRepoRoot; got != "/work/a" {
+		t.Fatalf("expected active launch root /work/a, got %q (disabled nested must be skipped)", got)
+	}
+}
+
 func TestObservationContextSurvivesPathNormalization(t *testing.T) {
 	ev := ObservationContext(mutationEvent("mixed", "Write", "/work/a/file", "/work/a"))
 	if !attrevents.ContextOnly(relativizeToolPaths(ev.ToolUsesJSON, "/work/a")) {

@@ -48,11 +48,24 @@ select count(*) > 0 as exists_flag from agent_events
 where turn_id = ? and tool_use_id = ? and tool_name = ?;
 
 -- name: PromptEventExists :one
+-- Match within the session to keep parent and subagent requests separate.
 select count(*) > 0 as exists_flag from agent_events
-where turn_id = ?
+where session_id = ?
+  and turn_id = ?
   and role = 'user'
   and kind = 'user'
   and event_source = 'hook';
+
+-- name: BackfillPromptProviderEventID :exec
+-- Retain the transcript request UUID on its matching hook prompt.
+update agent_events
+set provider_event_id = ?
+where session_id = ?
+  and turn_id = ?
+  and role = 'user'
+  and kind = 'user'
+  and event_source = 'hook'
+  and (provider_event_id is null or provider_event_id = '');
 
 -- name: ListAgentEventsBySession :many
 select * from agent_events where session_id = ? order by ts desc limit ?;
@@ -626,7 +639,7 @@ group by last_error
 order by count desc, last_error;
 
 -- name: ListStepProvenanceForTurn :many
--- Returns step provenance hashes for a turn, used to build the upload envelope.
+-- Returns tool-event provenance hashes for the turn's upload envelope.
 select event_id, tool_use_id, tool_name, provenance_hash
 from agent_events
 where session_id = ? and turn_id = ?
@@ -650,7 +663,7 @@ where session_id = ? and turn_id = ?
   and event_source = 'turn_observation' and kind = 'context';
 
 -- name: ListStepEventsForTurn :many
--- Returns step events for provenance bundle packaging.
+-- Returns tool events for provenance bundle packaging.
 -- Includes both hook-captured and transcript-sourced events
 -- so providers without direct hook capture are covered.
 select event_id, ts, tool_name, tool_use_id, provenance_hash, payload_hash,
@@ -690,7 +703,7 @@ from covering_checkpoint cc
 join commit_links cl on cc.checkpoint_id = cl.checkpoint_id;
 
 -- name: ListStepCompanionResults :many
--- Returns tool_result events matching a step's tool_use_id, ordered by
+-- Returns tool_result events matching a tool_use_id, ordered by
 -- timestamp. Returned as :many so the provider enricher can choose the
 -- right pairing when multiple results exist (e.g., retried tool calls).
 select event_id, payload_hash, summary, role, kind, ts

@@ -217,8 +217,8 @@ func buildSyncResult(
 		objects = append(objects, syncObject{Kind: "turn_response", Hash: responseHash, SizeBytes: len(raw)})
 	}
 
-	// Rewrite bundle's embedded hashes to upload hashes, then redact/hash.
-	rewrittenBundle := RewriteBundleHashes(rawBundle, hashMap)
+	// Remove local-only input evidence, rewrite upload hashes, then redact and hash.
+	rewrittenBundle := RewriteBundleHashes(stripObservedInput(rawBundle), hashMap)
 	bundleHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoPath)
 	if err != nil {
 		markFailed(ctx, h, m.ManifestID, redactionFailedReason("bundle", err))

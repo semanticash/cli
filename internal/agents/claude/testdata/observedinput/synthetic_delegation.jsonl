@@ -1,0 +1,3 @@
+{"type":"user","uuid":"parent-1","parentUuid":null,"sessionId":"synthetic","message":{"role":"user","content":"Parent request."}}
+{"type":"user","uuid":"child-1","parentUuid":"parent-1","sessionId":"synthetic","isSidechain":true,"message":{"role":"user","content":"Delegated: review the attached note."}}
+{"type":"attachment","uuid":"att-child","parentUuid":"child-1","sessionId":"synthetic","attachment":{"type":"file","filename":"/work/note.txt","content":{"type":"text","file":{"filePath":"/work/note.txt","content":"note supplied to the child\n","startLine":1,"numLines":1,"totalLines":1}}}}

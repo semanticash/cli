@@ -91,6 +91,39 @@ func Open(ctx context.Context, dbPath string, opts OpenOptions) (*Handle, error)
 	return h, nil
 }
 
+// OpenExisting opens a database without creating or migrating it.
+// It returns an error if the database does not exist.
+func OpenExisting(ctx context.Context, dbPath string, opts OpenOptions) (*Handle, error) {
+	if dbPath == "" {
+		return nil, fmt.Errorf("dbPath is empty")
+	}
+	if opts.BusyTimeout <= 0 {
+		opts.BusyTimeout = 250 * time.Millisecond
+	}
+	if opts.Synchronous == "" {
+		opts.Synchronous = "NORMAL"
+	}
+
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath, opts)+"&mode=rw")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite db: %w", err)
+	}
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping: %w", err)
+	}
+	if err := applyPragmas(ctx, db, opts); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Handle{DB: db, Queries: sqldb.New(db)}, nil
+}
+
 func Close(h *Handle) error {
 	if h == nil || h.DB == nil {
 		return nil

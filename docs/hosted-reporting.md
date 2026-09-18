@@ -32,6 +32,8 @@ Steps whose primary file is ignored by Git are filtered out during packaging,
 so ignored-file provenance stays local and is not included in synced bundles.
 Token usage is optional metadata, not a billing or completeness measure.
 
+Claude's local `observed_input` section is removed before upload, and sync does not traverse its content references. Existing prompt, response, and tool provenance continue to follow the normal sync rules. See [Claude observed inputs](providers.md#observed-inputs) for capture limits.
+
 `semantica disconnect` stops future sync attempts from the current repo:
 
 ```bash

@@ -87,21 +87,22 @@ func LoadTurnPrompt(ctx context.Context, repoPath, provider, providerSessionID, 
 }
 
 func resolveProviderSession(ctx context.Context, h *sqlstore.Handle, repositoryID, provider, providerSessionID string) (sqldb.AgentSession, error) {
+	// Prefer the transcript identity when a hook alias also has a session.
+	normalized := strings.ReplaceAll(provider, "-", "_")
 	sess, err := h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
 		RepositoryID:      repositoryID,
-		Provider:          provider,
+		Provider:          normalized,
 		ProviderSessionID: providerSessionID,
 	})
 	if err == nil {
 		return sess, nil
 	}
-	normalized := strings.ReplaceAll(provider, "-", "_")
-	if normalized == provider {
+	if normalized == provider || !errors.Is(err, sql.ErrNoRows) {
 		return sqldb.AgentSession{}, err
 	}
 	return h.Queries.GetAgentSessionByProviderID(ctx, sqldb.GetAgentSessionByProviderIDParams{
 		RepositoryID:      repositoryID,
-		Provider:          normalized,
+		Provider:          provider,
 		ProviderSessionID: providerSessionID,
 	})
 }

@@ -30,6 +30,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.agentEventExistsStmt, err = db.PrepareContext(ctx, agentEventExists); err != nil {
 		return nil, fmt.Errorf("error preparing query AgentEventExists: %w", err)
 	}
+	if q.backfillPromptProviderEventIDStmt, err = db.PrepareContext(ctx, backfillPromptProviderEventID); err != nil {
+		return nil, fmt.Errorf("error preparing query BackfillPromptProviderEventID: %w", err)
+	}
 	if q.claimCheckpointStmt, err = db.PrepareContext(ctx, claimCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query ClaimCheckpoint: %w", err)
 	}
@@ -364,6 +367,11 @@ func (q *Queries) Close() error {
 	if q.agentEventExistsStmt != nil {
 		if cerr := q.agentEventExistsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing agentEventExistsStmt: %w", cerr)
+		}
+	}
+	if q.backfillPromptProviderEventIDStmt != nil {
+		if cerr := q.backfillPromptProviderEventIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing backfillPromptProviderEventIDStmt: %w", cerr)
 		}
 	}
 	if q.claimCheckpointStmt != nil {
@@ -942,6 +950,7 @@ type Queries struct {
 	tx                                           *sql.Tx
 	advanceBackfillCursorStmt                    *sql.Stmt
 	agentEventExistsStmt                         *sql.Stmt
+	backfillPromptProviderEventIDStmt            *sql.Stmt
 	claimCheckpointStmt                          *sql.Stmt
 	completeBackfillStmt                         *sql.Stmt
 	completeCheckpointStmt                       *sql.Stmt
@@ -1057,6 +1066,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		tx:                                           tx,
 		advanceBackfillCursorStmt:                    q.advanceBackfillCursorStmt,
 		agentEventExistsStmt:                         q.agentEventExistsStmt,
+		backfillPromptProviderEventIDStmt:            q.backfillPromptProviderEventIDStmt,
 		claimCheckpointStmt:                          q.claimCheckpointStmt,
 		completeBackfillStmt:                         q.completeBackfillStmt,
 		completeCheckpointStmt:                       q.completeCheckpointStmt,

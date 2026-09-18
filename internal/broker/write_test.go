@@ -275,6 +275,174 @@ func TestWriteEventsToRepo_DedupsTranscriptPromptWhenHookPromptExists(t *testing
 	}
 }
 
+// Prompt deduplication preserves the transcript UUID used for input ownership.
+func TestWriteEventsToRepo_DedupBackfillsRequestUUID(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	tempRepoWithDB(t, repoPath)
+
+	ctx := context.Background()
+
+	// Direct hook prompt carries no provider_event_id (unknown at prompt time).
+	hookPrompt := RawEvent{
+		EventID: "evt-hook-prompt", SourceKey: "/data/session.jsonl", Provider: "claude_code",
+		Timestamp: 1000, Kind: "user", Role: "user", Summary: "Create a file", TurnID: "turn-1",
+		EventSource: "hook", ProviderSessionID: "sess-abc", SessionStartedAt: 900,
+		SessionMetaJSON: `{"source_key":"/data/session.jsonl"}`,
+	}
+	// Replayed transcript prompt carries the record UUID and is deduplicated.
+	transcriptPrompt := hookPrompt
+	transcriptPrompt.EventID = "evt-transcript-prompt"
+	transcriptPrompt.Timestamp = 999
+	transcriptPrompt.EventSource = "transcript"
+	transcriptPrompt.ProviderEventID = "req-uuid-1"
+
+	sids, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{hookPrompt, transcriptPrompt}, nil)
+	if err != nil {
+		t.Fatalf("WriteEventsToRepo: %v", err)
+	}
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	evts, err := h.Queries.ListAgentEventsBySession(ctx, sqldb.ListAgentEventsBySessionParams{SessionID: sids[0], Limit: 10})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var prompts int
+	for _, evt := range evts {
+		if evt.Kind == "user" && evt.Role.Valid && evt.Role.String == "user" {
+			prompts++
+			if !evt.ProviderEventID.Valid || evt.ProviderEventID.String != "req-uuid-1" {
+				t.Fatalf("surviving prompt did not retain request UUID: %v", evt.ProviderEventID)
+			}
+		}
+	}
+	if prompts != 1 {
+		t.Fatalf("expected exactly 1 prompt event, got %d", prompts)
+	}
+}
+
+// Destination sessions record the resolved launch root.
+func TestWriteEventsToRepo_SourceRepoPathUsesResolvedRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "repoB")
+	tempRepoWithDB(t, repoPath)
+	ctx := context.Background()
+
+	launchRoot := filepath.Join(dir, "repoA")
+	ev := RawEvent{
+		EventID: "evt-edit", SourceKey: "/data/session.jsonl", Provider: "claude_code",
+		Timestamp: 1000, Kind: "assistant", Role: "assistant", TurnID: "turn-1",
+		EventSource: "hook", ProviderSessionID: "sess-x", SessionStartedAt: 900,
+		SessionMetaJSON: `{"source_key":"/data/session.jsonl"}`,
+		// Launched from a subdirectory of A; routing resolved the repo root.
+		SourceProjectPath: filepath.Join(launchRoot, "subdir"),
+		ResolvedRepoRoot:  launchRoot,
+	}
+
+	sids, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{ev}, nil)
+	if err != nil || len(sids) != 1 {
+		t.Fatalf("WriteEventsToRepo: sids=%v err=%v", sids, err)
+	}
+
+	h, err := sqlstore.Open(ctx, filepath.Join(repoPath, ".semantica", "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	sess, err := h.Queries.GetAgentSessionByID(ctx, sids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.SourceRepoPath.Valid || sess.SourceRepoPath.String != launchRoot {
+		t.Fatalf("source_repo_path should be the resolved root %q, got %q", launchRoot, sess.SourceRepoPath.String)
+	}
+}
+
+// Shared turn IDs must not merge parent and subagent request identities.
+func TestWriteEventsToRepo_SubagentPromptDoesNotCorruptParent(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	tempRepoWithDB(t, repoPath)
+
+	ctx := context.Background()
+
+	// Parent: direct hook prompt (no UUID) then its own transcript prompt (UUID).
+	parentHook := RawEvent{
+		EventID: "evt-parent-hook", SourceKey: "/data/parent.jsonl", Provider: "claude_code",
+		Timestamp: 1000, Kind: "user", Role: "user", Summary: "parent", TurnID: "turn-1",
+		EventSource: "hook", ProviderSessionID: "sess-parent", SessionStartedAt: 900,
+		SessionMetaJSON: `{"source_key":"/data/parent.jsonl"}`,
+	}
+	parentTranscript := parentHook
+	parentTranscript.EventID = "evt-parent-transcript"
+	parentTranscript.EventSource = "transcript"
+	parentTranscript.ProviderEventID = "parent-uuid"
+
+	// Child: separate provider session, but inherits the parent's turn ID. Its
+	// transcript prompt carries the child UUID and must land on the child row.
+	childTranscript := RawEvent{
+		EventID: "evt-child-transcript", SourceKey: "/data/child.jsonl", Provider: "claude_code",
+		Timestamp: 1050, Kind: "user", Role: "user", Summary: "child", TurnID: "turn-1",
+		EventSource: "transcript", ProviderSessionID: "sess-child", ParentSessionID: "sess-parent",
+		SessionStartedAt: 950, ProviderEventID: "child-uuid",
+		SessionMetaJSON: `{"source_key":"/data/child.jsonl"}`,
+	}
+
+	// Child arrives before the parent's own transcript prompt, so the parent row is
+	// still empty: turn-only scoping would write the child UUID onto it.
+	if _, err := WriteEventsToRepo(ctx, repoPath, []RawEvent{parentHook, childTranscript, parentTranscript}, nil); err != nil {
+		t.Fatalf("WriteEventsToRepo: %v", err)
+	}
+
+	dbPath := filepath.Join(repoPath, ".semantica", "lineage.db")
+	h, err := sqlstore.Open(ctx, dbPath, sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+
+	// The parent row keeps the parent UUID; the child request survives as its own
+	// row with the child UUID.
+	repo, err := h.Queries.GetRepositoryByRootPath(ctx, repoPath)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	var parentUUIDs, childUUIDs []string
+	for _, provSess := range []string{"sess-parent", "sess-child"} {
+		sessRows, err := h.Queries.ListAgentSessionsByProviderSessionID(ctx, sqldb.ListAgentSessionsByProviderSessionIDParams{
+			RepositoryID: repo.RepositoryID, ProviderSessionID: provSess,
+		})
+		if err != nil || len(sessRows) == 0 {
+			t.Fatalf("resolve session %s: %v", provSess, err)
+		}
+		evts, err := h.Queries.ListAgentEventsBySession(ctx, sqldb.ListAgentEventsBySessionParams{SessionID: sessRows[0].SessionID, Limit: 10})
+		if err != nil {
+			t.Fatalf("list events for %s: %v", provSess, err)
+		}
+		for _, e := range evts {
+			if e.Kind == "user" && e.Role.Valid && e.Role.String == "user" && e.ProviderEventID.Valid {
+				if provSess == "sess-parent" {
+					parentUUIDs = append(parentUUIDs, e.ProviderEventID.String)
+				} else {
+					childUUIDs = append(childUUIDs, e.ProviderEventID.String)
+				}
+			}
+		}
+	}
+	if len(parentUUIDs) != 1 || parentUUIDs[0] != "parent-uuid" {
+		t.Fatalf("parent request identity corrupted: %v", parentUUIDs)
+	}
+	if len(childUUIDs) != 1 || childUUIDs[0] != "child-uuid" {
+		t.Fatalf("child request identity lost: %v", childUUIDs)
+	}
+}
+
 func TestWriteEventsToRepo_MultipleSessions(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "myrepo")

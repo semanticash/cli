@@ -341,7 +341,7 @@ type stdinPayload struct {
 	ToolResult json.RawMessage `json:"tool_result,omitempty"`
 }
 
-// stateAlteringTools are the tool names captured as direct step events.
+// stateAlteringTools lists tools captured directly from hooks.
 var stateAlteringTools = map[string]bool{
 	"Write": true,
 	"Edit":  true,
@@ -448,6 +448,15 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	return event, nil
 }
 
+// Allow JSON escaping and both delivered/source bodies for 8 MiB inputs.
+const maxTranscriptRecordBytes = 128 << 20
+
+func transcriptScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64<<10), maxTranscriptRecordBytes)
+	return s
+}
+
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {
@@ -459,8 +468,7 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	defer func() { _ = f.Close() }()
 
 	count := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
+	scanner := transcriptScanner(f)
 	for scanner.Scan() {
 		count++
 	}
@@ -477,6 +485,55 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 // OffsetReadsAuthoritative reports whether offset-based reads are exact.
 func (p *Provider) OffsetReadsAuthoritative() bool { return true }
 
+// CaptureObservedInputs normalizes records in [startOffset, endOffset) at capture time.
+func (p *Provider) CaptureObservedInputs(ctx context.Context, transcriptRef string, startOffset, endOffset int) (hooks.ObservedInputBatch, error) {
+	// Read failures must preserve the offset for retry.
+	f, err := os.Open(transcriptRef)
+	if err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	// Transcript compaction can reset the end offset below the start.
+	if endOffset <= startOffset {
+		return hooks.ObservedInputBatch{}, nil
+	}
+
+	scanner := transcriptScanner(f)
+	records := make([]json.RawMessage, 0, endOffset-startOffset)
+	i := 0
+	// Stop exactly at endOffset so a later oversized record cannot fail this batch.
+	for ; i < endOffset && scanner.Scan(); i++ {
+		if i < startOffset {
+			continue
+		}
+		// Keep every line in range, including blanks, so positions are preserved.
+		line := scanner.Bytes()
+		records = append(records, append(json.RawMessage(nil), line...))
+	}
+	if err := scanner.Err(); err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	if i < endOffset {
+		return hooks.ObservedInputBatch{}, fmt.Errorf("observed-input read incomplete: got %d lines, want through %d", i, endOffset)
+	}
+	n, err := agentclaude.NormalizeObservedInputs(agentclaude.NormalizeInput{
+		Provider: providerName, Locator: transcriptRef, StartOffset: int64(startOffset), Records: records,
+	})
+	if err != nil {
+		return hooks.ObservedInputBatch{}, err
+	}
+	return hooks.ObservedInputBatch{Turns: n.Turns, Contents: n.Contents, CallOwners: n.CallOwners, Ancestry: n.Ancestry}, nil
+}
+
+// ProviderSessionForTranscript derives the same session identity as ReadFromOffset.
+func (p *Provider) ProviderSessionForTranscript(transcriptRef string) string {
+	if id := agentclaude.ExtractSessionIDFromPath(transcriptRef); id != "" {
+		return id
+	}
+	return agentclaude.ExtractBasename(transcriptRef)
+}
+
 func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, offset int, bs api.BlobPutter) ([]broker.RawEvent, int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {
@@ -489,8 +546,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 
 	// Count total lines to detect stale offsets after transcript compaction.
 	totalLines := 0
-	prescan := bufio.NewScanner(f)
-	prescan.Buffer(make([]byte, 1024*1024), 1024*1024)
+	prescan := transcriptScanner(f)
 	for prescan.Scan() {
 		totalLines++
 	}
@@ -532,8 +588,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner := transcriptScanner(f)
 
 	lineNum := 0
 	var events []broker.RawEvent

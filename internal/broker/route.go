@@ -98,25 +98,7 @@ func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectP
 		return nil
 	}
 
-	// Match the deepest (most specific) repo whose root contains the source
-	// project path. Handles sessions launched from a subdir inside an enabled
-	// repo (e.g., /repo/subdir -> registered /repo). Longest match wins to
-	// avoid ambiguity when nested repos are registered (e.g., /repo and
-	// /repo/subrepo).
-	var bestRepo *RegisteredRepo
-	bestLen := 0
-	for i := range repos {
-		if !repos[i].Active {
-			continue
-		}
-		if PathBelongsToRepo(sourceProjectPath, repos[i].CanonicalPath) {
-			if len(repos[i].CanonicalPath) > bestLen {
-				bestRepo = &repos[i]
-				bestLen = len(repos[i].CanonicalPath)
-			}
-		}
-	}
-
+	bestRepo := DeepestActiveRepo(sourceProjectPath, repos)
 	if bestRepo == nil {
 		return nil
 	}
@@ -124,6 +106,26 @@ func RouteNoPathEvents(events []RawEvent, repos []RegisteredRepo, sourceProjectP
 		Repo:   *bestRepo,
 		Events: contextEvents,
 	}
+}
+
+// DeepestActiveRepo returns the active repository with the longest canonical
+// path containing dir, or nil if none matches.
+func DeepestActiveRepo(dir string, repos []RegisteredRepo) *RegisteredRepo {
+	if dir == "" {
+		return nil
+	}
+	var best *RegisteredRepo
+	bestLen := 0
+	for i := range repos {
+		if !repos[i].Active {
+			continue
+		}
+		if PathBelongsToRepo(dir, repos[i].CanonicalPath) && len(repos[i].CanonicalPath) > bestLen {
+			best = &repos[i]
+			bestLen = len(repos[i].CanonicalPath)
+		}
+	}
+	return best
 }
 
 // ExtractFilePaths parses the tool_uses JSON and returns all unique absolute

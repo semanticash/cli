@@ -204,6 +204,50 @@ func testTurnObservationContext(t *testing.T, provider string) {
 	}
 }
 
+// Direct observation publication records the resolved launch root.
+func TestTurnObservationRecordsResolvedLaunchRoot(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SEMANTICA_HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	a := newToolWindowWorld(t, home, "A")
+	defer func() { _ = broker.Close(a.bh) }()
+	b := newToolWindowWorldAt(t, a.bh, filepath.Join(t.TempDir(), "B"))
+
+	// Launch the session from a subdirectory inside A.
+	subdir := filepath.Join(a.repoPath, "sub")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &fakeProvider{name: "cursor"}
+	prompt := &Event{Type: PromptSubmitted, SessionID: "s", ProviderTurnID: "g", CWD: subdir, Timestamp: time.Now().UnixMilli()}
+	if err := Dispatch(ctx, p, prompt, a.bh, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b.repoPath, "inner.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := &Event{Type: AgentCompleted, SessionID: "s", ProviderTurnID: "g", CWD: subdir, Timestamp: time.Now().UnixMilli()}
+	if err := Dispatch(ctx, p, stop, a.bh, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := sqlstore.Open(ctx, filepath.Join(b.semDir, "lineage.db"), sqlstore.DefaultOpenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sqlstore.Close(h) }()
+	var srp string
+	if err := h.DB.QueryRow(`select coalesce(source_repo_path,'') from agent_sessions limit 1`).Scan(&srp); err != nil {
+		t.Fatal(err)
+	}
+	if srp != a.repoPath {
+		t.Fatalf("observation recorded origin %q, want resolved launch root %q", srp, a.repoPath)
+	}
+}
+
 func TestTurnObservationPublicationFailureRetainsRetryState(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()

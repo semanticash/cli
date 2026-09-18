@@ -10,6 +10,29 @@ import (
 	"database/sql"
 )
 
+const backfillPromptProviderEventID = `-- name: BackfillPromptProviderEventID :exec
+update agent_events
+set provider_event_id = ?
+where session_id = ?
+  and turn_id = ?
+  and role = 'user'
+  and kind = 'user'
+  and event_source = 'hook'
+  and (provider_event_id is null or provider_event_id = '')
+`
+
+type BackfillPromptProviderEventIDParams struct {
+	ProviderEventID sql.NullString `json:"provider_event_id"`
+	SessionID       string         `json:"session_id"`
+	TurnID          sql.NullString `json:"turn_id"`
+}
+
+// Retain the transcript request UUID on its matching hook prompt.
+func (q *Queries) BackfillPromptProviderEventID(ctx context.Context, arg BackfillPromptProviderEventIDParams) error {
+	_, err := q.exec(ctx, q.backfillPromptProviderEventIDStmt, backfillPromptProviderEventID, arg.ProviderEventID, arg.SessionID, arg.TurnID)
+	return err
+}
+
 const countManifestsByStatus = `-- name: CountManifestsByStatus :many
 select status, count(*) as count
 from provenance_manifests
@@ -1782,7 +1805,7 @@ type ListStepCompanionResultsRow struct {
 	Ts          int64          `json:"ts"`
 }
 
-// Returns tool_result events matching a step's tool_use_id, ordered by
+// Returns tool_result events matching a tool_use_id, ordered by
 // timestamp. Returned as :many so the provider enricher can choose the
 // right pairing when multiple results exist (e.g., retried tool calls).
 func (q *Queries) ListStepCompanionResults(ctx context.Context, arg ListStepCompanionResultsParams) ([]ListStepCompanionResultsRow, error) {
@@ -1841,7 +1864,7 @@ type ListStepEventsForTurnRow struct {
 	ToolUses       sql.NullString `json:"tool_uses"`
 }
 
-// Returns step events for provenance bundle packaging.
+// Returns tool events for provenance bundle packaging.
 // Includes both hook-captured and transcript-sourced events
 // so providers without direct hook capture are covered.
 func (q *Queries) ListStepEventsForTurn(ctx context.Context, arg ListStepEventsForTurnParams) ([]ListStepEventsForTurnRow, error) {
@@ -1898,7 +1921,7 @@ type ListStepProvenanceForTurnRow struct {
 	ProvenanceHash sql.NullString `json:"provenance_hash"`
 }
 
-// Returns step provenance hashes for a turn, used to build the upload envelope.
+// Returns tool-event provenance hashes for the turn's upload envelope.
 func (q *Queries) ListStepProvenanceForTurn(ctx context.Context, arg ListStepProvenanceForTurnParams) ([]ListStepProvenanceForTurnRow, error) {
 	rows, err := q.query(ctx, q.listStepProvenanceForTurnStmt, listStepProvenanceForTurn, arg.SessionID, arg.TurnID)
 	if err != nil {
@@ -1983,14 +2006,21 @@ func (q *Queries) MarkManifestUploading(ctx context.Context, arg MarkManifestUpl
 
 const promptEventExists = `-- name: PromptEventExists :one
 select count(*) > 0 as exists_flag from agent_events
-where turn_id = ?
+where session_id = ?
+  and turn_id = ?
   and role = 'user'
   and kind = 'user'
   and event_source = 'hook'
 `
 
-func (q *Queries) PromptEventExists(ctx context.Context, turnID sql.NullString) (bool, error) {
-	row := q.queryRow(ctx, q.promptEventExistsStmt, promptEventExists, turnID)
+type PromptEventExistsParams struct {
+	SessionID string         `json:"session_id"`
+	TurnID    sql.NullString `json:"turn_id"`
+}
+
+// Match within the session to keep parent and subagent requests separate.
+func (q *Queries) PromptEventExists(ctx context.Context, arg PromptEventExistsParams) (bool, error) {
+	row := q.queryRow(ctx, q.promptEventExistsStmt, promptEventExists, arg.SessionID, arg.TurnID)
 	var exists_flag bool
 	err := row.Scan(&exists_flag)
 	return exists_flag, err

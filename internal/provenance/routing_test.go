@@ -22,7 +22,7 @@ func TestBundlePreservesObservationContextAndDelta(t *testing.T) {
 	if len(filtered) != 1 || len(filtered[0].FilePaths) != 0 {
 		t.Fatalf("context claims paths: %+v", filtered)
 	}
-	hash, _, err := buildProvenanceBundleFromFiltered(ctx, bs, TurnContext{TurnID: "turn"}, sqldb.AgentSession{SessionID: "session"}, nil, filtered, map[string]string{"event": "delta"}, ResponseCandidate{})
+	hash, _, err := buildProvenanceBundleFromFiltered(ctx, t.TempDir(), bs, TurnContext{TurnID: "turn"}, sqldb.AgentSession{SessionID: "session"}, nil, filtered, map[string]string{"event": "delta"}, ResponseCandidate{})
 	if err != nil {
 		t.Fatal(err)
 	}

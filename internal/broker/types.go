@@ -32,7 +32,7 @@ type RawEvent struct {
 	// Used by RouteEvents to determine which repos this event belongs to.
 	FilePaths []string
 
-	// Turn and step provenance - links events to their prompt boundary
+	// Turn provenance links events to their prompt boundary.
 	// and specific tool invocation for dedup and drill-down.
 	TurnID         string // turn that produced this event
 	ToolUseID      string // stable provider tool call id
@@ -46,7 +46,9 @@ type RawEvent struct {
 	SessionStartedAt  int64
 	SessionMetaJSON   string
 	SourceProjectPath string // session context; not mutation ownership
-	Model             string // LLM model name (e.g. "opus 4.6", "gemini-2.5-pro")
+	// ResolvedRepoRoot identifies the active launch repository for evidence retrieval.
+	ResolvedRepoRoot string
+	Model            string // LLM model name (e.g. "opus 4.6", "gemini-2.5-pro")
 }
 
 // RepoMatch pairs a registered repo with the events routed to it.

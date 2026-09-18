@@ -45,6 +45,11 @@ func publishTurnObservation(ctx context.Context, adapter HookProvider, event *Ev
 	for _, repo := range repos {
 		active[repo.CanonicalPath] = repo
 	}
+	// Direct publication must record the same launch root as routed events.
+	launchRepoRoot := ""
+	if r := broker.DeepestActiveRepo(state.CWD, repos); r != nil {
+		launchRepoRoot = r.Path
+	}
 	for i, before := range rec.Repositories {
 		after := rec.End.Repositories[i]
 		if after.State != "changed" || before.Gap != "" || before.Subject.Gap != "" {
@@ -95,6 +100,7 @@ func publishTurnObservation(ctx context.Context, adapter HookProvider, event *Ev
 			Kind: "context", Role: "system", EventSource: "turn_observation",
 			Summary:           "Repository changes observed during the turn; authorship not established.",
 			SourceProjectPath: state.CWD,
+			ResolvedRepoRoot:  launchRepoRoot,
 		})
 		if _, err := broker.WriteEventsToRepo(ctx, subject.Path, []broker.RawEvent{ev}, nil); err != nil {
 			return err

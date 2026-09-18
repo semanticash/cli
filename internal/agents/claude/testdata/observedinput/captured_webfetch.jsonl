@@ -1,0 +1,11 @@
+{"type":"user","uuid":"web-record-1","parentUuid":null,"message":{"role":"user","content":"Read https://example.org/docs and summarize the task API."}}
+{"uuid":"web-record-2","parentUuid":"web-record-1"}
+{"uuid":"web-record-3","parentUuid":"web-record-2"}
+{"uuid":"web-record-4","parentUuid":"web-record-3"}
+{"uuid":"web-record-5","parentUuid":"web-record-4"}
+{"uuid":"web-record-6","parentUuid":"web-record-5"}
+{"uuid":"web-record-7","parentUuid":"web-record-6"}
+{"uuid":"web-record-8","parentUuid":"web-record-7"}
+{"uuid":"web-record-9","parentUuid":"web-record-8"}
+{"type":"assistant","uuid":"web-record-10","parentUuid":"web-record-9","message":{"role":"assistant","content":[{"type":"tool_use","id":"web-call-1","name":"WebFetch","input":{"url":"https://example.org/docs","prompt":"Summarize the task API."}}]}}
+{"type":"user","uuid":"web-record-11","parentUuid":"web-record-10","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"web-call-1","content":"The example project provides a small task API. Its documentation describes creating, listing, and completing tasks."}]},"toolUseResult":{"bytes":63305,"code":200,"codeText":"OK","result":"The example project provides a small task API. Its documentation describes creating, listing, and completing tasks.","url":"https://example.org/docs"}}

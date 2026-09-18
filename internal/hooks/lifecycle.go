@@ -506,6 +506,14 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 		return false, fmt.Errorf("read from offset: %w", err)
 	}
 	if len(events) == 0 {
+		// Retain input evidence even when the batch emits no ordinary events.
+		launchRepo := ""
+		if target, terr := resolveToolWindowTarget(ctx, bh, state.CWD); terr == nil && target != nil {
+			launchRepo = target.repoPath
+		}
+		if retainObservedInputs(readCtx, provider, state.TranscriptRef, launchRepo, resolveProviderSession(provider, events, state.TranscriptRef), state.TranscriptOffset, newOffset) {
+			return false, ErrRetentionIncomplete
+		}
 		state.TranscriptOffset = newOffset
 		state.Timestamp = time.Now().UnixMilli()
 		state.ScopedDeferrals = 0
@@ -548,6 +556,15 @@ func captureAndRouteScoped(ctx context.Context, provider HookProvider, event *Ev
 	}
 	if err := writeRoutedEvents(ctx, matches, blobStore); err != nil {
 		return false, fmt.Errorf("route and write: %w", err)
+	}
+
+	// Retain input evidence before advancing the transcript offset.
+	launchRepo := ""
+	if target, terr := resolveToolWindowTarget(ctx, bh, state.CWD); terr == nil && target != nil {
+		launchRepo = target.repoPath
+	}
+	if retainObservedInputs(readCtx, provider, state.TranscriptRef, launchRepo, resolveProviderSession(provider, events, state.TranscriptRef), state.TranscriptOffset, newOffset) {
+		return false, ErrRetentionIncomplete
 	}
 
 	state.TranscriptOffset = newOffset
@@ -767,8 +784,13 @@ func captureSubagentTranscripts(ctx context.Context, provider HookProvider, even
 		}
 	}
 
+	launchRepo := ""
+	if target, terr := resolveToolWindowTarget(ctx, bh, parentCWD); terr == nil && target != nil {
+		launchRepo = target.repoPath
+	}
+
 	for _, path := range paths {
-		ok := captureOneSubagent(ctx, provider, disc, path, event.SessionID, parentTurnID, turnStartedAt, bs, blobStore, repos)
+		ok := captureOneSubagent(ctx, provider, disc, path, event.SessionID, parentTurnID, turnStartedAt, bs, blobStore, repos, launchRepo)
 		if !ok {
 			failedKeys = append(failedKeys, disc.SubagentStateKey(path))
 		}
@@ -791,6 +813,7 @@ func captureOneSubagent(
 	bs api.BlobPutter,
 	blobStore *blobs.Store,
 	repos []broker.RegisteredRepo,
+	launchRepo string,
 ) bool {
 	stateKey := disc.SubagentStateKey(transcriptPath)
 
@@ -832,6 +855,9 @@ func captureOneSubagent(
 	}
 
 	if len(events) == 0 {
+		if retainObservedInputs(ctx, provider, transcriptPath, launchRepo, resolveProviderSession(provider, events, transcriptPath), state.TranscriptOffset, newOffset) {
+			return false
+		}
 		state.TranscriptOffset = newOffset
 		state.Timestamp = time.Now().UnixMilli()
 		if err := SaveCaptureState(state); err != nil {
@@ -854,6 +880,9 @@ func captureOneSubagent(
 		return false
 	}
 
+	if retainObservedInputs(ctx, provider, transcriptPath, launchRepo, resolveProviderSession(provider, events, transcriptPath), state.TranscriptOffset, newOffset) {
+		return false
+	}
 	state.TranscriptOffset = newOffset
 	state.Timestamp = time.Now().UnixMilli()
 	if err := SaveCaptureState(state); err != nil {
@@ -908,6 +937,9 @@ func captureDirectSubagent(ctx context.Context, provider HookProvider, event *Ev
 	}
 
 	if len(events) == 0 {
+		if retainSubagentObserved(ctx, provider, bh, state.TranscriptRef, event.CWD, events, state.TranscriptOffset, newOffset) {
+			return
+		}
 		state.TranscriptOffset = newOffset
 		state.Timestamp = time.Now().UnixMilli()
 		if err := SaveCaptureState(state); err != nil {
@@ -929,6 +961,9 @@ func captureDirectSubagent(ctx context.Context, provider HookProvider, event *Ev
 		return
 	}
 
+	if retainSubagentObserved(ctx, provider, bh, state.TranscriptRef, event.CWD, events, state.TranscriptOffset, newOffset) {
+		return
+	}
 	state.TranscriptOffset = newOffset
 	state.Timestamp = time.Now().UnixMilli()
 	if err := SaveCaptureState(state); err != nil {
