@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	attrevents "github.com/semanticash/cli/internal/attribution/events"
 	"github.com/semanticash/cli/internal/doctor"
+	"github.com/semanticash/cli/internal/observedinput"
 	"github.com/semanticash/cli/internal/platform"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -366,13 +367,16 @@ func buildProvenanceBundleFromFiltered(
 		}
 	}
 
-	// Include observed-input evidence when collection succeeds.
-	if ev, hash, err := CollectObservedInput(ctx, repoPath, tc.Provider, sess.SessionID, tc.TurnID); err != nil {
+	// Distinguish unavailable observed-input evidence from absent evidence.
+	if res, err := CollectObservedInput(ctx, repoPath, tc.Provider, sess.SessionID, tc.TurnID); err != nil {
 		slog.Warn("observed-input evidence unresolved for bundle", "turn", tc.TurnID, "err", err)
-	} else if ev != nil {
+	} else if res.Unavailable {
+		bundle.ObservedInput = &bundleObservedInput{Version: observedinput.EvidenceVersion, Unavailable: true}
+	} else if res.Evidence != nil {
+		ev := res.Evidence
 		bundle.ObservedInput = &bundleObservedInput{
-			Version: ev.Version, EvidenceHash: hash,
-			Requests: len(ev.Requests), Observations: len(ev.Observations), Gaps: len(ev.Gaps),
+			Version: ev.Version, EvidenceHash: res.Hash,
+			Requests: len(ev.Requests), Observations: len(ev.Observations), Gaps: countObservedGaps(ev),
 		}
 	}
 
@@ -508,13 +512,23 @@ type bundleRepositoryAssociation struct {
 	Authorship string `json:"authorship"`
 }
 
-// bundleObservedInput references a turn's evidence document and summarizes its records.
+// bundleObservedInput summarizes a turn's input evidence or marks it unavailable.
 type bundleObservedInput struct {
 	Version      int    `json:"version"`
-	EvidenceHash string `json:"evidence_hash"`
-	Requests     int    `json:"requests"`
-	Observations int    `json:"observations"`
+	EvidenceHash string `json:"evidence_hash,omitempty"`
+	Requests     int    `json:"requests,omitempty"`
+	Observations int    `json:"observations,omitempty"`
 	Gaps         int    `json:"gaps,omitempty"`
+	Unavailable  bool   `json:"unavailable,omitempty"`
+}
+
+// countObservedGaps counts session-level and observation-level gaps.
+func countObservedGaps(ev *observedinput.Evidence) int {
+	n := len(ev.Gaps)
+	for _, o := range ev.Observations {
+		n += len(o.Gaps)
+	}
+	return n
 }
 
 // bundleResponse describes the final response referenced by a bundle.

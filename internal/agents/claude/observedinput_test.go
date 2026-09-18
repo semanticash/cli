@@ -411,3 +411,47 @@ func TestNormalize_MixedContentKeepsGap(t *testing.T) {
 		t.Fatalf("omitted image did not record a gap: %+v", res.Gaps)
 	}
 }
+
+// Batch boundaries must not change request positions.
+func TestNormalize_RequestPositionUsesStartOffset(t *testing.T) {
+	prompt := `{"type":"user","uuid":"p","message":{"role":"user","content":"hi"}}`
+	// Five preceding records place the prompt at position 6.
+	recsA := []json.RawMessage{}
+	for i := 0; i < 5; i++ {
+		recsA = append(recsA, json.RawMessage(`{"uuid":"f`+string(rune('0'+i))+`"}`))
+	}
+	recsA = append(recsA, json.RawMessage(prompt))
+	a, _ := NormalizeObservedInputs(NormalizeInput{Provider: "claude_code", SessionID: "s", Locator: "x", StartOffset: 0, Records: recsA})
+	// Replay the prompt alone at the same absolute position.
+	b, _ := NormalizeObservedInputs(NormalizeInput{Provider: "claude_code", SessionID: "s", Locator: "x", StartOffset: 5, Records: []json.RawMessage{json.RawMessage(prompt)}})
+	ra := findTurn(a, "req:p")
+	rb := findTurn(b, "req:p")
+	if ra == nil || rb == nil {
+		t.Fatalf("request missing: %+v %+v", a.Turns, b.Turns)
+	}
+	if ra.Requests[0].Source.Position != rb.Requests[0].Source.Position || ra.Requests[0].Ordinal != rb.Requests[0].Ordinal {
+		t.Fatalf("request position depends on batch split: %d vs %d", ra.Requests[0].Source.Position, rb.Requests[0].Source.Position)
+	}
+}
+
+func TestNormalize_MalformedRecordKeepsPositionsAndGap(t *testing.T) {
+	prompt := `{"type":"user","uuid":"p","message":{"role":"user","content":"hi"}}`
+	// The malformed record still occupies position 1.
+	combined, _ := NormalizeObservedInputs(NormalizeInput{Provider: "claude_code", SessionID: "s", Locator: "x", StartOffset: 0,
+		Records: []json.RawMessage{json.RawMessage(`{not json`), json.RawMessage(prompt)}})
+	// Replay the prompt alone at position 2.
+	separate, _ := NormalizeObservedInputs(NormalizeInput{Provider: "claude_code", SessionID: "s", Locator: "x", StartOffset: 1,
+		Records: []json.RawMessage{json.RawMessage(prompt)}})
+	c := findTurn(combined, "req:p")
+	s := findTurn(separate, "req:p")
+	if c == nil || s == nil || c.Requests[0].Source.Position != s.Requests[0].Source.Position {
+		t.Fatalf("malformed record shifted positions: %d vs %d", c.Requests[0].Source.Position, s.Requests[0].Source.Position)
+	}
+	if c.Requests[0].Source.Position != 2 {
+		t.Fatalf("request absolute position = %d, want 2", c.Requests[0].Source.Position)
+	}
+	u := findTurn(combined, "unresolved")
+	if u == nil || !gapPresent(u.Gaps, observedinput.GapMalformed) {
+		t.Fatalf("malformed record did not record an explicit gap: %+v", combined.Turns)
+	}
+}

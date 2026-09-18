@@ -15,17 +15,22 @@ import (
 const maxObservedContentBytes = 8 << 20
 
 // NormalizeInput contains captured Claude records in source order.
+// StartOffset is the number of transcript records preceding this batch.
 type NormalizeInput struct {
-	Provider  string
-	SessionID string
-	Locator   string
-	Records   []json.RawMessage
+	Provider    string
+	SessionID   string
+	Locator     string
+	StartOffset int64
+	Records     []json.RawMessage
 }
 
-// Normalized contains request-scoped evidence, unresolved inputs, and content by hash.
+// Normalized contains input evidence, content by hash, and provider links
+// for resolving ownership across batches.
 type Normalized struct {
-	Turns    []observedinput.Evidence
-	Contents map[string][]byte
+	Turns      []observedinput.Evidence
+	Contents   map[string][]byte
+	CallOwners map[string]string // Tool-call ID -> issuing record UUID.
+	Ancestry   map[string]string // Record UUID -> parent UUID.
 }
 
 type claudeRecord struct {
@@ -112,39 +117,50 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		return tb
 	}
 
-	records := make([]claudeRecord, 0, len(in.Records))
+	type positioned struct {
+		rec claudeRecord
+		pos int64
+	}
+	records := make([]positioned, 0, len(in.Records))
 	parentByUUID := map[string]string{}
-	for _, raw := range in.Records {
+	var malformedGaps []observedinput.Gap
+	for idx, raw := range in.Records {
+		// Malformed records still count toward source positions.
+		pos := in.StartOffset + int64(idx) + 1
 		var rec claudeRecord
 		if json.Unmarshal(raw, &rec) != nil {
-			continue // Skip unparseable records.
+			malformedGaps = append(malformedGaps, observedinput.Gap{Reason: observedinput.GapMalformed, Detail: fmt.Sprintf("unparseable record at position %d", pos)})
+			continue
 		}
-		records = append(records, rec)
+		records = append(records, positioned{rec: rec, pos: pos})
 		if rec.UUID != "" && rec.ParentUUID != nil {
 			parentByUUID[rec.UUID] = *rec.ParentUUID
 		}
 		if rec.Type == "user" && rec.UUID != "" {
-			if req, ok := userRequest(in, rec, int64(len(records))); ok {
+			if req, ok := userRequest(in, rec, pos); ok {
 				r := req
 				requestByUUID[rec.UUID] = &r
 			}
 		}
 	}
-	// Follow provider parents to a request; missing or cyclic ancestry is unresolved.
-	ownerTurn := func(uuid string) string {
+	// Return the request ID, if found in this batch, and the last ancestor visited.
+	ownerTurn := func(uuid string) (string, string) {
 		seen := map[string]bool{}
+		terminal := uuid
 		for uuid != "" && !seen[uuid] {
 			if req, ok := requestByUUID[uuid]; ok {
-				return req.ID
+				return req.ID, uuid
 			}
 			seen[uuid] = true
+			terminal = uuid
 			uuid = parentByUUID[uuid]
 		}
-		return ""
+		return "", terminal
 	}
 
 	// Associate results with their calls and calls with their request ancestry.
 	toolCallTurn := map[string]string{}
+	callAncestor := map[string]string{}
 	var unresolved []observedinput.ObservedInput
 	var unresolvedGaps []observedinput.Gap
 	assign := func(owner string, obs observedinput.ObservedInput, link observedinput.ToolCallLink) {
@@ -162,8 +178,9 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		tb.obs = append(tb.obs, obs)
 		tb.toolLink = append(tb.toolLink, link)
 	}
-	for i, rec := range records {
-		ord := int64(i + 1)
+	for _, ir := range records {
+		ord := ir.pos
+		rec := ir.rec
 		switch rec.Type {
 		case "user":
 			if req, ok := requestByUUID[rec.UUID]; ok {
@@ -190,9 +207,10 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 			}
 		case "assistant":
 			// A call is owned by the request it descends from, not the latest one.
-			owner := ownerTurn(rec.UUID)
+			owner, _ := ownerTurn(rec.UUID)
 			for _, id := range assistantToolUseIDs(rec.Message) {
 				toolCallTurn[id] = owner
+				callAncestor[id] = rec.UUID // Retain the issuing record for ancestry resolution.
 			}
 			for _, r := range assistantToolResults(in, rec, ord, put) {
 				assign(toolCallTurn[r.link.ToolCallID], r.obs, r.link)
@@ -200,7 +218,7 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		}
 	}
 
-	out := Normalized{Contents: contents}
+	out := Normalized{Contents: contents, CallOwners: callAncestor, Ancestry: parentByUUID}
 	for _, id := range order {
 		tb := turns[id]
 		ev := observedinput.Evidence{
@@ -216,12 +234,12 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		}
 		out.Turns = append(out.Turns, ev)
 	}
-	// Keep unresolved observations separate from known request envelopes.
-	if len(unresolved) > 0 {
+	// Unresolved inputs and malformed records have no established request envelope.
+	if len(unresolved) > 0 || len(malformedGaps) > 0 {
 		ev := observedinput.Evidence{
 			Version: observedinput.EvidenceVersion, Provider: in.Provider,
 			SessionID: in.SessionID, TurnID: "unresolved",
-			Observations: unresolved, Gaps: unresolvedGaps,
+			Observations: unresolved, Gaps: append(unresolvedGaps, malformedGaps...),
 		}
 		out.Turns = append(out.Turns, ev)
 	}
@@ -533,7 +551,7 @@ func gap(obs *observedinput.ObservedInput, reason observedinput.GapReason, detai
 	return observedinput.Gap{Subject: obs.DeliveryID, Reason: reason, Detail: detail}
 }
 
-// assistantToolUseIDs lists the tool-call ids issued in an assistant record.
+// assistantToolUseIDs lists the tool-call IDs issued in an assistant record.
 func assistantToolUseIDs(message json.RawMessage) []string {
 	var msg rawMessage
 	if json.Unmarshal(message, &msg) != nil {
