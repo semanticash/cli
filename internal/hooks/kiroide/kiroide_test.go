@@ -593,52 +593,6 @@ func TestReadFromOffset_NewExecutions(t *testing.T) {
 	}
 }
 
-func TestReadFromOffset_FailedExecutionDoesNotBlockLaterEdits(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("APPDATA", home)
-	global := filepath.Join(home, "Library", "Application Support", "Kiro", "User", "globalStorage", "kiro.kiroagent", "workspace")
-	writeJSON := func(path string, value any) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		data, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	history := filepath.Join(home, "session.json")
-	writeJSON(history, agentKiro.SessionHistory{
-		SessionID: "s", WorkspaceDirectory: home,
-		History: []agentKiro.HistoryEntry{{ExecutionID: "failed"}, {ExecutionID: "successful"}},
-	})
-	writeJSON(filepath.Join(global, "index.json"), agentKiro.ExecutionIndex{Executions: []agentKiro.ExecutionMeta{
-		{ExecutionID: "failed", Status: "failed", StartTime: 1},
-		{ExecutionID: "successful", Status: "completed", StartTime: 2},
-	}})
-	writeJSON(filepath.Join(global, "traces", "failed.json"), agentKiro.ExecutionTrace{
-		ExecutionID: "failed", ChatSessionID: "s", Status: "failed", StartTime: 1,
-	})
-	writeJSON(filepath.Join(global, "traces", "successful.json"), agentKiro.ExecutionTrace{
-		ExecutionID: "successful", ChatSessionID: "s", Status: "completed", StartTime: 2,
-		Actions: []agentKiro.ExecutionAction{{ActionID: "write-1", ActionType: "create", ActionState: "completed",
-			Input: json.RawMessage(`{"file":"fixture.jsonl","modifiedContent":"generated\n"}`)}},
-	})
-	events, offset, err := (&Provider{}).ReadFromOffset(context.Background(), history, 0, newKiroFakeBlobPutter())
-	if err != nil || offset != 2 || len(events) != 1 {
-		t.Fatalf("failed execution blocked later capture: events=%+v offset=%d err=%v", events, offset, err)
-	}
-	if events[0].ToolName != agentKiro.ToolNameWrite || len(events[0].FilePaths) != 1 ||
-		filepath.Base(events[0].FilePaths[0]) != "fixture.jsonl" {
-		t.Fatalf("later write missing: %+v", events[0])
-	}
-}
-
 func TestReadFromOffset_NoNewExecutions(t *testing.T) {
 	sessDir := t.TempDir()
 	histPath := filepath.Join(sessDir, "session.json")

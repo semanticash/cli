@@ -34,8 +34,8 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if count != 11 {
-		t.Errorf("count: got %d, want 11", count)
+	if count != 10 {
+		t.Errorf("count: got %d, want 10", count)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.local.json"))
@@ -53,7 +53,7 @@ func TestInstallHooks_CreatesFile(t *testing.T) {
 		t.Fatalf("unmarshal hooks: %v", err)
 	}
 
-	for _, hp := range []string{"UserPromptSubmit", "Stop", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "SessionEnd"} {
+	for _, hp := range []string{"UserPromptSubmit", "Stop", "PostToolUse", "PreToolUse", "SessionStart", "SessionEnd"} {
 		matchers, ok := hooksMap[hp]
 		if !ok {
 			t.Errorf("missing hook point %q", hp)
@@ -131,8 +131,8 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 			}
 		}
 	}
-	if total != 11 {
-		t.Errorf("total semantica hooks after double install: got %d, want 11", total)
+	if total != 10 {
+		t.Errorf("total semantica hooks after double install: got %d, want 10", total)
 	}
 }
 

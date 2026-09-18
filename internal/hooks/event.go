@@ -13,7 +13,7 @@ const (
 	ContextCompacted
 	SubagentSpawned
 	SubagentCompleted
-	ToolStepCompleted       // terminal tool notification, including failed Bash commands
+	ToolStepCompleted       // state-changing PostToolUse (Write, Edit, Bash)
 	SubagentPromptSubmitted // PreToolUse[Agent] prompt event
 	IncrementalCapture      // mid-turn trigger to scan transcript from saved offset
 	ToolStepStarted         // PreToolUse for tools with paired window capture (Bash)
@@ -62,7 +62,6 @@ type Event struct {
 	ToolName          string          // Write, Edit, Bash, Agent, etc.
 	ToolInput         json.RawMessage // raw tool_input from hook payload
 	ToolResponse      json.RawMessage // raw tool_response from hook payload
-	ToolFailed        bool            // provider explicitly reported execution failure
 	ProviderTurnID    string          // provider turn ID, separate from TurnID
 	ProviderSessionID string          // native session ID; SessionID may be a workspace key
 	BackgroundTasks   json.RawMessage // provider Stop inventory; nil means unavailable

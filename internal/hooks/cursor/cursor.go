@@ -80,7 +80,6 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"beforeSubmitPrompt", hooks.GuardedCommand(bin, "capture cursor before-submit-prompt")},
 		{"preToolUse", hooks.GuardedCommand(bin, "capture cursor pre-tool-use")},
 		{"postToolUse", hooks.GuardedCommand(bin, "capture cursor post-tool-use")},
-		{"postToolUseFailure", hooks.GuardedCommand(bin, "capture cursor post-tool-use-failure")},
 		{"afterFileEdit", hooks.GuardedCommand(bin, "capture cursor after-file-edit")},
 		{"afterAgentResponse", hooks.GuardedCommand(bin, "capture cursor after-agent-response")},
 		{"stop", hooks.GuardedCommand(bin, "capture cursor stop")},
@@ -303,15 +302,11 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		default:
 			return nil, nil
 		}
-	case "post-tool-use", "post-tool-use-failure":
+	case "post-tool-use":
 		if normalizeCursorToolName(payload.ToolName) != "Bash" {
 			return nil, nil
 		}
-		if hookName == "post-tool-use-failure" && normalizeCursorToolUseID(payload.ToolUseID) == "" {
-			return nil, nil
-		}
 		event.Type = hooks.ToolStepCompleted
-		event.ToolFailed = hookName == "post-tool-use-failure"
 		event.ToolName = "Bash"
 		event.ToolUseID = normalizeCursorToolUseID(payload.ToolUseID)
 		event.ToolInput = bytes.TrimSpace(data)

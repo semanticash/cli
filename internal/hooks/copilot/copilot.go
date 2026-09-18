@@ -77,7 +77,6 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"userPromptSubmitted", hooks.GuardedCommand(bin, "capture copilot user-prompt-submitted")},
 		{"preToolUse", hooks.GuardedCommand(bin, "capture copilot pre-tool-use")},
 		{"postToolUse", hooks.GuardedCommand(bin, "capture copilot post-tool-use")},
-		{"postToolUseFailure", hooks.GuardedCommand(bin, "capture copilot post-tool-use-failure")},
 		{"agentStop", hooks.GuardedCommand(bin, "capture copilot agent-stop")},
 		{"sessionStart", hooks.GuardedCommand(bin, "capture copilot session-start")},
 		{"sessionEnd", hooks.GuardedCommand(bin, "capture copilot session-end")},
@@ -291,16 +290,11 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 			event.ToolUseID = syntheticCopilotToolUseID(payload.SessionID, payload.Timestamp, taskCall.Name, taskCall.Args)
 		}
 		event.ToolInput = normalizeEmbeddedJSON(taskCall.Args)
-	case "post-tool-use", "post-tool-use-failure":
+	case "post-tool-use":
 		toolName := normalizeCopilotToolName(payload.ToolName)
 		if toolName == "" {
 			return nil, nil
 		}
-		// Failed edit inputs do not establish that a file changed.
-		if hookName == "post-tool-use-failure" && toolName != "Bash" {
-			return nil, nil
-		}
-		event.ToolFailed = hookName == "post-tool-use-failure"
 		// task post-tool-use is only the dispatch acknowledgement.
 		// subagent-stop is the completion boundary.
 		if toolName == "Agent" {

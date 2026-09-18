@@ -86,7 +86,6 @@ func (p *Provider) InstallHooks(ctx context.Context, repoRoot string, binaryPath
 		{"PostToolUse", "Edit", hooks.GuardedCommand(bin, "capture claude-code post-edit")},
 		{"PreToolUse", "Bash", hooks.GuardedCommand(bin, "capture claude-code pre-bash")},
 		{"PostToolUse", "Bash", hooks.GuardedCommand(bin, "capture claude-code post-bash")},
-		{"PostToolUseFailure", "Bash", hooks.GuardedCommand(bin, "capture claude-code post-bash-failure")},
 		{"SessionStart", "", hooks.GuardedCommand(bin, "capture claude-code session-start")},
 		{"SessionEnd", "", hooks.GuardedCommand(bin, "capture claude-code session-end")},
 	}
@@ -432,12 +431,6 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 		} else {
 			return nil, nil
 		}
-	case "post-bash-failure":
-		if payload.ToolName != "Bash" || payload.ToolUseID == "" {
-			return nil, nil
-		}
-		event.Type = hooks.ToolStepCompleted
-		event.ToolFailed = true
 	case "pre-bash":
 		// Skip windows that cannot be paired by tool-use ID.
 		if payload.ToolName != "Bash" || payload.ToolUseID == "" {
@@ -455,6 +448,15 @@ func (p *Provider) ParseHookEvent(ctx context.Context, hookName string, stdin io
 	return event, nil
 }
 
+// Allow JSON escaping and both delivered/source bodies for 8 MiB inputs.
+const maxTranscriptRecordBytes = 128 << 20
+
+func transcriptScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64<<10), maxTranscriptRecordBytes)
+	return s
+}
+
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {
@@ -466,8 +468,7 @@ func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (
 	defer func() { _ = f.Close() }()
 
 	count := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
+	scanner := transcriptScanner(f)
 	for scanner.Scan() {
 		count++
 	}
@@ -498,8 +499,7 @@ func (p *Provider) CaptureObservedInputs(ctx context.Context, transcriptRef stri
 		return hooks.ObservedInputBatch{}, nil
 	}
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner := transcriptScanner(f)
 	records := make([]json.RawMessage, 0, endOffset-startOffset)
 	i := 0
 	// Stop exactly at endOffset so a later oversized record cannot fail this batch.
@@ -546,8 +546,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 
 	// Count total lines to detect stale offsets after transcript compaction.
 	totalLines := 0
-	prescan := bufio.NewScanner(f)
-	prescan.Buffer(make([]byte, 1024*1024), 1024*1024)
+	prescan := transcriptScanner(f)
 	for prescan.Scan() {
 		totalLines++
 	}
@@ -589,8 +588,7 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner := transcriptScanner(f)
 
 	lineNum := 0
 	var events []broker.RawEvent

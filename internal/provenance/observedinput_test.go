@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -265,6 +266,79 @@ func TestObservedInput_PersistCollectRoundTrip(t *testing.T) {
 	}
 	if err := observedinput.Validate(*res.Evidence); err != nil {
 		t.Fatalf("collected evidence invalid: %v", err)
+	}
+}
+
+func TestObservedInput_SourceFidelitySurvivesPackageTurn(t *testing.T) {
+	for _, fixture := range []string{"captured_pdf_attachment.jsonl", "captured_text_attachment.jsonl", "captured_webfetch.jsonl"} {
+		t.Run(fixture, func(t *testing.T) {
+			ctx := context.Background()
+			r := newObservedRepo(t)
+			n := normalizeFixtureForRepo(t, fixture)
+			turn := r.insertPrompt(t, requestUUID(n))
+			if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+				t.Fatal(err)
+			}
+			bs, err := blobs.NewStore(repoObjects(r.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			PackageTurn(ctx, r.path, TurnContext{Provider: "claude_code", SessionID: r.providerSession, TurnID: turn, StartedAt: 1, CompletedAt: 2000}, bs)
+			var bundle struct {
+				ObservedInput *bundleObservedInput `json:"observed_input"`
+			}
+			if err := json.Unmarshal(packagedBundle(t, r, turn, bs), &bundle); err != nil {
+				t.Fatal(err)
+			}
+			if bundle.ObservedInput == nil || bundle.ObservedInput.Unavailable {
+				t.Fatalf("missing evidence: %+v", bundle)
+			}
+			raw, err := bs.Get(ctx, bundle.ObservedInput.EvidenceHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got observedinput.Evidence
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]observedinput.ObservedInput{}
+			for _, ev := range n.Turns {
+				for _, o := range ev.Observations {
+					want[o.DeliveryID] = o
+				}
+			}
+			if len(got.Observations) != len(want) {
+				t.Fatalf("got %d observations, want %d", len(got.Observations), len(want))
+			}
+			for _, o := range got.Observations {
+				w := want[o.DeliveryID]
+				if o.InputSource.Locator == "" || o.InputSource != w.InputSource || !reflect.DeepEqual(o.Representation, w.Representation) {
+					t.Fatalf("source/fidelity changed during packaging: got %+v want %+v", o, w)
+				}
+			}
+		})
+	}
+}
+
+func TestObservedInput_SourceIdentityConflictRejected(t *testing.T) {
+	ctx := context.Background()
+	r := newObservedRepo(t)
+	n := normalizeFixtureForRepo(t, "captured_text_attachment.jsonl")
+	turn := r.insertPrompt(t, requestUUID(n))
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatal(err)
+	}
+	want := n.Turns[0].Observations[0].InputSource
+	n.Turns[0].Observations[0].InputSource.Locator = "/different/plan.md"
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err == nil {
+		t.Fatal("changed source accepted for the same delivery")
+	}
+	got, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turn)
+	if err != nil || got.Evidence == nil {
+		t.Fatalf("collect: %+v %v", got, err)
+	}
+	if len(got.Evidence.Observations) != 1 || got.Evidence.Observations[0].InputSource != want {
+		t.Fatalf("rejected source became visible: %+v", got.Evidence)
 	}
 }
 

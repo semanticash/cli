@@ -51,6 +51,19 @@ func TestValidate_Rejections(t *testing.T) {
 		mutate func(*Evidence)
 		want   string
 	}{
+		{"invalid source kind", func(e *Evidence) {
+			e.Observations[0].InputSource.Kind = "invented"
+		}, "invalid input source kind"},
+		{"invalid transformation", func(e *Evidence) {
+			e.Observations[0].Representation.Transformation = "invented"
+		}, "invalid transformation"},
+		{"invalid extent", func(e *Evidence) {
+			e.Observations[0].Representation.Extent = "invented"
+		}, "invalid extent"},
+		{"negative source bytes", func(e *Evidence) {
+			n := int64(-1)
+			e.Observations[0].Representation.ReportedSourceBytes = &n
+		}, "negative reported source bytes"},
 		{"tool-call link as envelope evidence", func(e *Evidence) {
 			// A tool result scoped as an envelope input must be rejected.
 			e.Observations[1].Scope = ScopeRequestEnvelope

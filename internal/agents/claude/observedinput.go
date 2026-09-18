@@ -46,21 +46,21 @@ type claudeRecord struct {
 }
 
 type rawAttachment struct {
-	Type     string          `json:"type"`
-	Filename string          `json:"filename"`
+	Type     string                `json:"type"`
+	Filename string                `json:"filename"`
 	Content  *rawAttachmentContent `json:"content"`
 }
 
 type rawAttachmentContent struct {
-	Type string    `json:"type"`
-	File *rawFile  `json:"file"`
+	Type string   `json:"type"`
+	File *rawFile `json:"file"`
 }
 
 type rawFile struct {
 	FilePath     string `json:"filePath"`
 	Content      string `json:"content"`
 	Base64       string `json:"base64"`
-	OriginalSize int64  `json:"originalSize"`
+	OriginalSize *int64 `json:"originalSize"`
 	StartLine    int    `json:"startLine"`
 	NumLines     int    `json:"numLines"`
 	TotalLines   int    `json:"totalLines"`
@@ -340,7 +340,16 @@ func attachmentObserved(in NormalizeInput, rec claudeRecord, ord int64, byUUID m
 }
 
 // attachmentRepresentation records the supplied body or an explicit content gap.
-func attachmentRepresentation(att *rawAttachment, obs *observedinput.ObservedInput, put func([]byte) string) observedinput.Representation {
+func attachmentRepresentation(att *rawAttachment, obs *observedinput.ObservedInput, put func([]byte) string) (rep observedinput.Representation) {
+	obs.InputSource.Kind = "unknown"
+	if att != nil && att.Filename != "" {
+		obs.InputSource = observedinput.InputSource{Kind: "file", Locator: att.Filename}
+	}
+	var file *rawFile
+	if att != nil && att.Content != nil {
+		file = att.Content.File
+	}
+	defer func() { fileFidelity(file, "", obs, &rep) }()
 	if att == nil || att.Content == nil || att.Content.File == nil {
 		obs.Gaps = append(obs.Gaps, observedinput.Gap{Subject: obs.DeliveryID, Reason: observedinput.GapMissingBody, Detail: "attachment carried no body"})
 		return observedinput.Representation{State: observedinput.RepUnavailable}
@@ -483,14 +492,25 @@ func toolResultBlocks(message json.RawMessage) []resultBlock {
 }
 
 // toolResultRepresentation extracts supported PDF or text content and records gaps.
-func toolResultRepresentation(raw json.RawMessage, agentFacing string, obs *observedinput.ObservedInput, put func([]byte) string) observedinput.Representation {
+func toolResultRepresentation(raw json.RawMessage, agentFacing string, obs *observedinput.ObservedInput, put func([]byte) string) (rep observedinput.Representation) {
 	var tr struct {
 		Type   string   `json:"type"`
 		File   *rawFile `json:"file"`
 		Result string   `json:"result"`
-		Bytes  int64    `json:"bytes"`
+		Bytes  *int64   `json:"bytes"`
 		URL    string   `json:"url"`
 	}
+	obs.InputSource.Kind = "unknown"
+	defer func() {
+		fileFidelity(tr.File, agentFacing, obs, &rep)
+		if tr.URL != "" {
+			obs.InputSource = observedinput.InputSource{Kind: "url", Locator: tr.URL}
+			rep.ReportedSourceBytes = tr.Bytes
+			if tr.Result != "" && rep.State == observedinput.RepPresent {
+				rep.Transformation, rep.Extent = "summarized", "partial"
+			}
+		}
+	}()
 	if len(raw) > 0 && json.Unmarshal(raw, &tr) != nil {
 		obs.Gaps = append(obs.Gaps, gap(obs, observedinput.GapMalformed, "undecodable tool result metadata"))
 		return observedinput.Representation{State: observedinput.RepUnavailable}
@@ -509,21 +529,50 @@ func toolResultRepresentation(raw json.RawMessage, agentFacing string, obs *obse
 		}
 		return observedinput.Representation{State: observedinput.RepPresent, ContentRef: put(b), ContentSize: int64(len(b)), MediaType: "application/pdf"}
 	case tr.File != nil && tr.File.Content != "":
-		rep := boundedText(agentFacing, tr.File.Content, obs, put)
-		rep.LineStart, rep.LineCount, rep.TotalLines = tr.File.StartLine, tr.File.NumLines, tr.File.TotalLines
-		return rep
+		return boundedText(agentFacing, tr.File.Content, obs, put)
 	case tr.Result != "":
-		rep := boundedText(agentFacing, tr.Result, obs, put)
-		if tr.Bytes > int64(len(tr.Result)) {
-			// The result is a summary, not the full fetched body.
-			rep.SourceDigest = fmt.Sprintf("fetched_bytes=%d", tr.Bytes)
-		}
-		return rep
+		return boundedText(agentFacing, tr.Result, obs, put)
 	case agentFacing != "":
 		return boundedText(agentFacing, "", obs, put)
 	}
 	obs.Gaps = append(obs.Gaps, gap(obs, observedinput.GapUnsupportedShape, "tool result with no recognized body"))
 	return observedinput.Representation{State: observedinput.RepUnavailable}
+}
+
+// fileFidelity preserves provider metadata even when the body is unavailable.
+func fileFidelity(file *rawFile, agentFacing string, obs *observedinput.ObservedInput, rep *observedinput.Representation) {
+	rep.Transformation, rep.Extent = "unknown", "unknown"
+	if file == nil {
+		return
+	}
+	obs.InputSource.Kind = "file"
+	if file.FilePath != "" {
+		obs.InputSource = observedinput.InputSource{Kind: "file", Locator: file.FilePath}
+	}
+	rep.ReportedSourceBytes = file.OriginalSize
+	rep.LineStart, rep.LineCount, rep.TotalLines = file.StartLine, file.NumLines, file.TotalLines
+	if rep.State != observedinput.RepPresent {
+		return
+	}
+	if file.Base64 != "" {
+		rep.Transformation = "none"
+		if file.OriginalSize != nil && *file.OriginalSize == rep.ContentSize {
+			rep.Extent = "complete"
+		}
+		return
+	}
+	if file.Content != "" {
+		rep.Transformation = "none"
+		if agentFacing != "" && agentFacing != file.Content {
+			rep.Transformation = "extracted"
+		}
+		if file.StartLine >= 1 && file.NumLines > 0 && file.TotalLines >= file.NumLines && file.StartLine-1 <= file.TotalLines-file.NumLines {
+			rep.Extent = "partial"
+			if file.StartLine == 1 && file.NumLines == file.TotalLines {
+				rep.Extent = "complete"
+			}
+		}
+	}
 }
 
 // boundedText bounds delivered text and stores differing source text separately.

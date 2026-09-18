@@ -2,10 +2,90 @@ package claude
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/semanticash/cli/internal/observedinput"
 )
+
+func TestTranscriptReadersSupportObservedContentLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		size              int
+		pdf, escaped, gap bool
+	}{
+		{"text above old scanner limit", 2 << 20, false, false, false},
+		{"PDF at evidence limit", 8 << 20, true, false, false},
+		{"escaped text at evidence limit", 8 << 20, false, true, false},
+		{"oversized text", (8 << 20) + 1, false, false, true},
+		{"oversized PDF", (8 << 20) + 1, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("x", tc.size)
+			if tc.escaped {
+				body = strings.Repeat("\x00", tc.size)
+			}
+			file := map[string]any{"filePath": "/work/plan.md", "originalSize": tc.size}
+			contentType := "text"
+			if tc.pdf {
+				file["base64"] = base64.StdEncoding.EncodeToString([]byte(body))
+				contentType = "pdf"
+			} else {
+				file["content"] = body
+			}
+			record, err := json.Marshal(map[string]any{
+				"type": "attachment", "uuid": "attachment", "parentUuid": "request",
+				"attachment": map[string]any{"type": "file", "filename": "/work/plan.md", "content": map[string]any{"type": contentType, "file": file}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			data := append([]byte("{\"type\":\"user\",\"uuid\":\"request\",\"message\":{\"role\":\"user\",\"content\":\"Use the attachment\"}}\n"), record...)
+			if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			p, ctx := New(), context.Background()
+			end, err := p.TranscriptOffset(ctx, path)
+			if err != nil || end != 2 {
+				t.Fatalf("offset=%d err=%v", end, err)
+			}
+			_, readEnd, err := p.ReadFromOffset(ctx, path, 0, nil)
+			if err != nil || readEnd != end {
+				t.Fatalf("read offset=%d err=%v", readEnd, err)
+			}
+			batch, err := p.CaptureObservedInputs(ctx, path, 0, readEnd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(batch.Turns) != 1 || len(batch.Turns[0].Observations) != 1 {
+				t.Fatalf("unexpected batch: %+v", batch.Turns)
+			}
+			o := batch.Turns[0].Observations[0]
+			if o.InputSource.Locator != "/work/plan.md" || o.Representation.ReportedSourceBytes == nil || *o.Representation.ReportedSourceBytes != int64(tc.size) {
+				t.Fatalf("source metadata lost: %+v", o)
+			}
+			if tc.gap {
+				if o.Representation.State != observedinput.RepReferenceOnly || o.Representation.Extent != "unknown" {
+					t.Fatalf("oversized content marked present: %+v", o)
+				}
+				for _, g := range o.Gaps {
+					if g.Reason == observedinput.GapSizeLimit {
+						return
+					}
+				}
+				t.Fatal("missing size-limit gap")
+			}
+			if got := batch.Contents[o.Representation.ContentRef]; string(got) != body {
+				t.Fatalf("retained %d bytes, want %d", len(got), tc.size)
+			}
+		})
+	}
+}
 
 // Capture preserves evidence from the requested transcript range.
 func TestProviderCaptureObservedInputs(t *testing.T) {

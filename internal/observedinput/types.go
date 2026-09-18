@@ -80,21 +80,30 @@ type SourceRef struct {
 	Native   string `json:"native,omitempty"`   // provider block/record identity
 }
 
+// InputSource identifies the document named by the provider, without fetching it.
+type InputSource struct {
+	Kind    string `json:"kind"` // file, url, or unknown
+	Locator string `json:"locator,omitempty"`
+}
+
 // Representation describes captured content or its absence.
 // ContentRef identifies observed bytes, not the original external source.
 type Representation struct {
-	State       RepState `json:"state"`
-	ContentRef  string   `json:"content_ref,omitempty"`
-	ContentSize int64    `json:"content_size,omitempty"`
-	MediaType   string   `json:"media_type,omitempty"`
-	LineStart   int      `json:"line_start,omitempty"`
-	LineCount   int      `json:"line_count,omitempty"`
-	TotalLines  int      `json:"total_lines,omitempty"`
+	Transformation      string   `json:"transformation,omitempty"` // none, summarized, extracted, or unknown
+	Extent              string   `json:"extent,omitempty"`         // complete, partial, or unknown
+	ReportedSourceBytes *int64   `json:"reported_source_bytes,omitempty"`
+	State               RepState `json:"state"`
+	ContentRef          string   `json:"content_ref,omitempty"`
+	ContentSize         int64    `json:"content_size,omitempty"`
+	MediaType           string   `json:"media_type,omitempty"`
+	LineStart           int      `json:"line_start,omitempty"`
+	LineCount           int      `json:"line_count,omitempty"`
+	TotalLines          int      `json:"total_lines,omitempty"`
 	// SourceContentRef identifies source content that differs from the delivered
 	// representation, such as raw file text behind formatted tool output.
 	SourceContentRef  string `json:"source_content_ref,omitempty"`
 	SourceContentSize int64  `json:"source_content_size,omitempty"`
-	SourceDigest      string `json:"source_digest,omitempty"`
+	SourceDigest      string `json:"source_digest,omitempty"` // Legacy evidence; new records use reported_source_bytes.
 	Truncated         bool   `json:"truncated,omitempty"`
 }
 
@@ -125,19 +134,20 @@ type RequestEvent struct {
 // ObservedInput records one delivery. Identical bytes delivered twice retain
 // separate delivery identities.
 type ObservedInput struct {
-	DeliveryID     string         `json:"delivery_id"`
-	Provider       string         `json:"provider"`
-	SessionID      string         `json:"session_id,omitempty"`
-	TurnID         string         `json:"turn_id,omitempty"`
+	DeliveryID  string        `json:"delivery_id"`
+	Provider    string        `json:"provider"`
+	SessionID   string        `json:"session_id,omitempty"`
+	TurnID      string        `json:"turn_id,omitempty"`
 	Acquisition Acquisition   `json:"acquisition"`
 	Scope       DeliveryScope `json:"scope"`
 	ToolCallID  string        `json:"tool_call_id,omitempty"`
 	// UnresolvedParentID preserves the provider parent ID for later resolution.
 	UnresolvedParentID string         `json:"unresolved_parent_id,omitempty"`
 	Ordinal            int64          `json:"ordinal"`
-	Representation     Representation  `json:"representation"`
-	Source             SourceRef       `json:"source"`
-	Gaps               []Gap           `json:"gaps,omitempty"`
+	Representation     Representation `json:"representation"`
+	Source             SourceRef      `json:"source"`
+	InputSource        InputSource    `json:"input_source"`
+	Gaps               []Gap          `json:"gaps,omitempty"`
 }
 
 // RequestInputLink joins an envelope input to its request by provider structure.

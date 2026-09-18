@@ -385,7 +385,7 @@ func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn map[string
 	return nil
 }
 
-// deliveryIdentityKey binds content to its provider parent or tool call.
+// deliveryIdentityKey binds content and source metadata to its parent or tool call.
 // It excludes the resolved turn so ownership resolution preserves identity.
 func deliveryIdentityKey(o observedinput.ObservedInput, reqLink *observedinput.RequestInputLink) string {
 	parent := o.UnresolvedParentID
@@ -393,7 +393,17 @@ func deliveryIdentityKey(o observedinput.ObservedInput, reqLink *observedinput.R
 		parent = strings.TrimPrefix(reqLink.RequestID, "req:")
 	}
 	structural := parent + "|" + o.ToolCallID
-	sum := sha256.Sum256([]byte(o.Representation.ContentRef + "\x00" + o.Representation.SourceContentRef + "\x00" + structural))
+	identity := o.Representation.ContentRef + "\x00" + o.Representation.SourceContentRef + "\x00" + structural
+	r := o.Representation
+	if o.InputSource.Kind != "" || o.InputSource.Locator != "" || r.Transformation != "" || r.Extent != "" || r.ReportedSourceBytes != nil {
+		metadata, _ := json.Marshal(struct {
+			Source                 observedinput.InputSource
+			Transformation, Extent string
+			ReportedSourceBytes    *int64
+		}{o.InputSource, r.Transformation, r.Extent, r.ReportedSourceBytes})
+		identity += "\x00" + string(metadata)
+	}
+	sum := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(sum[:])
 }
 

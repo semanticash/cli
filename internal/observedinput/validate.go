@@ -109,6 +109,24 @@ func Validate(e Evidence) error {
 			add("observation %q: duplicate delivery identity", o.DeliveryID)
 		}
 		deliveries[o.DeliveryID] = o
+		switch o.InputSource.Kind {
+		case "", "file", "url", "unknown":
+		default:
+			add("observation %q: invalid input source kind", o.DeliveryID)
+		}
+		switch o.Representation.Transformation {
+		case "", "none", "summarized", "extracted", "unknown":
+		default:
+			add("observation %q: invalid transformation", o.DeliveryID)
+		}
+		switch o.Representation.Extent {
+		case "", "complete", "partial", "unknown":
+		default:
+			add("observation %q: invalid extent", o.DeliveryID)
+		}
+		if n := o.Representation.ReportedSourceBytes; n != nil && *n < 0 {
+			add("observation %q: negative reported source bytes", o.DeliveryID)
+		}
 		if !validAcquisition(o.Acquisition) {
 			add("observation %q: invalid acquisition %q", o.DeliveryID, o.Acquisition)
 		}

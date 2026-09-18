@@ -40,7 +40,7 @@ Semantica registers five Codex hooks:
 - **`SessionStart`** - Records lifecycle metadata.
 - **`UserPromptSubmit`** - Stores the prompt blob and capture boundary.
 - **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for shell-tool evidence.
-- **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps, including Bash commands that exit with a non-zero status.
+- **`PostToolUse[apply_patch|Bash|Write|Edit]`** - Captures tool steps directly from hook payloads.
 - **`Stop`** - Marks the turn complete and packages captured events.
 
 Before parsing a payload or opening storage, Semantica verifies that its `cwd` belongs to an enabled repository. Other sessions exit without recording data.
@@ -78,7 +78,6 @@ Semantica registers the following hooks in `.claude/settings.local.json`:
 - **`UserPromptSubmit`** - Saves the current transcript offset and records the prompt.
 - **`PostToolUse[Write]`**, **`PostToolUse[Edit]`**, **`PostToolUse[Bash]`** - Capture direct file and shell provenance from hook payloads.
 - **`PreToolUse[Bash]`** - Registers a bounded workspace snapshot for pending shell-tool evidence.
-- **`PostToolUseFailure[Bash]`** - Closes failed shell windows and captures changes made before failure.
 - **`PreToolUse[Agent]`** - Captures the delegated subagent prompt.
 - **`PostToolUse[Agent]`** - Captures the delegated subagent boundary.
 - **`Stop`** - Replays the transcript from the saved offset and packages the completed turn.
@@ -94,6 +93,8 @@ Semantica retains provider-recorded requests, attachments, and tool results in l
 - Later Read and WebFetch results remain observed context, even when the prompt mentions the file or URL. WebFetch capture preserves the returned text, not a reconstructed copy of the webpage.
 - Original PDF bytes are retained when present in the provider record. A PDF attachment parented to another attachment can remain unresolved; a separate Read result is still retained as context.
 - Missing, unsupported, or truncated representations retain explicit gaps.
+- Evidence preserves recorded file paths or URLs, transformation and coverage metadata, and reported source byte counts. Missing metadata remains unknown; source locators are not fetched again.
+- Each content representation is limited to 8 MiB. Larger bodies retain size-limit gaps. Transcript records allow up to 128 MiB for JSON escaping and multiple representations; exceeding that record bound fails the read without advancing capture.
 
 This input evidence is local-only. It does not change line attribution or feed hosted Review Basis. Other providers do not yet produce this bundle section.
 
@@ -129,9 +130,8 @@ under `~/.cursor/`, which is shared across the supported desktop platforms.
 For Cursor IDE, Semantica registers hooks in `.cursor/hooks.json` for:
 
 - **`beforeSubmitPrompt`** - Saves the current transcript boundary and records the prompt.
-- **`preToolUse`** - Captures subagent prompt boundaries and opens shell-tool windows.
+- **`preToolUse`** - Captures subagent prompt boundaries.
 - **`postToolUse`** - Captures shell provenance.
-- **`postToolUseFailure`** - Closes failed shell windows, including errors, timeouts, and denied commands.
 - **`afterFileEdit`** - Captures direct file edit and file write provenance.
 - **`afterAgentResponse`** - Captures the final assistant response.
 - **`stop`** - Replays the transcript, records available model and parent-turn
@@ -305,7 +305,6 @@ Semantica installs the following hooks in `.github/hooks/semantica.json`:
 - **`userPromptSubmitted`** - Saves the current transcript offset and records the prompt.
 - **`preToolUse`** - Captures subagent prompt boundaries before `task` delegation.
 - **`postToolUse`** - Captures direct file and shell provenance for `create`, `edit`, and `bash`.
-- **`postToolUseFailure`** - Records failed shell completion without treating failed file-edit inputs as changes.
 - **`agentStop`** - Replays the transcript from the saved offset and packages the completed turn.
 - **`sessionStart`** / **`sessionEnd`** - Lifecycle tracking and final flush.
 - **`subagentStop`** - Captures the canonical subagent completion boundary.

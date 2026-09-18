@@ -139,9 +139,6 @@ func turnEvidence(provider string, event *Event) ([]turncapture.Evidence, bool) 
 			return nil, false
 		}
 		base.Kind = "execution_terminal"
-		if event.ToolFailed {
-			base.Status = "failed"
-		}
 		result := []turncapture.Evidence{base}
 		if provider == "claude-code" {
 			var response *struct {

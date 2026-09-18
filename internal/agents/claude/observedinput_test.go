@@ -122,12 +122,15 @@ func TestNormalize_WebFetchSummaryDistinctFromBytes(t *testing.T) {
 	if res.Scope != observedinput.ScopeObservedContext || res.ToolCallID == "" {
 		t.Fatalf("webfetch not observed context with tool-call join: %+v", res)
 	}
-	if res.Representation.ContentSize != 1397 {
-		t.Fatalf("webfetch summary size = %d, want 1397", res.Representation.ContentSize)
+	if res.Representation.ContentSize != 115 {
+		t.Fatalf("webfetch summary size = %d, want 115", res.Representation.ContentSize)
 	}
 	// Keep fetched size separate from summary size.
-	if res.Representation.SourceDigest != "fetched_bytes=63305" {
-		t.Fatalf("fetched byte count not recorded separately: %q", res.Representation.SourceDigest)
+	if n := res.Representation.ReportedSourceBytes; n == nil || *n != 63305 {
+		t.Fatalf("fetched byte count not recorded separately: %+v", res.Representation)
+	}
+	if res.InputSource.Kind != "url" || res.InputSource.Locator != "https://example.org/docs" || res.Representation.Transformation != "summarized" || res.Representation.Extent != "partial" {
+		t.Fatalf("WebFetch source/fidelity lost: %+v", res)
 	}
 }
 
