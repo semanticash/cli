@@ -613,3 +613,143 @@ func TestUploadTurn_ConflictIsTerminal(t *testing.T) {
 		t.Error("409 conflict should be a terminal error")
 	}
 }
+
+// completeStatusServer accepts uploads and returns the given status from /complete.
+func completeStatusServer(t *testing.T, status int) (backendURL string) {
+	t.Helper()
+	s3Mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	t.Cleanup(s3Mock.Close)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/provenance/prepare":
+			_ = json.NewEncoder(w).Encode(apiEnvelope[preparePayload]{Payload: preparePayload{
+				Uploads: []prepareUploadEntry{{Kind: "bundle", Hash: "abcdef1234567890", PresignedURL: s3Mock.URL + "/b"}},
+			}})
+		case "/v1/provenance/complete":
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":true,"message":"x"}`))
+		}
+	}))
+	t.Cleanup(backend.Close)
+	return backend.URL
+}
+
+func uploadWithCompleteStatus(t *testing.T, status int) UploadResult {
+	env := syncEnvelope{ConnectedRepoID: "r", Provider: "p", TurnID: "t", StartedAt: 1,
+		Objects: []syncObject{{Kind: "bundle", Hash: "abcdef1234567890", SizeBytes: 1}}}
+	envJSON, _ := json.Marshal(env)
+	return UploadTurn(context.Background(), completeStatusServer(t, status), "tok", SyncResult{
+		TurnID: "t", ManifestID: "m", Envelope: envJSON,
+		RedactedBlobs: map[string][]byte{"abcdef1234567890": {0x01}},
+	})
+}
+
+func TestUploadTurn_Complete400IsRetryable(t *testing.T) {
+	out := uploadWithCompleteStatus(t, http.StatusBadRequest)
+	if out.Err == nil {
+		t.Fatal("expected an error on 400")
+	}
+	if IsTerminal(out.Err) {
+		t.Fatal("400 must not be terminal (unsupported backend must stay retryable)")
+	}
+	if got := ClassifyOutcome(out.Err, 0); got != ActionRetry {
+		t.Fatalf("400 classified as %v, want ActionRetry", got)
+	}
+	if out.Uploaded {
+		t.Error("must not be marked uploaded on rejection")
+	}
+}
+
+func TestUploadTurn_Complete422IsTerminal(t *testing.T) {
+	out := uploadWithCompleteStatus(t, http.StatusUnprocessableEntity)
+	if out.Err == nil {
+		t.Fatal("expected an error on 422")
+	}
+	if !IsTerminal(out.Err) {
+		t.Fatal("422 (invalid evidence) must be terminal")
+	}
+	if got := ClassifyOutcome(out.Err, 0); got != ActionFail {
+		t.Fatalf("422 classified as %v, want ActionFail", got)
+	}
+	if out.Uploaded {
+		t.Error("must not be marked uploaded on rejection")
+	}
+}
+
+func prepare400Server(t *testing.T, body string) string {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/provenance/prepare" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(body))
+		}
+	}))
+	t.Cleanup(backend.Close)
+	return backend.URL
+}
+
+func uploadWithPrepare400(t *testing.T, body string, kinds ...string) UploadResult {
+	t.Helper()
+	objs := make([]syncObject, 0, len(kinds))
+	for i, k := range kinds {
+		objs = append(objs, syncObject{Kind: k, Hash: fmt.Sprintf("hash%08d", i), SizeBytes: 1})
+	}
+	env := syncEnvelope{ConnectedRepoID: "r", Provider: "p", TurnID: "t", StartedAt: 1, Objects: objs}
+	envJSON, _ := json.Marshal(env)
+	return UploadTurn(context.Background(), prepare400Server(t, body), "tok", SyncResult{
+		TurnID: "t", ManifestID: "m", Envelope: envJSON,
+	})
+}
+
+func TestUploadTurn_UnsupportedBackendIsDistinct(t *testing.T) {
+	out := uploadWithPrepare400(t,
+		`{"error":true,"message":"validation failed","errors":{"0.kind":"must be one of: prompt, bundle, step_provenance, turn_response, tool_delta"}}`,
+		"bundle", "observed_input")
+	if !IsUnsupportedBackend(out.Err) {
+		t.Fatalf("expected unsupported-backend classification, got: %v", out.Err)
+	}
+	if IsTerminal(out.Err) {
+		t.Fatal("unsupported backend must not be terminal")
+	}
+	if out.Uploaded {
+		t.Error("must not be marked uploaded")
+	}
+}
+
+func TestUploadTurn_Prepare400GenericWhenNotKindRejection(t *testing.T) {
+	out := uploadWithPrepare400(t, `{"error":true,"message":"connected_repo_id is required"}`, "bundle", "observed_input")
+	if IsUnsupportedBackend(out.Err) {
+		t.Fatal("non-kind 400 must not be classified as unsupported backend")
+	}
+	if IsTerminal(out.Err) {
+		t.Fatal("generic 400 stays retryable")
+	}
+	out = uploadWithPrepare400(t, `{"errors":{"0.kind":"must be one of: prompt, bundle"}}`, "bundle")
+	if IsUnsupportedBackend(out.Err) {
+		t.Fatal("kind 400 without observed-input objects must not be unsupported backend")
+	}
+
+	// A backend that accepts observed_input is rejecting a different kind.
+	out = uploadWithPrepare400(t,
+		`{"errors":{"1.kind":"must be one of: prompt, bundle, step_provenance, turn_response, tool_delta, observed_input, observed_input_content"}}`,
+		"observed_input", "bogus_kind")
+	if IsUnsupportedBackend(out.Err) {
+		t.Fatal("a supporting backend that lists observed_input must not be classified as unsupported")
+	}
+	if IsTerminal(out.Err) {
+		t.Fatal("an unrelated invalid-kind 400 stays a generic retry")
+	}
+}
+
+func TestUploadTurn_Complete503IsRetryable(t *testing.T) {
+	out := uploadWithCompleteStatus(t, http.StatusServiceUnavailable)
+	if out.Err == nil {
+		t.Fatal("expected an error on 503")
+	}
+	if IsTerminal(out.Err) {
+		t.Fatal("503 must be retryable (transient storage)")
+	}
+	if got := ClassifyOutcome(out.Err, 0); got != ActionRetry {
+		t.Fatalf("503 classified as %v, want ActionRetry", got)
+	}
+}

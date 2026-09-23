@@ -56,10 +56,7 @@ type syncEnvelope struct {
 const staleUploadingThreshold = 5 * time.Minute
 
 // SyncPendingTurns prepares upload artifacts for packaged manifests.
-// The local schema includes upload_transform_version and
-// remote_verified_at on provenance_manifests, but the current upload path
-// does not write them yet. Wire these when adding GC or version-aware
-// re-upload logic.
+// Manifest fields upload_transform_version and remote_verified_at are not written.
 // The watermarkTs bounds the sync to manifests created at or before this
 // timestamp. A zero watermark applies no timestamp filter.
 func SyncPendingTurns(ctx context.Context, repoPath string, watermarkTs int64, limit int) ([]SyncResult, error) {
@@ -265,12 +262,8 @@ func buildSyncResult(
 		env.CompletedAt = m.CompletedAt.Int64
 	}
 
-	// Resolve commit linkage by finding the earliest checkpoint in this session
-	// created at or after the manifest's start time, then checking whether that
-	// checkpoint has a commit link. No row means the turn has no commit link.
-	// This is anchored on started_at because turns are expected to complete
-	// before their covering checkpoint. If turns can cross checkpoint
-	// boundaries, switch this to completed_at or a coalesced fallback.
+	// Use the first checkpoint at or after the turn's start for commit linkage.
+	// This assumes the turn finishes before that checkpoint. No row means no link.
 	link, err := h.Queries.GetManifestCommitLink(ctx, sqldb.GetManifestCommitLinkParams{
 		SessionID: m.SessionID,
 		CreatedAt: m.StartedAt,

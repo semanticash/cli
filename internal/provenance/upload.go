@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
@@ -205,6 +206,18 @@ func callPrepare(ctx context.Context, endpoint, token string, body prepareReques
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, errUnauthorized
 	}
+	if resp.StatusCode == http.StatusBadRequest {
+		msg := drainBody(resp.Body)
+		// Older backends omit observed_input from the accepted-kind list.
+		// Only those rejections bypass the retry budget.
+		lower := strings.ToLower(msg)
+		if requestHasObservedInputKinds(body) &&
+			strings.Contains(lower, "kind") &&
+			!strings.Contains(lower, "observed_input") {
+			return nil, fmt.Errorf("backend does not support observed-input object kinds (HTTP 400: %s): %w", msg, errUnsupportedBackend)
+		}
+		return nil, fmt.Errorf("HTTP 400: %s", msg)
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg := drainBody(resp.Body)
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
@@ -264,6 +277,11 @@ func callComplete(ctx context.Context, endpoint, token string, envelope []byte) 
 	if resp.StatusCode == http.StatusConflict {
 		return fmt.Errorf("turn already registered with different identity: %w", errTerminal)
 	}
+	// Invalid evidence stops retries; the manifest and local evidence remain stored.
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		msg := drainBody(resp.Body)
+		return fmt.Errorf("evidence rejected as invalid (HTTP 422): %s: %w", msg, errTerminal)
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg := drainBody(resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
@@ -302,6 +320,25 @@ var errUnauthorized = fmt.Errorf("unauthorized")
 // IsUnauthorized returns true if the error chain contains a 401 from the backend.
 func IsUnauthorized(err error) bool {
 	return errors.Is(err, errUnauthorized)
+}
+
+// errUnsupportedBackend keeps uploads pending without consuming retries until
+// the backend supports observed-input object kinds.
+var errUnsupportedBackend = fmt.Errorf("unsupported backend")
+
+// IsUnsupportedBackend reports whether the error is an unsupported-backend rejection.
+func IsUnsupportedBackend(err error) bool {
+	return errors.Is(err, errUnsupportedBackend)
+}
+
+// requestHasObservedInputKinds reports whether a request includes observed-input objects.
+func requestHasObservedInputKinds(body prepareRequestBody) bool {
+	for _, o := range body.Objects {
+		if o.Kind == "observed_input" || o.Kind == "observed_input_content" {
+			return true
+		}
+	}
+	return false
 }
 
 // MaxUploadAttempts is the retry cap for transient upload failures.
@@ -409,6 +446,25 @@ func SyncAndUpload(ctx context.Context, repoRoot, endpoint, token string, waterm
 			out = append(out, ur)
 			progress(ur)
 			break
+		}
+
+		// Keep the manifest pending without consuming retries until the backend is upgraded.
+		if ur.Err != nil && IsUnsupportedBackend(ur.Err) {
+			ur.Action = ActionRetry
+			if err := writeUploadState(ctx, func(stateCtx context.Context) error {
+				return h.Queries.ResetManifestToPackaged(stateCtx, sqldb.ResetManifestToPackagedParams{
+					UpdatedAt:  time.Now().UnixMilli(),
+					ManifestID: r.ManifestID,
+				})
+			}); err != nil {
+				slog.Warn("upload: reset manifest after unsupported-backend rejection", "turn", r.TurnID, "manifest_id", r.ManifestID, "err", err)
+				ur.Action = ActionFail
+				ur.Uploaded = false
+				ur.Err = fmt.Errorf("reset manifest after unsupported-backend rejection: %w", err)
+			}
+			out = append(out, ur)
+			progress(ur)
+			continue
 		}
 
 		action := ClassifyOutcome(ur.Err, r.UploadAttempts)
