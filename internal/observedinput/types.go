@@ -105,6 +105,15 @@ type Representation struct {
 	SourceContentSize int64  `json:"source_content_size,omitempty"`
 	SourceDigest      string `json:"source_digest,omitempty"` // Legacy evidence; new records use reported_source_bytes.
 	Truncated         bool   `json:"truncated,omitempty"`
+	// Upload marks outbound withholding without changing local capture state.
+	Upload *UploadMarker `json:"upload,omitempty"`
+}
+
+// UploadMarker records why captured bytes were withheld from upload.
+// Withheld representations retain capture state and size but omit content references.
+type UploadMarker struct {
+	State  string `json:"state"`            // "withheld"
+	Reason string `json:"reason,omitempty"` // e.g. "binary_privacy_policy"
 }
 
 // Gap is an explicit coverage gap. Subject is a request or delivery identity when
@@ -171,13 +180,15 @@ type ToolCallLink struct {
 
 // Evidence is the per-turn observed-input document persisted in CAS.
 type Evidence struct {
-	Version       int                `json:"version"`
-	Provider      string             `json:"provider"`
-	SessionID     string             `json:"session_id"`
-	TurnID        string             `json:"turn_id"`
-	Requests      []RequestEvent     `json:"requests"`
-	Observations  []ObservedInput    `json:"observations"`
-	RequestLinks  []RequestInputLink `json:"request_links"`
-	ToolCallLinks []ToolCallLink     `json:"tool_call_links"`
-	Gaps          []Gap              `json:"gaps,omitempty"`
+	Version int `json:"version"`
+	// UploadTransformVersion identifies the outbound privacy rules; absent locally.
+	UploadTransformVersion int                `json:"upload_transform_version,omitempty"`
+	Provider               string             `json:"provider"`
+	SessionID              string             `json:"session_id"`
+	TurnID                 string             `json:"turn_id"`
+	Requests               []RequestEvent     `json:"requests"`
+	Observations           []ObservedInput    `json:"observations"`
+	RequestLinks           []RequestInputLink `json:"request_links"`
+	ToolCallLinks          []ToolCallLink     `json:"tool_call_links"`
+	Gaps                   []Gap              `json:"gaps,omitempty"`
 }

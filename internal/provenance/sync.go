@@ -217,8 +217,27 @@ func buildSyncResult(
 		objects = append(objects, syncObject{Kind: "turn_response", Hash: responseHash, SizeBytes: len(raw)})
 	}
 
-	// Remove local-only input evidence, rewrite upload hashes, then redact and hash.
-	rewrittenBundle := RewriteBundleHashes(stripObservedInput(rawBundle), hashMap)
+	// Add sanitized input evidence and update the bundle reference.
+	// Preserve absent or unavailable sections.
+	bundleBase := rawBundle
+	if evHash := observedInputEvidenceHashFromBundle(rawBundle); evHash != "" {
+		up, oerr := buildObservedInputUpload(ctx, bs, evHash, repoPath)
+		if oerr != nil {
+			markFailed(ctx, h, m.ManifestID, "observed-input: "+oerr.Error())
+			result.Skipped = true
+			return result
+		}
+		result.RedactedBlobs[up.DocHash] = up.DocBytes
+		objects = append(objects, syncObject{Kind: "observed_input", Hash: up.DocHash, SizeBytes: len(up.DocBytes)})
+		for _, hash := range sortedKeys(up.Content) {
+			result.RedactedBlobs[hash] = up.Content[hash]
+			objects = append(objects, syncObject{Kind: "observed_input_content", Hash: hash, SizeBytes: len(up.Content[hash])})
+		}
+		bundleBase = rewriteObservedInputEvidenceHash(rawBundle, up.DocHash)
+	}
+
+	// Rewrite upload hashes, then redact and hash the bundle.
+	rewrittenBundle := RewriteBundleHashes(bundleBase, hashMap)
 	bundleHash, bundleRedacted, err := DeriveUploadHash(rewrittenBundle, "bundle", repoPath)
 	if err != nil {
 		markFailed(ctx, h, m.ManifestID, redactionFailedReason("bundle", err))
