@@ -165,3 +165,25 @@ func TestIsBinary(t *testing.T) {
 		t.Error("NUL beyond window classified binary")
 	}
 }
+
+func TestIsBinaryUTF8(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		binary  bool
+	}{
+		{"empty", "", false},
+		{"unicode", "Καλημέρα 世界\n", false},
+		{"replacement_character", "\ufffd\n", false},
+		{"invalid_utf8", "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n", true},
+		{"invalid_utf8_after_window", strings.Repeat("a", 9000) + "\xff", true},
+		{"unicode_across_window", strings.Repeat("a", 7999) + "世", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBinary([]byte(tc.content)); got != tc.binary {
+				t.Fatalf("isBinary = %v, want %v", got, tc.binary)
+			}
+		})
+	}
+}

@@ -104,6 +104,75 @@ func TestCaptureAfterBinaryFileTouchOnly(t *testing.T) {
 	}
 }
 
+func TestCaptureAfterNonUTF8PreservesTextEvidence(t *testing.T) {
+	const pdf = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n%%EOF\n"
+	for _, operation := range []string{"create", "edit", "delete", "replace_with_text"} {
+		t.Run(operation, func(t *testing.T) {
+			root := testRepo(t)
+			if operation != "create" {
+				writeFile(t, root, "fixture.pdf", pdf)
+			}
+			s := openTestStore(t, root)
+			ctx := context.Background()
+			pre, err := s.CaptureBefore(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch operation {
+			case "create":
+				writeFile(t, root, "fixture.pdf", pdf)
+			case "edit":
+				writeFile(t, root, "fixture.pdf", pdf+"updated\n")
+			case "delete":
+				if err := os.Remove(filepath.Join(root, "fixture.pdf")); err != nil {
+					t.Fatal(err)
+				}
+			case "replace_with_text":
+				writeFile(t, root, "fixture.pdf", "plain text\n")
+			}
+			const addedLine = "generated 世界 \ufffd"
+			writeFile(t, root, "a.txt", "alpha\n"+addedLine+"\n")
+			res, err := s.CaptureAfter(ctx, pre, s.postAnchor())
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := Delta{
+				Scope: "tool", Status: "complete",
+				Actors:   []Actor{{Provider: "claude_code", SessionID: "session", TurnID: "turn"}},
+				ToolUses: []ToolUse{{ToolUseID: "tool", ToolName: "Bash", EventID: "event", Actor: 0}},
+				Files:    res.Files,
+				Limits:   Limits{FilesObserved: len(res.Files), BytesRead: res.BytesRead, Truncated: res.Truncated},
+			}
+			raw, err := d.CanonicalBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := ParseDelta(raw)
+			if err != nil {
+				t.Fatalf("captured delta cannot be read: %v", err)
+			}
+			if len(parsed.Files) != 2 {
+				t.Fatalf("files = %+v, want PDF and text", parsed.Files)
+			}
+			for _, f := range parsed.Files {
+				switch f.Path {
+				case "fixture.pdf":
+					if !f.Binary || f.Truncated || len(f.Hunks) != 0 {
+						t.Fatalf("PDF must retain only file evidence: %+v", f)
+					}
+				case "a.txt":
+					want := []Hunk{{OldStart: 2, NewStart: 2, NewCount: 1, OldLines: []string{}, NewLines: []string{addedLine}}}
+					if f.Binary || f.Truncated || !reflect.DeepEqual(f.Hunks, want) {
+						t.Fatalf("text evidence changed: %+v", f)
+					}
+				default:
+					t.Fatalf("unexpected file %q", f.Path)
+				}
+			}
+		})
+	}
+}
+
 func TestCaptureAfterHeadMovedFailsPartial(t *testing.T) {
 	root := testRepo(t)
 	s := openTestStore(t, root)

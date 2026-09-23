@@ -3,6 +3,7 @@ package toolsnap
 import (
 	"bytes"
 	"context"
+	"unicode/utf8"
 )
 
 // Hunk is a contiguous, context-free change between two text blobs.
@@ -285,13 +286,12 @@ func splitLines(content []byte) []string {
 	return lines
 }
 
-// isBinary mirrors git's heuristic: a NUL byte in the leading window
-// marks content as binary. Binary files contribute file-touch
-// evidence only.
+// isBinary detects NUL bytes in Git's leading window and invalid UTF-8 anywhere.
+// Binary files retain file-level evidence without lossy JSON text conversion.
 func isBinary(content []byte) bool {
 	window := content
 	if len(window) > 8000 {
 		window = window[:8000]
 	}
-	return bytes.IndexByte(window, 0) >= 0
+	return bytes.IndexByte(window, 0) >= 0 || !utf8.Valid(content)
 }
