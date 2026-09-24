@@ -534,7 +534,7 @@ func (p *Provider) CaptureObservedInputs(ctx context.Context, transcriptRef stri
 	if err != nil {
 		return hooks.ObservedInputBatch{}, err
 	}
-	return hooks.ObservedInputBatch{Turns: n.Turns, Contents: n.Contents, CallOwners: n.CallOwners, Ancestry: n.Ancestry}, nil
+	return hooks.ObservedInputBatch{Turns: n.Turns, Contents: n.Contents, CallOwners: n.CallOwners, Ancestry: n.Ancestry, AttachmentAncestry: n.AttachmentAncestry}, nil
 }
 
 // ProviderSessionForTranscript derives the same session identity as ReadFromOffset.

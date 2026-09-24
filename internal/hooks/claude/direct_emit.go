@@ -306,18 +306,18 @@ func serializeStepToolUses(toolName, filePath, fileOp string) string {
 	return ""
 }
 
-// makeBaseRawEvent assembles the provider-specific source key and
-// session metadata, then delegates envelope construction to the
-// shared builder. Claude derives the provider session ID, parent
-// session ID, and project path from the transcript path, with a CWD
-// fallback for project path when the transcript does not encode it.
+// makeBaseRawEvent builds event and session metadata from hook data.
 func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	providerSessionID := agentclaude.ExtractSessionIDFromPath(event.TranscriptRef)
 	if providerSessionID == "" {
 		providerSessionID = agentclaude.ExtractBasename(event.TranscriptRef)
 	}
 	parentSessionID := agentclaude.ExtractParentSessionID(event.TranscriptRef)
-	projectPath := agentclaude.DecodeProjectPathFromSourceKey(event.TranscriptRef)
+	// Prefer the delivered CWD because transcript path encoding loses literal hyphens.
+	projectPath := event.CWD
+	if projectPath == "" {
+		projectPath = agentclaude.DecodeProjectPathFromSourceKey(event.TranscriptRef)
+	}
 
 	meta := map[string]any{"source_key": event.TranscriptRef}
 	if projectPath != "" {
@@ -326,9 +326,6 @@ func makeBaseRawEvent(event *hooks.Event) broker.RawEvent {
 	metaJSON, _ := json.Marshal(meta)
 
 	sourceProjectPath := projectPath
-	if sourceProjectPath == "" && event.CWD != "" {
-		sourceProjectPath = event.CWD
-	}
 
 	return builder.BaseRawEvent(builder.BaseInput{
 		Event:             event,

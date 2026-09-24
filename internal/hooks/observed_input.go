@@ -26,10 +26,11 @@ func providerSessionID(events []broker.RawEvent, _ *CaptureState) string {
 
 // ObservedInputBatch holds normalized evidence from one transcript batch.
 type ObservedInputBatch struct {
-	Turns      []observedinput.Evidence
-	Contents   map[string][]byte
-	CallOwners map[string]string
-	Ancestry   map[string]string
+	Turns              []observedinput.Evidence
+	Contents           map[string][]byte
+	CallOwners         map[string]string
+	Ancestry           map[string]string
+	AttachmentAncestry map[string]string
 }
 
 func (b ObservedInputBatch) empty() bool {
@@ -89,7 +90,7 @@ func retainObservedInputs(ctx context.Context, provider HookProvider, transcript
 		return true
 	}
 	err = provenance.PersistObservedInputs(ctx, targetRepo, provider.Name(), providerSessionID, time.Now().UnixMilli(),
-		batch.Turns, batch.Contents, batch.CallOwners, batch.Ancestry)
+		batch.Turns, batch.Contents, batch.CallOwners, batch.Ancestry, batch.AttachmentAncestry)
 	if err != nil {
 		if !errors.Is(err, provenance.ErrObservedInputRetry) {
 			slog.Warn("observed-input persist failed", "repo", targetRepo, "err", err)

@@ -203,7 +203,7 @@ func TestObservedInput_ClaudeHookAliasPreservesPackagedTurn(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 4, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+			if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 4, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 				t.Fatal(err)
 			}
 			PackageTurn(ctx, r.path, TurnContext{Provider: "claude-code", SessionID: r.providerSession, TurnID: turnID, StartedAt: 1, CompletedAt: 5}, bs)
@@ -254,7 +254,7 @@ func TestObservedInput_PersistCollectRoundTrip(t *testing.T) {
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	turnID := r.insertPrompt(t, requestUUID(n))
 
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -276,7 +276,7 @@ func TestObservedInput_SourceFidelitySurvivesPackageTurn(t *testing.T) {
 			r := newObservedRepo(t)
 			n := normalizeFixtureForRepo(t, fixture)
 			turn := r.insertPrompt(t, requestUUID(n))
-			if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+			if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 				t.Fatal(err)
 			}
 			bs, err := blobs.NewStore(repoObjects(r.path))
@@ -325,12 +325,12 @@ func TestObservedInput_SourceIdentityConflictRejected(t *testing.T) {
 	r := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_text_attachment.jsonl")
 	turn := r.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	want := n.Turns[0].Observations[0].InputSource
 	n.Turns[0].Observations[0].InputSource.Locator = "/different/plan.md"
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err == nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err == nil {
 		t.Fatal("changed source accepted for the same delivery")
 	}
 	got, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turn)
@@ -348,11 +348,11 @@ func TestObservedInput_ReplayIsIdempotent(t *testing.T) {
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	turnID := r.insertPrompt(t, requestUUID(n))
 
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
 	b, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -371,11 +371,11 @@ func TestObservedInput_IncrementalAccumulation(t *testing.T) {
 	// Persist the request before its inputs arrive.
 	reqOnly := n.Turns[0]
 	reqOnly.Observations, reqOnly.RequestLinks, reqOnly.ToolCallLinks = nil, nil, nil
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{reqOnly}, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{reqOnly}, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("batch1: %v", err)
 	}
 	// Replay with the attachment and read result.
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("batch2 (accumulation) rejected: %v", err)
 	}
 	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -389,7 +389,7 @@ func TestObservedInput_ConflictingDeliveryDiagnosed(t *testing.T) {
 	r := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	r.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// Change one delivery's content under the same delivery identity.
@@ -403,7 +403,7 @@ func TestObservedInput_ConflictingDeliveryDiagnosed(t *testing.T) {
 			break
 		}
 	}
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{conflict}, n.Contents, n.CallOwners, n.Ancestry); err == nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{conflict}, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err == nil {
 		t.Fatal("changed content for the same delivery was not diagnosed")
 	}
 }
@@ -413,7 +413,7 @@ func TestObservedInput_UnavailableWhenContentMissing(t *testing.T) {
 	r := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	turnID := r.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// Remove referenced content to make the evidence unavailable.
@@ -499,7 +499,7 @@ func TestObservedInput_AcceptanceThroughPackageTurn(t *testing.T) {
 	t2 := r.insertPrompt(t, "r2")
 
 	n1 := normalizeBatch(t, batch1)
-	if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry, n1.AttachmentAncestry); err != nil {
 		t.Fatalf("persist batch1: %v", err)
 	}
 	// Normalize the next batch without in-memory state from the first.
@@ -507,7 +507,7 @@ func TestObservedInput_AcceptanceThroughPackageTurn(t *testing.T) {
 	if isolatedUnresolved := findBatchTurn(n2, "unresolved"); isolatedUnresolved == nil {
 		t.Fatal("expected the late attachment to be unresolved in its isolated batch")
 	}
-	if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude-code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry, n2.AttachmentAncestry); err != nil {
 		t.Fatalf("persist batch2: %v", err)
 	}
 
@@ -604,7 +604,7 @@ func TestObservedInput_MissingTurnIsRetryable(t *testing.T) {
 	ctx := context.Background()
 	r := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl") // no prompt event inserted
-	err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry)
+	err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry)
 	if err == nil || !errors.Is(err, ErrObservedInputRetry) {
 		t.Fatalf("missing turn mapping should be retryable, got %v", err)
 	}
@@ -619,7 +619,7 @@ func TestObservedInput_DeliveryConflictIndependentOfOwnership(t *testing.T) {
 		`{"type":"attachment","uuid":"att-x","parentUuid":"px","attachment":{"type":"file","filename":"/f","content":{"type":"text","file":{"filePath":"/f","content":"one\n","numLines":1,"totalLines":1}}}}`,
 	}
 	n1 := normalizeBatch(t, att)
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry, n1.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// The parent becomes known; the same delivery arrives with different content.
@@ -629,7 +629,7 @@ func TestObservedInput_DeliveryConflictIndependentOfOwnership(t *testing.T) {
 		`{"type":"attachment","uuid":"att-x","parentUuid":"px","attachment":{"type":"file","filename":"/f","content":{"type":"text","file":{"filePath":"/f","content":"TWO different\n","numLines":1,"totalLines":1}}}}`,
 	}
 	n2 := normalizeBatch(t, att2)
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err == nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry, n2.AttachmentAncestry); err == nil {
 		t.Fatal("changed content for the same delivery was accepted after ownership resolved")
 	}
 }
@@ -641,13 +641,13 @@ func TestObservedInput_RetainedUnresolvedReconciled(t *testing.T) {
 	n1 := normalizeBatch(t, []string{
 		`{"type":"attachment","uuid":"att-y","parentUuid":"py","attachment":{"type":"file","filename":"/f","content":{"type":"text","file":{"filePath":"/f","content":"body\n","numLines":1,"totalLines":1}}}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry, n1.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// Persisting the parent resolves the retained attachment.
 	turnID := r.insertPrompt(t, "py")
 	n2 := normalizeBatch(t, []string{`{"type":"user","uuid":"py","message":{"role":"user","content":"parent request"}}`})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry, n2.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -676,7 +676,7 @@ func TestObservedInput_ChainedAttachmentResolvesToRequest(t *testing.T) {
 	if u := findBatchTurn(n, "unresolved"); u == nil {
 		t.Fatal("expected the nested attachment to normalize as unresolved")
 	}
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 
@@ -715,7 +715,7 @@ func TestObservedInput_ChainedAttachmentSplitBatchNoConflict(t *testing.T) {
 	n1 := normalizeBatch(t, []string{
 		`{"type":"attachment","uuid":"att-nested","parentUuid":"att-outer","attachment":{"type":"file","filename":"/work/nested.txt","content":{"type":"text","file":{"filePath":"/work/nested.txt","content":"nested payload\n","numLines":1,"totalLines":1}}}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry, n1.AttachmentAncestry); err != nil {
 		t.Fatalf("persist batch1: %v", err)
 	}
 
@@ -725,7 +725,7 @@ func TestObservedInput_ChainedAttachmentSplitBatchNoConflict(t *testing.T) {
 		`{"type":"user","uuid":"r1","message":{"role":"user","content":"request"}}`,
 		`{"type":"attachment","uuid":"att-outer","parentUuid":"r1","attachment":{"type":"file","filename":"/work/outer.txt","content":{"type":"text","file":{"filePath":"/work/outer.txt","content":"outer\n","numLines":1,"totalLines":1}}}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry, n2.AttachmentAncestry); err != nil {
 		t.Fatalf("promote retained chained attachment: %v", err)
 	}
 
@@ -747,6 +747,46 @@ func TestObservedInput_ChainedAttachmentSplitBatchNoConflict(t *testing.T) {
 	}
 }
 
+// Attachments parented to tool results stay outside the request envelope.
+func TestRetestRuntimeAttachmentIsNotRequestEnvelope(t *testing.T) {
+	ctx := context.Background()
+	r := newObservedRepo(t)
+	t1 := r.insertPrompt(t, "r1")
+
+	batch := normalizeBatch(t, []string{
+		`{"type":"user","uuid":"r1","message":{"role":"user","content":"do the task"}}`,
+		`{"type":"attachment","uuid":"att-good","parentUuid":"r1","attachment":{"type":"file","filename":"spec.md","content":{"type":"text","file":{"filePath":"spec.md","content":"spec\n","numLines":1,"totalLines":1}}}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"r1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read"}]}}`,
+		`{"type":"user","uuid":"res1","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file body"}]}}`,
+		`{"type":"attachment","uuid":"att-reminder","parentUuid":"res1","attachment":{"type":"file","filename":"reminder","content":{"type":"text","file":{"filePath":"reminder","content":"runtime reminder\n","numLines":1,"totalLines":1}}}}`,
+	})
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, batch.Turns, batch.Contents, batch.CallOwners, batch.Ancestry, batch.AttachmentAncestry); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, t1)
+	if err != nil || res.Evidence == nil {
+		t.Fatalf("collect: %+v err=%v", res, err)
+	}
+	envelope := map[string]bool{}
+	for _, o := range res.Evidence.Observations {
+		if o.Scope == observedinput.ScopeRequestEnvelope {
+			envelope[o.DeliveryID] = true
+		}
+	}
+	if !envelope["att:att-good"] {
+		t.Fatal("the genuine attachment on the request should be a request-envelope input")
+	}
+	if envelope["att:att-reminder"] {
+		t.Fatal("a runtime attachment parented to a tool result must not become a request-envelope input")
+	}
+	for _, l := range res.Evidence.RequestLinks {
+		if l.DeliveryID == "att:att-reminder" {
+			t.Fatalf("runtime attachment gained a request membership link: %+v", l)
+		}
+	}
+}
+
 // Collection preserves top-level gaps.
 func TestObservedInput_TopLevelGapsRetained(t *testing.T) {
 	ctx := context.Background()
@@ -755,7 +795,7 @@ func TestObservedInput_TopLevelGapsRetained(t *testing.T) {
 	turnID := r.insertPrompt(t, requestUUID(n))
 	ev := n.Turns[0]
 	ev.Gaps = append(ev.Gaps, observedinput.Gap{Reason: observedinput.GapUnsupportedShape, Detail: "recorded limitation"})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{ev}, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{ev}, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -778,14 +818,14 @@ func TestObservedInput_SplitCallAndResult(t *testing.T) {
 		`{"type":"user","uuid":"r1","message":{"role":"user","content":"do it"}}`,
 		`{"type":"assistant","uuid":"a1","parentUuid":"r1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read"}]}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry, n1.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// Normalize the result without the earlier call record.
 	n2 := normalizeBatch(t, []string{
 		`{"type":"user","uuid":"res","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"output"}]}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry, n2.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -810,7 +850,7 @@ func TestObservedInput_RejectedConflictNotPublished(t *testing.T) {
 	n := normalizeBatch(t, []string{
 		`{"type":"attachment","uuid":"att-z","parentUuid":"pz","attachment":{"type":"file","filename":"/f","content":{"type":"text","file":{"filePath":"/f","content":"one\n","numLines":1,"totalLines":1}}}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	turnID := r.insertPrompt(t, "pz")
@@ -818,7 +858,7 @@ func TestObservedInput_RejectedConflictNotPublished(t *testing.T) {
 		`{"type":"user","uuid":"pz","message":{"role":"user","content":"parent"}}`,
 		`{"type":"attachment","uuid":"att-z","parentUuid":"pz","attachment":{"type":"file","filename":"/f","content":{"type":"text","file":{"filePath":"/f","content":"CHANGED\n","numLines":1,"totalLines":1}}}}`,
 	})
-	_ = PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, changed.Turns, changed.Contents, changed.CallOwners, changed.Ancestry)
+	_ = PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, changed.Turns, changed.Contents, changed.CallOwners, changed.Ancestry, changed.AttachmentAncestry)
 	// The changed delivery's item must not be published under the turn.
 	res, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
 	if res.Evidence != nil {
@@ -846,14 +886,14 @@ func TestObservedInput_StructuralIdentityImmutable(t *testing.T) {
 		`{"type":"user","uuid":"pa","message":{"role":"user","content":"A"}}`,
 		`{"type":"attachment","uuid":"dup","parentUuid":"pa","attachment":{"type":"file","filename":"/f",` + body + `}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, b1.Turns, b1.Contents, b1.CallOwners, b1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, b1.Turns, b1.Contents, b1.CallOwners, b1.Ancestry, b1.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	b2 := normalizeBatch(t, []string{
 		`{"type":"user","uuid":"pb","message":{"role":"user","content":"B"}}`,
 		`{"type":"attachment","uuid":"dup","parentUuid":"pb","attachment":{"type":"file","filename":"/f",` + body + `}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, b2.Turns, b2.Contents, b2.CallOwners, b2.Ancestry); err == nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, b2.Turns, b2.Contents, b2.CallOwners, b2.Ancestry, b2.AttachmentAncestry); err == nil {
 		t.Fatal("same delivery id acquired a different parent without conflict")
 	}
 }
@@ -867,12 +907,12 @@ func TestObservedInput_GapsAccumulate(t *testing.T) {
 	ev := n.Turns[0]
 	ev1 := ev
 	ev1.Gaps = []observedinput.Gap{{Reason: observedinput.GapUnsupportedShape, Detail: "first"}}
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{ev1}, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, []observedinput.Evidence{ev1}, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	ev2 := ev
 	ev2.Gaps = []observedinput.Gap{{Reason: observedinput.GapSizeLimit, Detail: "second"}}
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, []observedinput.Evidence{ev2}, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, []observedinput.Evidence{ev2}, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("second gap batch conflicted: %v", err)
 	}
 	res, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -887,17 +927,17 @@ func TestObservedInput_ThreeBatchCallAncestry(t *testing.T) {
 	r := newObservedRepo(t)
 	turnID := r.insertPrompt(t, "r1")
 	b1 := normalizeBatch(t, []string{`{"type":"user","uuid":"r1","message":{"role":"user","content":"go"}}`})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, b1.Turns, b1.Contents, b1.CallOwners, b1.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, b1.Turns, b1.Contents, b1.CallOwners, b1.Ancestry, b1.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// The call refers to a request from the previous batch.
 	b2 := normalizeBatch(t, []string{`{"type":"assistant","uuid":"a1","parentUuid":"r1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read"}]}}`})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, b2.Turns, b2.Contents, b2.CallOwners, b2.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, b2.Turns, b2.Contents, b2.CallOwners, b2.Ancestry, b2.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// Batch 3: the result.
 	b3 := normalizeBatch(t, []string{`{"type":"user","uuid":"res","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"out"}]}}`})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 3000, b3.Turns, b3.Contents, b3.CallOwners, b3.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 3000, b3.Turns, b3.Contents, b3.CallOwners, b3.Ancestry, b3.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	res, _ := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, turnID)
@@ -920,7 +960,7 @@ func TestObservedInput_FourBatchDeepAncestry(t *testing.T) {
 	turnID := r.insertPrompt(t, "r1")
 	persist := func(recs []string, at int64) {
 		n := normalizeBatch(t, recs)
-		if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, at, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, at, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -975,7 +1015,7 @@ func TestObservedInput_NonRequestAncestorDoesNotAnchor(t *testing.T) {
 		`{"type":"assistant","uuid":"c2","parentUuid":"dr","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read"}]}}`,
 		`{"type":"user","uuid":"res2","parentUuid":"c2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"out"}]}}`,
 	})
-	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatal(err)
 	}
 	// The request determines the owning turn.
@@ -1004,7 +1044,7 @@ func TestObservedInput_CrossRepoPropagation(t *testing.T) {
 	a := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	turnID := a.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist in launch repo: %v", err)
 	}
 
@@ -1043,7 +1083,7 @@ func TestObservedInput_CrossRepoPackageUsesRecordedRoot(t *testing.T) {
 	a := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	t1 := a.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist in launch repo: %v", err)
 	}
 
@@ -1084,7 +1124,7 @@ func TestObservedInput_DeletedOriginIsUnavailableAndNotRecreated(t *testing.T) {
 	a := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	t1 := a.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist in launch repo: %v", err)
 	}
 	b := newDestRepo(t, a.path)
@@ -1141,7 +1181,7 @@ func TestObservedInput_CrossRepoOriginFailureIsUnavailable(t *testing.T) {
 	a := newObservedRepo(t)
 	n := normalizeFixtureForRepo(t, "captured_pdf_attachment.jsonl")
 	t1 := a.insertPrompt(t, requestUUID(n))
-	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+	if err := PersistObservedInputs(ctx, a.path, "claude_code", a.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry, n.AttachmentAncestry); err != nil {
 		t.Fatalf("persist in launch repo: %v", err)
 	}
 	b := newDestRepo(t, a.path)

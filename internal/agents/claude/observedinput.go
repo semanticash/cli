@@ -32,6 +32,8 @@ type Normalized struct {
 	Contents   map[string][]byte
 	CallOwners map[string]string // Tool-call ID -> issuing record UUID.
 	Ancestry   map[string]string // Record UUID -> parent UUID.
+	// AttachmentAncestry maps attachment UUIDs to parents for envelope resolution.
+	AttachmentAncestry map[string]string
 }
 
 type claudeRecord struct {
@@ -124,6 +126,7 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 	}
 	records := make([]positioned, 0, len(in.Records))
 	parentByUUID := map[string]string{}
+	attachmentAncestry := map[string]string{}
 	var malformedGaps []observedinput.Gap
 	for idx, raw := range in.Records {
 		// Blank and malformed records still count toward source positions.
@@ -139,6 +142,10 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		records = append(records, positioned{rec: rec, pos: pos})
 		if rec.UUID != "" && rec.ParentUUID != nil {
 			parentByUUID[rec.UUID] = *rec.ParentUUID
+			// Keep envelope links separate from general conversation ancestry.
+			if rec.Type == "attachment" {
+				attachmentAncestry[rec.UUID] = *rec.ParentUUID
+			}
 		}
 		if rec.Type == "user" && rec.UUID != "" {
 			if req, ok := userRequest(in, rec, pos); ok {
@@ -222,7 +229,7 @@ func NormalizeObservedInputs(in NormalizeInput) (Normalized, error) {
 		}
 	}
 
-	out := Normalized{Contents: contents, CallOwners: callAncestor, Ancestry: parentByUUID}
+	out := Normalized{Contents: contents, CallOwners: callAncestor, Ancestry: parentByUUID, AttachmentAncestry: attachmentAncestry}
 	for _, id := range order {
 		tb := turns[id]
 		ev := observedinput.Evidence{

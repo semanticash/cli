@@ -3,6 +3,8 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -227,6 +229,42 @@ func TestBuildHookEvents_Prompt(t *testing.T) {
 	}
 	if ev.PayloadHash == "" {
 		t.Error("expected non-empty payload_hash for prompt")
+	}
+}
+
+// Hook prompts preserve hyphenated paths from the delivered CWD.
+func TestRetestDirectPromptUsesRecordedCwd(t *testing.T) {
+	p := &Provider{}
+	bs := newFakeBlobPutter()
+
+	// Use an encoded path that decodes differently from the delivered CWD.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir: %v", err)
+	}
+	transcriptRef := filepath.Join(home, ".claude", "projects", "-private-tmp-semantica-live-retest-repo--inputs", "sess-1.jsonl")
+	event := &hooks.Event{
+		Type:          hooks.PromptSubmitted,
+		SessionID:     "sess-1",
+		TurnID:        "turn-1",
+		Prompt:        "hello",
+		TranscriptRef: transcriptRef,
+		CWD:           "/private/tmp/semantica-live-retest/repo--inputs",
+		Timestamp:     500,
+	}
+
+	events, err := p.BuildHookEvents(context.Background(), event, bs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	if events[0].SourceProjectPath != event.CWD {
+		t.Fatalf("SourceProjectPath = %q, want delivered CWD %q", events[0].SourceProjectPath, event.CWD)
+	}
+	if !strings.Contains(events[0].SessionMetaJSON, event.CWD) {
+		t.Fatalf("session meta did not record the delivered CWD: %s", events[0].SessionMetaJSON)
 	}
 }
 

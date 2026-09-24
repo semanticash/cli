@@ -27,7 +27,9 @@ const (
 	observedInputCallKind     = "observed_input_call"
 	observedInputAncestryKind = "observed_input_ancestry"
 	observedInputCallRegKind  = "observed_input_callreg"
-	unresolvedTurn            = "unresolved"
+	// Attachment parent links establish request-envelope membership.
+	observedInputAttachAncestryKind = "observed_input_attach_ancestry"
+	unresolvedTurn                  = "unresolved"
 )
 
 // ErrObservedInputRetry indicates a missing production turn.
@@ -68,7 +70,7 @@ type ObservedInputResult struct {
 
 // PersistObservedInputs stores immutable evidence and resolves provider identities
 // to production turns. New items accumulate; conflicting deliveries are rejected.
-func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSessionID string, capturedAt int64, evs []observedinput.Evidence, contents map[string][]byte, callOwners, ancestry map[string]string) error {
+func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSessionID string, capturedAt int64, evs []observedinput.Evidence, contents map[string][]byte, callOwners, ancestry, attachAncestry map[string]string) error {
 	sessionID, turnByRequest, err := resolveIdentities(ctx, repoPath, provider, providerSessionID)
 	if err != nil {
 		return err
@@ -78,7 +80,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 		return err
 	}
 	p := &oiWriter{ctx: ctx, repoPath: repoPath, provider: provider, providerSession: providerSessionID, sessionID: sessionID, capturedAt: capturedAt, bs: bs, contents: contents, seen: map[string]bool{}}
-	for _, anchor := range []string{"@delivery", "@call", "@ancestry", "@callreg"} {
+	for _, anchor := range []string{"@delivery", "@call", "@ancestry", "@callreg", "@attancestry"} {
 		if err := p.ensureEvent(anchor); err != nil {
 			return err
 		}
@@ -87,6 +89,12 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 	// Retain ancestry and calls even when their owning request is unknown.
 	for child, parent := range ancestry {
 		if err := p.writeAnchor(observedInputAncestryKind, child, parent, "@ancestry"); err != nil {
+			return err
+		}
+	}
+	// Retain attachment links for resolution across batches.
+	for child, parent := range attachAncestry {
+		if err := p.writeAnchor(observedInputAttachAncestryKind, child, parent, "@attancestry"); err != nil {
 			return err
 		}
 	}
@@ -100,6 +108,10 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 
 	// Resolve calls through ancestry retained across batches.
 	durableAncestry, err := p.loadAnchors("@ancestry", observedInputAncestryKind)
+	if err != nil {
+		return err
+	}
+	durableAttachAncestry, err := p.loadAnchors("@attancestry", observedInputAttachAncestryKind)
 	if err != nil {
 		return err
 	}
@@ -124,7 +136,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 	}
 
 	// Retry ownership resolution using the updated durable records.
-	if err := p.reconcileUnresolved(turnByRequest, durableCallTurn, durableAncestry); err != nil {
+	if err := p.reconcileUnresolved(turnByRequest, durableCallTurn, durableAttachAncestry); err != nil {
 		return err
 	}
 
@@ -132,7 +144,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 	for _, ev := range evs {
 		if ev.TurnID == unresolvedTurn {
 			for i := range ev.Observations {
-				if err := p.placeObservation(ev.Observations[i], turnByRequest, durableCallTurn, durableAncestry); err != nil {
+				if err := p.placeObservation(ev.Observations[i], turnByRequest, durableCallTurn, durableAttachAncestry); err != nil {
 					return err
 				}
 			}
@@ -321,25 +333,29 @@ func resolveOwner(uuid string, ancestry, turnByRequest map[string]string) string
 	return ""
 }
 
-// resolveRequestAncestor follows parent links to a known request and its turn.
-// Missing ancestry or a cycle returns empty identities.
-func resolveRequestAncestor(uuid string, ancestry, turnByRequest map[string]string) (string, string) {
+// resolveRequestAncestor follows attachment links to a request and its turn.
+// Non-attachment nodes, missing links, and cycles return empty identities.
+func resolveRequestAncestor(uuid string, attachAncestry, turnByRequest map[string]string) (string, string) {
 	seen := map[string]bool{}
 	for uuid != "" && !seen[uuid] {
 		if t := turnByRequest[uuid]; t != "" {
 			return uuid, t
 		}
+		parent, isAttachment := attachAncestry[uuid]
+		if !isAttachment {
+			return "", ""
+		}
 		seen[uuid] = true
-		uuid = ancestry[uuid]
+		uuid = parent
 	}
 	return "", ""
 }
 
 // placeObservation stores an input under its owning turn when known.
 // Otherwise, it retains the unresolved input and its provider links.
-func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest, durableCallTurn, ancestry map[string]string) error {
+func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest, durableCallTurn, attachAncestry map[string]string) error {
 	if o.UnresolvedParentID != "" {
-		if reqUUID, t := resolveRequestAncestor(o.UnresolvedParentID, ancestry, turnByRequest); t != "" {
+		if reqUUID, t := resolveRequestAncestor(o.UnresolvedParentID, attachAncestry, turnByRequest); t != "" {
 			po := o
 			po.SessionID, po.TurnID, po.Scope = p.sessionID, t, observedinput.ScopeRequestEnvelope
 			po.Gaps, po.UnresolvedParentID = dropGap(po.Gaps, observedinput.GapUnresolvedParent), ""
@@ -364,7 +380,7 @@ func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest
 }
 
 // reconcileUnresolved assigns retained inputs to newly resolved owning turns.
-func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn, ancestry map[string]string) error {
+func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn, attachAncestry map[string]string) error {
 	h, err := sqlstore.Open(p.ctx, repoLineageDB(p.repoPath), sqlstore.DefaultOpenOptions())
 	if err != nil {
 		return err
@@ -387,14 +403,14 @@ func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn, ancestry 
 			continue
 		}
 		o := *item.Observation
-		_, parentTurn := resolveRequestAncestor(o.UnresolvedParentID, ancestry, turnByRequest)
+		_, parentTurn := resolveRequestAncestor(o.UnresolvedParentID, attachAncestry, turnByRequest)
 		resolvable := (o.UnresolvedParentID != "" && parentTurn != "") ||
 			(o.ToolCallID != "" && durableCallTurn[o.ToolCallID] != "")
 		if !resolvable {
 			continue
 		}
 		o.Scope = observedinput.ScopeUnresolved // Reclassify through placeObservation.
-		if err := p.placeObservation(o, turnByRequest, durableCallTurn, ancestry); err != nil {
+		if err := p.placeObservation(o, turnByRequest, durableCallTurn, attachAncestry); err != nil {
 			return err
 		}
 	}
