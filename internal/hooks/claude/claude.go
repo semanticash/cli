@@ -457,6 +457,17 @@ func transcriptScanner(r io.Reader) *bufio.Scanner {
 	return s
 }
 
+// lineCwd returns a transcript record's working directory, if present.
+func lineCwd(raw []byte) string {
+	var probe struct {
+		Cwd string `json:"cwd"`
+	}
+	if json.Unmarshal(raw, &probe) == nil {
+		return probe.Cwd
+	}
+	return ""
+}
+
 func (p *Provider) TranscriptOffset(ctx context.Context, transcriptRef string) (int, error) {
 	f, err := os.Open(transcriptRef)
 	if err != nil {
@@ -544,11 +555,15 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 	}
 	defer func() { _ = f.Close() }()
 
-	// Count total lines to detect stale offsets after transcript compaction.
+	// Count lines to detect stale offsets and retain the first recorded cwd.
 	totalLines := 0
+	recordedCwd := ""
 	prescan := transcriptScanner(f)
 	for prescan.Scan() {
 		totalLines++
+		if recordedCwd == "" {
+			recordedCwd = lineCwd(prescan.Bytes())
+		}
 	}
 	if err := prescan.Err(); err != nil {
 		return nil, offset, fmt.Errorf("prescan transcript: %w", err)
@@ -576,6 +591,10 @@ func (p *Provider) ReadFromOffset(ctx context.Context, transcriptRef string, off
 	}
 	parentSessionID := agentclaude.ExtractParentSessionID(transcriptRef)
 	projectPath := agentclaude.DecodeProjectPathFromSourceKey(transcriptRef)
+	if recordedCwd != "" {
+		// The encoded directory name cannot distinguish hyphens from separators.
+		projectPath = recordedCwd
+	}
 
 	model := hooks.ModelFromContext(ctx)
 

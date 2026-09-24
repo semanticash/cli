@@ -659,6 +659,94 @@ func TestObservedInput_RetainedUnresolvedReconciled(t *testing.T) {
 	}
 }
 
+// Attachments can reach their request through another attachment's parent link.
+func TestObservedInput_ChainedAttachmentResolvesToRequest(t *testing.T) {
+	ctx := context.Background()
+	r := newObservedRepo(t)
+
+	batch := []string{
+		`{"type":"user","uuid":"r1","message":{"role":"user","content":"request with nested attachments"}}`,
+		`{"type":"attachment","uuid":"att-text","parentUuid":"r1","attachment":{"type":"file","filename":"/work/notes.txt","content":{"type":"text","file":{"filePath":"/work/notes.txt","content":"outer note\n","numLines":1,"totalLines":1}}}}`,
+		`{"type":"attachment","uuid":"att-nested","parentUuid":"att-text","attachment":{"type":"file","filename":"/work/nested.txt","content":{"type":"text","file":{"filePath":"/work/nested.txt","content":"nested payload\n","numLines":1,"totalLines":1}}}}`,
+	}
+
+	t1 := r.insertPrompt(t, "r1")
+	n := normalizeBatch(t, batch)
+	// The nested attachment requires ancestry resolution during persistence.
+	if u := findBatchTurn(n, "unresolved"); u == nil {
+		t.Fatal("expected the nested attachment to normalize as unresolved")
+	}
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n.Turns, n.Contents, n.CallOwners, n.Ancestry); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, t1)
+	if err != nil || res.Evidence == nil {
+		t.Fatalf("collect: %+v err=%v", res, err)
+	}
+	if len(res.Evidence.Observations) != 2 {
+		t.Fatalf("both attachments should resolve to the turn, got %d: %+v", len(res.Evidence.Observations), res.Evidence.Observations)
+	}
+	for _, o := range res.Evidence.Observations {
+		if o.Scope != observedinput.ScopeRequestEnvelope {
+			t.Fatalf("attachment %s not promoted to envelope scope: %+v", o.DeliveryID, o)
+		}
+	}
+	// Both attachments belong to the same request.
+	linkByDelivery := map[string]string{}
+	for _, l := range res.Evidence.RequestLinks {
+		linkByDelivery[l.DeliveryID] = l.RequestID
+	}
+	outer, nested := linkByDelivery["att:att-text"], linkByDelivery["att:att-nested"]
+	if nested == "" {
+		t.Fatal("nested attachment has no request membership link")
+	}
+	if nested != outer {
+		t.Fatalf("nested attachment linked to %q, want the chain-root request %q", nested, outer)
+	}
+}
+
+// Resolving retained ancestry preserves the attachment's delivery identity.
+func TestObservedInput_ChainedAttachmentSplitBatchNoConflict(t *testing.T) {
+	ctx := context.Background()
+	r := newObservedRepo(t)
+
+	// Retain the nested attachment before its parent arrives.
+	n1 := normalizeBatch(t, []string{
+		`{"type":"attachment","uuid":"att-nested","parentUuid":"att-outer","attachment":{"type":"file","filename":"/work/nested.txt","content":{"type":"text","file":{"filePath":"/work/nested.txt","content":"nested payload\n","numLines":1,"totalLines":1}}}}`,
+	})
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 1000, n1.Turns, n1.Contents, n1.CallOwners, n1.Ancestry); err != nil {
+		t.Fatalf("persist batch1: %v", err)
+	}
+
+	// Supply the missing parent and request.
+	t1 := r.insertPrompt(t, "r1")
+	n2 := normalizeBatch(t, []string{
+		`{"type":"user","uuid":"r1","message":{"role":"user","content":"request"}}`,
+		`{"type":"attachment","uuid":"att-outer","parentUuid":"r1","attachment":{"type":"file","filename":"/work/outer.txt","content":{"type":"text","file":{"filePath":"/work/outer.txt","content":"outer\n","numLines":1,"totalLines":1}}}}`,
+	})
+	if err := PersistObservedInputs(ctx, r.path, "claude_code", r.providerSession, 2000, n2.Turns, n2.Contents, n2.CallOwners, n2.Ancestry); err != nil {
+		t.Fatalf("promote retained chained attachment: %v", err)
+	}
+
+	res, err := CollectObservedInput(ctx, r.path, "claude_code", r.sessionID, t1)
+	if err != nil || res.Evidence == nil {
+		t.Fatalf("collect: %+v err=%v", res, err)
+	}
+	if len(res.Evidence.Observations) != 2 {
+		t.Fatalf("expected both attachments on the turn, got %d: %+v", len(res.Evidence.Observations), res.Evidence.Observations)
+	}
+	var nestedLink string
+	for _, l := range res.Evidence.RequestLinks {
+		if l.DeliveryID == "att:att-nested" {
+			nestedLink = l.RequestID
+		}
+	}
+	if nestedLink != "req:r1" {
+		t.Fatalf("nested attachment linked to %q, want req:r1", nestedLink)
+	}
+}
+
 // Collection preserves top-level gaps.
 func TestObservedInput_TopLevelGapsRetained(t *testing.T) {
 	ctx := context.Background()

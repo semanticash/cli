@@ -3,6 +3,7 @@ package claude
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,11 +169,12 @@ func TestObservedInput_EndToEndSampleThroughLifecycle(t *testing.T) {
 		t.Fatalf("prompt dispatch: %v", err)
 	}
 
-	// The real transcript now lands, exactly as a live session would write it.
+	// Update the captured cwd so the relocated transcript routes to the test repo.
 	data, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatal(err)
 	}
+	data = rewriteTranscriptCwd(data, repoPath)
 	if err := os.WriteFile(transcriptRef, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -295,4 +297,27 @@ func newRegisteredRepo(t *testing.T, repoPath string) {
 	if err := sqlstore.Close(h); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// rewriteTranscriptCwd replaces existing cwd fields with the test repository path.
+func rewriteTranscriptCwd(data []byte, cwd string) []byte {
+	cwdJSON, _ := json.Marshal(cwd)
+	lines := bytes.Split(data, []byte("\n"))
+	for i, ln := range lines {
+		if len(bytes.TrimSpace(ln)) == 0 {
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(ln, &obj) != nil {
+			continue
+		}
+		if _, ok := obj["cwd"]; !ok {
+			continue
+		}
+		obj["cwd"] = cwdJSON
+		if reencoded, err := json.Marshal(obj); err == nil {
+			lines[i] = reencoded
+		}
+	}
+	return bytes.Join(lines, []byte("\n"))
 }

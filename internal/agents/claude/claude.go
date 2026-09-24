@@ -54,15 +54,9 @@ func extractParentSessionID(sourceKey string) string {
 	return ""
 }
 
-// DecodeProjectPath decodes the project path from a Claude source key.
-// Claude stores projects under ~/.claude/projects/<encoded-path>/, where
-// the encoded path replaces "/" with "-".
-//
-// Returns "" when sourceKey is not actually under the projects base.
-//
-// Claude does not escape dashes inside path segments, so this decoded path can
-// be ambiguous. Do not use it for routing, filesystem access, or authorization
-// until the decoder is disambiguated.
+// DecodeProjectPath decodes a path under ~/.claude/projects, or returns "".
+// Claude encodes separators as hyphens, making literal hyphens ambiguous.
+// Prefer the transcript's recorded cwd for repository ownership.
 func DecodeProjectPath(sourceKey string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {

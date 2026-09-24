@@ -926,3 +926,31 @@ func TestPrepareTranscript_StopWaitsForCurrentStopSentinel(t *testing.T) {
 		t.Fatalf("PrepareTranscript returned too late (%s); likely timed out instead of matching stop sentinel", elapsed)
 	}
 }
+
+// Recorded cwd preserves literal and repeated hyphens in repository paths.
+func TestReadFromOffset_UsesRecordedCwdAsProjectPath(t *testing.T) {
+	dir := t.TempDir()
+	transcriptDir := filepath.Join(dir, ".claude", "projects", "-work-team-api-repo--one")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(transcriptDir, "sess.jsonl")
+	line := `{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","cwd":"/work/team-api/repo--one","message":{"role":"user","content":"hi"}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Provider{}
+	events, _, err := p.ReadFromOffset(context.Background(), transcript, 0, nil)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected at least one event")
+	}
+	for _, ev := range events {
+		if ev.SourceProjectPath != "/work/team-api/repo--one" {
+			t.Fatalf("SourceProjectPath = %q, want the recorded cwd", ev.SourceProjectPath)
+		}
+	}
+}

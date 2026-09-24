@@ -124,7 +124,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 	}
 
 	// Retry ownership resolution using the updated durable records.
-	if err := p.reconcileUnresolved(turnByRequest, durableCallTurn); err != nil {
+	if err := p.reconcileUnresolved(turnByRequest, durableCallTurn, durableAncestry); err != nil {
 		return err
 	}
 
@@ -132,7 +132,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 	for _, ev := range evs {
 		if ev.TurnID == unresolvedTurn {
 			for i := range ev.Observations {
-				if err := p.placeObservation(ev.Observations[i], turnByRequest, durableCallTurn); err != nil {
+				if err := p.placeObservation(ev.Observations[i], turnByRequest, durableCallTurn, durableAncestry); err != nil {
 					return err
 				}
 			}
@@ -168,7 +168,7 @@ func PersistObservedInputs(ctx context.Context, repoPath, provider, providerSess
 			item := evidenceItem{Kind: "observation", Observation: &o,
 				RequestLink: findRequestLink(mapped.RequestLinks, o.DeliveryID),
 				ToolLink:    findToolLink(mapped.ToolCallLinks, o.DeliveryID)}
-			if err := p.persistObservation(turnID, o, item); err != nil {
+			if err := p.persistObservation(turnID, o, item, providerParentFor(o, item.RequestLink)); err != nil {
 				return err
 			}
 		}
@@ -245,7 +245,7 @@ func (p *oiWriter) persistItem(turnID, group string, item evidenceItem) error {
 
 // persistObservation atomically links an observation and its delivery identity.
 // Conflicting content or provider links prevent publication.
-func (p *oiWriter) persistObservation(turnID string, o observedinput.ObservedInput, item evidenceItem) error {
+func (p *oiWriter) persistObservation(turnID string, o observedinput.ObservedInput, item evidenceItem, providerParent string) error {
 	if err := p.putVerified(o.Representation.ContentRef); err != nil {
 		return err
 	}
@@ -262,7 +262,7 @@ func (p *oiWriter) persistObservation(turnID string, o observedinput.ObservedInp
 	return broker.WriteEvidenceLinksToRepo(p.ctx, p.repoPath, []broker.EvidenceLink{
 		evidenceItemLink(observedInputTurnEventID(p.provider, p.sessionID, turnID), o.DeliveryID, h, p.capturedAt),
 		{EventID: observedInputTurnEventID(p.provider, p.sessionID, "@delivery"), EvidenceKind: observedInputDeliveryKind,
-			EvidenceHash: deliveryIdentityKey(o, item.RequestLink), GroupID: o.DeliveryID, CreatedAt: p.capturedAt},
+			EvidenceHash: deliveryIdentityKey(o, providerParent), GroupID: o.DeliveryID, CreatedAt: p.capturedAt},
 	})
 }
 
@@ -321,17 +321,32 @@ func resolveOwner(uuid string, ancestry, turnByRequest map[string]string) string
 	return ""
 }
 
+// resolveRequestAncestor follows parent links to a known request and its turn.
+// Missing ancestry or a cycle returns empty identities.
+func resolveRequestAncestor(uuid string, ancestry, turnByRequest map[string]string) (string, string) {
+	seen := map[string]bool{}
+	for uuid != "" && !seen[uuid] {
+		if t := turnByRequest[uuid]; t != "" {
+			return uuid, t
+		}
+		seen[uuid] = true
+		uuid = ancestry[uuid]
+	}
+	return "", ""
+}
+
 // placeObservation stores an input under its owning turn when known.
 // Otherwise, it retains the unresolved input and its provider links.
-func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest, durableCallTurn map[string]string) error {
+func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest, durableCallTurn, ancestry map[string]string) error {
 	if o.UnresolvedParentID != "" {
-		if t := turnByRequest[o.UnresolvedParentID]; t != "" {
+		if reqUUID, t := resolveRequestAncestor(o.UnresolvedParentID, ancestry, turnByRequest); t != "" {
 			po := o
 			po.SessionID, po.TurnID, po.Scope = p.sessionID, t, observedinput.ScopeRequestEnvelope
 			po.Gaps, po.UnresolvedParentID = dropGap(po.Gaps, observedinput.GapUnresolvedParent), ""
-			link := observedinput.RequestInputLink{RequestID: "req:" + o.UnresolvedParentID, DeliveryID: po.DeliveryID,
+			link := observedinput.RequestInputLink{RequestID: "req:" + reqUUID, DeliveryID: po.DeliveryID,
 				Relationship: observedinput.RelAttachedTo, Basis: observedinput.BasisParentLink, Source: po.Source}
-			return p.persistObservation(t, po, evidenceItem{Kind: "observation", Observation: &po, RequestLink: &link})
+			// Preserve the original parent in the delivery identity during resolution.
+			return p.persistObservation(t, po, evidenceItem{Kind: "observation", Observation: &po, RequestLink: &link}, providerParentFor(o, &link))
 		}
 	}
 	if o.ToolCallID != "" {
@@ -340,16 +355,16 @@ func (p *oiWriter) placeObservation(o observedinput.ObservedInput, turnByRequest
 			po.SessionID, po.TurnID, po.Scope = p.sessionID, t, observedinput.ScopeObservedContext
 			po.Gaps = dropGap(po.Gaps, observedinput.GapUnresolvedParent)
 			toolLink := observedinput.ToolCallLink{DeliveryID: po.DeliveryID, ToolCallID: po.ToolCallID, SessionID: p.sessionID, TurnID: t, Source: po.Source}
-			return p.persistObservation(t, po, evidenceItem{Kind: "observation", Observation: &po, ToolLink: &toolLink})
+			return p.persistObservation(t, po, evidenceItem{Kind: "observation", Observation: &po, ToolLink: &toolLink}, providerParentFor(o, nil))
 		}
 	}
 	uo := o
 	uo.SessionID = p.sessionID
-	return p.persistObservation(unresolvedTurn, uo, evidenceItem{Kind: "observation", Observation: &uo})
+	return p.persistObservation(unresolvedTurn, uo, evidenceItem{Kind: "observation", Observation: &uo}, providerParentFor(o, nil))
 }
 
 // reconcileUnresolved assigns retained inputs to newly resolved owning turns.
-func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn map[string]string) error {
+func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn, ancestry map[string]string) error {
 	h, err := sqlstore.Open(p.ctx, repoLineageDB(p.repoPath), sqlstore.DefaultOpenOptions())
 	if err != nil {
 		return err
@@ -372,27 +387,36 @@ func (p *oiWriter) reconcileUnresolved(turnByRequest, durableCallTurn map[string
 			continue
 		}
 		o := *item.Observation
-		resolvable := (o.UnresolvedParentID != "" && turnByRequest[o.UnresolvedParentID] != "") ||
+		_, parentTurn := resolveRequestAncestor(o.UnresolvedParentID, ancestry, turnByRequest)
+		resolvable := (o.UnresolvedParentID != "" && parentTurn != "") ||
 			(o.ToolCallID != "" && durableCallTurn[o.ToolCallID] != "")
 		if !resolvable {
 			continue
 		}
 		o.Scope = observedinput.ScopeUnresolved // Reclassify through placeObservation.
-		if err := p.placeObservation(o, turnByRequest, durableCallTurn); err != nil {
+		if err := p.placeObservation(o, turnByRequest, durableCallTurn, ancestry); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// deliveryIdentityKey binds content and source metadata to its parent or tool call.
-// It excludes the resolved turn so ownership resolution preserves identity.
-func deliveryIdentityKey(o observedinput.ObservedInput, reqLink *observedinput.RequestInputLink) string {
-	parent := o.UnresolvedParentID
-	if parent == "" && reqLink != nil {
-		parent = strings.TrimPrefix(reqLink.RequestID, "req:")
+// providerParentFor returns the original parent UUID from an unresolved input
+// or a direct request link. Call it before resolving chained membership.
+func providerParentFor(o observedinput.ObservedInput, reqLink *observedinput.RequestInputLink) string {
+	if o.UnresolvedParentID != "" {
+		return o.UnresolvedParentID
 	}
-	structural := parent + "|" + o.ToolCallID
+	if reqLink != nil {
+		return strings.TrimPrefix(reqLink.RequestID, "req:")
+	}
+	return ""
+}
+
+// deliveryIdentityKey binds content and metadata to the original parent and tool call.
+// Resolving request membership must not change this identity.
+func deliveryIdentityKey(o observedinput.ObservedInput, providerParent string) string {
+	structural := providerParent + "|" + o.ToolCallID
 	identity := o.Representation.ContentRef + "\x00" + o.Representation.SourceContentRef + "\x00" + structural
 	r := o.Representation
 	if o.InputSource.Kind != "" || o.InputSource.Locator != "" || r.Transformation != "" || r.Extent != "" || r.ReportedSourceBytes != nil {
