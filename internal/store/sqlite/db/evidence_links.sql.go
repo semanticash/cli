@@ -222,3 +222,58 @@ func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenc
 	}
 	return items, nil
 }
+
+const listTurnObservationsInWindow = `-- name: ListTurnObservationsInWindow :many
+select e.event_id
+from agent_events e
+where e.repository_id = ?
+    and e.event_source = 'turn_observation' and e.kind = 'context'
+    and ((cast(?2 as integer) = 1
+            and (e.ts > ?3
+                 or (e.ts = ?3 and e.insert_seq > ?4))
+            and (e.ts < ?5
+                 or (e.ts = ?5 and e.insert_seq <= ?6)))
+         or (cast(?2 as integer) = 0
+            and e.ts > ?3 and e.ts <= ?5))
+order by e.ts, e.insert_seq, e.event_id
+`
+
+type ListTurnObservationsInWindowParams struct {
+	RepositoryID string        `json:"repository_id"`
+	UseCursor    int64         `json:"use_cursor"`
+	AfterTs      int64         `json:"after_ts"`
+	AfterCursor  sql.NullInt64 `json:"after_cursor"`
+	UpToTs       int64         `json:"up_to_ts"`
+	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
+}
+
+// Published turn observations identify changed repositories without authorship.
+func (q *Queries) ListTurnObservationsInWindow(ctx context.Context, arg ListTurnObservationsInWindowParams) ([]string, error) {
+	rows, err := q.query(ctx, q.listTurnObservationsInWindowStmt, listTurnObservationsInWindow,
+		arg.RepositoryID,
+		arg.UseCursor,
+		arg.AfterTs,
+		arg.AfterCursor,
+		arg.UpToTs,
+		arg.UpToCursor,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var event_id string
+		if err := rows.Scan(&event_id); err != nil {
+			return nil, err
+		}
+		items = append(items, event_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

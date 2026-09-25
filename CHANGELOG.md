@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Turn-observed changes with no authorship evidence no longer default to Human in attribution. Unmatched lines remain Unattributed, including when reading older checkpoints; proven AI matches are preserved.
 - Observed-input uploads withhold text with missing or unknown source identity while preserving local evidence.
 - Non-UTF-8 files retain file-level capture evidence without invalidating text-file evidence from the same command.
 - Claude observed inputs now share the transcript session, keeping the request, attached inputs, and final response together in local provenance bundles.

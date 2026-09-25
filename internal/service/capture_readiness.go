@@ -22,14 +22,14 @@ import (
 var captureGrace = 30 * time.Second
 var captureRetryDelay = 5 * time.Second
 
-// CaptureGap identifies evidence unavailable to a checkpoint.
+// CaptureGap records missing evidence or unresolved authorship for a checkpoint.
 type CaptureGap struct {
 	Key     *toolsnap.ToolKey `json:"key,omitempty"`
 	GroupID string            `json:"group_id,omitempty"`
 	Reason  string            `json:"reason"`
 }
 
-// CaptureReadiness covers registered tool windows, not all possible agent activity.
+// CaptureReadiness covers known tool windows and turn-observed changes.
 type CaptureReadiness struct {
 	Status string       `json:"status"` // pending, complete, incomplete
 	Gaps   []CaptureGap `json:"gaps,omitempty"`
@@ -154,7 +154,10 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 		return nil, nil, err
 	}
 	resolved := map[toolsnap.ToolKey]captureProof{}
-	var gaps []CaptureGap
+	gaps, err := turnObservationGaps(ctx, h, cp, win)
+	if err != nil {
+		return nil, nil, err
+	}
 	seen := map[string]bool{}
 	linked := map[string]map[string]sqldb.ListCaptureGroupLinksRow{}
 	selected := map[string]map[string]bool{}
@@ -247,6 +250,22 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 		}
 	}
 	return resolved, gaps, nil
+}
+
+// Turn observations preserve changes, but cannot establish their authorship.
+func turnObservationGaps(ctx context.Context, h *sqlstore.Handle, cp sqldb.Checkpoint, win eventWindow) ([]CaptureGap, error) {
+	ids, err := h.Queries.ListTurnObservationsInWindow(ctx, sqldb.ListTurnObservationsInWindowParams{
+		RepositoryID: cp.RepositoryID, UseCursor: win.cursorFlag(), AfterCursor: win.cursorAfter(),
+		UpToCursor: win.cursorUpTo(), AfterTs: win.afterTs, UpToTs: win.upToTs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var gaps []CaptureGap
+	for _, id := range ids {
+		gaps = append(gaps, CaptureGap{GroupID: id, Reason: "turn_observation_authorship_unknown"})
+	}
+	return gaps, nil
 }
 
 func evaluateCheckpointCapture(r *checkpointCapture, snap toolsnap.RegistrySnapshot, inspectErr error, evidence map[toolsnap.ToolKey]captureProof, evidenceGaps []CaptureGap, now time.Time) {
@@ -368,6 +387,17 @@ func attributionCapture(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store
 		return nil, err
 	}
 	if r != nil {
+		// Older checkpoints did not account for turn-observation uncertainty.
+		gaps, err := turnObservationGaps(ctx, h, cp, win)
+		if err != nil {
+			return nil, err
+		}
+		if len(gaps) > 0 {
+			r.Result.Gaps = uniqueCaptureGaps(append(r.Result.Gaps, gaps...))
+			if r.Result.Status == "complete" {
+				r.Result.Status = "incomplete"
+			}
+		}
 		return &r.Result, nil
 	}
 	snap, inspectErr := toolsnap.InspectRegistry(semDir)

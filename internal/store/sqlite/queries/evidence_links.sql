@@ -46,3 +46,18 @@ where e.repository_id = ?
          or (cast(sqlc.arg(use_cursor) as integer) = 0
             and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)))
 order by e.ts, e.insert_seq, l.event_id, l.group_id;
+
+-- name: ListTurnObservationsInWindow :many
+-- Published turn observations identify changed repositories without authorship.
+select e.event_id
+from agent_events e
+where e.repository_id = ?
+    and e.event_source = 'turn_observation' and e.kind = 'context'
+    and ((cast(sqlc.arg(use_cursor) as integer) = 1
+            and (e.ts > sqlc.arg(after_ts)
+                 or (e.ts = sqlc.arg(after_ts) and e.insert_seq > sqlc.arg(after_cursor)))
+            and (e.ts < sqlc.arg(up_to_ts)
+                 or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
+         or (cast(sqlc.arg(use_cursor) as integer) = 0
+            and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)))
+order by e.ts, e.insert_seq, e.event_id;

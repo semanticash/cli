@@ -270,6 +270,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listTranscriptEventsStmt, err = db.PrepareContext(ctx, listTranscriptEvents); err != nil {
 		return nil, fmt.Errorf("error preparing query ListTranscriptEvents: %w", err)
 	}
+	if q.listTurnObservationsInWindowStmt, err = db.PrepareContext(ctx, listTurnObservationsInWindow); err != nil {
+		return nil, fmt.Errorf("error preparing query ListTurnObservationsInWindow: %w", err)
+	}
 	if q.listUserPromptsForCommitStmt, err = db.PrepareContext(ctx, listUserPromptsForCommit); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserPromptsForCommit: %w", err)
 	}
@@ -769,6 +772,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listTranscriptEventsStmt: %w", cerr)
 		}
 	}
+	if q.listTurnObservationsInWindowStmt != nil {
+		if cerr := q.listTurnObservationsInWindowStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listTurnObservationsInWindowStmt: %w", cerr)
+		}
+	}
 	if q.listUserPromptsForCommitStmt != nil {
 		if cerr := q.listUserPromptsForCommitStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listUserPromptsForCommitStmt: %w", cerr)
@@ -1030,6 +1038,7 @@ type Queries struct {
 	listStepEventsForTurnStmt                    *sql.Stmt
 	listStepProvenanceForTurnStmt                *sql.Stmt
 	listTranscriptEventsStmt                     *sql.Stmt
+	listTurnObservationsInWindowStmt             *sql.Stmt
 	listUserPromptsForCommitStmt                 *sql.Stmt
 	markCheckpointAttributionPushedStmt          *sql.Stmt
 	markManifestFailedStmt                       *sql.Stmt
@@ -1146,6 +1155,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listStepEventsForTurnStmt:                    q.listStepEventsForTurnStmt,
 		listStepProvenanceForTurnStmt:                q.listStepProvenanceForTurnStmt,
 		listTranscriptEventsStmt:                     q.listTranscriptEventsStmt,
+		listTurnObservationsInWindowStmt:             q.listTurnObservationsInWindowStmt,
 		listUserPromptsForCommitStmt:                 q.listUserPromptsForCommitStmt,
 		markCheckpointAttributionPushedStmt:          q.markCheckpointAttributionPushedStmt,
 		markManifestFailedStmt:                       q.markManifestFailedStmt,
