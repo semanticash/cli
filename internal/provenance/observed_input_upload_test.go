@@ -34,6 +34,7 @@ func synthStore(t *testing.T, contents [][]byte) (*blobs.Store, string) {
 			Provider:    "claude-code",
 			Acquisition: observedinput.AcquisitionAttachment,
 			Scope:       observedinput.ScopeObservedContext,
+			InputSource: observedinput.InputSource{Kind: "url", Locator: "https://example.com/context"},
 			Representation: observedinput.Representation{
 				State: observedinput.RepPresent, ContentRef: h,
 				ContentSize: int64(len(c)), MediaType: "text/plain",
@@ -243,6 +244,69 @@ func TestBuildObservedInputUpload_LimitBoundaries(t *testing.T) {
 }
 
 func restoreInt(p *int, v int) { *p = v }
+
+func TestBuildObservedInputUpload_UnverifiableSourceWithholds(t *testing.T) {
+	for _, source := range []observedinput.InputSource{
+		{},
+		{Kind: "unknown", Locator: "spec.md"},
+		{Kind: "future_kind", Locator: "spec.md"},
+		{Kind: "file"},
+		{Kind: "url"},
+		{Kind: "url", Locator: "  "},
+	} {
+		t.Run(source.Kind+"/"+source.Locator, func(t *testing.T) {
+			ctx := context.Background()
+			body := []byte("PRIVATE DELIVERED CONTENT")
+			bs, evHash := synthStore(t, [][]byte{body})
+			raw, err := bs.Get(ctx, evHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ev observedinput.Evidence
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				t.Fatal(err)
+			}
+			ev.Observations[0].InputSource = source
+			sourceBody := []byte("PRIVATE ORIGINAL SOURCE")
+			ref, _, err := bs.Put(ctx, sourceBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ev.Observations[0].Representation.SourceContentRef = ref
+			ev.Observations[0].Representation.SourceContentSize = int64(len(sourceBody))
+			localHash := storeEvidence(t, bs, ev)
+			up, err := buildObservedInputUpload(ctx, bs, localHash, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out observedinput.Evidence
+			if err := json.Unmarshal(up.DocBytes, &out); err != nil {
+				t.Fatal(err)
+			}
+			rep := out.Observations[0].Representation
+			if rep.Upload == nil || rep.Upload.State != "withheld" || rep.Upload.Reason != "unverifiable_source" {
+				t.Fatalf("unverifiable source was not withheld: %+v", rep)
+			}
+			if rep.State != observedinput.RepPresent || rep.ContentSize != int64(len(body)) {
+				t.Fatal("withholding changed capture state or size")
+			}
+			if len(up.Content) != 0 || rep.ContentRef != "" || rep.SourceContentRef != "" || bytes.Contains(up.DocBytes, body) || bytes.Contains(up.DocBytes, sourceBody) {
+				t.Fatal("unverifiable content leaked into upload")
+			}
+			local, err := bs.Get(ctx, localHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := json.Marshal(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(local, want) {
+				t.Fatal("local evidence changed")
+			}
+		})
+	}
+}
 
 // storeEvidence marshals an evidence document into the store and returns its hash.
 func storeEvidence(t *testing.T, bs *blobs.Store, ev observedinput.Evidence) string {

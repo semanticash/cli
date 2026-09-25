@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Observed-input uploads withhold text with missing or unknown source identity while preserving local evidence.
 - Non-UTF-8 files retain file-level capture evidence without invalidating text-file evidence from the same command.
 - Claude observed inputs now share the transcript session, keeping the request, attached inputs, and final response together in local provenance bundles.
 - Claude input evidence retains recorded file paths, URLs, transformations, coverage, and source byte counts. Transcript readers accept encoded 8 MiB inputs; oversized bodies retain explicit size-limit gaps.

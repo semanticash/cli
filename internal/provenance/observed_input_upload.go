@@ -153,6 +153,8 @@ func buildObservedInputUpload(ctx context.Context, bs *blobs.Store, evidenceHash
 		switch {
 		case withholdMedia(rep.MediaType):
 			reason = "binary_privacy_policy"
+		case (origSource.Kind != "file" && origSource.Kind != "url") || strings.TrimSpace(origSource.Locator) == "":
+			reason = "unverifiable_source"
 		case origSource.Kind == "file":
 			switch {
 			case !withinRepo(origSource.Locator, repoRoot):
