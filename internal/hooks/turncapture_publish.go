@@ -105,10 +105,20 @@ func publishTurnObservation(ctx context.Context, adapter HookProvider, event *Ev
 		if _, err := broker.WriteEventsToRepo(ctx, subject.Path, []broker.RawEvent{ev}, nil); err != nil {
 			return err
 		}
-		if err := broker.WriteEvidenceLinksToRepo(ctx, subject.Path, []broker.EvidenceLink{{
+		links := []broker.EvidenceLink{{
 			EventID: key, EvidenceKind: "turn_observation", EvidenceHash: hash,
 			GroupID: key, CreatedAt: rec.End.BoundaryAt.UnixMilli(),
-		}}); err != nil {
+		}}
+		// Link recorded commits regardless of when the observation is published.
+		for _, change := range after.Changes {
+			if change.Commit != "" && len(change.Files) > 0 {
+				links = append(links, broker.EvidenceLink{
+					EventID: key, EvidenceKind: "turn_observation", EvidenceHash: hash,
+					GroupID: change.Commit, CreatedAt: rec.End.BoundaryAt.UnixMilli(),
+				})
+			}
+		}
+		if err := broker.WriteEvidenceLinksToRepo(ctx, subject.Path, links); err != nil {
 			return err
 		}
 	}

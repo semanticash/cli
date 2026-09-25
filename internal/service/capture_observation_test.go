@@ -14,9 +14,44 @@ import (
 	"github.com/semanticash/cli/internal/hooks/codex"
 	"github.com/semanticash/cli/internal/store/blobs"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
+	"github.com/semanticash/cli/internal/toolsnap"
 )
 
 func TestCaptureReadinessCrossRepoObservation(t *testing.T) {
+	t.Run("before_commit", func(t *testing.T) { testCrossRepoObservation(t, false) })
+	t.Run("after_checkpoint", func(t *testing.T) { testCrossRepoObservation(t, true) })
+}
+
+func TestTurnObservationCommitAssociation(t *testing.T) {
+	changed := []toolsnap.FileDelta{{Path: "changed.txt"}}
+	committed := []toolsnap.TurnChange{
+		{Commit: "first", Tree: "tree-1", Files: changed},
+		{Commit: "second", Tree: "tree-2", Files: changed},
+	}
+	for _, tc := range []struct {
+		name     string
+		commit   string
+		final    toolsnap.TurnChange
+		inWindow bool
+		want     bool
+	}{
+		{"first_commit_late", "first", toolsnap.TurnChange{Tree: "tree-2", Files: changed}, false, true},
+		{"second_commit_late", "second", toolsnap.TurnChange{Tree: "tree-2", Files: changed}, false, true},
+		{"unrelated_commit_clean_end", "third", toolsnap.TurnChange{Tree: "tree-2", Files: changed}, true, false},
+		{"remaining_dirty_changes", "third", toolsnap.TurnChange{Tree: "dirty", Files: changed}, true, true},
+		{"restored_baseline_after_commit", "third", toolsnap.TurnChange{Tree: "baseline"}, true, true},
+		{"dirty_outside_window", "third", toolsnap.TurnChange{Tree: "dirty", Files: changed}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation := toolsnap.TurnObservation{State: "changed", Changes: append(slices.Clone(committed), tc.final)}
+			if got := turnObservationApplies(observation, map[string]bool{tc.commit: true}, tc.inWindow); got != tc.want {
+				t.Fatalf("applies=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func testCrossRepoObservation(t *testing.T, late bool) {
 	ctx := context.Background()
 	home := t.TempDir()
 	t.Setenv("SEMANTICA_HOME", home)
@@ -63,13 +98,33 @@ func TestCaptureReadinessCrossRepoObservation(t *testing.T) {
 	dispatch(hooks.PromptSubmitted)
 	dispatch(hooks.ToolStepStarted)
 	b.write(t, "generated.txt", "unproven cross-repository change\n")
-	dispatch(hooks.ToolStepCompleted)
+	if !late {
+		dispatch(hooks.ToolStepCompleted)
+	}
 	// Independent Write evidence must retain its AI attribution.
 	b.write(t, "direct.txt", "directly captured edit\n")
 	src := insertSource(t, b.h, b.repoID, "/direct")
 	session := insertSessionWithProvider(t, b.h, b.repoID, src, "direct", "claude_code")
 	insertEventWithPayload(t, b.h, b.bs, session, b.repoID, b.dir, time.Now().UnixMilli(), "direct.txt", "directly captured edit\n")
-	dispatch(hooks.AgentCompleted)
+	if !late {
+		dispatch(hooks.AgentCompleted)
+	}
+	b.git("add", ".")
+	b.git("commit", "-m", "cross-repository edits")
+	sha := b.git("rev-parse", "HEAD")
+	insertPendingLinked(t, b.h, b.repoID, "observed-checkpoint", sha, time.Now().UnixMilli())
+	if err := NewWorkerService(nil).Run(ctx, WorkerInput{RepoRoot: b.dir, CheckpointID: "observed-checkpoint", CommitHash: sha}); err != nil {
+		t.Fatal(err)
+	}
+	if late {
+		cp := readCheckpoint(t, b.h, "observed-checkpoint")
+		recorded, err := readCheckpointCapture(ctx, b.h, cp)
+		if err != nil || recorded == nil || recorded.Result.Status != "complete" {
+			t.Fatalf("expected checkpoint to finish before publication: %+v, %v", recorded, err)
+		}
+		dispatch(hooks.ToolStepCompleted)
+		dispatch(hooks.AgentCompleted)
+	}
 	var observations, deltas int
 	if err := b.h.DB.QueryRow("select count(*) from agent_events where event_source='turn_observation'").Scan(&observations); err != nil {
 		t.Fatal(err)
@@ -80,13 +135,6 @@ func TestCaptureReadinessCrossRepoObservation(t *testing.T) {
 	if observations != 1 || deltas != 0 {
 		t.Fatalf("expected observation without destination tool capture: observations=%d deltas=%d", observations, deltas)
 	}
-	b.git("add", ".")
-	b.git("commit", "-m", "cross-repository edits")
-	sha := b.git("rev-parse", "HEAD")
-	insertPendingLinked(t, b.h, b.repoID, "observed-checkpoint", sha, time.Now().UnixMilli())
-	if err := NewWorkerService(nil).Run(ctx, WorkerInput{RepoRoot: b.dir, CheckpointID: "observed-checkpoint", CommitHash: sha}); err != nil {
-		t.Fatal(err)
-	}
 	result, err := NewAttributionService().AttributeCommit(ctx, AttributionInput{RepoPath: b.dir, CommitHash: sha})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +142,7 @@ func TestCaptureReadinessCrossRepoObservation(t *testing.T) {
 	if result.Capture == nil || result.Capture.Status != "incomplete" || result.HumanLines != 0 || result.UnattributedLines != 1 || result.AILines != 1 {
 		t.Fatalf("observation lost uncertainty or direct AI evidence: %+v", result)
 	}
-	// Checkpoints saved by older binaries must receive the same protection.
+	// A saved complete status must not hide authorship uncertainty.
 	cp := readCheckpoint(t, b.h, "observed-checkpoint")
 	recorded, err := readCheckpointCapture(ctx, b.h, cp)
 	if err != nil {
@@ -108,11 +156,29 @@ func TestCaptureReadinessCrossRepoObservation(t *testing.T) {
 	if err != nil || again.HumanLines != 0 || again.UnattributedLines != 1 || again.AILines != 1 {
 		t.Fatalf("saved complete status concealed uncertainty: %+v, %v", again, err)
 	}
+	if late {
+		b.write(t, "unrelated.txt", "a later unrelated edit\n")
+		b.git("add", ".")
+		b.git("commit", "-m", "unrelated change")
+		nextSHA := b.git("rev-parse", "HEAD")
+		insertPendingLinked(t, b.h, b.repoID, "next-checkpoint", nextSHA, time.Now().UnixMilli())
+		if err := NewWorkerService(nil).Run(ctx, WorkerInput{RepoRoot: b.dir, CheckpointID: "next-checkpoint", CommitHash: nextSHA}); err != nil {
+			t.Fatal(err)
+		}
+		next, err := NewAttributionService().AttributeCommit(ctx, AttributionInput{RepoPath: b.dir, CommitHash: nextSHA})
+		if err != nil || next.Capture == nil || next.Capture.Status != "complete" || next.UnattributedLines != 0 {
+			t.Fatalf("late publication contaminated the next commit: %+v, %v", next, err)
+		}
+	}
 }
 
 func TestTurnObservationGapsRespectCheckpointScope(t *testing.T) {
-	_, h, repoID := setupQueueRepo(t)
+	dir, h, repoID := setupQueueRepo(t)
 	ctx := context.Background()
+	bs, err := blobs.NewStore(filepath.Join(dir, ".semantica", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	src := insertSource(t, h, repoID, "/session")
 	session := insertSessionWithProvider(t, h, repoID, src, "session", "codex")
 	add := func(id string, ts int64, kind, source string) {
@@ -149,13 +215,13 @@ func TestTurnObservationGapsRespectCheckpointScope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			checkpoint := cp
 			checkpoint.RepositoryID = tc.repo
-			gaps, err := turnObservationGaps(ctx, h, checkpoint, tc.win)
+			gaps, err := turnObservationGaps(ctx, h, bs, checkpoint, tc.win)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var ids []string
 			for _, gap := range gaps {
-				if gap.Reason != "turn_observation_authorship_unknown" {
+				if gap.Reason != "turn_observation_unavailable" {
 					t.Fatalf("unexpected gap: %+v", gap)
 				}
 				ids = append(ids, gap.GroupID)

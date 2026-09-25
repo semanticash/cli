@@ -190,8 +190,22 @@ func testTurnObservationContext(t *testing.T, provider string) {
 		if err := publishTurnObservation(ctx, p, stop, state, a.bh); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.DB.QueryRow(`select count(*) from agent_event_evidence_links where evidence_kind='turn_observation'`).Scan(&count); err != nil || count != 1 {
-			t.Fatalf("retry duplicated observation: %d %v", count, err)
+		wantLinks := 1
+		for _, change := range projected.End.Repositories[0].Changes {
+			if change.Commit == "" || len(change.Files) == 0 {
+				continue
+			}
+			wantLinks++
+			var linkedHash string
+			if err := h.DB.QueryRow(`select evidence_hash from agent_event_evidence_links where evidence_kind='turn_observation' and group_id=?`, change.Commit).Scan(&linkedHash); err != nil || linkedHash != hash {
+				t.Fatalf("commit lost its observation: %s %v", linkedHash, err)
+			}
+		}
+		if err := h.DB.QueryRow(`select count(*) from agent_event_evidence_links where evidence_kind='turn_observation'`).Scan(&count); err != nil || count != wantLinks {
+			t.Fatalf("retry changed observation links: %d, want %d: %v", count, wantLinks, err)
+		}
+		if err := h.DB.QueryRow(`select count(distinct event_id) from agent_event_evidence_links where evidence_kind='turn_observation'`).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("retry duplicated observation event: %d %v", count, err)
 		}
 	}
 	if agentEventCount(t, a.repoPath) != sourceEvents {

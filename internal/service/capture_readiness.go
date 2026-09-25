@@ -17,6 +17,7 @@ import (
 	sqlstore "github.com/semanticash/cli/internal/store/sqlite"
 	sqldb "github.com/semanticash/cli/internal/store/sqlite/db"
 	"github.com/semanticash/cli/internal/toolsnap"
+	"github.com/semanticash/cli/internal/turncapture"
 )
 
 var captureGrace = 30 * time.Second
@@ -143,8 +144,8 @@ func freezeCheckpointCapture(cp sqldb.Checkpoint, win eventWindow, snap toolsnap
 	return r
 }
 
-// captureEvidence selects groups within attribution bounds and validates their
-// stored evidence. Registry closure alone does not prove evidence was persisted.
+// captureEvidence validates tool deltas and checks turn-observation uncertainty.
+// Registry closure alone does not prove evidence was persisted.
 func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, cp sqldb.Checkpoint, win eventWindow) (map[toolsnap.ToolKey]captureProof, []CaptureGap, error) {
 	links, err := h.Queries.ListEvidenceLinksInWindow(ctx, sqldb.ListEvidenceLinksInWindowParams{
 		RepositoryID: cp.RepositoryID, UseCursor: win.cursorFlag(), AfterCursor: win.cursorAfter(),
@@ -154,7 +155,7 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 		return nil, nil, err
 	}
 	resolved := map[toolsnap.ToolKey]captureProof{}
-	gaps, err := turnObservationGaps(ctx, h, cp, win)
+	gaps, err := turnObservationGaps(ctx, h, bs, cp, win)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -252,20 +253,68 @@ func captureEvidence(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, c
 	return resolved, gaps, nil
 }
 
-// Turn observations preserve changes, but cannot establish their authorship.
-func turnObservationGaps(ctx context.Context, h *sqlstore.Handle, cp sqldb.Checkpoint, win eventWindow) ([]CaptureGap, error) {
-	ids, err := h.Queries.ListTurnObservationsInWindow(ctx, sqldb.ListTurnObservationsInWindowParams{
+// turnObservationGaps finds observed changes without proof of authorship.
+func turnObservationGaps(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store, cp sqldb.Checkpoint, win eventWindow) ([]CaptureGap, error) {
+	rows, err := h.Queries.ListTurnObservationsForCheckpoint(ctx, sqldb.ListTurnObservationsForCheckpointParams{
 		RepositoryID: cp.RepositoryID, UseCursor: win.cursorFlag(), AfterCursor: win.cursorAfter(),
-		UpToCursor: win.cursorUpTo(), AfterTs: win.afterTs, UpToTs: win.upToTs,
+		UpToCursor: win.cursorUpTo(), AfterTs: win.afterTs, UpToTs: win.upToTs, CheckpointID: cp.CheckpointID,
 	})
 	if err != nil {
 		return nil, err
 	}
+	links, err := h.Queries.GetCommitLinksByCheckpoint(ctx, cp.CheckpointID)
+	if err != nil {
+		return nil, err
+	}
+	commits := make(map[string]bool, len(links))
+	for _, link := range links {
+		if link.RepositoryID == cp.RepositoryID {
+			commits[link.CommitHash] = true
+		}
+	}
 	var gaps []CaptureGap
-	for _, id := range ids {
-		gaps = append(gaps, CaptureGap{GroupID: id, Reason: "turn_observation_authorship_unknown"})
+	for _, row := range rows {
+		raw, readErr := bs.Get(ctx, row.EvidenceHash.String)
+		sum := sha256.Sum256(raw)
+		var record turncapture.Record
+		if readErr != nil || hex.EncodeToString(sum[:]) != row.EvidenceHash.String || json.Unmarshal(raw, &record) != nil ||
+			record.Version != 1 || record.TurnID != row.TurnID.String || record.End == nil || record.End.FinishedAt.IsZero() ||
+			len(record.Repositories) != 1 || len(record.End.Repositories) != 1 || record.Repositories[0].Subject.RepositoryID != cp.RepositoryID {
+			gaps = append(gaps, CaptureGap{GroupID: row.EventID, Reason: "turn_observation_unavailable"})
+			continue
+		}
+		inWindow := row.Ts > win.afterTs && row.Ts <= win.upToTs
+		if win.useCursor {
+			inWindow = (row.Ts > win.afterTs || (row.Ts == win.afterTs && row.InsertSeq.Int64 > win.afterCursor)) &&
+				(row.Ts < win.upToTs || (row.Ts == win.upToTs && row.InsertSeq.Int64 <= win.upToCursor))
+		}
+		if turnObservationApplies(record.End.Repositories[0], commits, inWindow) {
+			gaps = append(gaps, CaptureGap{GroupID: row.EventID, Reason: "turn_observation_authorship_unknown"})
+		}
 	}
 	return gaps, nil
+}
+
+func turnObservationApplies(observation toolsnap.TurnObservation, commits map[string]bool, inWindow bool) bool {
+	if observation.State != "changed" {
+		return false
+	}
+	lastCommitTree := ""
+	for _, change := range observation.Changes {
+		if change.Commit != "" {
+			if commits[change.Commit] && len(change.Files) > 0 {
+				return true
+			}
+			lastCommitTree = change.Tree
+			continue
+		}
+		// The final delta includes committed changes. Only remaining dirty state
+		// belongs to the publication window rather than a recorded commit.
+		if inWindow && ((lastCommitTree == "" && len(change.Files) > 0) || (lastCommitTree != "" && change.Tree != lastCommitTree)) {
+			return true
+		}
+	}
+	return false
 }
 
 func evaluateCheckpointCapture(r *checkpointCapture, snap toolsnap.RegistrySnapshot, inspectErr error, evidence map[toolsnap.ToolKey]captureProof, evidenceGaps []CaptureGap, now time.Time) {
@@ -387,8 +436,8 @@ func attributionCapture(ctx context.Context, h *sqlstore.Handle, bs *blobs.Store
 		return nil, err
 	}
 	if r != nil {
-		// Older checkpoints did not account for turn-observation uncertainty.
-		gaps, err := turnObservationGaps(ctx, h, cp, win)
+		// Include observations published after the capture result was saved.
+		gaps, err := turnObservationGaps(ctx, h, bs, cp, win)
 		if err != nil {
 			return nil, err
 		}

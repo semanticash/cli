@@ -223,10 +223,13 @@ func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenc
 	return items, nil
 }
 
-const listTurnObservationsInWindow = `-- name: ListTurnObservationsInWindow :many
-select e.event_id
+const listTurnObservationsForCheckpoint = `-- name: ListTurnObservationsForCheckpoint :many
+select e.event_id as event_id, e.turn_id as turn_id, l.evidence_hash as evidence_hash,
+       e.ts as ts, e.insert_seq as insert_seq
 from agent_events e
-where e.repository_id = ?
+left join agent_event_evidence_links l
+    on l.event_id = e.event_id and l.evidence_kind = 'turn_observation'
+where e.repository_id = ?1
     and e.event_source = 'turn_observation' and e.kind = 'context'
     and ((cast(?2 as integer) = 1
             and (e.ts > ?3
@@ -235,39 +238,64 @@ where e.repository_id = ?
                  or (e.ts = ?5 and e.insert_seq <= ?6)))
          or (cast(?2 as integer) = 0
             and e.ts > ?3 and e.ts <= ?5))
-order by e.ts, e.insert_seq, e.event_id
+union
+select e.event_id, e.turn_id, l.evidence_hash, e.ts, e.insert_seq
+from commit_links c
+join agent_event_evidence_links l
+    on l.group_id = c.commit_hash and l.evidence_kind = 'turn_observation'
+join agent_events e on e.event_id = l.event_id and e.repository_id = c.repository_id
+where c.checkpoint_id = ?7
+    and c.repository_id = ?1
+    and e.event_source = 'turn_observation' and e.kind = 'context'
+order by ts, insert_seq, event_id
 `
 
-type ListTurnObservationsInWindowParams struct {
+type ListTurnObservationsForCheckpointParams struct {
 	RepositoryID string        `json:"repository_id"`
 	UseCursor    int64         `json:"use_cursor"`
 	AfterTs      int64         `json:"after_ts"`
 	AfterCursor  sql.NullInt64 `json:"after_cursor"`
 	UpToTs       int64         `json:"up_to_ts"`
 	UpToCursor   sql.NullInt64 `json:"up_to_cursor"`
+	CheckpointID string        `json:"checkpoint_id"`
 }
 
-// Published turn observations identify changed repositories without authorship.
-func (q *Queries) ListTurnObservationsInWindow(ctx context.Context, arg ListTurnObservationsInWindowParams) ([]string, error) {
-	rows, err := q.query(ctx, q.listTurnObservationsInWindowStmt, listTurnObservationsInWindow,
+type ListTurnObservationsForCheckpointRow struct {
+	EventID      string         `json:"event_id"`
+	TurnID       sql.NullString `json:"turn_id"`
+	EvidenceHash sql.NullString `json:"evidence_hash"`
+	Ts           int64          `json:"ts"`
+	InsertSeq    sql.NullInt64  `json:"insert_seq"`
+}
+
+// Include late observations linked to the checkpoint's recorded commits.
+func (q *Queries) ListTurnObservationsForCheckpoint(ctx context.Context, arg ListTurnObservationsForCheckpointParams) ([]ListTurnObservationsForCheckpointRow, error) {
+	rows, err := q.query(ctx, q.listTurnObservationsForCheckpointStmt, listTurnObservationsForCheckpoint,
 		arg.RepositoryID,
 		arg.UseCursor,
 		arg.AfterTs,
 		arg.AfterCursor,
 		arg.UpToTs,
 		arg.UpToCursor,
+		arg.CheckpointID,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []string{}
+	items := []ListTurnObservationsForCheckpointRow{}
 	for rows.Next() {
-		var event_id string
-		if err := rows.Scan(&event_id); err != nil {
+		var i ListTurnObservationsForCheckpointRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.TurnID,
+			&i.EvidenceHash,
+			&i.Ts,
+			&i.InsertSeq,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, event_id)
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

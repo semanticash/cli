@@ -47,11 +47,14 @@ where e.repository_id = ?
             and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)))
 order by e.ts, e.insert_seq, l.event_id, l.group_id;
 
--- name: ListTurnObservationsInWindow :many
--- Published turn observations identify changed repositories without authorship.
-select e.event_id
+-- name: ListTurnObservationsForCheckpoint :many
+-- Include late observations linked to the checkpoint's recorded commits.
+select e.event_id as event_id, e.turn_id as turn_id, l.evidence_hash as evidence_hash,
+       e.ts as ts, e.insert_seq as insert_seq
 from agent_events e
-where e.repository_id = ?
+left join agent_event_evidence_links l
+    on l.event_id = e.event_id and l.evidence_kind = 'turn_observation'
+where e.repository_id = sqlc.arg(repository_id)
     and e.event_source = 'turn_observation' and e.kind = 'context'
     and ((cast(sqlc.arg(use_cursor) as integer) = 1
             and (e.ts > sqlc.arg(after_ts)
@@ -60,4 +63,13 @@ where e.repository_id = ?
                  or (e.ts = sqlc.arg(up_to_ts) and e.insert_seq <= sqlc.arg(up_to_cursor))))
          or (cast(sqlc.arg(use_cursor) as integer) = 0
             and e.ts > sqlc.arg(after_ts) and e.ts <= sqlc.arg(up_to_ts)))
-order by e.ts, e.insert_seq, e.event_id;
+union
+select e.event_id, e.turn_id, l.evidence_hash, e.ts, e.insert_seq
+from commit_links c
+join agent_event_evidence_links l
+    on l.group_id = c.commit_hash and l.evidence_kind = 'turn_observation'
+join agent_events e on e.event_id = l.event_id and e.repository_id = c.repository_id
+where c.checkpoint_id = sqlc.arg(checkpoint_id)
+    and c.repository_id = sqlc.arg(repository_id)
+    and e.event_source = 'turn_observation' and e.kind = 'context'
+order by ts, insert_seq, event_id;
