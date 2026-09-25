@@ -350,12 +350,29 @@ Bundles attached through an observation include
 This qualifier survives upload preparation, including when the bundle has no tool
 steps. It means the repository changed during the turn, not that the agent caused
 the change or that the prompt applies to it. Consumers must preserve that
-distinction; tool evidence, when present, is assessed separately. Observation
-snapshots remain local and do not change AI attribution percentages.
+distinction; tool evidence, when present, is assessed separately.
+
+Attribution v2 can use local turn snapshots to estimate agent contribution.
+Ordered snapshot lines must match the commit diff. Direct edit and tool-delta
+matches take precedence; snapshot matches precede modified-line inheritance.
+JSON identifies this evidence as `turn_snapshot` and reports
+`turn_snapshot_matches` in diagnostics. This is inferred authorship: concurrent
+human or untracked process edits can enter the same snapshot.
+
+Failed or incomplete snapshots, explicitly running work, and overlapping
+published turn observations do not contribute snapshot credit. Unknown tracked
+completion does not invalidate a successful observation; it does not establish
+that detached work finished. Unmatched lines retain capture uncertainty.
+Recorded commit identities admit late observations for their original commits.
+Commit deltas are excluded when the turn began dirty, since those deltas can
+contain pre-existing changes. Final baseline-relative deltas remain eligible for
+turns without intermediate commits. Binary, truncated, and deletion-only changes
+do not receive line credit through this path.
 
 Publication is idempotent. Failures retain capture state for a repeated completion
 hook; there is no publication worker or automatic backfill. Completed checkpoints,
-including commits made during the turn, are not recomputed.
+including commits made during the turn, are not automatically recomputed.
+An explicit blame read assesses currently available local evidence.
 
 Snapshot failures produce `unknown` without blocking the provider. Temporary
 snapshot stores are deleted only after the end record is durably saved, even when

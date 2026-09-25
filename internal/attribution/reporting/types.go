@@ -29,6 +29,8 @@ type FileScoreInput struct {
 	// DeltaExactLines and DeltaFormattedLines are the subsets backed by tool deltas.
 	DeltaExactLines     int
 	DeltaFormattedLines int
+	// TurnSnapshotLines is the subset attributed through turn snapshots.
+	TurnSnapshotLines int
 }
 
 // ProviderAttribution holds per-provider AI line counts.
@@ -79,6 +81,7 @@ const (
 	EvidenceCarryForward   EvidenceClass = "carry_forward"    // attributed from previous checkpoint window
 	EvidenceDeletion       EvidenceClass = "deletion"         // inferred from bash rm / provider deletion
 	EvidenceNone           EvidenceClass = "none"             // no AI evidence (human file)
+	EvidenceTurnSnapshot   EvidenceClass = "turn_snapshot"    // inferred attribution from matching snapshot lines
 )
 
 // TouchOrigin describes how a file entered the AI-touched set.

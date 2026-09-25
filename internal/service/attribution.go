@@ -106,13 +106,14 @@ type FileChange struct {
 // normalizes any singular "note" field from older CLI versions into
 // this same slice at ingest time.
 type AttributionDiagnostics struct {
-	EventsConsidered  int `json:"events_considered"`
-	EventsAssistant   int `json:"events_assistant"`
-	PayloadsLoaded    int `json:"payloads_loaded"`
-	AIToolEvents      int `json:"ai_tool_events"`
-	ExactMatches      int `json:"exact_matches"`
-	NormalizedMatches int `json:"normalized_matches"`
-	ModifiedMatches   int `json:"modified_matches"`
+	EventsConsidered    int `json:"events_considered"`
+	EventsAssistant     int `json:"events_assistant"`
+	PayloadsLoaded      int `json:"payloads_loaded"`
+	AIToolEvents        int `json:"ai_tool_events"`
+	ExactMatches        int `json:"exact_matches"`
+	NormalizedMatches   int `json:"normalized_matches"`
+	ModifiedMatches     int `json:"modified_matches"`
+	TurnSnapshotMatches int `json:"turn_snapshot_matches,omitempty"`
 	// Tool-delta counters are set only by v2 scoring.
 	DeltaExactMatches      int      `json:"delta_exact_matches,omitempty"`
 	DeltaNormalizedMatches int      `json:"delta_normalized_matches,omitempty"`
@@ -228,8 +229,20 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	eventRows := toEventRows(ctx, bs, windowRows)
 	cands, evStats := attrevents.BuildCandidatesFromRows(eventRows, repoRoot, nil)
 
-	// V2 loads verified tool deltas and replaces matching rm inference.
+	// V2 combines tool deltas with inferred turn-snapshot matches.
 	v2 := util.AttributionV2Enabled(semDir)
+	var turns turnAttribution
+	if v2 {
+		turns, err = loadTurnAttribution(ctx, h, bs, cp.CheckpointID, cp.RepositoryID, in.CommitHash, win)
+		if err != nil {
+			return nil, fmt.Errorf("load turn attribution: %w", err)
+		}
+		for provider, model := range turns.models {
+			if cands.ProviderModel[provider] == "" {
+				cands.ProviderModel[provider] = model
+			}
+		}
+	}
 	var deltas *attrevents.DeltaCandidates
 	if v2 {
 		deltas, err = LoadDeltaCandidates(ctx, h, bs, ComputeAIPercentInput{
@@ -421,12 +434,17 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	var scores []fileScore
 	var matchStats attrscoring.MatchStats
 	if v2 {
-		scores, matchStats = scoreDiffPerFileV2(dr, finalCands, cands.LineStamps, deltas.Claims)
+		scores, matchStats = scoreDiffPerFileV2(dr, finalCands, cands.LineStamps, deltas.Claims, turns.claims)
 	} else {
 		scores, matchStats = scoreDiffPerFile(dr, finalCands)
 	}
 
 	// Build per-file touch origins for evidence classification.
+	for _, score := range scores {
+		if fileScoreAILines(&score) > 0 {
+			aiTouchedFiles[score.path] = true
+		}
+	}
 	touchOrigins := deriveFileTouchOrigins(aiTouchedFiles, aiLines, providerTouchedFiles, fileProvider)
 	if deltas != nil {
 		applyDeltaTouchOrigins(touchOrigins, deltas)
@@ -520,6 +538,7 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 	diag.ExactMatches = matchStats.ExactMatches
 	diag.NormalizedMatches = matchStats.NormalizedMatches
 	diag.ModifiedMatches = matchStats.ModifiedMatches
+	diag.TurnSnapshotMatches = matchStats.TurnSnapshotMatches
 	if v2 {
 		diag.DeltaExactMatches = matchStats.DeltaExactMatches
 		diag.DeltaNormalizedMatches = matchStats.DeltaNormalizedMatches
@@ -544,6 +563,9 @@ func (s *AttributionService) AttributeCommit(ctx context.Context, in Attribution
 		AIPercent: result.AIPercentage,
 	})
 	diag.Notes = attrreporting.AssembleCommitNotes(pipelineNote, cr)
+	if diag.TurnSnapshotMatches > 0 {
+		diag.Notes = append(diag.Notes, fmt.Sprintf("%d lines attributed from turn snapshots (inferred authorship).", diag.TurnSnapshotMatches))
+	}
 	result.Diagnostics = diag
 	result.AttrVersion = "v1"
 	if v2 {
@@ -679,9 +701,11 @@ type AIPercentResult struct {
 
 // ComputeAIPercentInput holds parameters for the lightweight AI% computation.
 type ComputeAIPercentInput struct {
-	RepoRoot string
-	RepoID   string
-	Window   eventWindow // delta window (previous checkpoint, this checkpoint]
+	RepoRoot     string
+	RepoID       string
+	CheckpointID string
+	CommitHash   string
+	Window       eventWindow // delta window (previous checkpoint, this checkpoint]
 }
 
 // fileScore stores internal per-file attribution counts.
@@ -700,6 +724,7 @@ type fileScore struct {
 	deltaFormattedLines int
 	// Refused alignment retains file-level delta evidence.
 	deltaAlignmentRefused bool
+	turnSnapshotLines     int
 }
 
 // aiCandidates holds the AI line sets and provider metadata extracted from events.
@@ -889,6 +914,7 @@ func scoreDiffPerFileV2(
 	cands aiCandidates,
 	lineStamps map[string]map[string][]attrevents.LineStamp,
 	deltaClaims map[string][]attrevents.DeltaClaimGroup,
+	turnClaims ...map[string][]attrscoring.DeltaClaimGroup,
 ) ([]fileScore, attrscoring.MatchStats) {
 	sDiff := toScoringDiff(dr)
 
@@ -925,7 +951,7 @@ func scoreDiffPerFileV2(
 
 	newScores, stats := attrscoring.ScoreFilesWithDeltas(
 		sDiff, cands.aiLines, cands.providerTouchedFiles, cands.fileProvider,
-		cands.lineProviders, stamps, groups)
+		cands.lineProviders, stamps, groups, turnClaims...)
 
 	out := make([]fileScore, len(newScores))
 	for i, s := range newScores {
@@ -942,6 +968,7 @@ func scoreDiffPerFileV2(
 			deltaExactLines:             s.DeltaExactLines,
 			deltaFormattedLines:         s.DeltaFormattedLines,
 			deltaAlignmentRefused:       s.DeltaAlignmentRefused,
+			turnSnapshotLines:           s.TurnSnapshotLines,
 		}
 	}
 	return out, stats
@@ -1342,6 +1369,7 @@ func buildCommitResultInput(scores []fileScore, dr diffResult, ctx commitResultC
 			DeletedNonBlank:             deletedNonBlank[fs.path],
 			DeltaExactLines:             fs.deltaExactLines,
 			DeltaFormattedLines:         fs.deltaFormattedLines,
+			TurnSnapshotLines:           fs.turnSnapshotLines,
 		}
 	}
 	return attrreporting.CommitResultInput{
@@ -1507,8 +1535,19 @@ func attributeWithCarryForward(
 	currentNoEvents := false
 	var currentScores []fileScore
 	var currentCands aiCandidates
+	var turns turnAttribution
+	if useV2 {
+		var err error
+		turns, err = loadTurnAttribution(ctx, h, bs, in.CheckpointID, in.RepoID, in.CommitHash, in.Window)
+		if err != nil {
+			return carryForwardResult{}, err
+		}
+	}
 
 	events, err := loadWindowEvents(ctx, h, in)
+	if errors.Is(err, ErrNoEventsInWindow) && len(turns.claims) > 0 {
+		err = nil
+	}
 	if errors.Is(err, ErrNoEventsInWindow) {
 		currentNoEvents = true
 	} else if err != nil {
@@ -1516,6 +1555,11 @@ func attributeWithCarryForward(
 	} else {
 		eventRows := toEventRows(ctx, bs, events)
 		newCands, _ := attrevents.BuildCandidatesFromRows(eventRows, in.RepoRoot, nil)
+		for provider, model := range turns.models {
+			if newCands.ProviderModel[provider] == "" {
+				newCands.ProviderModel[provider] = model
+			}
+		}
 		var deltas *attrevents.DeltaCandidates
 		if useV2 {
 			deltas, err = LoadDeltaCandidates(ctx, h, bs, in)
@@ -1531,10 +1575,10 @@ func attributeWithCarryForward(
 			fileProvider:         newCands.FileProvider, providerModel: newCands.ProviderModel,
 		}
 		haveEvidence := len(currentCands.aiLines) > 0 || len(currentCands.providerTouchedFiles) > 0 ||
-			(deltas != nil && len(deltas.Claims) > 0)
+			(deltas != nil && len(deltas.Claims) > 0) || len(turns.claims) > 0
 		if haveEvidence {
 			if useV2 {
-				currentScores, _ = scoreDiffPerFileV2(dr, currentCands, newCands.LineStamps, deltas.Claims)
+				currentScores, _ = scoreDiffPerFileV2(dr, currentCands, newCands.LineStamps, deltas.Claims, turns.claims)
 			} else {
 				currentScores, _ = scoreDiffPerFile(dr, currentCands)
 			}

@@ -223,6 +223,60 @@ func (q *Queries) ListEvidenceLinksInWindow(ctx context.Context, arg ListEvidenc
 	return items, nil
 }
 
+const listTurnObservationEvidence = `-- name: ListTurnObservationEvidence :many
+select distinct e.event_id, e.turn_id, s.provider, s.model, l.evidence_hash
+from agent_events e
+join agent_sessions s on s.session_id = e.session_id and s.repository_id = e.repository_id
+left join agent_event_evidence_links l
+    on l.event_id = e.event_id and l.evidence_kind = 'turn_observation'
+where e.repository_id = ? and e.event_source = 'turn_observation'
+    and e.kind = 'context' and e.ts >= ?
+order by e.ts, e.insert_seq, e.event_id
+`
+
+type ListTurnObservationEvidenceParams struct {
+	RepositoryID string `json:"repository_id"`
+	Ts           int64  `json:"ts"`
+}
+
+type ListTurnObservationEvidenceRow struct {
+	EventID      string         `json:"event_id"`
+	TurnID       sql.NullString `json:"turn_id"`
+	Provider     string         `json:"provider"`
+	Model        sql.NullString `json:"model"`
+	EvidenceHash sql.NullString `json:"evidence_hash"`
+}
+
+// Include later publications when checking overlapping capture intervals.
+func (q *Queries) ListTurnObservationEvidence(ctx context.Context, arg ListTurnObservationEvidenceParams) ([]ListTurnObservationEvidenceRow, error) {
+	rows, err := q.query(ctx, q.listTurnObservationEvidenceStmt, listTurnObservationEvidence, arg.RepositoryID, arg.Ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTurnObservationEvidenceRow{}
+	for rows.Next() {
+		var i ListTurnObservationEvidenceRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.TurnID,
+			&i.Provider,
+			&i.Model,
+			&i.EvidenceHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTurnObservationsForCheckpoint = `-- name: ListTurnObservationsForCheckpoint :many
 select e.event_id as event_id, e.turn_id as turn_id, l.evidence_hash as evidence_hash,
        e.ts as ts, e.insert_seq as insert_seq

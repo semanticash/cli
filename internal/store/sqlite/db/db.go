@@ -270,6 +270,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listTranscriptEventsStmt, err = db.PrepareContext(ctx, listTranscriptEvents); err != nil {
 		return nil, fmt.Errorf("error preparing query ListTranscriptEvents: %w", err)
 	}
+	if q.listTurnObservationEvidenceStmt, err = db.PrepareContext(ctx, listTurnObservationEvidence); err != nil {
+		return nil, fmt.Errorf("error preparing query ListTurnObservationEvidence: %w", err)
+	}
 	if q.listTurnObservationsForCheckpointStmt, err = db.PrepareContext(ctx, listTurnObservationsForCheckpoint); err != nil {
 		return nil, fmt.Errorf("error preparing query ListTurnObservationsForCheckpoint: %w", err)
 	}
@@ -772,6 +775,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listTranscriptEventsStmt: %w", cerr)
 		}
 	}
+	if q.listTurnObservationEvidenceStmt != nil {
+		if cerr := q.listTurnObservationEvidenceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listTurnObservationEvidenceStmt: %w", cerr)
+		}
+	}
 	if q.listTurnObservationsForCheckpointStmt != nil {
 		if cerr := q.listTurnObservationsForCheckpointStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listTurnObservationsForCheckpointStmt: %w", cerr)
@@ -1038,6 +1046,7 @@ type Queries struct {
 	listStepEventsForTurnStmt                    *sql.Stmt
 	listStepProvenanceForTurnStmt                *sql.Stmt
 	listTranscriptEventsStmt                     *sql.Stmt
+	listTurnObservationEvidenceStmt              *sql.Stmt
 	listTurnObservationsForCheckpointStmt        *sql.Stmt
 	listUserPromptsForCommitStmt                 *sql.Stmt
 	markCheckpointAttributionPushedStmt          *sql.Stmt
@@ -1155,6 +1164,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listStepEventsForTurnStmt:                    q.listStepEventsForTurnStmt,
 		listStepProvenanceForTurnStmt:                q.listStepProvenanceForTurnStmt,
 		listTranscriptEventsStmt:                     q.listTranscriptEventsStmt,
+		listTurnObservationEvidenceStmt:              q.listTurnObservationEvidenceStmt,
 		listTurnObservationsForCheckpointStmt:        q.listTurnObservationsForCheckpointStmt,
 		listUserPromptsForCommitStmt:                 q.listUserPromptsForCommitStmt,
 		markCheckpointAttributionPushedStmt:          q.markCheckpointAttributionPushedStmt,

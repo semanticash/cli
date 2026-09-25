@@ -21,11 +21,10 @@ type lineCandidate struct {
 	fromDelta bool
 }
 
-// ScoreFilesWithDeltas scores direct and tool-delta evidence per line.
-// Match quality wins before recency in (ts, insert_seq, event_id) order.
-// Delta groups establish alignment before competing for shared lines and
-// cannot trigger modified-line inheritance. Unstamped direct evidence uses
-// zero recency and a deterministic provider fallback.
+// ScoreFilesWithDeltas matches direct and snapshot evidence to added lines.
+// Direct and tool-delta matches rank by quality, then (ts, insert_seq, event_id).
+// Turn matches fill remaining lines before direct hunk inheritance.
+// Snapshot matches cannot trigger inheritance.
 func ScoreFilesWithDeltas(
 	diff DiffResult,
 	aiLines map[string]map[string]struct{},
@@ -34,6 +33,7 @@ func ScoreFilesWithDeltas(
 	lineProviders map[string]map[string]map[string]struct{},
 	lineStamps map[string]map[string][]LineStamp,
 	deltaGroups map[string][]DeltaClaimGroup,
+	turnGroups ...map[string][]DeltaClaimGroup,
 ) ([]FileScore, MatchStats) {
 	aiLinesNorm := BuildNormalizedSet(aiLines)
 	lineProvidersNorm := BuildNormalizedLineProviders(lineProviders)
@@ -54,6 +54,10 @@ func ScoreFilesWithDeltas(
 		// any budget failure drops all line-level delta evidence for the file.
 		groups := deltaGroups[fd.Path]
 		flat := flattenGroups(fd.Groups)
+		var turnCand []*lineCandidate
+		if diff.Complete && len(turnGroups) > 0 {
+			turnCand = alignTurnClaims(turnGroups[0][fd.Path], flat)
+		}
 		deltaCand := make([]*lineCandidate, len(flat))
 		deltaContention := make([]bool, len(flat))
 		haveDelta := false
@@ -400,6 +404,7 @@ func ScoreFilesWithDeltas(
 				contested bool
 				trimmed   string
 				norm      string
+				turn      *lineCandidate
 			}
 			var classes []lc
 			hasDirectOverlap := false
@@ -425,6 +430,9 @@ func ScoreFilesWithDeltas(
 					continue
 				}
 				c := lc{trimmed: trimmed, norm: NormalizeWhitespace(trimmed)}
+				if lineFlat < len(turnCand) {
+					c.turn = turnCand[lineFlat]
+				}
 
 				var cands []lineCandidate
 				if fileSet, ok := aiLines[fd.Path]; ok {
@@ -495,7 +503,7 @@ func ScoreFilesWithDeltas(
 						stats.DeltaNormalizedMatches++
 					}
 					fs.ProviderLines[c.winner.provider]++
-				case hasDirectOverlap:
+				case hasDirectOverlap && c.turn == nil:
 					// Only direct evidence can anchor modified-line fallback.
 					fs.ModifiedLines++
 					stats.ModifiedMatches++
@@ -506,6 +514,17 @@ func ScoreFilesWithDeltas(
 					} else if prov != "" {
 						fs.ProviderLines[prov]++
 					}
+				case c.turn != nil:
+					fs.TurnSnapshotLines++
+					if c.turn.quality == qualityExact {
+						fs.ExactLines++
+						stats.ExactMatches++
+					} else {
+						fs.FormattedLines++
+						stats.NormalizedMatches++
+					}
+					fs.ProviderLines[c.turn.provider]++
+					stats.TurnSnapshotMatches++
 				case refusedProvider != "":
 					fs.ProviderOnlyLines++
 					fs.ProviderOnlyLinesByProvider[refusedProvider]++

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Attribution now credits matching lines from complete turn snapshots, including cross-repository shell changes. Direct edit and tool-delta matches take precedence; snapshot-based credit is marked as inferred.
 - Turn-observed changes with no authorship evidence no longer default to Human in attribution. Unmatched lines remain Unattributed, including when reading older checkpoints; proven AI matches are preserved.
 - Turn observations now link to commits created during the turn, so late publication protects the original commit without marking an unrelated later commit uncertain.
 - Observed-input uploads withhold text with missing or unknown source identity while preserving local evidence.

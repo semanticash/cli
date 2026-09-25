@@ -139,8 +139,17 @@ func testCrossRepoObservation(t *testing.T, late bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Capture == nil || result.Capture.Status != "incomplete" || result.HumanLines != 0 || result.UnattributedLines != 1 || result.AILines != 1 {
-		t.Fatalf("observation lost uncertainty or direct AI evidence: %+v", result)
+	if result.Capture == nil || result.Capture.Status != "incomplete" || result.HumanLines != 0 || result.UnattributedLines != 0 || result.AILines != 2 || result.Diagnostics.TurnSnapshotMatches != 1 {
+		t.Fatalf("observation lost turn attribution or direct AI evidence: %+v", result)
+	}
+	for _, file := range result.Files {
+		want := "codex"
+		if file.Path == "direct.txt" {
+			want = "claude_code"
+		}
+		if !slices.Equal(file.Providers, []string{want}) {
+			t.Fatalf("%s providers=%v, want %s", file.Path, file.Providers, want)
+		}
 	}
 	// A saved complete status must not hide authorship uncertainty.
 	cp := readCheckpoint(t, b.h, "observed-checkpoint")
@@ -153,7 +162,7 @@ func testCrossRepoObservation(t *testing.T, late bool) {
 		t.Fatal(err)
 	}
 	again, err := NewAttributionService().AttributeCommit(ctx, AttributionInput{RepoPath: b.dir, CommitHash: sha})
-	if err != nil || again.HumanLines != 0 || again.UnattributedLines != 1 || again.AILines != 1 {
+	if err != nil || again.HumanLines != 0 || again.UnattributedLines != 0 || again.AILines != 2 {
 		t.Fatalf("saved complete status concealed uncertainty: %+v, %v", again, err)
 	}
 	if late {

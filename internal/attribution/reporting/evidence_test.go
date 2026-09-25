@@ -4,6 +4,20 @@ import (
 	"testing"
 )
 
+func TestTurnSnapshotEvidence(t *testing.T) {
+	fs := FileScoreInput{ExactLines: 3, TurnSnapshotLines: 3}
+	if got := ResolveFileEvidence(fs, TouchOriginCoarse, false); got != EvidenceTurnSnapshot {
+		t.Fatalf("primary evidence=%s", got)
+	}
+	classes := CollectFileEvidence(fs, TouchOriginCoarse, false)
+	level, count := CommitEvidence([]FileAttributionOutput{{
+		PrimaryEvidence: EvidenceTurnSnapshot, AllEvidence: classes, AIExactLines: 3,
+	}})
+	if level != "Medium" || count != 1 {
+		t.Fatalf("snapshot estimate overstated: level=%s fallback=%d", level, count)
+	}
+}
+
 func TestResolveFileEvidence_ExactWins(t *testing.T) {
 	fs := FileScoreInput{ExactLines: 5, FormattedLines: 2, ModifiedLines: 1}
 	got := ResolveFileEvidence(fs, TouchOriginLineLevel, false)

@@ -44,6 +44,8 @@ type FileScore struct {
 	DeltaFormattedLines int
 	// DeltaAlignmentRefused marks delta evidence that must degrade to touch.
 	DeltaAlignmentRefused bool
+	// TurnSnapshotLines counts exact and formatted matches inferred from turn snapshots.
+	TurnSnapshotLines int
 	// ContestedLines counts lines where multiple evidence candidates
 	// competed before winner selection.
 	ContestedLines int
@@ -60,4 +62,5 @@ type MatchStats struct {
 	DeltaNormalizedMatches int
 	DeltaAlignmentsRefused int
 	ContestedLines         int
+	TurnSnapshotMatches    int
 }

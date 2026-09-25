@@ -212,9 +212,11 @@ func computeEnrichmentAttribution(ctx context.Context, wctx *workerContext, in W
 	}
 
 	cfr, err := attributeWithCarryForward(ctx, wctx.h, wctx.blobStore, diffBytes, ComputeAIPercentInput{
-		RepoRoot: in.RepoRoot,
-		RepoID:   wctx.cp.RepositoryID,
-		Window:   windows.attrWindow,
+		RepoRoot:     in.RepoRoot,
+		RepoID:       wctx.cp.RepositoryID,
+		CheckpointID: wctx.cp.CheckpointID,
+		CommitHash:   in.CommitHash,
+		Window:       windows.attrWindow,
 	}, windows.prevCommitLinked, wctx.semDir, v2)
 	if errors.Is(err, ErrNoEventsInWindow) {
 		// No agent evidence is a completed empty result.

@@ -2,17 +2,13 @@ package reporting
 
 import "fmt"
 
-// ResolveFileEvidence determines the primary evidence class for a file
-// based on its scored lines, touch origin, and carry-forward status.
-// Returns the highest-quality evidence class that applies.
-//
-// Line-level evidence (exact / formatted / modified) wins when
-// present. Otherwise the function falls through to touch-based
-// classes; ProviderOnlyLines > 0 with a TouchOriginProviderEdit
-// resolves to EvidenceProviderTouch, which is the canonical
-// shape for Cursor / Copilot / Gemini / Kiro that report file
-// edits without line-level payload.
+// ResolveFileEvidence selects a file's primary evidence class.
+// Files attributed entirely from turn snapshots retain the inferred class.
+// Other files prefer line matches, then file-touch evidence.
 func ResolveFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bool) EvidenceClass {
+	if fs.TurnSnapshotLines > 0 && fs.TurnSnapshotLines == fs.ExactLines+fs.FormattedLines+fs.ModifiedLines {
+		return EvidenceTurnSnapshot
+	}
 	aiLines := fs.ExactLines + fs.FormattedLines + fs.ModifiedLines
 
 	// Line-level evidence takes priority (highest to lowest quality).
@@ -82,7 +78,10 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	if touch == TouchOriginProviderEdit {
 		classes = append(classes, EvidenceProviderTouch)
 	}
-	if touch == TouchOriginCoarse {
+	if fs.TurnSnapshotLines > 0 {
+		classes = append(classes, EvidenceTurnSnapshot)
+	}
+	if touch == TouchOriginCoarse && fs.TurnSnapshotLines == 0 {
 		classes = append(classes, EvidenceProviderCoarse)
 	}
 	if touch == TouchOriginLineLevel && fs.ExactLines == 0 && fs.FormattedLines == 0 && fs.ModifiedLines == 0 {
@@ -101,25 +100,21 @@ func CollectFileEvidence(fs FileScoreInput, touch TouchOrigin, isCarryForward bo
 	return classes
 }
 
-// IsFallbackEvidence reports whether an evidence class indicates the
-// file's attribution required a non-line-level signal. Fallback
-// classes pull commit-level strength down via the penalty term in
-// CommitEvidence.
+// IsFallbackEvidence identifies evidence that reduces commit-level confidence.
 func IsFallbackEvidence(c EvidenceClass) bool {
 	switch c {
-	case EvidenceToolDeltaTouch, EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion:
+	case EvidenceToolDeltaTouch, EvidenceProviderTouch, EvidenceProviderCoarse, EvidenceCarryForward, EvidenceDeletion, EvidenceTurnSnapshot:
 		return true
 	}
 	return false
 }
 
-// CommitEvidence computes the evidence level, score, and fallback count
-// from per-file evidence using a weighted formula.
+// CommitEvidence computes confidence and a fallback-file count.
 //
 // Line-evidence score (0-1): LineScore = (1.00*Exact + 0.85*Normalized + 0.55*Modified) / max(1, AILines)
 // File-evidence penalty (0-1): FallbackPenalty = (0.18*Tdt + 0.18*Tpd + 0.30*Tpc + 0.25*CF + 0.35*D) / max(1, AIFiles)
 //
-// Tool-delta and provider touches use the same weight.
+// Turn snapshots use the provider-coarse penalty (Tpc).
 // Combined score: Score = clamp(LineScore - FallbackPenalty, 0, 1)
 //
 // Buckets:
@@ -128,14 +123,7 @@ func IsFallbackEvidence(c EvidenceClass) bool {
 //	Medium: 0.45 <= Score < 0.75
 //	Low:    Score < 0.45
 //
-// Thresholds may be tuned as the evaluation corpus grows.
-//
-// Fallback bucket selection walks AllEvidence (not PrimaryEvidence) so
-// a file with line-level evidence plus weaker corroboration (e.g.
-// modified + provider_touch) still contributes to the penalty term.
-// Each file counts at most once toward fallbackCount and toward at
-// most one of tpd/tpc/cf/del, picking the strongest fallback class
-// present in AllEvidence.
+// Each file contributes at most one penalty, selected from AllEvidence.
 func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount int) {
 	var exactLines, normLines, modLines int
 	var aiFiles int
@@ -158,7 +146,7 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 		case EvidenceProviderTouch:
 			tpd++
 			fallbackCount++
-		case EvidenceProviderCoarse:
+		case EvidenceProviderCoarse, EvidenceTurnSnapshot:
 			tpc++
 			fallbackCount++
 		case EvidenceCarryForward:
@@ -206,23 +194,16 @@ func CommitEvidence(files []FileAttributionOutput) (level string, fallbackCount 
 	return level, fallbackCount
 }
 
-// selectFallbackBucket returns the strongest fallback class among a
-// file's evidence (AllEvidence takes priority over PrimaryEvidence so
-// corroborating fallback signals on a line-level file still count).
-// Returns EvidenceNone when no fallback class is present, in which
-// case the file does not contribute to the penalty term.
-//
-// Each file uses its strongest fallback class: tool_delta_touch,
-// provider_touch, provider_coarse, carry_forward, then deletion.
+// selectFallbackBucket selects one uncertainty penalty per file.
+// Turn-snapshot inference takes precedence over file-touch evidence.
 func selectFallbackBucket(f FileAttributionOutput) EvidenceClass {
 	classes := f.AllEvidence
 	if len(classes) == 0 && IsFallbackEvidence(f.PrimaryEvidence) {
-		// Defense for older paths that never populated AllEvidence:
-		// fall back to PrimaryEvidence so the bucket logic still
-		// produces a sane result.
+		// Older callers may provide only the primary class.
 		return f.PrimaryEvidence
 	}
 	priority := []EvidenceClass{
+		EvidenceTurnSnapshot,
 		EvidenceToolDeltaTouch,
 		EvidenceProviderTouch,
 		EvidenceProviderCoarse,

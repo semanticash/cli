@@ -73,3 +73,14 @@ where c.checkpoint_id = sqlc.arg(checkpoint_id)
     and c.repository_id = sqlc.arg(repository_id)
     and e.event_source = 'turn_observation' and e.kind = 'context'
 order by ts, insert_seq, event_id;
+
+-- name: ListTurnObservationEvidence :many
+-- Include later publications when checking overlapping capture intervals.
+select distinct e.event_id, e.turn_id, s.provider, s.model, l.evidence_hash
+from agent_events e
+join agent_sessions s on s.session_id = e.session_id and s.repository_id = e.repository_id
+left join agent_event_evidence_links l
+    on l.event_id = e.event_id and l.evidence_kind = 'turn_observation'
+where e.repository_id = ? and e.event_source = 'turn_observation'
+    and e.kind = 'context' and e.ts >= ?
+order by e.ts, e.insert_seq, e.event_id;
