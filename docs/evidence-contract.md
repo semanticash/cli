@@ -48,14 +48,16 @@ and retry behavior.
 
 ## Evidence classes
 
-Each file has one primary evidence class. The three line-level classes contribute
-to the headline percentage. The five fallback classes do not.
+Each file has one primary evidence class. Line matches, including inferred
+turn-snapshot matches, contribute to the headline percentage. File-touch and
+carry-forward evidence do not.
 
 | Class | Produced from | Tier | Supports | Does not establish |
 |-------|---------------|------|----------|--------------------|
 | `exact` | Added line matches captured AI output character-for-character after trimming | line-level | the line's content matches captured AI output (trimmed) | that AI is the sole author, or that a human did not also produce identical content |
 | `normalized` | Match after stripping all whitespace (catches formatter/linter reflow) | line-level | the line matches captured AI output modulo whitespace | byte-exact identity |
 | `modified` | Line sits in a diff hunk overlapping captured AI output, without a line match | line-level | the line is in a hunk that overlaps captured AI output | that the final line's content is AI output |
+| `turn_snapshot` | Added lines match a complete turn snapshot | inferred line-level | the lines appeared during the observed agent turn | exclusive authorship or completion of detached work |
 | `tool_delta_touch` | Verified tool-window delta with no surviving line match | fallback | a file change was captured while an agent tool ran | which lines changed or which process produced them |
 | `provider_touch` | Explicit file-edit tool event from a provider, no line-level payload | fallback | the provider reported a file-edit event for this file | which lines, or that the edit survived to the commit |
 | `provider_coarse` | Session-level linkage only (no direct file-edit event) | fallback | an AI session was active in this file's window | that the provider edited this specific file |
@@ -101,6 +103,10 @@ Each file reports:
   `provider_touch` > `provider_coarse`.
 - `evidence_classes` - all contributing classes, strongest first.
 
+Files whose AI lines all come from turn snapshots use `turn_snapshot` as their
+primary class. Mixed files retain their line-match class and include
+`turn_snapshot` among the contributing classes.
+
 `evidence_classes` preserves weaker corroborating signals even when line-level
 evidence determines `evidence_class`.
 
@@ -132,7 +138,7 @@ Line-level evidence contributes according to match quality. Fallback evidence
 subtracts from the score. Coefficients and thresholds are tunable implementation
 details.
 
-## Tool-delta evidence (v2)
+## Tool-delta evidence
 
 Tool-window capture records the workspace delta observed while an agent-issued
 Bash tool ran. This can include changes from scripts, formatters, and generators.
@@ -146,23 +152,27 @@ within the same window. Only verified single-actor deltas are scored. Partial,
 ambiguous, binary, truncated, symlink, gitlink, and unaligned changes retain
 file-level evidence only.
 
-## v1 vs v2, and result stamping
+## Configuration and compatibility
 
-- **v1** uses assistant `Edit`/`Write` output and supports Bash deletion
-  inference. Select v1 with `attribution_v2: false` in
-  `.semantica/settings.json`, or `SEMANTICA_ATTRIBUTION_V2=0` per run.
-- **v2 (default)** additionally scores verified Bash workspace deltas, producing
-  `tool_delta_touch` and the delta-line subsets.
-- When multiple providers directly witness the same line, v2 assigns that line
+- Attribution includes verified Bash workspace deltas by default, producing
+  `tool_delta_touch` and the delta-line subsets. It also uses complete turn
+  snapshots across supported turn-capture providers, including cross-repository
+  changes. These matches carry the `turn_snapshot` evidence class and reduce
+  confidence to reflect inferred authorship.
+- When multiple providers directly witness the same line, Semantica assigns it
   to one deterministic provider instead of crediting every witness. This does
   not change the headline line count.
-- Capture and scoring are separate. Semantica may capture eligible Bash deltas
-  while v2 scoring is disabled. Enabling v2 does not update existing results.
-- Missing repository settings use v2. Unreadable or malformed settings fail
-  closed to v1 so an explicit repository opt-out is not bypassed silently.
-- Commit-message trailers use v1. `semantica blame`, background enrichment, and
-  hosted attribution use the repository's selected version. Each result records
-  its `attribution_version`.
+- Set `attribution_v2: false` in `.semantica/settings.json`, or
+  `SEMANTICA_ATTRIBUTION_V2=0` per run, to use the legacy scorer. It uses assistant
+  `Edit`/`Write` output and Bash deletion inference, without snapshot line credit.
+- Capture and scoring are separate. Disabling snapshot scoring does not disable
+  capture; enabling it does not update existing results.
+- Missing settings use the default scorer. Unreadable or malformed settings use
+  the legacy scorer so an explicit opt-out is not bypassed.
+- Commit-message trailers use the legacy scorer. `semantica blame`, background
+  enrichment, and hosted attribution honor the repository setting. Stored
+  `attribution_version` values distinguish legacy (`1`) and snapshot-enabled
+  (`2`) results for compatibility.
 
 ## Guarantees and limits
 

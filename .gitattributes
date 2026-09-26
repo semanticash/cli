@@ -1,2 +1,5 @@
 # Keep JSON fixtures LF for byte comparisons.
 **/testdata/**/*.json text eol=lf
+
+# Preserve content-addressed fixture bytes on every platform.
+internal/provenance/testdata/observed_input_upload_v1/** -text

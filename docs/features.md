@@ -18,7 +18,14 @@ When you run `semantica blame` or `semantica explain`, Semantica diffs the commi
 | Formatted | `ai_formatted` | Match after stripping all whitespace - catches linter/formatter changes (e.g., `func foo(){` vs `func foo() {`) |
 | Modified | `ai_modified` | Line is in a diff hunk that overlaps with AI output but doesn't match exactly - the developer likely edited AI-generated code |
 
-Direct attribution uses assistant `Edit` and `Write` output. In v1, `Bash` events support deletion inference only. The default v2 scorer also uses verified workspace deltas captured around Claude Code and Codex Bash tools, including changes made by invoked scripts, formatters, and generators.
+Attribution uses assistant `Edit` and `Write` output and captured workspace changes
+around supported shell commands, including scripts, formatters, and generators.
+
+Semantica also matches lines from complete turn snapshots for Codex, Claude Code,
+Gemini CLI, Copilot CLI, Cursor IDE, interactive Cursor CLI, and Kiro CLI v2.
+This includes cross-repository shell changes. Direct edit and tool-delta matches
+take precedence. Turn-snapshot credit is marked as inferred authorship because
+concurrent human or process edits can enter the same snapshot.
 
 ### What you see
 
@@ -35,6 +42,9 @@ provider details, and attribution diagnostics. Each file also carries
 full strongest-first list. Tool-delta scoring additionally reports
 `ai_delta_exact_lines`, `ai_delta_formatted_lines`, and `tool_delta_touch`
 evidence.
+
+Turn-snapshot attribution adds the `turn_snapshot` evidence class and the
+`turn_snapshot_matches` diagnostic count.
 
 See the [Evidence Contract](evidence-contract.md) for evidence classes, strength levels, and their limits.
 

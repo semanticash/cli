@@ -104,21 +104,10 @@ func TestObservedInput_EndToEndSampleThroughLifecycle(t *testing.T) {
 		t.Skip("git unavailable")
 	}
 	ctx := context.Background()
-	// The Claude project-path decoder round-trips '-' <-> '/', so the repo and home
-	// must live under a dash-free base for the encoded transcript path to decode
-	// back to the launch repository.
-	tmpRoot := "/tmp"
-	if evaled, err := filepath.EvalSymlinks(tmpRoot); err == nil {
-		tmpRoot = evaled
+	base := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
 	}
-	base := filepath.Join(tmpRoot, "semantica_oi_"+strings.ReplaceAll(uuid.NewString(), "-", ""))
-	if strings.Contains(base, "-") {
-		t.Skipf("temp base contains '-', cannot encode Claude project path: %s", base)
-	}
-	if err := os.MkdirAll(base, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
 
 	fakeHome := filepath.Join(base, "home")
 	semHome := filepath.Join(base, "sem")
@@ -130,6 +119,7 @@ func TestObservedInput_EndToEndSampleThroughLifecycle(t *testing.T) {
 	}
 	// os.UserHomeDir drives the transcript project-path decoder; isolate it.
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
 	t.Setenv("SEMANTICA_HOME", semHome)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -149,11 +139,10 @@ func TestObservedInput_EndToEndSampleThroughLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Place the transcript exactly where Claude would: under
-	// ~/.claude/projects/<encoded-repo-path>/<session>.jsonl, so routing recovers
-	// the launch repository the way it does for a real session.
+	// Keep the transcript under Claude's project directory; cwd supplies ownership.
 	sessionID := uuid.NewString()
-	projectsDir := filepath.Join(fakeHome, ".claude", "projects", strings.ReplaceAll(repoPath, "/", "-"))
+	projectKey := strings.NewReplacer("/", "-", `\`, "-", ":", "-").Replace(repoPath)
+	projectsDir := filepath.Join(fakeHome, ".claude", "projects", projectKey)
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

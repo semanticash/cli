@@ -352,7 +352,10 @@ steps. It means the repository changed during the turn, not that the agent cause
 the change or that the prompt applies to it. Consumers must preserve that
 distinction; tool evidence, when present, is assessed separately.
 
-Attribution v2 can use local turn snapshots to estimate agent contribution.
+Attribution uses local turn snapshots to estimate agent contribution for
+all providers with turn capture: Codex, Claude Code, Gemini CLI, Copilot CLI,
+Cursor IDE, interactive Cursor CLI, and Kiro CLI v2. The scoring path is shared
+across providers.
 Ordered snapshot lines must match the commit diff. Direct edit and tool-delta
 matches take precedence; snapshot matches precede modified-line inheritance.
 JSON identifies this evidence as `turn_snapshot` and reports
@@ -420,7 +423,7 @@ prunes expired objects without operating on the user repository.
 
 Claude Code, Codex, and Cursor shell hooks capture canonical deltas and link
 them to their tool events. Recovery runs during worker drains and with
-`semantica tidy --apply`. By default, v2 scoring verifies and aligns these
+`semantica tidy --apply`. Attribution verifies and aligns these
 deltas against committed lines; partial or ambiguous evidence remains
 file-level only.
 
